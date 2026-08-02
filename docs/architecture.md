@@ -2,19 +2,13 @@
 
 ## Purpose
 
-Runstead exists to make the ChatGPT Web model exposed by OmniRoute behave as a dependable local agent. It does this by owning the execution contract around the model rather than trusting the provider session or the model's claims.
+Runstead exists to make ChatGPT Web behave as a dependable local agent by owning the execution contract around the model rather than trusting a provider session, a transport adapter or the model's claims.
+
+The project deliberately separates the **agent runtime** from the **provider transport**. The runtime must become reliable first through OmniRoute. A first-party ChatGPT Web connector is introduced only after the runtime baseline is proven.
 
 ## System boundary
 
-### OmniRoute owns
-
-- provider authentication and session access;
-- exposure of ChatGPT Web through an API-compatible endpoint;
-- request and response transport;
-- provider-specific compatibility work;
-- upstream retries or routing that belong to the gateway.
-
-### Runstead owns
+### Runstead core owns
 
 - task lifecycle;
 - prompts and the action contract;
@@ -26,7 +20,67 @@ Runstead exists to make the ChatGPT Web model exposed by OmniRoute behave as a d
 - verification of observable effects;
 - final evidence and auditability.
 
-Runstead must not depend on a remote conversation as its source of truth.
+### Provider adapters own
+
+- authentication material required by the provider path;
+- request and response transport;
+- provider-specific request construction;
+- streaming or response decoding;
+- provider error classification;
+- sanitized transport diagnostics.
+
+Provider adapters must not own task truth, acceptance decisions or local side effects.
+
+## Provider transition strategy
+
+### Stage 1 — OmniRoute baseline
+
+OmniRoute is the first supported adapter because it already exposes ChatGPT Web and lets Runstead validate the higher-risk agent-runtime assumptions without first rebuilding the unofficial web transport.
+
+The OmniRoute adapter owns:
+
+- configurable base URL, API key and model;
+- non-streaming requests initially;
+- timeouts and cancellation;
+- capture of useful upstream identifiers;
+- classification of transport, authentication, timeout, empty-response and malformed-response failures.
+
+Runstead does not depend on OmniRoute's emulated native tool calling. Model output is treated as text and interpreted through a Runstead-owned action protocol.
+
+### Stage 2 — First-party ChatGPT Web connector
+
+After the OmniRoute-backed v0.1 is reliable, Runstead will add `provider/chatgptweb`.
+
+The first-party connector may need to own:
+
+- explicit local credential import without collecting account passwords;
+- secure credential storage or operating-system keyring integration;
+- session-cookie rotation and access-token exchange;
+- ChatGPT Web request requirements and proof material;
+- browser-compatible HTTP/TLS behavior;
+- model-slug discovery or mapping;
+- request construction for the internal conversation endpoint;
+- SSE decoding and final-answer extraction;
+- sanitized raw-response capture for diagnosis;
+- precise failure categories and bounded recovery.
+
+This connector is intentionally narrow. It will not expose a public OpenAI-compatible API, manage many accounts, implement quota routing or reproduce OmniRoute's provider catalog.
+
+### Stage 3 — Bake-off and migration
+
+The OmniRoute and direct adapters must run the same protocol test corpus and end-to-end tasks.
+
+The direct connector becomes the default only if it demonstrates material improvement in one or more of:
+
+- valid action rate;
+- protocol-refusal rate;
+- empty or malformed response rate;
+- recoverability after session failure;
+- diagnostic precision;
+- latency or operational simplicity;
+- maintenance cost.
+
+A direct connector that merely duplicates OmniRoute with similar reliability does not justify migration.
 
 ## Architectural style
 
@@ -37,7 +91,9 @@ cmd/runstead
     ↓
 agent loop
     ├── protocol
-    ├── provider/omniroute
+    ├── provider
+    │   ├── omniroute
+    │   └── chatgptweb     # later milestone
     ├── tools
     ├── executor
     ├── policy
@@ -46,7 +102,9 @@ agent loop
     └── trace
 ```
 
-Packages separate responsibilities, but they do not become services. Internal interfaces should be introduced where real substitution or test isolation is required, not to imitate enterprise architecture.
+Packages separate responsibilities, but they do not become services. Internal interfaces are introduced only where real substitution or test isolation is required.
+
+The provider interface should remain small enough to support deterministic fake providers in tests and the two real provider paths without becoming a generic routing framework.
 
 ## Main execution loop
 
@@ -55,7 +113,7 @@ load task state
     ↓
 build bounded context
     ↓
-request next model decision
+request next model decision through provider adapter
     ↓
 parse Runstead action
     ↓
@@ -76,7 +134,7 @@ The model never executes a tool directly. It proposes an action. Runstead remain
 
 ## Action protocol
 
-Runstead will use a protocol it controls instead of requiring OmniRoute's emulated native tool calling to work perfectly.
+Runstead uses a protocol it controls instead of requiring provider-native or emulated tool calling to work perfectly.
 
 Initial candidate:
 
@@ -101,22 +159,7 @@ The protocol must support:
 - bounded retries;
 - versioning once behavior stabilizes.
 
-Native `tool_calls` may be accepted later as an additional input format, but the project must retain an independent fallback.
-
-## Provider adapter
-
-The first adapter targets OmniRoute and ChatGPT Web only.
-
-Initial behavior:
-
-- use a non-streaming request path first;
-- configure base URL, model and credentials explicitly;
-- apply request timeouts and cancellation;
-- preserve useful upstream identifiers in the trace;
-- classify transport, authentication, timeout, empty-response and malformed-response failures;
-- avoid coupling task persistence to OmniRoute session persistence.
-
-Provider interfaces should remain minimal. Broad provider abstraction is not a v0.1 deliverable.
+Native `tool_calls` may be accepted later as an additional input format, but the independent protocol remains the compatibility path across transports.
 
 ## Local tools
 
@@ -134,7 +177,7 @@ Provider interfaces should remain minimal. Broad provider abstraction is not a v
 - `write_file`
 - `apply_patch`
 
-Every tool returns structured observations including success, failure, exit status, stdout/stderr where appropriate and evidence needed by the verifier.
+Every tool returns structured observations including success, failure, exit status, bounded stdout/stderr where appropriate and evidence needed by the verifier.
 
 ## Policy model
 
@@ -170,11 +213,13 @@ Initial entities:
 
 The event history should be append-oriented. Derived task status may be updated for convenience, but it must remain possible to reconstruct what happened from persisted events.
 
+Provider-specific session identifiers may be recorded as disposable metadata. They are never the source of task truth.
+
 ## Recovery model
 
-A remote session can fail without invalidating the task.
+A remote session or provider adapter can fail without invalidating the task.
 
-On recovery, Runstead should reconstruct a bounded context from:
+On recovery, Runstead reconstructs a bounded context from:
 
 - original objective;
 - current plan or working summary;
@@ -184,7 +229,7 @@ On recovery, Runstead should reconstruct a bounded context from:
 - unresolved errors;
 - remaining constraints.
 
-It may create a new upstream conversation and continue from the local checkpoint.
+It may create a new upstream conversation, use the same provider with a new session or resume through another compatible adapter.
 
 ## Verification
 
@@ -199,7 +244,28 @@ Examples:
 - repository changes are proven by `git diff`;
 - final completion requires satisfied acceptance checks.
 
-The verifier should remain separate from the model-facing narrative so that false claims cannot silently become state.
+The verifier remains separate from the model-facing narrative so that false claims cannot silently become state.
+
+## Docker development boundary
+
+Docker is used to make development and testing reproducible without installing project dependencies directly on the host.
+
+It is not treated as a complete security sandbox. A bind-mounted writable repository is intentionally modifiable from the container.
+
+The development environment should:
+
+- run the process as a non-root user matching the host UID/GID when practical;
+- bind-mount only the Runstead source and explicitly selected workspaces;
+- use named volumes for Go module and build caches;
+- keep SQLite development data in an explicit named volume or selected host path;
+- mount credentials read-only or inject them at runtime;
+- avoid host networking unless a demonstrated requirement exists;
+- never mount `/var/run/docker.sock`;
+- never run privileged;
+- drop unnecessary Linux capabilities and set `no-new-privileges` where supported;
+- retain direct native build and test commands outside Docker.
+
+The later direct ChatGPT Web connector may require a dedicated image or transport helper because browser-compatible TLS behavior can introduce native dependencies. That work must not contaminate the core runtime image before the direct connector milestone.
 
 ## Failure controls
 
@@ -216,11 +282,12 @@ The runtime must eventually handle:
 - stale remote sessions;
 - duplicated requests;
 - claims of actions that never occurred;
-- loop exhaustion.
+- loop exhaustion;
+- provider-adapter replacement during recovery.
 
 ## Dependency policy
 
-The first milestone should keep external Go dependencies to the practical minimum. A dependency is accepted only when it removes meaningful risk or maintenance burden that the standard library cannot reasonably cover.
+External Go dependencies are kept to the practical minimum. A dependency is accepted only when it removes meaningful risk or maintenance burden that the standard library cannot reasonably cover.
 
 Explicitly excluded from the initial architecture:
 
@@ -231,4 +298,5 @@ Explicitly excluded from the initial architecture:
 - queues and brokers;
 - distributed services;
 - UI frameworks;
-- vector databases.
+- vector databases;
+- a universal provider router.
