@@ -1,0 +1,7 @@
+I will inspect the fixture before reporting anything.
+
+<runstead_action>
+{"version":"runstead.protocol.v1","tool":"list_files","arguments":{"path":"."}}
+</runstead_action>
+
+The tagged action is the only executable part of this response.

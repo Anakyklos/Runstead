@@ -1,0 +1,6 @@
+{"turn":1,"response":"<runstead_action>\n{\"version\":\"runstead.protocol.v1\",\"tool\":\"read_file\",\"arguments\":{\"path\":\"README.md\"}}\n</runstead_action>"}
+{"turn":2,"response":"<runstead_action>\n{\"version\":\"runstead.protocol.v1\",\"tool\":\"list_files\",\"arguments\":{\"path\":\".\"}}\n</runstead_action>"}
+{"turn":3,"response":"<runstead_action>\n{\"version\":\"runstead.protocol.v1\",\"tool\":\"read_file\",\"arguments\":{\"path\":\"docs/architecture.md\"}}\n</runstead_action>"}
+{"turn":4,"response":"<runstead_action>\n{\"version\":\"runstead.protocol.v1\",\"tool\":\"list_files\",\"arguments\":{\"path\":\"docs\"}}\n</runstead_action>"}
+{"turn":5,"response":"<runstead_action>\n{\"version\":\"runstead.protocol.v1\",\"tool\":\"read_file\",\"arguments\":{\"path\":\"docs/roadmap.md\"}}\n</runstead_action>"}
+{"turn":6,"response":"<runstead_final>\n{\"version\":\"runstead.protocol.v1\",\"status\":\"complete\",\"summary\":\"The fixture workspace was inspected through five read-only tool turns.\",\"evidence\":[\"README.md was read\",\"The workspace and docs directories were listed\",\"Architecture and roadmap files were read\"]}\n</runstead_final>"}
