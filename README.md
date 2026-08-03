@@ -72,6 +72,9 @@ Runstead begins as a modular monolith:
 
 The initial project will not use agent frameworks, an ORM, Redis, message brokers, microservices, Kubernetes, a web UI or a vector database.
 
+The current read-only registry contract is documented in
+[`docs/tools.md`](docs/tools.md).
+
 ## Development environment
 
 A Docker-based development environment is recommended to keep Go, `jq`, test utilities, caches and later transport-specific native dependencies out of the host system.
@@ -114,7 +117,6 @@ Read-only tools come first:
 - `read_file`
 - `list_files`
 - `search_text`
-- `shell` with policy restrictions
 - `git_status`
 - `git_diff`
 

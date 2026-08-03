@@ -177,8 +177,9 @@ parser never truncates input and attempts a partial parse.
 
 Actions contain only `version`, `tool` and `arguments`. The injected
 `protocol.ToolCatalog` seam first identifies a registered tool and then
-validates its typed `protocol.Arguments` object, keeping the future #6 registry
-out of this package. A schema-valid action can still be rejected as
+validates its typed `protocol.Arguments` object. The issue #6 read-only
+registry lives in `internal/tools` and stays out of this package. A
+schema-valid action can still be rejected as
 `unknown_tool` or `invalid_arguments`; only an accepted action is executable.
 Final responses contain only `version`, `status` (`complete` or `incomplete`),
 `summary` and non-empty string `evidence`. An accepted final response is not a
@@ -201,8 +202,10 @@ disposable M0 shell implementation remains unchanged.
 SHA-256. `RepeatGuard` is caller-owned session state; its `Check` method returns
 the typed `repeated_action` failure and the parser itself keeps no history, so
 repeated actions can be rejected before execution. Actual tool
-registration/execution remains #6 work, and correction budgets plus the agent
-loop remain #7 work.
+registration/execution is implemented by the issue #6 read-only registry;
+correction budgets plus the agent loop remain #7 work. See
+[`tools.md`](tools.md) for its strict contracts, workspace boundary and
+bounded observation semantics.
 
 ## Native path remains authoritative
 
