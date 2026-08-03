@@ -60,6 +60,7 @@ type Governor struct {
 	nextAttempt      int
 	ledger           rollingLedger
 	tasks            map[string]*taskState
+	seenRequestIDs   map[string]struct{}
 	circuit          circuitData
 	cooldownUntil    time.Time
 	telemetry        telemetryState
@@ -85,6 +86,7 @@ func New(config Config, options Options) (*Governor, error) {
 		events:          options.Events,
 		nextAttempt:     1,
 		tasks:           make(map[string]*taskState),
+		seenRequestIDs:  make(map[string]struct{}),
 		circuit:         circuitData{state: CircuitClosed},
 	}, nil
 }
@@ -193,6 +195,12 @@ func (g *Governor) tryAdmit(ctx context.Context, request AttemptRequest) Admissi
 		g.mu.Unlock()
 		return result
 	}
+	if g.requestSeenLocked(request.ClientRequestID) {
+		result := g.resultLocked(AdmissionDuplicateClientRequest, AdmissionDuplicateClientRequest, time.Time{}, nil)
+		g.emitAdmissionLocked(request, result, true)
+		g.mu.Unlock()
+		return result
+	}
 	if len(g.queue) >= g.config.QueueCapacity {
 		result := g.resultLocked(AdmissionQueueFull, AdmissionQueueFull, time.Time{}, nil)
 		g.emitAdmissionLocked(request, result, true)
@@ -209,6 +217,12 @@ func (g *Governor) tryAdmit(ctx context.Context, request AttemptRequest) Admissi
 	g.mu.Lock()
 	if g.closed {
 		result := g.resultLocked(AdmissionGovernorClosed, AdmissionGovernorClosed, time.Time{}, ErrGovernorClosed)
+		g.mu.Unlock()
+		return result
+	}
+	if g.requestSeenLocked(request.ClientRequestID) {
+		result := g.resultLocked(AdmissionDuplicateClientRequest, AdmissionDuplicateClientRequest, time.Time{}, nil)
+		g.emitAdmissionLocked(request, result, healthy)
 		g.mu.Unlock()
 		return result
 	}
@@ -243,6 +257,7 @@ func (g *Governor) tryAdmit(ctx context.Context, request AttemptRequest) Admissi
 		g.mu.Unlock()
 		return result
 	}
+	g.reserveRequestLocked(request.ClientRequestID)
 	permit := g.grantLocked(request)
 	g.emitAdmissionLocked(request, AdmissionResult{Code: AdmissionAdmitted, Permit: permit}, healthy)
 	g.mu.Unlock()
@@ -256,6 +271,12 @@ func (g *Governor) queueAdmit(ctx context.Context, request AttemptRequest) Admis
 		g.mu.Unlock()
 		return result
 	}
+	if g.requestSeenLocked(request.ClientRequestID) {
+		result := g.resultLocked(AdmissionDuplicateClientRequest, AdmissionDuplicateClientRequest, time.Time{}, nil)
+		g.emitAdmissionLocked(request, result, true)
+		g.mu.Unlock()
+		return result
+	}
 	if len(g.queue) >= g.config.QueueCapacity {
 		result := g.resultLocked(AdmissionQueueFull, AdmissionQueueFull, time.Time{}, nil)
 		g.emitAdmissionLocked(request, result, true)
@@ -263,6 +284,7 @@ func (g *Governor) queueAdmit(ctx context.Context, request AttemptRequest) Admis
 		return result
 	}
 	waiter := &waiter{request: request, notify: make(chan struct{})}
+	g.reserveRequestLocked(request.ClientRequestID)
 	g.queue = append(g.queue, waiter)
 	g.mu.Unlock()
 
@@ -349,6 +371,7 @@ func (g *Governor) queueAdmit(ctx context.Context, request AttemptRequest) Admis
 			return result
 		}
 		g.removeWaiterLocked(waiter)
+		g.reserveRequestLocked(request.ClientRequestID)
 		permit := g.grantLocked(request)
 		result := AdmissionResult{Code: AdmissionAdmitted, Permit: permit}
 		g.emitAdmissionLocked(request, result, healthy)
@@ -452,7 +475,7 @@ func (g *Governor) checkLocked(now time.Time, request AttemptRequest) admissionC
 	if request.Retry && state.retries >= g.config.RetryBudget {
 		return admissionCheck{code: AdmissionRetryBudgetExhausted}
 	}
-	if next := g.ledger.next(now, 3*time.Hour, g.config.Rolling3h-g.config.ManualReserve); !next.IsZero() {
+	if next := g.ledger.next(now, 3*time.Hour, g.config.Rolling3h); !next.IsZero() {
 		return admissionCheck{code: AdmissionRollingBudgetExhausted, until: next, delayed: true}
 	}
 	if next := g.ledger.next(now, time.Hour, g.config.Rolling1h); !next.IsZero() {
@@ -505,6 +528,19 @@ func (g *Governor) grantLocked(request AttemptRequest) *Permit {
 	return &Permit{governor: g, request: request}
 }
 
+func (g *Governor) requestSeenLocked(requestID string) bool {
+	_, seen := g.seenRequestIDs[requestID]
+	return seen
+}
+
+func (g *Governor) reserveRequestLocked(requestID string) {
+	g.seenRequestIDs[requestID] = struct{}{}
+}
+
+func (g *Governor) releaseRequestLocked(requestID string) {
+	delete(g.seenRequestIDs, requestID)
+}
+
 func (g *Governor) taskLocked(taskID string) *taskState {
 	state := g.tasks[taskID]
 	if state == nil {
@@ -515,13 +551,18 @@ func (g *Governor) taskLocked(taskID string) *taskState {
 }
 
 func (g *Governor) removeWaiterLocked(target *waiter) {
+	if target.removed {
+		return
+	}
 	index := g.indexOfLocked(target)
 	if index < 0 {
 		target.removed = true
+		g.releaseRequestLocked(target.request.ClientRequestID)
 		g.signalLocked(target)
 		return
 	}
 	target.removed = true
+	g.releaseRequestLocked(target.request.ClientRequestID)
 	g.queue = append(g.queue[:index], g.queue[index+1:]...)
 	g.signalLocked(target)
 	g.signalAllLocked()
@@ -594,7 +635,7 @@ func (g *Governor) applyTelemetryLocked(snapshot TelemetrySnapshot, now time.Tim
 			g.telemetry.available = cloneInt(snapshot.Remaining)
 		}
 		g.telemetry.resetAt = snapshot.ResetAt
-	} else if snapshot.Remaining != nil && g.telemetry.available == nil {
+	} else if snapshot.Remaining != nil && (g.telemetry.available == nil || *snapshot.Remaining < *g.telemetry.available) {
 		g.telemetry.available = cloneInt(snapshot.Remaining)
 	}
 	if snapshot.CooldownUntil.After(g.telemetry.cooldownUntil) {
@@ -670,7 +711,7 @@ func (g *Governor) budgetLocked(now time.Time, taskID string) BudgetSnapshot {
 	return BudgetSnapshot{
 		Rolling3hUsed:          g.ledger.count(now, 3*time.Hour),
 		Rolling3hCeiling:       g.config.Rolling3h,
-		Automated3hCeiling:     g.config.Rolling3h - g.config.ManualReserve,
+		Automated3hCeiling:     g.config.Rolling3h,
 		Rolling1hUsed:          g.ledger.count(now, time.Hour),
 		Rolling1hCeiling:       g.config.Rolling1h,
 		Rolling10mUsed:         g.ledger.count(now, 10*time.Minute),
@@ -766,7 +807,11 @@ func (g *Governor) recordOutcomeLocked(now time.Time, permit *Permit, outcome Ou
 		g.circuit.rateEvents = append(g.circuit.rateEvents, now)
 		sequence := len(g.circuit.rateEvents)
 		base := []time.Duration{15 * time.Second, 30 * time.Second, 60 * time.Second, 120 * time.Second}
-		selected = g.jitter.Apply(base[min(sequence-1, len(base)-1)], sequence)
+		baseline := base[min(sequence-1, len(base)-1)]
+		selected = g.jitter.Apply(baseline, sequence)
+		if selected < baseline {
+			selected = baseline
+		}
 		authoritativeUntil := time.Time{}
 		if outcome.RetryAfter > 0 {
 			authoritativeUntil = now.Add(outcome.RetryAfter)
@@ -903,11 +948,13 @@ func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client p
 	if client == nil {
 		return ExecutionResult{Admission: g.result(AdmissionUnsafeConfiguration, AdmissionUnsafeConfiguration, time.Time{}, errors.New("provider client is required"))}
 	}
-	if aware, ok := client.(provider.SafetyAware); ok {
-		safety := aware.RouteSafety()
-		if err := safety.Validate(); err != nil || !safety.Equal(g.config.RouteSafety) {
-			return ExecutionResult{Admission: g.result(AdmissionUnsafeProviderAmplification, AdmissionUnsafeProviderAmplification, time.Time{}, provider.ErrUnsafeRoute)}
-		}
+	aware, ok := client.(provider.SafetyAware)
+	if !ok {
+		return ExecutionResult{Admission: g.result(AdmissionUnsafeProviderAmplification, AdmissionUnsafeProviderAmplification, time.Time{}, provider.ErrUnsafeRoute)}
+	}
+	safety := aware.RouteSafety()
+	if err := safety.Validate(); err != nil || !safety.Equal(g.config.RouteSafety) {
+		return ExecutionResult{Admission: g.result(AdmissionUnsafeProviderAmplification, AdmissionUnsafeProviderAmplification, time.Time{}, provider.ErrUnsafeRoute)}
 	}
 	admission := g.Admit(ctx, request)
 	if !admission.Admitted() {
@@ -1017,6 +1064,7 @@ func (p *Permit) CancelBeforeStart() error {
 		return ErrPermitStarted
 	}
 	p.completed = true
+	g.releaseRequestLocked(p.request.ClientRequestID)
 	g.inFlight = false
 	g.emitAdmissionLocked(p.request, AdmissionResult{Code: AdmissionContextCancelled, Reason: AdmissionContextCancelled}, true)
 	g.signalAllLocked()

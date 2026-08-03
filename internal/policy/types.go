@@ -138,6 +138,7 @@ const (
 	AdmissionHumanAcknowledgementRequired  AdmissionCode = "human_acknowledgement_required"
 	AdmissionRetryBudgetExhausted          AdmissionCode = "retry_budget_exhausted"
 	AdmissionAuthenticationRefreshRequired AdmissionCode = "authentication_refresh_required"
+	AdmissionDuplicateClientRequest        AdmissionCode = "duplicate_client_request"
 	AdmissionGovernorClosed                AdmissionCode = "governor_closed"
 )
 
@@ -272,7 +273,8 @@ func (j *randomJitter) Apply(base time.Duration, _ int) time.Duration {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	return time.Duration(j.rng.Int63n(int64(base) + 1))
+	extra := base / 2
+	return base + time.Duration(j.rng.Int63n(int64(extra)+1))
 }
 
 type EventKind string

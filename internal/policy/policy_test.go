@@ -115,6 +115,12 @@ func (t *fakeTelemetry) Snapshot(context.Context) (policy.TelemetrySnapshot, err
 	return t.snapshot, t.err
 }
 
+func (t *fakeTelemetry) Set(snapshot policy.TelemetrySnapshot) {
+	t.mu.Lock()
+	t.snapshot = snapshot
+	t.mu.Unlock()
+}
+
 func instantGovernor(t *testing.T) (*policy.Governor, *fakeClock, *eventSink) {
 	t.Helper()
 	clock := newFakeClock()
@@ -153,6 +159,22 @@ func admitAndFinish(t *testing.T, governor *policy.Governor, task string, reques
 	})
 	if !admission.Admitted() {
 		t.Fatalf("Admit() = %#v, want admitted", admission)
+	}
+	if err := admission.Permit.Start(); err != nil {
+		t.Fatalf("Permit.Start() error = %v", err)
+	}
+	return admission.Permit.Finish(outcome)
+}
+
+func tryAdmitAndFinish(t *testing.T, governor *policy.Governor, task string, request string, retry bool, outcome policy.Outcome) policy.FinishResult {
+	t.Helper()
+	admission := governor.TryAdmit(context.Background(), policy.AttemptRequest{
+		TaskID:          task,
+		ClientRequestID: request,
+		Retry:           retry,
+	})
+	if !admission.Admitted() {
+		t.Fatalf("TryAdmit() = %#v, want admitted", admission)
 	}
 	if err := admission.Permit.Start(); err != nil {
 		t.Fatalf("Permit.Start() error = %v", err)
@@ -349,6 +371,52 @@ func TestRollingWindowsAreMovingAndManualReserveIsSeparate(t *testing.T) {
 	}
 }
 
+func TestInstantProfileAllowsFullAutomatedThreeHourCeiling(t *testing.T) {
+	clock := newFakeClock()
+	config := policy.DefaultInstantConfig("policy-account-1", "omniroute", "instant", provider.SafeRouteSafety())
+	config.MinimumStartInterval = time.Nanosecond
+	config.TaskBudget = 200
+	config.RetryBudget = 200
+	governor, err := policy.New(config, policy.Options{Clock: clock, Jitter: fixedJitter{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	batches := []struct {
+		advance time.Duration
+		count   int
+	}{
+		{advance: 0, count: 20},
+		{advance: 10 * time.Minute, count: 20},
+		{advance: 10 * time.Minute, count: 20},
+		{advance: 10 * time.Minute, count: 20},
+		{advance: 30 * time.Minute, count: 20},
+		{advance: 10 * time.Minute, count: 20},
+		{advance: 10 * time.Minute, count: 20},
+	}
+	requestNumber := 0
+	for _, batch := range batches {
+		clock.Advance(batch.advance)
+		for i := 0; i < batch.count; i++ {
+			requestNumber++
+			tryAdmitAndFinish(t, governor, "task", "request-"+string(rune(0x1000+requestNumber)), false, policy.Outcome{Class: policy.OutcomeSuccess})
+			clock.Advance(time.Nanosecond)
+		}
+	}
+
+	snapshot := governor.Snapshot()
+	if snapshot.Budgets.Rolling3hUsed != 140 {
+		t.Fatalf("rolling 3h usage = %d, want full automated ceiling 140", snapshot.Budgets.Rolling3hUsed)
+	}
+	if snapshot.Budgets.Automated3hCeiling != 140 || snapshot.Budgets.ManualReserve != 20 {
+		t.Fatalf("budget snapshot = %#v, want separate 140 ceiling and 20 reserve", snapshot.Budgets)
+	}
+	blocked := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "after-ceiling"})
+	if blocked.Code != policy.AdmissionDelayed || blocked.Reason != policy.AdmissionRollingBudgetExhausted {
+		t.Fatalf("post-ceiling admission = %#v, want rolling budget exhaustion", blocked)
+	}
+}
+
 func TestTaskAndRetryBudgetsChargeEveryStartedAttempt(t *testing.T) {
 	clock := newFakeClock()
 	config := fastConfig(t)
@@ -454,6 +522,38 @@ func TestTelemetryCannotRaiseLocalHardCeiling(t *testing.T) {
 	blocked := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "blocked"})
 	if blocked.Code != policy.AdmissionDelayed {
 		t.Fatalf("telemetry expanded local ceiling: %#v", blocked)
+	}
+}
+
+func TestTelemetryRemainingOnlyTightensWithoutReset(t *testing.T) {
+	clock := newFakeClock()
+	remaining := 100
+	telemetry := &fakeTelemetry{snapshot: policy.TelemetrySnapshot{Remaining: &remaining}}
+	config := fastConfig(t)
+	config.Rolling3h = 20
+	config.Rolling1h = 19
+	config.Rolling10m = 18
+	config.ManualReserve = 1
+	governor, err := policy.New(config, policy.Options{Clock: clock, Jitter: fixedJitter{}, Telemetry: telemetry})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "first"})
+	if !first.Admitted() {
+		t.Fatalf("first telemetry admission = %#v", first)
+	}
+	if err := first.Permit.Start(); err != nil {
+		t.Fatal(err)
+	}
+	first.Permit.Finish(policy.Outcome{Class: policy.OutcomeSuccess})
+	clock.Advance(time.Nanosecond)
+
+	zero := 0
+	telemetry.Set(policy.TelemetrySnapshot{Remaining: &zero})
+	second := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "second"})
+	if second.Code != policy.AdmissionUpstreamAllowanceExhausted {
+		t.Fatalf("reduced telemetry without reset = %#v, want immediate exhaustion", second)
 	}
 }
 
@@ -719,6 +819,27 @@ func (c *safetyClient) Complete(context.Context, provider.Request) (provider.Res
 
 func (c *safetyClient) RouteSafety() provider.RouteSafety { return c.safety }
 
+type plainClient struct {
+	calls int
+}
+
+func (c *plainClient) Complete(context.Context, provider.Request) (provider.Response, error) {
+	c.calls++
+	return provider.Response{Text: "private model response"}, nil
+}
+
+func TestExecuteRejectsProviderWithoutExplicitRouteSafety(t *testing.T) {
+	governor, _, _ := instantGovernor(t)
+	client := &plainClient{}
+	result := governor.Execute(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "request"}, client, nil)
+	if result.Admission.Code != policy.AdmissionUnsafeProviderAmplification {
+		t.Fatalf("unaware provider admission = %#v, want fail-closed unsafe provider", result.Admission)
+	}
+	if client.calls != 0 || governor.Snapshot().Budgets.Rolling3hUsed != 0 {
+		t.Fatalf("unaware provider side effects = calls %d, budget %d; want zero", client.calls, governor.Snapshot().Budgets.Rolling3hUsed)
+	}
+}
+
 func TestSingleAttemptExecutionChargesExactlyOnceAndSanitizesEvents(t *testing.T) {
 	governor, _, events := instantGovernor(t)
 	fake := provider.NewFake(provider.Response{Text: "private model response"})
@@ -741,6 +862,48 @@ func TestSingleAttemptExecutionChargesExactlyOnceAndSanitizesEvents(t *testing.T
 		if strings.Contains(strings.ToLower(string(encoded)), strings.ToLower(secret)) {
 			t.Fatalf("sanitized events contain %q: %s", secret, encoded)
 		}
+	}
+}
+
+func TestDuplicateClientRequestIDIsRejectedAfterFirstAttempt(t *testing.T) {
+	clock := newFakeClock()
+	config := fastConfig(t)
+	governor, err := policy.New(config, policy.Options{Clock: clock, Jitter: fixedJitter{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := provider.NewFake(provider.Response{Text: "private model response"})
+	request := policy.AttemptRequest{TaskID: "task", ClientRequestID: "request"}
+	first := governor.Execute(context.Background(), request, client, nil)
+	if !first.Admission.Admitted() || first.Err != nil {
+		t.Fatalf("first Execute() = %#v", first)
+	}
+	clock.Advance(time.Nanosecond)
+	second := governor.Execute(context.Background(), request, client, nil)
+	if second.Admission.Code != policy.AdmissionDuplicateClientRequest {
+		t.Fatalf("duplicate Execute() = %#v, want duplicate request code", second.Admission)
+	}
+	if client.Attempts() != 1 || governor.Snapshot().Budgets.Rolling3hUsed != 1 {
+		t.Fatalf("duplicate side effects = provider %d, budget %d; want one", client.Attempts(), governor.Snapshot().Budgets.Rolling3hUsed)
+	}
+}
+
+func TestJitterCannotShortenRateBackoffBaseline(t *testing.T) {
+	clock := newFakeClock()
+	config := fastConfig(t)
+	config.RateResponseThreshold = 10
+	governor, err := policy.New(config, policy.Options{Clock: clock, Jitter: fixedJitter{values: []time.Duration{0}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wants := []time.Duration{15 * time.Second, 30 * time.Second, 60 * time.Second, 120 * time.Second}
+	for i, want := range wants {
+		finish := admitAndFinish(t, governor, "task", "rate-"+string(rune('a'+i)), false, policy.Outcome{Class: policy.OutcomeRateCapacity})
+		if finish.SelectedBackoff != want {
+			t.Fatalf("rate response %d backoff = %s, want baseline %s", i+1, finish.SelectedBackoff, want)
+		}
+		clock.Advance(want)
 	}
 }
 

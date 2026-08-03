@@ -50,9 +50,11 @@ it more permissive without an explicit configuration change.
 
 For automated admission, the allowance headroom is the strictest known
 constraint after preserving the reserve:
-`min(local allowance remaining, trusted upstream remaining) - manual_reserve`.
-The 10-minute and 1-hour burst guards remain independent local windows; the
-reserve is not subtracted a second time from those guards.
+`min(local allowance remaining, trusted upstream remaining - manual_reserve)`.
+The Instant local ceiling of 140 already represents the automated portion of
+the published 160-message family, so the reserve is not subtracted a second
+time from that rolling ledger. The 10-minute and 1-hour burst guards remain
+independent local windows.
 
 ## Governor flow
 
@@ -69,6 +71,10 @@ provider call is about to begin. `Finish` releases the lane, classifies the
 outcome, updates cooldown/circuit state and returns retry eligibility. The
 governor never runs an autonomous retry loop; a future agent loop must request
 each next attempt through `Admit` again.
+
+`ClientRequestID` is a process-local identity for exact-request suppression: an
+accepted ID cannot be admitted again, while cancellation before `Start` releases
+the pending identity.
 
 Every successful `Start` has exactly one terminal `Finish`; a late cancellation,
 timeout, provider error or uncertain result still finishes with an uncertain
@@ -104,7 +110,8 @@ allowance, reset time, cooldown, rate/capacity state and an upstream breaker.
 It does not import OmniRoute HTTP types. `Retry-After` and reliable reset
 times take precedence over local jittered backoff. Without authoritative
 guidance, the recorded backoff sequence is 15s, 30s, 60s and 120s with
-injectable jitter; selecting a backoff never performs a retry.
+injectable jitter whose baseline is a floor; selecting a backoff never performs
+a retry.
 
 The circuit has explicit `closed`, `open_until` and
 `human_review_required` states. Authentication denial, HTTP 403 equivalents,
