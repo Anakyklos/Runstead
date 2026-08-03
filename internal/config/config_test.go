@@ -2,6 +2,7 @@ package config
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,5 +95,67 @@ func TestResolveRejectsUnsupportedLogLevel(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("Resolve() error = nil, want unsupported log level error")
+	}
+}
+
+func TestResolveOmniRouteConfigurationPrecedenceAndSafety(t *testing.T) {
+	env := map[string]string{
+		EnvOmniRouteBaseURL:                 "http://env.example/v1",
+		EnvOmniRouteAPIKey:                  "env-secret",
+		EnvOmniRouteModel:                   "env-model",
+		EnvOmniRouteSingleAttemptGuaranteed: "true",
+		EnvOmniRouteInternalRetriesDisabled: "true",
+		EnvOmniRouteCooldownReplayDisabled:  "true",
+		EnvOmniRouteAccountPoolingDisabled:  "true",
+		EnvOmniRouteFallbackDisabled:        "true",
+	}
+	got, err := Resolve(Overrides{OmniRoute: OmniRouteOverrides{
+		BaseURL:    "http://flag.example/v1",
+		BaseURLSet: true,
+		Model:      "flag-model",
+		ModelSet:   true,
+	}}, func(key string) (string, bool) {
+		value, ok := env[key]
+		return value, ok
+	})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got.OmniRoute == nil {
+		t.Fatal("Resolve() OmniRoute = nil")
+	}
+	if got.OmniRoute.BaseURL != "http://flag.example/v1" || got.OmniRoute.Model != "flag-model" || got.OmniRoute.APIKey != "env-secret" {
+		t.Fatalf("resolved OmniRoute = %#v, want flags over env and env key", got.OmniRoute)
+	}
+	if err := got.OmniRoute.RouteSafety.Validate(); err != nil {
+		t.Fatalf("resolved route safety = %#v: %v", got.OmniRoute.RouteSafety, err)
+	}
+	if strings.Contains(got.OmniRoute.String(), "env-secret") {
+		t.Fatal("OmniRoute config String() leaked API key")
+	}
+}
+
+func TestResolveOmniRouteRequiresExplicitSafety(t *testing.T) {
+	_, err := Resolve(Overrides{}, func(key string) (string, bool) {
+		if key == EnvOmniRouteAPIKey {
+			return "secret", true
+		}
+		return "", false
+	})
+	if err == nil || !strings.Contains(err.Error(), "route safety") {
+		t.Fatalf("Resolve() error = %v, want explicit route safety failure", err)
+	}
+}
+
+func TestResolveOmniRouteDoesNotLogCredentialsOnValidationFailure(t *testing.T) {
+	_, err := Resolve(Overrides{OmniRoute: OmniRouteOverrides{
+		APIKey:    "secret-value",
+		APIKeySet: true,
+	}}, nil)
+	if err == nil {
+		t.Fatal("Resolve() error = nil, want missing safety failure")
+	}
+	if strings.Contains(err.Error(), "secret-value") {
+		t.Fatalf("Resolve() error leaked API key: %v", err)
 	}
 }

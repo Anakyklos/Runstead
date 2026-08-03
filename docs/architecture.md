@@ -41,9 +41,12 @@ The OmniRoute adapter owns:
 
 - configurable base URL, API key and model;
 - non-streaming requests initially;
+- explicit `/api/resilience` preflight before the route is usable;
 - timeouts and cancellation;
 - capture of useful upstream identifiers;
-- classification of transport, authentication, timeout, empty-response and malformed-response failures.
+- classification of transport, authentication, timeout, rate/capacity,
+  account-safety, empty-response and malformed-response failures;
+- optional sanitized rate-limit/resilience telemetry.
 
 Runstead does not depend on OmniRoute's emulated native tool calling. Model output is treated as text and interpreted through a Runstead-owned action protocol.
 

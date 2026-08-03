@@ -8,8 +8,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/config"
+	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/trace"
 )
 
@@ -57,8 +59,22 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	flags.SetOutput(io.Discard)
 	workspace := ""
 	logLevel := ""
+	omniBaseURL := ""
+	omniManagementBaseURL := ""
+	omniAPIKey := ""
+	omniModel := ""
+	omniChatEndpoint := ""
+	omniTimeout := ""
+	omniSafeRoute := false
 	flags.StringVar(&workspace, "workspace", "", "workspace path (default: RUNSTEAD_WORKSPACE or .)")
 	flags.StringVar(&logLevel, "log-level", "", "log level: debug, info, warn or error")
+	flags.StringVar(&omniBaseURL, "omniroute-base-url", "", "OmniRoute base URL (OMNIROUTE_BASE_URL)")
+	flags.StringVar(&omniManagementBaseURL, "omniroute-management-base-url", "", "OmniRoute management URL (OMNIROUTE_MANAGEMENT_BASE_URL)")
+	flags.StringVar(&omniAPIKey, "omniroute-api-key", "", "OmniRoute API key (OMNIROUTE_API_KEY)")
+	flags.StringVar(&omniModel, "omniroute-model", "", "OmniRoute model (OMNIROUTE_MODEL)")
+	flags.StringVar(&omniChatEndpoint, "omniroute-chat-endpoint", "", "OmniRoute chat endpoint (OMNIROUTE_CHAT_ENDPOINT)")
+	flags.StringVar(&omniTimeout, "omniroute-timeout", "", "OmniRoute timeout (OMNIROUTE_TIMEOUT)")
+	flags.BoolVar(&omniSafeRoute, "omniroute-safe-route", false, "declare the static route safe; preflight evidence is still required")
 	if err := flags.Parse(args); err != nil {
 		fmt.Fprintf(errOut, "run: invalid flags: %v\n", err)
 		printRunHelp(errOut)
@@ -70,11 +86,39 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return exitUsage
 	}
 
+	omniOverrides := config.OmniRouteOverrides{
+		BaseURL:              omniBaseURL,
+		BaseURLSet:           flagWasSet(flags, "omniroute-base-url"),
+		ManagementBaseURL:    omniManagementBaseURL,
+		ManagementBaseURLSet: flagWasSet(flags, "omniroute-management-base-url"),
+		APIKey:               omniAPIKey,
+		APIKeySet:            flagWasSet(flags, "omniroute-api-key"),
+		Model:                omniModel,
+		ModelSet:             flagWasSet(flags, "omniroute-model"),
+		ChatEndpoint:         omniChatEndpoint,
+		ChatEndpointSet:      flagWasSet(flags, "omniroute-chat-endpoint"),
+	}
+	if flagWasSet(flags, "omniroute-timeout") {
+		timeout, parseErr := time.ParseDuration(omniTimeout)
+		if parseErr != nil {
+			fmt.Fprintln(errOut, "run: invalid OmniRoute timeout")
+			return exitUsage
+		}
+		omniOverrides.Timeout = timeout
+		omniOverrides.TimeoutSet = true
+	}
+	if flagWasSet(flags, "omniroute-safe-route") {
+		if omniSafeRoute {
+			omniOverrides.RouteSafety = provider.SafeRouteSafety()
+		}
+		omniOverrides.RouteSafetySet = true
+	}
 	cfg, err := config.Resolve(config.Overrides{
 		Workspace:    workspace,
 		WorkspaceSet: flagWasSet(flags, "workspace"),
 		LogLevel:     logLevel,
 		LogLevelSet:  flagWasSet(flags, "log-level"),
+		OmniRoute:    omniOverrides,
 	}, os.LookupEnv)
 	if err != nil {
 		fmt.Fprintf(errOut, "run: invalid configuration: %v\n", err)
@@ -93,7 +137,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	}
 
 	logger.InfoContext(ctx, "run command unavailable", "command", "run", "workspace", cfg.Workspace)
-	fmt.Fprintln(errOut, "run: agent loop is not implemented in issue #3; provider integration is deferred to issue #4 and the full loop to issue #7")
+	fmt.Fprintln(errOut, "run: agent loop is not implemented in issue #7; the configured provider adapter is ready but the full loop is still deferred")
 	return exitUnavailable
 }
 
@@ -158,6 +202,7 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Configuration precedence: flags > environment > defaults")
 	fmt.Fprintf(out, "  %s, %s\n", config.EnvWorkspace, config.EnvLogLevel)
+	fmt.Fprintf(out, "  OmniRoute: %s, %s, %s, %s\n", config.EnvOmniRouteBaseURL, config.EnvOmniRouteAPIKey, config.EnvOmniRouteModel, config.EnvOmniRouteChatEndpoint)
 	fmt.Fprintln(out, "Use 'runstead <command> --help' for command-specific help.")
 }
 
@@ -169,6 +214,13 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "Flags:")
 	fmt.Fprintln(out, "  --workspace PATH   workspace path (RUNSTEAD_WORKSPACE, default .)")
 	fmt.Fprintln(out, "  --log-level LEVEL  debug, info, warn or error (RUNSTEAD_LOG_LEVEL, default info)")
+	fmt.Fprintln(out, "  --omniroute-base-url URL             base URL (OMNIROUTE_BASE_URL)")
+	fmt.Fprintln(out, "  --omniroute-management-base-url URL  management URL (OMNIROUTE_MANAGEMENT_BASE_URL)")
+	fmt.Fprintln(out, "  --omniroute-api-key KEY              API key (OMNIROUTE_API_KEY)")
+	fmt.Fprintln(out, "  --omniroute-model MODEL              explicit model (OMNIROUTE_MODEL)")
+	fmt.Fprintln(out, "  --omniroute-chat-endpoint PATH       endpoint (OMNIROUTE_CHAT_ENDPOINT)")
+	fmt.Fprintln(out, "  --omniroute-timeout DURATION         timeout (OMNIROUTE_TIMEOUT)")
+	fmt.Fprintln(out, "  --omniroute-safe-route               static declaration; remote preflight remains mandatory")
 }
 
 func printPlaceholderHelp(out io.Writer, name string) {
