@@ -117,13 +117,24 @@ Implemented package responsibilities are deliberately narrow:
   deterministic fake;
 - `internal/trace`: JSON `log/slog` construction and level parsing.
 
-The planned `tools`, `policy`, `state` and `verifier` packages are intentionally
-absent until they contain real behavior. The one-call/one-attempt provider
-contract forbids adapter-owned retries, fallback selection, account rotation,
-queue scheduling and quota policy; those belong above the adapter and will be
-designed with #21. The OmniRoute adapter is #4, the complete parser is #5 and
+The planned `tools`, `state` and `verifier` packages are intentionally absent
+until they contain real behavior. The one-call/one-attempt provider contract
+forbids adapter-owned retries, fallback selection, account rotation, queue
+scheduling and quota policy; those decisions now belong to the #21 governor
+above the adapter. The OmniRoute adapter is #4, the complete parser is #5 and
 the agent loop is #7. Docker support remains optional and pending #15; native
 commands are authoritative.
+
+## Issue #21 account protection
+
+The account-scoped governor is process-local M1 policy above every provider
+adapter. It owns admission, one-account serialization, start-to-start pacing,
+rolling budgets, manual reserve, cooldowns, retry eligibility and circuit
+state. `provider.Client.Complete` remains one attempt and never gains retry,
+fallback, account rotation or quota behavior. See
+[`docs/account-protection.md`](account-protection.md) for the SLO, explicit
+Instant/reasoning profiles, single-attempt route safety, telemetry seam and
+the limitations deferred to #4, #7 and #8.
 
 ## Issue #5 protocol parser
 

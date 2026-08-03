@@ -1,0 +1,59 @@
+package trace
+
+import (
+	"io"
+	"log/slog"
+
+	"github.com/RenyEnnos/Runstead/internal/policy"
+)
+
+type PolicySink struct {
+	logger *slog.Logger
+}
+
+func NewPolicySink(logger *slog.Logger) *PolicySink {
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	return &PolicySink{logger: logger}
+}
+
+func (s *PolicySink) Emit(event policy.Event) {
+	s.logger.Info("account policy event",
+		"kind", event.Kind,
+		"account_policy_id", event.AccountPolicyID,
+		"provider", event.ProviderID,
+		"model_pool", event.ModelPool,
+		"allowance_profile", event.AllowanceProfile,
+		"task_id", event.TaskID,
+		"client_request_id", event.ClientRequestID,
+		"attempt_sequence", event.AttemptSequence,
+		"admission", event.Admission,
+		"reason", event.Reason,
+		"delay", event.Delay,
+		"retry_at", event.RetryAt,
+		"outcome", event.Outcome,
+		"cooldown_until", event.CooldownUntil,
+		"selected_backoff", event.SelectedBackoff,
+		"circuit_from", event.CircuitFrom,
+		"circuit_to", event.CircuitTo,
+		"circuit_reason", event.CircuitReason,
+		"telemetry_healthy", event.TelemetryHealthy,
+		slog.Group("budgets_before",
+			"rolling_3h_used", event.BudgetsBefore.Rolling3hUsed,
+			"rolling_1h_used", event.BudgetsBefore.Rolling1hUsed,
+			"rolling_10m_used", event.BudgetsBefore.Rolling10mUsed,
+			"task_used", event.BudgetsBefore.TaskUsed,
+			"retries_used", event.BudgetsBefore.RetriesUsed,
+			"manual_reserve_remaining", event.BudgetsBefore.ManualReserveRemaining,
+		),
+		slog.Group("budgets_after",
+			"rolling_3h_used", event.BudgetsAfter.Rolling3hUsed,
+			"rolling_1h_used", event.BudgetsAfter.Rolling1hUsed,
+			"rolling_10m_used", event.BudgetsAfter.Rolling10mUsed,
+			"task_used", event.BudgetsAfter.TaskUsed,
+			"retries_used", event.BudgetsAfter.RetriesUsed,
+			"manual_reserve_remaining", event.BudgetsAfter.ManualReserveRemaining,
+		),
+	)
+}

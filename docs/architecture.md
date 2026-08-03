@@ -102,6 +102,14 @@ agent loop
     └── trace
 ```
 
+The `policy` package is the account-protection boundary above both provider
+adapters. It is account-scoped rather than a generic remote-service router:
+one FIFO lane admits at most one ChatGPT Web attempt, charges rolling/task
+ledgers at attempt start and exposes only sanitized events. Provider safety
+metadata must explicitly prove the M1 single-attempt invariant. See
+[`account-protection.md`](account-protection.md) for the SLO and deferred
+persistence boundary.
+
 Packages separate responsibilities, but they do not become services. Internal interfaces are introduced only where real substitution or test isolation is required.
 
 The provider interface should remain small enough to support deterministic fake providers in tests and the two real provider paths without becoming a generic routing framework.

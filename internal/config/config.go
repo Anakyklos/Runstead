@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"strings"
+
+	"github.com/RenyEnnos/Runstead/internal/policy"
 )
 
 const (
@@ -14,15 +16,18 @@ const (
 )
 
 type Config struct {
-	Workspace string
-	LogLevel  string
+	Workspace     string
+	LogLevel      string
+	AccountPolicy *policy.Config
 }
 
 type Overrides struct {
-	Workspace    string
-	WorkspaceSet bool
-	LogLevel     string
-	LogLevelSet  bool
+	Workspace        string
+	WorkspaceSet     bool
+	LogLevel         string
+	LogLevelSet      bool
+	AccountPolicy    *policy.Config
+	AccountPolicySet bool
 }
 
 type LookupEnv func(string) (string, bool)
@@ -30,6 +35,7 @@ type LookupEnv func(string) (string, bool)
 func Resolve(overrides Overrides, lookupEnv LookupEnv) (Config, error) {
 	workspace := DefaultWorkspace
 	logLevel := DefaultLogLevel
+	var accountPolicy *policy.Config
 	if lookupEnv != nil {
 		if value, ok := lookupEnv(EnvWorkspace); ok {
 			workspace = value
@@ -44,6 +50,16 @@ func Resolve(overrides Overrides, lookupEnv LookupEnv) (Config, error) {
 	if overrides.LogLevelSet {
 		logLevel = overrides.LogLevel
 	}
+	if overrides.AccountPolicySet {
+		if overrides.AccountPolicy == nil {
+			return Config{}, fmt.Errorf("account policy must be provided when configured")
+		}
+		copy := *overrides.AccountPolicy
+		if err := copy.Validate(); err != nil {
+			return Config{}, fmt.Errorf("invalid account policy: %w", err)
+		}
+		accountPolicy = &copy
+	}
 
 	workspace = strings.TrimSpace(workspace)
 	if workspace == "" {
@@ -54,7 +70,7 @@ func Resolve(overrides Overrides, lookupEnv LookupEnv) (Config, error) {
 		return Config{}, fmt.Errorf("log level %q must be one of debug, info, warn or error", logLevel)
 	}
 
-	return Config{Workspace: workspace, LogLevel: logLevel}, nil
+	return Config{Workspace: workspace, LogLevel: logLevel, AccountPolicy: accountPolicy}, nil
 }
 
 func validLogLevel(value string) bool {

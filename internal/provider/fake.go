@@ -17,6 +17,8 @@ type Fake struct {
 	requests  []Request
 }
 
+func (f *Fake) RouteSafety() RouteSafety { return SafeRouteSafety() }
+
 func NewFake(responses ...Response) *Fake {
 	return &Fake{responses: append([]Response(nil), responses...)}
 }
