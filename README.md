@@ -144,6 +144,9 @@ The later direct connector is successful only if it matches this capability and 
 
 ## Project status
 
-**Planning and protocol research.** The immediate work is to validate the Runstead action protocol through OmniRoute, then build the Go runtime. Direct ChatGPT Web transport is a planned later milestone, not a prerequisite for beginning the agent work.
+**M1 foundation.** The repository now contains the native Go module, a small
+CLI surface and the provider-neutral one-call/one-attempt seam described in
+`docs/development.md`. The actual provider adapter, protocol parser, tool loop
+and durable recovery remain later milestone work.
 
 See [`docs/architecture.md`](docs/architecture.md), [`docs/roadmap.md`](docs/roadmap.md) and [`docs/development.md`](docs/development.md).

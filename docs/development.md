@@ -77,6 +77,54 @@ The OmniRoute client requires outbound access to the configured OmniRoute endpoi
 
 Later direct ChatGPT Web work may require outbound access to ChatGPT endpoints and additional transport dependencies. Keep that work in a dedicated layer or image so the core development environment remains understandable.
 
+## Issue #3 Go foundation
+
+The native bootstrap has no external Go dependencies. Build and test it with:
+
+```bash
+gofmt -w <changed-go-files>
+go test ./...
+go vet ./...
+go build ./cmd/runstead
+go test -race ./...
+```
+
+The current CLI is intentionally small:
+
+```text
+runstead --help
+runstead run --help
+runstead inspect --help
+runstead resume --help
+```
+
+`run` currently validates configuration and then fails explicitly because the
+provider adapter and full loop are deferred. `inspect` and `resume` are
+explicit placeholders because durable state and recovery are not part of this
+bootstrap.
+
+Configuration precedence is deterministic: command-line flags, then
+`RUNSTEAD_WORKSPACE`/`RUNSTEAD_LOG_LEVEL`, then conservative defaults (`.` and
+`info`). Credentials and complete environment contents are never logged.
+
+Implemented package responsibilities are deliberately narrow:
+
+- `cmd/runstead`: signal-aware process entrypoint, exit codes and CLI help;
+- `internal/config`: flag/environment/default resolution;
+- `internal/agent`: one provider request seam with no loop or retry;
+- `internal/protocol`: the adopted `runstead.protocol.v1` identifier;
+- `internal/provider`: provider-neutral request/response types and a
+  deterministic fake;
+- `internal/trace`: JSON `log/slog` construction and level parsing.
+
+The planned `tools`, `policy`, `state` and `verifier` packages are intentionally
+absent until they contain real behavior. The one-call/one-attempt provider
+contract forbids adapter-owned retries, fallback selection, account rotation,
+queue scheduling and quota policy; those belong above the adapter and will be
+designed with #21. The OmniRoute adapter is #4, the complete parser is #5 and
+the agent loop is #7. Docker support remains optional and pending #15; native
+commands are authoritative.
+
 ## Native path remains authoritative
 
 These commands must remain supported outside Docker:
