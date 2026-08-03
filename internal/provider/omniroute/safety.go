@@ -40,7 +40,27 @@ func safeResilience(body []byte) bool {
 	if !ok || !boolEquals(providerCooldown, "enabled", false) {
 		return false
 	}
+
+	legacy, ok := jsonObjectField(root, "legacy")
+	if !ok || !intEquals(legacy, "requestRetry", 0) || !intEquals(legacy, "maxRetryIntervalSec", 0) {
+		return false
+	}
+	if !safeSingleAttemptContract(root) {
+		return false
+	}
 	return true
+}
+
+func safeSingleAttemptContract(root map[string]json.RawMessage) bool {
+	contract, ok := jsonObjectField(root, "singleAttemptContract")
+	return ok &&
+		intEquals(contract, "version", 1) &&
+		boolEquals(contract, "guaranteed", true) &&
+		boolEquals(contract, "internalRetries", false) &&
+		boolEquals(contract, "credentialRefreshRetry", false) &&
+		boolEquals(contract, "cooldownReplay", false) &&
+		boolEquals(contract, "accountPooling", false) &&
+		boolEquals(contract, "automaticFallback", false)
 }
 
 func safeConnectionCooldown(root map[string]json.RawMessage, category string) bool {
@@ -49,8 +69,8 @@ func safeConnectionCooldown(root map[string]json.RawMessage, category string) bo
 		return false
 	}
 	if raw, exists := profile["useUpstream429BreakerHints"]; exists {
-		var value bool
-		if json.Unmarshal(raw, &value) != nil || value {
+		var value *bool
+		if json.Unmarshal(raw, &value) != nil || value == nil || *value {
 			return false
 		}
 	}
@@ -83,23 +103,29 @@ func safeSettingsEvidence(model string, body []byte) bool {
 	if !ok {
 		return false
 	}
-	if raw, exists := root["wildcardAliases"]; exists {
-		var aliases []json.RawMessage
-		if json.Unmarshal(raw, &aliases) != nil || len(aliases) != 0 {
-			return false
-		}
+	wildcardAliases, exists := root["wildcardAliases"]
+	if !exists {
+		return false
 	}
-	if raw, exists := root["modelAliases"]; exists {
-		aliases, ok := jsonObject(raw)
-		if !ok || hasModelAlias(aliases, model) {
-			return false
-		}
+	var aliases []json.RawMessage
+	if json.Unmarshal(wildcardAliases, &aliases) != nil || aliases == nil || len(aliases) != 0 {
+		return false
 	}
-	if raw, exists := root["globalFallbackModel"]; exists {
-		var fallback string
-		if json.Unmarshal(raw, &fallback) != nil || strings.TrimSpace(fallback) != "" {
-			return false
-		}
+	modelAliases, exists := root["modelAliases"]
+	if !exists {
+		return false
+	}
+	aliasObject, ok := jsonObject(modelAliases)
+	if !ok || hasModelAlias(aliasObject, model) {
+		return false
+	}
+	fallbackValue, exists := root["globalFallbackModel"]
+	if !exists {
+		return false
+	}
+	var fallback *string
+	if json.Unmarshal(fallbackValue, &fallback) != nil || fallback == nil || strings.TrimSpace(*fallback) != "" {
+		return false
 	}
 	return true
 }
@@ -124,7 +150,7 @@ func safeSettingsAliasEvidence(model string, body []byte) bool {
 
 func safeFallbackEvidence(body []byte) bool {
 	var chains []json.RawMessage
-	return json.Unmarshal(body, &chains) == nil && len(chains) == 0
+	return json.Unmarshal(body, &chains) == nil && chains != nil && len(chains) == 0
 }
 
 func safeCombosEvidence(body []byte) bool {
@@ -132,8 +158,12 @@ func safeCombosEvidence(body []byte) bool {
 	if !ok {
 		return false
 	}
+	raw, exists := root["combos"]
+	if !exists {
+		return false
+	}
 	var combos []json.RawMessage
-	return json.Unmarshal(root["combos"], &combos) == nil && len(combos) == 0
+	return json.Unmarshal(raw, &combos) == nil && combos != nil && len(combos) == 0
 }
 
 func safeModelComboMappingsEvidence(body []byte) bool {
@@ -141,8 +171,12 @@ func safeModelComboMappingsEvidence(body []byte) bool {
 	if !ok {
 		return false
 	}
+	raw, exists := root["mappings"]
+	if !exists {
+		return false
+	}
 	var mappings []json.RawMessage
-	return json.Unmarshal(root["mappings"], &mappings) == nil && len(mappings) == 0
+	return json.Unmarshal(raw, &mappings) == nil && mappings != nil && len(mappings) == 0
 }
 
 func safeProvidersEvidence(providerName string, body []byte) bool {
@@ -151,7 +185,8 @@ func safeProvidersEvidence(providerName string, body []byte) bool {
 		return false
 	}
 	var connections []map[string]json.RawMessage
-	if json.Unmarshal(root["connections"], &connections) != nil {
+	raw, exists := root["connections"]
+	if !exists || json.Unmarshal(raw, &connections) != nil || connections == nil {
 		return false
 	}
 	activeMatches := 0
@@ -199,8 +234,8 @@ func boolEquals(root map[string]json.RawMessage, key string, want bool) bool {
 	if !exists {
 		return false
 	}
-	var got bool
-	return json.Unmarshal(value, &got) == nil && got == want
+	var got *bool
+	return json.Unmarshal(value, &got) == nil && got != nil && *got == want
 }
 
 func intEquals(root map[string]json.RawMessage, key string, want int) bool {
@@ -208,8 +243,8 @@ func intEquals(root map[string]json.RawMessage, key string, want int) bool {
 	if !exists {
 		return false
 	}
-	var got int
-	return json.Unmarshal(value, &got) == nil && got == want
+	var got *int
+	return json.Unmarshal(value, &got) == nil && got != nil && *got == want
 }
 
 func intAtLeast(root map[string]json.RawMessage, key string, minimum int) bool {
@@ -217,6 +252,6 @@ func intAtLeast(root map[string]json.RawMessage, key string, minimum int) bool {
 	if !exists {
 		return false
 	}
-	var got int
-	return json.Unmarshal(value, &got) == nil && got >= minimum
+	var got *int
+	return json.Unmarshal(value, &got) == nil && got != nil && *got >= minimum
 }

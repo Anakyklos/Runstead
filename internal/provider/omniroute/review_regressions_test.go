@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -83,13 +84,42 @@ func newReviewClient(t *testing.T, state *reviewRouteState, posts *atomic.Int32)
 	return client, server
 }
 
-func TestPreflightAcceptsCurrentOmniRouteSafetyAndRouteEvidence(t *testing.T) {
+func TestPreflightAcceptsExplicitSingleAttemptContractAndRouteEvidence(t *testing.T) {
 	state := newReviewRouteState()
 	client, server := newReviewClient(t, state, &atomic.Int32{})
 	defer server.Close()
 
 	if err := client.Preflight(context.Background()); err != nil {
-		t.Fatalf("Preflight() error = %v, want current sanitized route evidence accepted", err)
+		t.Fatalf("Preflight() error = %v, want explicit single-attempt contract accepted", err)
+	}
+}
+
+func TestPreflightRejectsMissingSingleAttemptContract(t *testing.T) {
+	state := newReviewRouteState()
+	state.resilience = strings.Replace(
+		safeResilienceResponse,
+		`  "singleAttemptContract": {
+    "version": 1,
+    "guaranteed": true,
+    "internalRetries": false,
+    "credentialRefreshRetry": false,
+    "cooldownReplay": false,
+    "accountPooling": false,
+    "automaticFallback": false
+  },
+`,
+		"",
+		1,
+	)
+	var posts atomic.Int32
+	client, server := newReviewClient(t, state, &posts)
+	defer server.Close()
+
+	if _, err := client.Complete(context.Background(), provider.Request{Prompt: "prompt"}); !errors.Is(err, provider.ErrUnsafeRoute) {
+		t.Fatalf("Complete() error = %v, want unsafe route without single-attempt contract", err)
+	}
+	if posts.Load() != 0 {
+		t.Fatalf("chat POSTs without single-attempt contract = %d, want 0", posts.Load())
 	}
 }
 

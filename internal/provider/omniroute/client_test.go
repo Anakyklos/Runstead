@@ -20,6 +20,15 @@ import (
 
 const safeResilienceResponse = `{
   "requestQueue": {"concurrentRequests": 1, "minTimeBetweenRequestsMs": 0, "maxWaitMs": 15000, "maxQueueDepth": 0},
+  "singleAttemptContract": {
+    "version": 1,
+    "guaranteed": true,
+    "internalRetries": false,
+    "credentialRefreshRetry": false,
+    "cooldownReplay": false,
+    "accountPooling": false,
+    "automaticFallback": false
+  },
   "connectionCooldown": {
     "oauth": {"baseCooldownMs": 0, "useUpstreamRetryHints": false, "useUpstream429BreakerHints": false, "maxBackoffSteps": 0},
     "apikey": {"baseCooldownMs": 0, "useUpstreamRetryHints": false, "useUpstream429BreakerHints": false, "maxBackoffSteps": 0}
@@ -281,11 +290,11 @@ func TestCompleteRejectsOversizedResponseWithoutRetainingIt(t *testing.T) {
 	var posts atomic.Int32
 	server := httptest.NewServer(safeHandler(func(w http.ResponseWriter, r *http.Request) {
 		posts.Add(1)
-		io.WriteString(w, `{"choices":[{"message":{"content":"`+strings.Repeat("x", 2048)+`"}}]}`)
+		io.WriteString(w, `{"choices":[{"message":{"content":"`+strings.Repeat("x", 8192)+`"}}]}`)
 	}))
 	defer server.Close()
 	cfg := testConfig(server.URL)
-	cfg.MaxResponseBytes = 1024
+	cfg.MaxResponseBytes = 4096
 	client, err := New(cfg, Options{HTTPClient: server.Client()})
 	if err != nil {
 		t.Fatal(err)

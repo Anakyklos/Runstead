@@ -128,8 +128,10 @@ Implemented package responsibilities are deliberately narrow:
 - `internal/provider`: provider-neutral request/response types and a
   deterministic fake;
 - `internal/provider/omniroute`: stdlib-only, non-streaming OmniRoute transport,
-  current-config route proof, per-request drift revalidation, sanitized typed
-  errors, classifier and optional telemetry source;
+  fail-closed current-config route proof, per-request drift revalidation,
+  sanitized typed errors, classifier and optional telemetry source. The
+  generic OmniRoute runtime is intentionally rejected until it exposes a
+  verifiable single-attempt contract that disables credential-refresh retry;
 - `internal/trace`: JSON `log/slog` construction and level parsing.
 
 The planned `tools`, `state` and `verifier` packages are intentionally absent
@@ -139,10 +141,12 @@ scheduling and quota policy; those decisions belong to the #21 governor above
 the adapter. Construct the OmniRoute client, call `Preflight`, then route each
 turn through `agent.Executor`/`governor.Execute` with `omniroute.Classify`.
 `Complete` accepts provider text—including mixed prose or refusals—without
-protocol parsing. The adapter's live integration check is opt-in:
+protocol parsing. The adapter's live safety check is opt-in:
 `RUNSTEAD_LIVE_OMNIROUTE=1 go test ./internal/provider/omniroute -run Live`;
-it must still stop when safety evidence is unavailable. Docker support remains
-optional and pending #15; native commands are authoritative.
+it must stop before any model request when the upstream single-attempt
+contract is unavailable. The current generic OmniRoute runtime is expected
+to be refused. Docker support remains optional and pending #15; native
+commands are authoritative.
 
 ## Issue #21 account protection
 

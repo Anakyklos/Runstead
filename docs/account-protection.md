@@ -114,11 +114,21 @@ and declare internal retry, cooldown replay, account pooling and automatic
 fallback disabled. Unknown or unsafe declarations are rejected before queue
 admission. The #4 OmniRoute adapter starts with an unknown declaration and
 cannot complete a chat request until a preflight proves the current
-OmniRoute resilience response is safe. The adapter reads the current
-`/api/resilience` contract without rejecting unrelated fields, then checks
-`/api/settings`, `/api/models/alias`, `/api/settings/model-aliases`,
-`/api/fallback/chains`, `/api/combos`, `/api/model-combo-mappings` and
-`/api/providers`. It fails closed on aliases for the configured model,
+OmniRoute resilience response and an explicit `singleAttemptContract` version
+1. The contract must declare internal retries, credential-refresh retries,
+cooldown replay, account pooling and automatic fallback disabled. The
+resilience proof also requires `legacy.requestRetry` and
+`legacy.maxRetryIntervalSec` to be zero. Missing fields are unsafe.
+
+The current OmniRoute generic chat pipeline does not expose this contract:
+its executor has bounded retries and `chatCore` can refresh credentials after
+401/403 and execute the model request again. Therefore the current runtime
+remains unknown and Runstead refuses model execution; a future OmniRoute
+single-attempt endpoint or mode must expose the contract before this adapter
+can be enabled. The adapter also checks `/api/settings`,
+`/api/models/alias`, `/api/settings/model-aliases`, `/api/fallback/chains`,
+`/api/combos`, `/api/model-combo-mappings` and `/api/providers`. It fails
+closed on absent settings evidence, aliases for the configured model,
 wildcards, fallback chains, combos, model-to-combo mappings or more than one
 active connection for the configured provider. It does not infer safety from
 model-name markers. `Complete` repeats this evidence check immediately before

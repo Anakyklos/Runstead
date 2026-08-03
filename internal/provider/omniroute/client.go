@@ -194,7 +194,7 @@ func (c *Client) Preflight(ctx context.Context) error {
 		evidence[endpoint] = body
 	}
 	if !safeResilience(evidence[resiliencePath]) {
-		return unsafeError(errors.New("OmniRoute resilience settings are missing or unsafe"))
+		return unsafeError(errors.New("OmniRoute resilience or single-attempt contract is missing or unsafe"))
 	}
 	if !safeRouteEvidence(c.config.Model, evidence) {
 		return unsafeError(errors.New("OmniRoute route evidence is missing or unsafe"))
