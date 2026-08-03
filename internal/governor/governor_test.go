@@ -794,6 +794,16 @@ func TestEventSinkCanReenterSnapshot(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("event sink re-entry deadlocked the governor")
 	}
+	drainDone := make(chan int, 1)
+	go func() { drainDone <- governor.DrainEvents() }()
+	select {
+	case drained := <-drainDone:
+		if drained == 0 {
+			t.Fatal("event sink drain delivered no events")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("event sink re-entry deadlocked the event drain")
+	}
 }
 
 func TestBlockedEventSinkDoesNotHoldGovernorMutex(t *testing.T) {
@@ -805,15 +815,17 @@ func TestBlockedEventSinkDoesNotHoldGovernorMutex(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	done := make(chan struct{})
-	go func() {
-		governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "request"})
-		close(done)
-	}()
+	admission := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "request"})
+	if !admission.Admitted() {
+		t.Fatalf("admission = %#v", admission)
+	}
+	drainDone := make(chan int, 1)
+	go func() { drainDone <- governor.DrainEvents() }()
 	select {
 	case <-sink.entered:
 	case <-time.After(time.Second):
-		t.Fatal("event sink was not called")
+		close(sink.release)
+		t.Fatal("event sink was not called by explicit drain")
 	}
 	snapshotDone := make(chan struct{})
 	go func() {
@@ -828,9 +840,135 @@ func TestBlockedEventSinkDoesNotHoldGovernorMutex(t *testing.T) {
 	}
 	close(sink.release)
 	select {
-	case <-done:
+	case drained := <-drainDone:
+		if drained == 0 {
+			t.Fatal("event drain delivered no events")
+		}
 	case <-time.After(time.Second):
-		t.Fatal("admission did not complete after event sink release")
+		t.Fatal("event drain did not complete after event sink release")
+	}
+}
+
+func TestBlockedEventSinkDoesNotBlockExecutionOrLane(t *testing.T) {
+	clock := newFakeClock()
+	config := policy.DefaultInstantConfig("policy-account-1", "omniroute", "instant", provider.SafeRouteSafety())
+	sink := &blockingSink{entered: make(chan struct{}), release: make(chan struct{})}
+	governor, err := policy.New(config, policy.Options{Clock: clock, Jitter: fixedJitter{}, Events: sink})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := provider.NewFake(provider.Response{Text: "response"})
+	executionDone := make(chan policy.ExecutionResult, 1)
+	go func() {
+		executionDone <- governor.Execute(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "request"}, client, nil)
+	}()
+
+	var execution policy.ExecutionResult
+	select {
+	case execution = <-executionDone:
+	case <-time.After(time.Second):
+		close(sink.release)
+		t.Fatal("blocked event sink delayed execution")
+	}
+	if !execution.Admission.Admitted() || client.Attempts() != 1 {
+		t.Fatalf("execution = %#v, provider attempts = %d", execution, client.Attempts())
+	}
+
+	drainDone := make(chan int, 1)
+	go func() { drainDone <- governor.DrainEvents() }()
+	select {
+	case <-sink.entered:
+	case <-time.After(time.Second):
+		t.Fatal("event drain did not call the sink")
+	}
+	clock.Advance(5 * time.Second)
+	second := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "second", ClientRequestID: "second"})
+	if !second.Admitted() {
+		t.Fatalf("lane remained blocked by event sink: %#v", second)
+	}
+	if err := second.Permit.Start(); err != nil {
+		t.Fatal(err)
+	}
+	second.Permit.Finish(policy.Outcome{Class: policy.OutcomeSuccess})
+	close(sink.release)
+	select {
+	case <-drainDone:
+	case <-time.After(time.Second):
+		t.Fatal("event drain did not finish after sink release")
+	}
+}
+
+func TestUpstreamOpenCircuitRemainsBlockedAfterCooldown(t *testing.T) {
+	clock := newFakeClock()
+	config := fastConfig(t)
+	telemetry := &fakeTelemetry{snapshot: policy.TelemetrySnapshot{
+		UpstreamCircuit: policy.UpstreamCircuitOpen,
+		CooldownUntil:   clock.Now().Add(-time.Second),
+	}}
+	governor, err := policy.New(config, policy.Options{Clock: clock, Jitter: fixedJitter{}, Telemetry: telemetry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := provider.NewFake(provider.Response{Text: "response"})
+	blocked := governor.Execute(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "request"}, client, nil)
+	if blocked.Admission.Code != policy.AdmissionCircuitOpen {
+		t.Fatalf("expired upstream cooldown admission = %#v, want circuit open", blocked.Admission)
+	}
+	if client.Attempts() != 0 || governor.Snapshot().InFlight {
+		t.Fatalf("expired upstream cooldown side effects = attempts %d, snapshot %#v", client.Attempts(), governor.Snapshot())
+	}
+
+	telemetry.Set(policy.TelemetrySnapshot{UpstreamCircuit: policy.UpstreamCircuitClosed})
+	allowed := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "closed-request"})
+	if !allowed.Admitted() {
+		t.Fatalf("explicit upstream close admission = %#v, want admitted", allowed)
+	}
+	allowed.Permit.Start()
+	allowed.Permit.Finish(policy.Outcome{Class: policy.OutcomeSuccess})
+}
+
+func TestAttemptEventsPreserveTelemetryHealth(t *testing.T) {
+	clock := newFakeClock()
+	events := &eventSink{}
+	telemetry := &fakeTelemetry{err: errors.New("telemetry unavailable")}
+	config := fastConfig(t)
+	governor, err := policy.New(config, policy.Options{Clock: clock, Jitter: fixedJitter{}, Telemetry: telemetry, Events: events})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := provider.NewFake(provider.Response{Text: "response"})
+	result := governor.Execute(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "request"}, client, nil)
+	if !result.Admission.Admitted() || result.Err != nil {
+		t.Fatalf("execution with telemetry failure = %#v", result)
+	}
+	governor.DrainEvents()
+	for _, event := range events.Events() {
+		if event.Kind == policy.EventAttemptStarted || event.Kind == policy.EventAttemptFinished {
+			if event.TelemetryHealthy {
+				t.Fatalf("attempt event reported healthy telemetry: %#v", event)
+			}
+		}
+	}
+}
+
+func TestEventQueueIsBounded(t *testing.T) {
+	governor, _, _ := instantGovernor(t)
+	first := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "first"})
+	if !first.Admitted() {
+		t.Fatalf("first admission = %#v", first)
+	}
+	for i := 0; i < 300; i++ {
+		governor.TryAdmit(context.Background(), policy.AttemptRequest{
+			TaskID:          "waiting",
+			ClientRequestID: "waiting-" + strconv.Itoa(i),
+		})
+	}
+	snapshot := governor.Snapshot()
+	if snapshot.PendingEvents != 256 || snapshot.DroppedEvents == 0 {
+		t.Fatalf("event queue snapshot = %#v, want bounded pending queue and drops", snapshot)
+	}
+	if err := first.Permit.CancelBeforeStart(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -875,6 +1013,7 @@ func TestCircuitTransitionsEmitOneEventEach(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			governor.DrainEvents()
 			count := 0
 			for _, event := range events.Events() {
 				if event.Kind == policy.EventCircuit {
@@ -1035,6 +1174,7 @@ func TestSingleAttemptExecutionChargesExactlyOnceAndSanitizesEvents(t *testing.T
 	if fake.Attempts() != 1 || governor.Snapshot().Budgets.Rolling3hUsed != 1 {
 		t.Fatalf("attempt accounting = provider %d, snapshot %#v", fake.Attempts(), governor.Snapshot().Budgets)
 	}
+	governor.DrainEvents()
 	encoded, err := json.Marshal(events.Events())
 	if err != nil {
 		t.Fatal(err)

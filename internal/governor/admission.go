@@ -57,7 +57,6 @@ func contextAdmissionCode(ctx context.Context) AdmissionCode {
 }
 
 func (g *Governor) tryAdmit(ctx context.Context, request AttemptRequest) AdmissionResult {
-	defer g.flushEvents()
 	g.mu.Lock()
 	if g.closed {
 		result := g.resultLocked(AdmissionGovernorClosed, AdmissionGovernorClosed, time.Time{}, ErrGovernorClosed)
@@ -127,14 +126,14 @@ func (g *Governor) tryAdmit(ctx context.Context, request AttemptRequest) Admissi
 		return result
 	}
 	g.reserveRequestLocked(request.ClientRequestID)
-	permit := g.grantLocked(request)
-	g.emitAdmissionLocked(request, AdmissionResult{Code: AdmissionAdmitted, Permit: permit}, healthy)
+	permit := g.grantLocked(request, healthy)
+	result := AdmissionResult{Code: AdmissionAdmitted, Permit: permit, TelemetryHealthy: healthy}
+	g.emitAdmissionLocked(request, result, healthy)
 	g.mu.Unlock()
-	return AdmissionResult{Code: AdmissionAdmitted, Permit: permit}
+	return result
 }
 
 func (g *Governor) queueAdmit(ctx context.Context, request AttemptRequest) AdmissionResult {
-	defer g.flushEvents()
 	g.mu.Lock()
 	if g.closed {
 		result := g.resultLocked(AdmissionGovernorClosed, AdmissionGovernorClosed, time.Time{}, ErrGovernorClosed)
@@ -242,8 +241,8 @@ func (g *Governor) queueAdmit(ctx context.Context, request AttemptRequest) Admis
 		}
 		g.removeWaiterLocked(waiter)
 		g.reserveRequestLocked(request.ClientRequestID)
-		permit := g.grantLocked(request)
-		result := AdmissionResult{Code: AdmissionAdmitted, Permit: permit}
+		permit := g.grantLocked(request, healthy)
+		result := AdmissionResult{Code: AdmissionAdmitted, Permit: permit, TelemetryHealthy: healthy}
 		g.emitAdmissionLocked(request, result, healthy)
 		g.mu.Unlock()
 		return result
@@ -315,16 +314,14 @@ func (g *Governor) checkLocked(now time.Time, request AttemptRequest) admissionC
 		}
 		g.transitionCircuitLocked(CircuitClosed, "", time.Time{}, "")
 	}
-	if now.Before(g.cooldownUntil) {
-		return admissionCheck{code: AdmissionCooldownActive, until: g.cooldownUntil, delayed: true}
-	}
 	if g.telemetry.upstreamCircuit == UpstreamCircuitOpen {
 		if g.telemetry.cooldownUntil.After(now) {
 			return admissionCheck{code: AdmissionCircuitOpen, until: g.telemetry.cooldownUntil, delayed: true}
 		}
-		if g.telemetry.cooldownUntil.IsZero() {
-			return admissionCheck{code: AdmissionCircuitOpen}
-		}
+		return admissionCheck{code: AdmissionCircuitOpen}
+	}
+	if now.Before(g.cooldownUntil) {
+		return admissionCheck{code: AdmissionCooldownActive, until: g.cooldownUntil, delayed: true}
 	}
 	if g.telemetry.rateLimited || g.telemetry.capacityExhausted {
 		if g.telemetry.resetAt.After(now) {
@@ -396,10 +393,10 @@ func (g *Governor) indexOfLocked(target *waiter) int {
 	return -1
 }
 
-func (g *Governor) grantLocked(request AttemptRequest) *Permit {
+func (g *Governor) grantLocked(request AttemptRequest, telemetryHealthy bool) *Permit {
 	g.inFlight = true
 	g.activeTaskID = request.TaskID
-	return &Permit{governor: g, request: request}
+	return &Permit{governor: g, request: request, telemetryHealthy: telemetryHealthy}
 }
 
 func (g *Governor) removeWaiterLocked(target *waiter) {
@@ -457,7 +454,7 @@ func (g *Governor) delayedLocked(request AttemptRequest, reason AdmissionCode, r
 	if !retryAt.IsZero() && retryAt.After(now) {
 		delay = retryAt.Sub(now)
 	}
-	result := AdmissionResult{Code: AdmissionDelayed, Reason: reason, RetryAt: retryAt, Delay: delay}
+	result := AdmissionResult{Code: AdmissionDelayed, Reason: reason, RetryAt: retryAt, Delay: delay, TelemetryHealthy: healthy}
 	g.emitAdmissionLocked(request, result, healthy)
 	return result
 }

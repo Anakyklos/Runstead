@@ -39,6 +39,15 @@ func (s *PolicySink) Emit(event governor.Event) {
 		"circuit_to", event.CircuitTo,
 		"circuit_reason", event.CircuitReason,
 		"telemetry_healthy", event.TelemetryHealthy,
+		slog.Group("telemetry",
+			"available", event.Telemetry.Available,
+			"remaining", telemetryRemaining(event.Telemetry.Remaining),
+			"reset_at", event.Telemetry.ResetAt,
+			"cooldown_until", event.Telemetry.CooldownUntil,
+			"rate_limited", event.Telemetry.RateLimited,
+			"capacity_exhausted", event.Telemetry.CapacityExhausted,
+			"upstream_circuit", event.Telemetry.UpstreamCircuit,
+		),
 		slog.Group("budgets_before",
 			"rolling_3h_used", event.BudgetsBefore.Rolling3hUsed,
 			"rolling_1h_used", event.BudgetsBefore.Rolling1hUsed,
@@ -56,4 +65,11 @@ func (s *PolicySink) Emit(event governor.Event) {
 			"manual_reserve_remaining", event.BudgetsAfter.ManualReserveRemaining,
 		),
 	)
+}
+
+func telemetryRemaining(value *int) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }

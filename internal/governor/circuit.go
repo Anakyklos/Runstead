@@ -99,10 +99,7 @@ func min(left, right int) int {
 
 func (g *Governor) AcknowledgeHuman() error {
 	g.mu.Lock()
-	defer func() {
-		g.mu.Unlock()
-		g.flushEvents()
-	}()
+	defer g.mu.Unlock()
 	if g.circuit.state != CircuitHumanReviewRequired {
 		return errors.New("human acknowledgement is not required")
 	}

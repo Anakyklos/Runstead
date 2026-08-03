@@ -57,7 +57,8 @@ type Governor struct {
 	cooldownUntil       time.Time
 	telemetry           telemetryState
 	pendingEvents       []Event
-	emittingEvents      bool
+	drainingEvents      bool
+	droppedEvents       int
 }
 
 func New(config Config, options Options) (*Governor, error) {

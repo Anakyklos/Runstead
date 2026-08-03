@@ -151,12 +151,13 @@ type AttemptRequest struct {
 }
 
 type AdmissionResult struct {
-	Code    AdmissionCode
-	Reason  AdmissionCode
-	RetryAt time.Time
-	Delay   time.Duration
-	Permit  *Permit
-	Err     error
+	Code             AdmissionCode
+	Reason           AdmissionCode
+	RetryAt          time.Time
+	Delay            time.Duration
+	Permit           *Permit
+	Err              error
+	TelemetryHealthy bool
 }
 
 func (r AdmissionResult) Admitted() bool {
@@ -361,6 +362,8 @@ type Snapshot struct {
 	Budgets            BudgetSnapshot
 	Circuit            CircuitSnapshot
 	Telemetry          TelemetrySummary
+	PendingEvents      int
+	DroppedEvents      int
 	Tasks              map[string]TaskSnapshot
 	RetainedRequestIDs int
 	RetainedTaskStates int

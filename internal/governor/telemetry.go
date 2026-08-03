@@ -51,7 +51,9 @@ func (g *Governor) applyTelemetryLocked(snapshot TelemetrySnapshot, now time.Tim
 	}
 	g.telemetry.rateLimited = snapshot.RateLimited
 	g.telemetry.capacityExhausted = snapshot.CapacityExhausted
-	g.telemetry.upstreamCircuit = snapshot.UpstreamCircuit
+	if snapshot.UpstreamCircuit != UpstreamCircuitUnknown {
+		g.telemetry.upstreamCircuit = snapshot.UpstreamCircuit
+	}
 	if (snapshot.RateLimited || snapshot.CapacityExhausted) && previousReset.After(now) && snapshot.ResetAt.After(now) {
 		openUntil := previousReset
 		if snapshot.ResetAt.After(openUntil) {
@@ -90,7 +92,6 @@ func (g *Governor) expireLocked(now time.Time) {
 		g.telemetry.resetAt = time.Time{}
 		g.telemetry.rateLimited = false
 		g.telemetry.capacityExhausted = false
-		g.telemetry.upstreamCircuit = UpstreamCircuitUnknown
 		g.telemetry.cooldownUntil = time.Time{}
 	}
 }

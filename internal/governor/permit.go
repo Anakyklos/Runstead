@@ -37,10 +37,7 @@ func (p *RefreshPermit) Finish(success bool) error {
 	}
 	g := p.governor
 	g.mu.Lock()
-	defer func() {
-		g.mu.Unlock()
-		g.flushEvents()
-	}()
+	defer g.mu.Unlock()
 	if p.finished {
 		return ErrPermitCompleted
 	}
@@ -56,11 +53,12 @@ func (p *RefreshPermit) Finish(success bool) error {
 }
 
 type Permit struct {
-	governor        *Governor
-	request         AttemptRequest
-	started         bool
-	completed       bool
-	attemptSequence int
+	governor         *Governor
+	request          AttemptRequest
+	telemetryHealthy bool
+	started          bool
+	completed        bool
+	attemptSequence  int
 }
 
 func (p *Permit) Start() error {
@@ -69,10 +67,7 @@ func (p *Permit) Start() error {
 	}
 	g := p.governor
 	g.mu.Lock()
-	defer func() {
-		g.mu.Unlock()
-		g.flushEvents()
-	}()
+	defer g.mu.Unlock()
 	if p.completed {
 		return ErrPermitCompleted
 	}
@@ -121,7 +116,7 @@ func (p *Permit) Start() error {
 		BudgetsBefore:    before,
 		BudgetsAfter:     g.budgetLocked(now, p.request.TaskID),
 		Telemetry:        g.telemetrySummaryLocked(),
-		TelemetryHealthy: true,
+		TelemetryHealthy: p.telemetryHealthy,
 	})
 	return nil
 }
@@ -132,10 +127,7 @@ func (p *Permit) CancelBeforeStart() error {
 	}
 	g := p.governor
 	g.mu.Lock()
-	defer func() {
-		g.mu.Unlock()
-		g.flushEvents()
-	}()
+	defer g.mu.Unlock()
 	if p.completed {
 		return ErrPermitCompleted
 	}
@@ -146,7 +138,7 @@ func (p *Permit) CancelBeforeStart() error {
 	g.releaseRequestLocked(p.request.ClientRequestID)
 	g.inFlight = false
 	g.activeTaskID = ""
-	g.emitAdmissionLocked(p.request, AdmissionResult{Code: AdmissionContextCancelled, Reason: AdmissionContextCancelled}, true)
+	g.emitAdmissionLocked(p.request, AdmissionResult{Code: AdmissionContextCancelled, Reason: AdmissionContextCancelled, TelemetryHealthy: p.telemetryHealthy}, p.telemetryHealthy)
 	g.signalAllLocked()
 	return nil
 }
@@ -157,10 +149,7 @@ func (p *Permit) Finish(outcome Outcome) FinishResult {
 	}
 	g := p.governor
 	g.mu.Lock()
-	defer func() {
-		g.mu.Unlock()
-		g.flushEvents()
-	}()
+	defer g.mu.Unlock()
 	if p.completed {
 		return FinishResult{Err: ErrPermitCompleted}
 	}
@@ -191,7 +180,7 @@ func (p *Permit) Finish(outcome Outcome) FinishResult {
 		BudgetsBefore:    before,
 		BudgetsAfter:     g.budgetLocked(g.clock.Now(), p.request.TaskID),
 		Telemetry:        g.telemetrySummaryLocked(),
-		TelemetryHealthy: true,
+		TelemetryHealthy: p.telemetryHealthy,
 	})
 	return result
 }
