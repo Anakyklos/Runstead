@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/RenyEnnos/Runstead/internal/policy"
+	"github.com/RenyEnnos/Runstead/internal/governor"
 )
 
 const (
@@ -18,7 +18,7 @@ const (
 type Config struct {
 	Workspace     string
 	LogLevel      string
-	AccountPolicy *policy.Config
+	AccountPolicy *governor.Config
 }
 
 type Overrides struct {
@@ -26,7 +26,7 @@ type Overrides struct {
 	WorkspaceSet     bool
 	LogLevel         string
 	LogLevelSet      bool
-	AccountPolicy    *policy.Config
+	AccountPolicy    *governor.Config
 	AccountPolicySet bool
 }
 
@@ -35,7 +35,7 @@ type LookupEnv func(string) (string, bool)
 func Resolve(overrides Overrides, lookupEnv LookupEnv) (Config, error) {
 	workspace := DefaultWorkspace
 	logLevel := DefaultLogLevel
-	var accountPolicy *policy.Config
+	var accountPolicy *governor.Config
 	if lookupEnv != nil {
 		if value, ok := lookupEnv(EnvWorkspace); ok {
 			workspace = value

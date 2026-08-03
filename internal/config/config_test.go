@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RenyEnnos/Runstead/internal/policy"
+	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
@@ -61,7 +61,7 @@ func TestResolveConfigurationPrecedence(t *testing.T) {
 }
 
 func TestResolveValidatesOptionalAccountPolicy(t *testing.T) {
-	valid := policy.DefaultInstantConfig("policy-account-1", "omniroute", "instant", provider.SafeRouteSafety())
+	valid := governor.DefaultInstantConfig("policy-account-1", "omniroute", "instant", provider.SafeRouteSafety())
 	got, err := Resolve(Overrides{AccountPolicy: &valid, AccountPolicySet: true}, nil)
 	if err != nil {
 		t.Fatalf("Resolve(valid policy) error = %v", err)

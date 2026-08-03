@@ -96,17 +96,19 @@ agent loop
     │   └── chatgptweb     # later milestone
     ├── tools
     ├── executor
-    ├── policy
+    ├── governor
     ├── verifier
     ├── state
     └── trace
 ```
 
-The `policy` package is the account-protection boundary above both provider
+The `governor` package is the account-protection boundary above both provider
 adapters. It is account-scoped rather than a generic remote-service router:
 one FIFO lane admits at most one ChatGPT Web attempt, charges rolling/task
 ledgers at attempt start and exposes only sanitized events. Provider safety
-metadata must explicitly prove the M1 single-attempt invariant. See
+metadata must explicitly declare the M1 single-attempt invariant; the future
+OmniRoute adapter must provide the route evidence that makes that declaration
+trustworthy. See
 [`account-protection.md`](account-protection.md) for the SLO and deferred
 persistence boundary.
 

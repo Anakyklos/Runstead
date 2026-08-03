@@ -111,7 +111,7 @@ Implemented package responsibilities are deliberately narrow:
 
 - `cmd/runstead`: signal-aware process entrypoint, exit codes and CLI help;
 - `internal/config`: flag/environment/default resolution;
-- `internal/agent`: one provider request seam with no loop or retry;
+- `internal/agent`: governor-owned executor seam with no loop or retry;
 - `internal/protocol`: the adopted `runstead.protocol.v1` identifier;
 - `internal/provider`: provider-neutral request/response types and a
   deterministic fake;

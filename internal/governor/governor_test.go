@@ -1,16 +1,17 @@
-package policy_test
+package governor_test
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/RenyEnnos/Runstead/internal/policy"
+	policy "github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
@@ -99,6 +100,25 @@ func (s *eventSink) Events() []policy.Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]policy.Event(nil), s.events...)
+}
+
+type snapshotSink struct {
+	governor *policy.Governor
+}
+
+func (s *snapshotSink) Emit(policy.Event) {
+	_ = s.governor.Snapshot()
+}
+
+type blockingSink struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingSink) Emit(policy.Event) {
+	s.once.Do(func() { close(s.entered) })
+	<-s.release
 }
 
 type fakeTelemetry struct {
@@ -299,6 +319,41 @@ func TestTwoTasksNeverHaveTwoAttemptsInFlight(t *testing.T) {
 		result.Permit.Finish(policy.Outcome{Class: policy.OutcomeSuccess})
 	case <-time.After(time.Second):
 		t.Fatal("second task was not released")
+	}
+}
+
+func TestQueuedAttemptWaitsForActivePermitAfterPacingInterval(t *testing.T) {
+	governor, clock, _ := instantGovernor(t)
+	first := governor.Admit(context.Background(), policy.AttemptRequest{TaskID: "task-a", ClientRequestID: "request-a"})
+	if !first.Admitted() {
+		t.Fatalf("first admission = %#v", first)
+	}
+	if err := first.Permit.Start(); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(10 * time.Second)
+	secondResult := make(chan policy.AdmissionResult, 1)
+	go func() {
+		secondResult <- governor.Admit(context.Background(), policy.AttemptRequest{TaskID: "task-b", ClientRequestID: "request-b"})
+	}()
+	waitForQueue(t, governor, 1)
+	select {
+	case result := <-secondResult:
+		t.Fatalf("queued attempt admitted while first was in flight: %#v", result)
+	default:
+	}
+	if result := first.Permit.Finish(policy.Outcome{Class: policy.OutcomeSuccess}); result.Err != nil {
+		t.Fatalf("first Finish() = %#v", result)
+	}
+	select {
+	case result := <-secondResult:
+		if !result.Admitted() {
+			t.Fatalf("second admission = %#v", result)
+		}
+		result.Permit.Start()
+		result.Permit.Finish(policy.Outcome{Class: policy.OutcomeSuccess})
+	case <-time.After(time.Second):
+		t.Fatal("queued attempt was not released after active permit finished")
 	}
 }
 
@@ -707,6 +762,132 @@ func TestThreeRateResponsesRequireHumanAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestEventSinkCanReenterSnapshot(t *testing.T) {
+	clock := newFakeClock()
+	config := policy.DefaultInstantConfig("policy-account-1", "omniroute", "instant", provider.SafeRouteSafety())
+	sink := &snapshotSink{}
+	governor, err := policy.New(config, policy.Options{Clock: clock, Jitter: fixedJitter{}, Events: sink})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.governor = governor
+
+	done := make(chan error, 1)
+	go func() {
+		admission := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "request"})
+		if !admission.Admitted() {
+			done <- errors.New("request was not admitted")
+			return
+		}
+		if err := admission.Permit.Start(); err != nil {
+			done <- err
+			return
+		}
+		admission.Permit.Finish(policy.Outcome{Class: policy.OutcomeSuccess})
+		done <- nil
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("event sink re-entry deadlocked the governor")
+	}
+}
+
+func TestBlockedEventSinkDoesNotHoldGovernorMutex(t *testing.T) {
+	clock := newFakeClock()
+	config := policy.DefaultInstantConfig("policy-account-1", "omniroute", "instant", provider.SafeRouteSafety())
+	sink := &blockingSink{entered: make(chan struct{}), release: make(chan struct{})}
+	governor, err := policy.New(config, policy.Options{Clock: clock, Jitter: fixedJitter{}, Events: sink})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "request"})
+		close(done)
+	}()
+	select {
+	case <-sink.entered:
+	case <-time.After(time.Second):
+		t.Fatal("event sink was not called")
+	}
+	snapshotDone := make(chan struct{})
+	go func() {
+		_ = governor.Snapshot()
+		close(snapshotDone)
+	}()
+	select {
+	case <-snapshotDone:
+	case <-time.After(time.Second):
+		close(sink.release)
+		t.Fatal("blocked event sink held the governor mutex")
+	}
+	close(sink.release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("admission did not complete after event sink release")
+	}
+}
+
+func TestCircuitTransitionsEmitOneEventEach(t *testing.T) {
+	cases := []struct {
+		name        string
+		outcome     policy.OutcomeClass
+		threshold   int
+		acknowledge bool
+		refresh     bool
+		want        int
+	}{
+		{name: "security", outcome: policy.OutcomeHTTP403, want: 1},
+		{name: "rate threshold", outcome: policy.OutcomeRateCapacity, threshold: 1, want: 1},
+		{name: "acknowledgement", outcome: policy.OutcomeHTTP403, acknowledge: true, want: 2},
+		{name: "credential refresh", outcome: policy.OutcomeAuthenticationExpired, refresh: true, want: 2},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			clock := newFakeClock()
+			events := &eventSink{}
+			config := policy.DefaultInstantConfig("policy-account-1", "omniroute", "instant", provider.SafeRouteSafety())
+			if testCase.threshold != 0 {
+				config.RateResponseThreshold = testCase.threshold
+			}
+			governor, err := policy.New(config, policy.Options{Clock: clock, Jitter: fixedJitter{}, Events: events})
+			if err != nil {
+				t.Fatal(err)
+			}
+			admitAndFinish(t, governor, "task", "request", false, policy.Outcome{Class: testCase.outcome})
+			if testCase.acknowledge {
+				if err := governor.AcknowledgeHuman(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if testCase.refresh {
+				refresh := governor.BeginCredentialRefresh()
+				if !refresh.Admitted() {
+					t.Fatalf("credential refresh = %#v", refresh)
+				}
+				if err := refresh.Permit.Finish(true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			count := 0
+			for _, event := range events.Events() {
+				if event.Kind == policy.EventCircuit {
+					count++
+				}
+			}
+			if count != testCase.want {
+				t.Fatalf("circuit events = %d, want %d: %#v", count, testCase.want, events.Events())
+			}
+		})
+	}
+}
+
 func TestQueueCancellationAndFairnessQuantum(t *testing.T) {
 	governor, clock, _ := instantGovernor(t)
 	config := governor.Config()
@@ -930,6 +1111,135 @@ func TestCancellationAfterStartIsUncertainAndStillDebited(t *testing.T) {
 	}
 }
 
+func TestRetentionExpiresCompletedRequestIDs(t *testing.T) {
+	clock := newFakeClock()
+	config := fastConfig(t)
+	governor, err := policy.New(config, policy.Options{Clock: clock, Jitter: fixedJitter{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitAndFinish(t, governor, "first-task", "request", false, policy.Outcome{Class: policy.OutcomeSuccess})
+	if got := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "same-task", ClientRequestID: "request"}); got.Code != policy.AdmissionDuplicateClientRequest {
+		t.Fatalf("recent request reuse = %#v, want duplicate", got)
+	}
+	clock.Advance(3*time.Hour + time.Nanosecond)
+	admission := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "second-task", ClientRequestID: "request"})
+	if !admission.Admitted() {
+		t.Fatalf("request reuse after retention window = %#v, want admitted", admission)
+	}
+	if err := admission.Permit.Start(); err != nil {
+		t.Fatal(err)
+	}
+	admission.Permit.Finish(policy.Outcome{Class: policy.OutcomeSuccess})
+}
+
+func TestRetentionPreservesPendingAndActiveRequests(t *testing.T) {
+	governor, clock, _ := instantGovernor(t)
+	active := governor.Admit(context.Background(), policy.AttemptRequest{TaskID: "active", ClientRequestID: "active-request"})
+	if !active.Admitted() {
+		t.Fatalf("active admission = %#v", active)
+	}
+	if err := active.Permit.Start(); err != nil {
+		t.Fatal(err)
+	}
+	queuedContext, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	queued := make(chan policy.AdmissionResult, 1)
+	go func() {
+		queued <- governor.Admit(queuedContext, policy.AttemptRequest{TaskID: "queued", ClientRequestID: "queued-request"})
+	}()
+	waitForQueue(t, governor, 1)
+	clock.Advance(4 * time.Hour)
+	snapshot := governor.Snapshot()
+	if snapshot.RetainedTaskStates == 0 {
+		t.Fatalf("active task state was pruned: %#v", snapshot)
+	}
+	for _, request := range []policy.AttemptRequest{
+		{TaskID: "active-again", ClientRequestID: "active-request"},
+		{TaskID: "queued-again", ClientRequestID: "queued-request"},
+	} {
+		if got := governor.TryAdmit(context.Background(), request); got.Code != policy.AdmissionDuplicateClientRequest {
+			t.Fatalf("request %q after retention pruning = %#v, want duplicate", request.ClientRequestID, got)
+		}
+	}
+	cancel()
+	if result := <-queued; result.Code != policy.AdmissionContextCancelled {
+		t.Fatalf("queued cleanup = %#v", result)
+	}
+	if result := active.Permit.Finish(policy.Outcome{Class: policy.OutcomeSuccess}); result.Err != nil {
+		t.Fatalf("active cleanup = %#v", result)
+	}
+}
+
+func TestRetentionCapsCompletedRequestsAndTasks(t *testing.T) {
+	clock := newFakeClock()
+	config := fastConfig(t)
+	config.Rolling3h = 20000
+	config.Rolling1h = 10000
+	config.Rolling10m = 5000
+	config.TaskBudget = 2
+	governor, err := policy.New(config, policy.Options{Clock: clock, Jitter: fixedJitter{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 4097; index++ {
+		id := strconv.Itoa(index)
+		admitAndFinish(t, governor, "task-"+id, "request-"+id, false, policy.Outcome{Class: policy.OutcomeSuccess})
+		clock.Advance(time.Nanosecond)
+	}
+	snapshot := governor.Snapshot()
+	if snapshot.RetainedRequestIDs > 4096 {
+		t.Fatalf("retained request IDs = %d, want at most 4096", snapshot.RetainedRequestIDs)
+	}
+	if snapshot.RetainedTaskStates > 1024 {
+		t.Fatalf("retained task states = %d, want at most 1024", snapshot.RetainedTaskStates)
+	}
+}
+
+func TestRetentionExpiresInactiveTaskStates(t *testing.T) {
+	governor, clock, _ := instantGovernor(t)
+	admitAndFinish(t, governor, "task", "request", false, policy.Outcome{Class: policy.OutcomeSuccess})
+	if got := governor.Snapshot().RetainedTaskStates; got == 0 {
+		t.Fatal("completed task state was not retained immediately")
+	}
+	clock.Advance(3*time.Hour + time.Nanosecond)
+	if got := governor.Snapshot().RetainedTaskStates; got != 0 {
+		t.Fatalf("expired task states = %d, want zero", got)
+	}
+}
+
+func TestCancelBeforeStartAfterStartDoesNotReleaseLane(t *testing.T) {
+	governor, clock, _ := instantGovernor(t)
+	first := governor.Admit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "request"})
+	if !first.Admitted() {
+		t.Fatalf("first admission = %#v", first)
+	}
+	if err := first.Permit.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Permit.CancelBeforeStart(); !errors.Is(err, policy.ErrPermitStarted) {
+		t.Fatalf("CancelBeforeStart after Start() = %v, want ErrPermitStarted", err)
+	}
+	snapshot := governor.Snapshot()
+	if !snapshot.InFlight || snapshot.Budgets.Rolling3hUsed != 1 {
+		t.Fatalf("started permit changed after rejected cancel: %#v", snapshot)
+	}
+	second := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "other", ClientRequestID: "other"})
+	if second.Code != policy.AdmissionDelayed {
+		t.Fatalf("admission after rejected cancel = %#v, want delayed", second)
+	}
+	if result := first.Permit.Finish(policy.Outcome{Class: policy.OutcomeSuccess}); result.Err != nil {
+		t.Fatalf("first Finish() = %#v", result)
+	}
+	clock.Advance(5 * time.Second)
+	if got := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "other", ClientRequestID: "other"}); !got.Admitted() {
+		t.Fatalf("admission after real finish = %#v", got)
+	} else {
+		got.Permit.Start()
+		got.Permit.Finish(policy.Outcome{Class: policy.OutcomeSuccess})
+	}
+}
+
 func TestNoGoroutineLeakAfterQueuedCancellation(t *testing.T) {
 	governor, _, _ := instantGovernor(t)
 	first := governor.Admit(context.Background(), policy.AttemptRequest{TaskID: "active", ClientRequestID: "active"})
@@ -946,7 +1256,9 @@ func TestNoGoroutineLeakAfterQueuedCancellation(t *testing.T) {
 	if result.Code != policy.AdmissionContextCancelled {
 		t.Fatalf("queued cancellation = %#v", result)
 	}
-	first.Permit.CancelBeforeStart()
+	if result := first.Permit.Finish(policy.Outcome{Class: policy.OutcomeSuccess}); result.Err != nil {
+		t.Fatalf("active permit cleanup = %#v", result)
+	}
 	deadline := time.Now().Add(time.Second)
 	for runtime.NumGoroutine() > before+1 && time.Now().Before(deadline) {
 		runtime.Gosched()

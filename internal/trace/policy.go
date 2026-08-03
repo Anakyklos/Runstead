@@ -4,7 +4,7 @@ import (
 	"io"
 	"log/slog"
 
-	"github.com/RenyEnnos/Runstead/internal/policy"
+	"github.com/RenyEnnos/Runstead/internal/governor"
 )
 
 type PolicySink struct {
@@ -18,7 +18,7 @@ func NewPolicySink(logger *slog.Logger) *PolicySink {
 	return &PolicySink{logger: logger}
 }
 
-func (s *PolicySink) Emit(event policy.Event) {
+func (s *PolicySink) Emit(event governor.Event) {
 	s.logger.Info("account policy event",
 		"kind", event.Kind,
 		"account_policy_id", event.AccountPolicyID,

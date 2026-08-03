@@ -6,7 +6,7 @@
 **Goal:** Add a process-local, account-scoped ChatGPT Web request governor that
 accounts every upstream attempt and fails closed on unsafe provider behavior.
 
-**Architecture:** `internal/policy` owns an explicitly configured governor,
+**Architecture:** `internal/governor` owns an explicitly configured governor,
 rolling ledgers, FIFO account lane, admission permit lifecycle, outcome
 classification, cooldown/backoff and circuit state. It depends only on the
 standard library plus the existing provider boundary. Optional `Clock`,
@@ -31,10 +31,10 @@ before admission; no OmniRoute adapter or agent loop is added.
 
 ## File map
 
-- Create `internal/policy/types.go`: profiles, config validation, admission/outcome/circuit/event/snapshot types, clock/jitter/telemetry/sink seams.
-- Create `internal/policy/ledger.go`: timestamped rolling ledger and per-task counters.
-- Create `internal/policy/governor.go`: lane, permit lifecycle, admission, pacing, telemetry, outcome/circuit updates and provider execution seam.
-- Create `internal/policy/policy_test.go`: table-driven and deterministic concurrent tests for all Issue #21 invariants.
+- Create `internal/governor/types.go`: profiles, config validation, admission/outcome/circuit/event/snapshot types, clock/jitter/telemetry/sink seams.
+- Create `internal/governor/ledger.go`: timestamped rolling ledger and per-task counters.
+- Create `internal/governor/governor.go`: lane, permit lifecycle, admission, pacing, telemetry, outcome/circuit updates and provider execution seam.
+- Create `internal/governor/governor_test.go`: table-driven and deterministic concurrent tests for all Issue #21 invariants.
 - Modify `internal/provider/provider.go`: executable route safety states and validation.
 - Modify `internal/provider/fake.go` and `internal/provider/fake_test.go`: safe route metadata and unsafe fake coverage.
 - Modify `internal/config/config.go` and `internal/config/config_test.go`: optional validated account-policy configuration without changing current CLI defaults.
@@ -50,10 +50,10 @@ before admission; no OmniRoute adapter or agent loop is added.
    single-attempt safe metadata acceptance, all amplification flags being
    disabled, `max_in_flight != 1`, incomplete identifiers/ceilings and Instant
    defaults.
-2. Run `go test ./internal/provider ./internal/policy ./internal/config` and
-   observe failures because the policy package and safety metadata do not exist.
+2. Run `go test ./internal/provider ./internal/governor ./internal/config` and
+   observe failures because the governor package and safety metadata do not exist.
 3. Implement the smallest explicit enums and `Config.Validate` required by the
-   tests. Keep policy-specific types in `internal/policy`, with
+   tests. Keep governor-specific types in `internal/governor`, with
    `provider.RouteSafety` as the provider-owned executable declaration.
 4. Re-run the focused tests, then `gofmt`.
 
@@ -65,7 +65,7 @@ before admission; no OmniRoute adapter or agent loop is added.
 2. Implement a deque-like timestamp ledger with an expiry head index and no
    goroutines. Expose only count/next-admission/snapshot operations needed by
    the governor.
-3. Add fake-clock and deterministic-jitter test helpers in the policy test
+3. Add fake-clock and deterministic-jitter test helpers in the governor test
    package; do not make production tests wait real seconds.
 4. Run focused ledger tests and `go test -race` for the package.
 
@@ -79,7 +79,7 @@ before admission; no OmniRoute adapter or agent loop is added.
    `Permit.Finish` with a mutex plus per-waiter notification channels. Inject
    timers through `Clock`; do not start scheduler goroutines.
 3. Verify concurrent fake-provider execution and repeat the focused package
-   tests with `go test -count=20 ./internal/policy/...`.
+   tests with `go test -count=20 ./internal/governor/...`.
 
 ### Task 4: Add telemetry, retry accounting, outcome classification and circuit
 
@@ -94,7 +94,7 @@ before admission; no OmniRoute adapter or agent loop is added.
 3. Add `Execute` as the narrow provider integration seam: validate configured
    route safety, admit, start exactly once, call `provider.Client.Complete`,
    classify, finish and return sanitized result metadata.
-4. Run focused tests and `go test -race ./internal/policy/...`.
+4. Run focused tests and `go test -race ./internal/governor/...`.
 
 ### Task 5: Integrate config/trace and document boundaries
 
@@ -111,12 +111,12 @@ before admission; no OmniRoute adapter or agent loop is added.
 Run, read and record all output from:
 
 ```bash
-gofmt -w internal/policy/*.go internal/provider/*.go internal/config/*.go internal/trace/*.go
+gofmt -w internal/governor/*.go internal/provider/*.go internal/config/*.go internal/trace/*.go
 go test ./...
 go test -race ./...
 go vet ./...
 go build ./cmd/runstead
-go test -count=20 ./internal/policy/...
+go test -count=20 ./internal/governor/...
 bash experiments/protocol/test.sh
 ```
 

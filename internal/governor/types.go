@@ -1,4 +1,4 @@
-package policy
+package governor
 
 import (
 	"context"
@@ -349,19 +349,21 @@ type CircuitSnapshot struct {
 }
 
 type Snapshot struct {
-	AccountPolicyID  string
-	ProviderID       string
-	ModelPool        string
-	AllowanceProfile AllowanceProfile
-	InFlight         bool
-	QueueLength      int
-	NextAttempt      int
-	LastStart        time.Time
-	CooldownUntil    time.Time
-	Budgets          BudgetSnapshot
-	Circuit          CircuitSnapshot
-	Telemetry        TelemetrySummary
-	Tasks            map[string]TaskSnapshot
+	AccountPolicyID    string
+	ProviderID         string
+	ModelPool          string
+	AllowanceProfile   AllowanceProfile
+	InFlight           bool
+	QueueLength        int
+	NextAttempt        int
+	LastStart          time.Time
+	CooldownUntil      time.Time
+	Budgets            BudgetSnapshot
+	Circuit            CircuitSnapshot
+	Telemetry          TelemetrySummary
+	Tasks              map[string]TaskSnapshot
+	RetainedRequestIDs int
+	RetainedTaskStates int
 }
 
 type TaskSnapshot struct {

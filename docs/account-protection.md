@@ -97,11 +97,14 @@ There are no scheduler goroutines, daemon workers or distributed queues.
 The provider boundary remains deliberately small: one
 `provider.Client.Complete` invocation represents at most one upstream model
 attempt and owns no retry, quota, fallback, account rotation or scheduling
-policy. M1 additionally requires executable route-safety metadata: the route
-must explicitly guarantee single-attempt behavior and declare internal retry,
-cooldown replay, account pooling and automatic fallback disabled. Unknown or
-unsafe metadata is rejected before queue admission. The OmniRoute adapter is
-not implemented by this issue.
+policy. M1 additionally requires an executable route-safety declaration: the
+governor requires the route to explicitly guarantee single-attempt behavior
+and declare internal retry, cooldown replay, account pooling and automatic
+fallback disabled. Unknown or unsafe declarations are rejected before queue
+admission. This declaration is an executable admission contract, not proof
+that an adapter actually behaves that way; the #4 OmniRoute adapter must
+supply and test the route evidence. The OmniRoute adapter is not implemented
+by this issue.
 
 ## Telemetry and circuit breaker
 
@@ -133,9 +136,13 @@ credentials, personal account identifiers and raw HTTP bodies are excluded.
 
 ## M1 state boundary and future work
 
-Ledger, task, lane and circuit state are process-local and exposed through
-sanitized snapshots. Restart-safe cooldown and ledger persistence is deferred
-to #8; M1 does not pretend that restarting Runstead preserves protection.
+Ledger, task, lane, request-identity and circuit state are process-local and
+exposed through sanitized snapshots. Completed request identities are retained
+for three hours with a bounded in-memory cap, while pending and active
+identities are never pruned; task state is likewise bounded and protected
+while queued or active. Restart-safe cooldown, ledger and identity persistence
+is deferred to #8; M1 does not pretend that restarting Runstead preserves
+protection.
 Issue #4 can add the OmniRoute adapter and telemetry only by reusing this
 governor. #7 must route every agent turn through it, #13 adds stress and
 failure evidence, #14 publishes consumption/SLO evidence, and #16/#17 reuse
