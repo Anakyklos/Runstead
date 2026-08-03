@@ -125,6 +125,47 @@ designed with #21. The OmniRoute adapter is #4, the complete parser is #5 and
 the agent loop is #7. Docker support remains optional and pending #15; native
 commands are authoritative.
 
+## Issue #5 protocol parser
+
+`internal/protocol.Parse` is a stateless parser for the adopted
+`runstead.protocol.v1` contract. It accepts exactly one strict
+`<runstead_action>...</runstead_action>` or
+`<runstead_final>...</runstead_final>` envelope. Short prose before or after a
+single valid envelope is allowed and sets `MixedProse`; prose inside the tagged
+JSON block, multiple/nested/mismatched envelopes, unclosed tags, trailing JSON
+values and unknown JSON fields are rejected without repair. Responses larger
+than 1 MiB or JSON nested beyond 128 levels are rejected as malformed; the
+parser never truncates input and attempts a partial parse.
+
+Actions contain only `version`, `tool` and `arguments`. The injected
+`protocol.ToolCatalog` seam first identifies a registered tool and then
+validates its typed `protocol.Arguments` object, keeping the future #6 registry
+out of this package. A schema-valid action can still be rejected as
+`unknown_tool` or `invalid_arguments`; only an accepted action is executable.
+Final responses contain only `version`, `status` (`complete` or `incomplete`),
+`summary` and non-empty string `evidence`. An accepted final response is not a
+tool execution and does not by itself establish task completion.
+
+Failures expose stable codes: `missing_envelope`, `protocol_refusal`,
+`unsupported_execution_claim`, `multiple_envelopes`, `unclosed_envelope`,
+`malformed_json`, `invalid_action_schema`, `invalid_final_schema`,
+`unsupported_protocol_version`, `unknown_tool`, `invalid_arguments` and
+`repeated_action`. Each failure says whether a bounded structured correction is
+reasonable; `GenerateCorrectionMessage` only emits the deterministic M0
+correction JSON and never owns retries or a correction budget.
+
+The no-envelope refusal/claim classifier is only a deterministic aid for known
+phrases with concrete local-work context; generic protocol commentary remains
+`missing_envelope`. It is not natural-language understanding, and the
+disposable M0 shell implementation remains unchanged.
+
+`ActionFingerprint` hashes the tool name and canonical JSON arguments with
+SHA-256. `RepeatGuard` is caller-owned session state; its `Check` method returns
+the typed `repeated_action` failure and the parser itself keeps no history, so
+repeated actions can be rejected before execution. Actual tool
+registration/execution remains #6 work, and correction budgets plus the agent
+loop remain #7 work.
+
 ## Native path remains authoritative
 
 These commands must remain supported outside Docker:
