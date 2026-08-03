@@ -58,7 +58,6 @@ type Governor struct {
 	telemetry           telemetryState
 	pendingEvents       []Event
 	drainingEvents      bool
-	droppedEvents       int
 }
 
 func New(config Config, options Options) (*Governor, error) {

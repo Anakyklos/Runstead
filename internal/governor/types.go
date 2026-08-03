@@ -363,7 +363,6 @@ type Snapshot struct {
 	Circuit            CircuitSnapshot
 	Telemetry          TelemetrySummary
 	PendingEvents      int
-	DroppedEvents      int
 	Tasks              map[string]TaskSnapshot
 	RetainedRequestIDs int
 	RetainedTaskStates int

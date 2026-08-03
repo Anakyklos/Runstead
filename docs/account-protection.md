@@ -92,11 +92,16 @@ is waiting, the current task yields after its quantum of consecutive starts to
 the oldest different task still waiting in the lane.
 There are no scheduler goroutines, daemon workers or distributed queues.
 
-Configured event sinks use a bounded in-memory queue. Governor operations only
+Configured event sinks use a process-local in-memory queue. Governor operations only
 enqueue sanitized events; callers explicitly invoke `DrainEvents` to perform
-sink I/O outside the account lane. A full queue drops new events and exposes
-the pending and dropped counts in snapshots. M1 does not create a background
-dispatcher.
+sink I/O outside the account lane. All current admission, attempt and circuit
+events are mandatory and remain queued until delivered; they are never
+dropped. The agent `Executor` owns one drain after each execution, while direct
+governor callers may drain explicitly. M1 does not create a background
+dispatcher or a durable event queue, so a permanently blocked sink can grow
+this process-local pending state; a future durable delivery/backpressure design
+must preserve the mandatory-event invariant. There are currently no
+best-effort event kinds.
 
 ## Single-attempt invariant
 

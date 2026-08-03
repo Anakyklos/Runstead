@@ -23,7 +23,6 @@ func (g *Governor) Snapshot() Snapshot {
 		Circuit:            g.circuitSnapshotLocked(),
 		Telemetry:          g.telemetrySummaryLocked(),
 		PendingEvents:      len(g.pendingEvents),
-		DroppedEvents:      g.droppedEvents,
 		Tasks:              tasks,
 		RetainedRequestIDs: len(g.requestIDs),
 		RetainedTaskStates: len(g.tasks),

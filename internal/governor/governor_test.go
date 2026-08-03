@@ -849,6 +849,48 @@ func TestBlockedEventSinkDoesNotHoldGovernorMutex(t *testing.T) {
 	}
 }
 
+func TestEventDrainCatchesEventsQueuedDuringDelivery(t *testing.T) {
+	clock := newFakeClock()
+	config := policy.DefaultInstantConfig("policy-account-1", "omniroute", "instant", provider.SafeRouteSafety())
+	sink := &blockingSink{entered: make(chan struct{}), release: make(chan struct{})}
+	governor, err := policy.New(config, policy.Options{Clock: clock, Jitter: fixedJitter{}, Events: sink})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "first"})
+	if !first.Admitted() {
+		t.Fatalf("first admission = %#v", first)
+	}
+
+	drainDone := make(chan int, 1)
+	go func() { drainDone <- governor.DrainEvents() }()
+	select {
+	case <-sink.entered:
+	case <-time.After(time.Second):
+		close(sink.release)
+		t.Fatal("event drain did not enter sink")
+	}
+	delayed := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "delayed"})
+	if delayed.Code != policy.AdmissionDelayed {
+		t.Fatalf("concurrent admission = %#v, want delayed", delayed)
+	}
+	close(sink.release)
+	select {
+	case drained := <-drainDone:
+		if drained != 2 {
+			t.Fatalf("drained events = %d, want 2", drained)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("event drain did not finish")
+	}
+	if snapshot := governor.Snapshot(); snapshot.PendingEvents != 0 {
+		t.Fatalf("events queued during delivery remained pending: %#v", snapshot)
+	}
+	if err := first.Permit.CancelBeforeStart(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBlockedEventSinkDoesNotBlockExecutionOrLane(t *testing.T) {
 	clock := newFakeClock()
 	config := policy.DefaultInstantConfig("policy-account-1", "omniroute", "instant", provider.SafeRouteSafety())
@@ -951,11 +993,14 @@ func TestAttemptEventsPreserveTelemetryHealth(t *testing.T) {
 	}
 }
 
-func TestEventQueueIsBounded(t *testing.T) {
-	governor, _, _ := instantGovernor(t)
+func TestMandatoryEventsSurviveLargeBacklog(t *testing.T) {
+	governor, _, events := instantGovernor(t)
 	first := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "first"})
 	if !first.Admitted() {
 		t.Fatalf("first admission = %#v", first)
+	}
+	if err := first.Permit.Start(); err != nil {
+		t.Fatal(err)
 	}
 	for i := 0; i < 300; i++ {
 		governor.TryAdmit(context.Background(), policy.AttemptRequest{
@@ -963,12 +1008,30 @@ func TestEventQueueIsBounded(t *testing.T) {
 			ClientRequestID: "waiting-" + strconv.Itoa(i),
 		})
 	}
+	first.Permit.Finish(policy.Outcome{Class: policy.OutcomeHTTP403})
 	snapshot := governor.Snapshot()
-	if snapshot.PendingEvents != 256 || snapshot.DroppedEvents == 0 {
-		t.Fatalf("event queue snapshot = %#v, want bounded pending queue and drops", snapshot)
+	const expectedEvents = 304
+	if snapshot.PendingEvents != expectedEvents {
+		t.Fatalf("event queue snapshot = %#v, want %d pending events", snapshot, expectedEvents)
 	}
-	if err := first.Permit.CancelBeforeStart(); err != nil {
-		t.Fatal(err)
+	if drained := governor.DrainEvents(); drained != expectedEvents {
+		t.Fatalf("drained events = %d, want %d", drained, expectedEvents)
+	}
+	seenStart := false
+	seenFinish := false
+	seenSecurityCircuit := false
+	for _, event := range events.Events() {
+		switch event.Kind {
+		case policy.EventAttemptStarted:
+			seenStart = seenStart || event.ClientRequestID == "first"
+		case policy.EventAttemptFinished:
+			seenFinish = seenFinish || event.ClientRequestID == "first"
+		case policy.EventCircuit:
+			seenSecurityCircuit = seenSecurityCircuit || event.CircuitTo == policy.CircuitHumanReviewRequired
+		}
+	}
+	if !seenStart || !seenFinish || !seenSecurityCircuit {
+		t.Fatalf("mandatory events missing: start=%t finish=%t security_circuit=%t", seenStart, seenFinish, seenSecurityCircuit)
 	}
 }
 
