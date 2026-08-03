@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/protocol"
 )
@@ -78,7 +79,22 @@ type Request struct {
 }
 
 type Response struct {
-	Text string
+	Text     string
+	Metadata ResponseMetadata
+}
+
+// ResponseMetadata contains provider-neutral, sanitized observations about a
+// completed request. It deliberately excludes prompts, response bodies,
+// credentials and raw headers.
+type ResponseMetadata struct {
+	StatusCode int
+	RequestID  string
+	SessionID  string
+	Duration   time.Duration
+	RetryAfter time.Duration
+	ResetAt    time.Time
+	Endpoint   string
+	Model      string
 }
 
 // Client performs at most one upstream model attempt per Complete invocation.

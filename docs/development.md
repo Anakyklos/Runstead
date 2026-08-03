@@ -99,13 +99,27 @@ runstead resume --help
 ```
 
 `run` currently validates configuration and then fails explicitly because the
-provider adapter and full loop are deferred. `inspect` and `resume` are
+full agent loop is deferred. `inspect` and `resume` are
 explicit placeholders because durable state and recovery are not part of this
 bootstrap.
 
 Configuration precedence is deterministic: command-line flags, then
-`RUNSTEAD_WORKSPACE`/`RUNSTEAD_LOG_LEVEL`, then conservative defaults (`.` and
-`info`). Credentials and complete environment contents are never logged.
+environment, then conservative defaults. Workspace/logging use
+`RUNSTEAD_WORKSPACE` and `RUNSTEAD_LOG_LEVEL`. The optional OmniRoute config
+uses `OMNIROUTE_BASE_URL`, `OMNIROUTE_API_KEY`, `OMNIROUTE_MODEL` and
+`OMNIROUTE_CHAT_ENDPOINT`, with optional management URL and timeout variables;
+the `run` command exposes matching flags. API keys are never logged or
+included in errors, snapshots, telemetry or URLs.
+The explicit route declaration variables
+`OMNIROUTE_SINGLE_ATTEMPT_GUARANTEED`,
+`OMNIROUTE_INTERNAL_RETRIES_DISABLED`,
+`OMNIROUTE_COOLDOWN_REPLAY_DISABLED`,
+`OMNIROUTE_ACCOUNT_POOLING_DISABLED` and
+`OMNIROUTE_AUTOMATIC_FALLBACK_DISABLED`, or the equivalent
+`--omniroute-safe-route` declaration, remain configuration inputs for the
+governor contract. They do not authorize OmniRoute model execution: the
+adapter remains unknown until #29/#30 provide and verify authoritative
+attempt receipts.
 
 Implemented package responsibilities are deliberately narrow:
 
@@ -115,14 +129,27 @@ Implemented package responsibilities are deliberately narrow:
 - `internal/protocol`: the adopted `runstead.protocol.v1` identifier;
 - `internal/provider`: provider-neutral request/response types and a
   deterministic fake;
+- `internal/provider/omniroute`: stdlib-only, non-streaming OmniRoute transport,
+  fail-closed observable-settings checks, sanitized typed errors, classifier
+  and optional telemetry source. It is a scaffold: the proposed
+  `singleAttemptContract` and management snapshots never authorize a model
+  POST. Protected execution remains disabled until #29/#30 provide
+  authoritative attempt receipts and per-attempt governor accounting;
 - `internal/trace`: JSON `log/slog` construction and level parsing.
 
 The planned `tools`, `state` and `verifier` packages are intentionally absent
 until they contain real behavior. The one-call/one-attempt provider contract
 forbids adapter-owned retries, fallback selection, account rotation, queue
-scheduling and quota policy; those decisions now belong to the #21 governor
-above the adapter. The OmniRoute adapter is #4, the complete parser is #5 and
-the agent loop is #7. Docker support remains optional and pending #15; native
+scheduling and quota policy; those decisions belong to the #21 governor above
+the adapter. Construct the OmniRoute client, call `Preflight` for diagnostics,
+then route each turn through `agent.Executor`/`governor.Execute` with
+`omniroute.Classify`; the governor must reject the current unknown route.
+Transport and response parsing are exercised through a package-local test
+seam. The production `Complete` path returns `ErrUnsafeRoute` without a model
+POST. The adapter's live safety check is opt-in:
+`RUNSTEAD_LIVE_OMNIROUTE=1 go test ./internal/provider/omniroute -run Live`;
+it must stop before any model request because authoritative attempt receipts
+are unavailable. Docker support remains optional and pending #15; native
 commands are authoritative.
 
 ## Issue #21 account protection
@@ -134,7 +161,7 @@ state. `provider.Client.Complete` remains one attempt and never gains retry,
 fallback, account rotation or quota behavior. See
 [`docs/account-protection.md`](account-protection.md) for the SLO, explicit
 Instant/reasoning profiles, single-attempt route safety, telemetry seam and
-the limitations deferred to #4, #7 and #8.
+the limitations deferred to #7 and #8.
 
 ## Issue #5 protocol parser
 

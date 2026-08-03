@@ -112,16 +112,36 @@ policy. M1 additionally requires an executable route-safety declaration: the
 governor requires the route to explicitly guarantee single-attempt behavior
 and declare internal retry, cooldown replay, account pooling and automatic
 fallback disabled. Unknown or unsafe declarations are rejected before queue
-admission. This declaration is an executable admission contract, not proof
-that an adapter actually behaves that way; the #4 OmniRoute adapter must
-supply and test the route evidence. The OmniRoute adapter is not implemented
-by this issue.
+admission.
+
+The #4 OmniRoute adapter is currently a fail-closed scaffold. Its
+`singleAttemptContract` field is only a proposed/test fixture; it is not an
+authoritative authorization, and the management snapshots cannot prove how
+many upstream attempts the runtime made. `Preflight` may validate observable
+resilience and route settings, but it never marks the route verified.
+`Complete` therefore returns `provider.ErrUnsafeRoute` without a model POST
+until #29 supplies server-side attempt receipts and #30 consumes and charges
+every receipt through the governor. The receipt contract must represent
+credential-refresh retries, executor retries, fallback/combo attempts,
+cancellation, duplicates and missing or unverifiable records.
+
+The adapter still checks `/api/settings`, `/api/models/alias`,
+`/api/settings/model-aliases`, `/api/fallback/chains`, `/api/combos`,
+`/api/model-combo-mappings` and `/api/providers` as fail-closed observable
+sanity checks. It rejects absent settings evidence, aliases for the configured
+model, wildcards, fallback chains, combos, model-to-combo mappings or more
+than one active connection for the configured provider. It does not infer
+safety from model-name markers. Transport and response parsing remain covered
+through an internal test seam, not a production authorization path.
 
 ## Telemetry and circuit breaker
 
-The optional telemetry seam carries sanitized equivalents of remaining
-allowance, reset time, cooldown, rate/capacity state and an upstream breaker.
-It does not import OmniRoute HTTP types. `Retry-After` and reliable reset
+The optional OmniRoute telemetry source reads `/api/rate-limits` and
+`/api/resilience`, carrying only sanitized equivalents of remaining allowance,
+reset time, cooldown, rate/capacity state and an upstream breaker. Malformed
+or unavailable optional telemetry returns an unhealthy source signal; it never
+replaces or disables the governor's local limits. It does not export OmniRoute
+HTTP types. `Retry-After` and reliable reset
 times take precedence over local jittered backoff. Without authoritative
 guidance, the recorded backoff sequence is 15s, 30s, 60s and 120s with
 injectable jitter whose baseline is a floor; selecting a backoff never performs
@@ -139,7 +159,13 @@ human acknowledgement. Severe circuits do not reopen automatically and no
 classification selects another account, session, proxy, IP, provider or
 model.
 
-Events and snapshots contain only policy/account identifiers, provider/model
+The adapter uses one non-streaming POST per `Complete` call, with no adapter
+retry, cooldown wait, fallback, account rotation, pooling, pacing or model
+swap. Its typed errors classify transport, timeout/cancellation, authentication,
+403, rate/capacity, login challenge, CAPTCHA, suspicious activity, account
+warning, feature restriction, connection reset, empty/malformed response and
+upstream failure; `omniroute.Classify` maps those errors into governor
+outcomes. Events and snapshots contain only policy/account identifiers, provider/model
 pool, profile, task and client request identifiers, attempt sequence,
 admission/result codes, budget summaries, telemetry summaries, backoff,
 cooldown and circuit transitions. Prompts, responses, tokens, cookies,
@@ -154,9 +180,9 @@ identities are never pruned; task state is likewise bounded and protected
 while queued or active. Restart-safe cooldown, ledger and identity persistence
 is deferred to #8; M1 does not pretend that restarting Runstead preserves
 protection.
-Issue #4 can add the OmniRoute adapter and telemetry only by reusing this
-governor. #7 must route every agent turn through it, #13 adds stress and
-failure evidence, #14 publishes consumption/SLO evidence, and #16/#17 reuse
+The #4 OmniRoute adapter reuses this governor. #7 must route every agent turn
+through it. #13 adds stress and failure evidence, #14 publishes
+consumption/SLO evidence, and #16/#17 reuse
 the same account policy without an independent provider quota policy. #8
 provides durable state; direct-connector work and any later transport changes
 remain behind the same boundary.

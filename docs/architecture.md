@@ -41,9 +41,14 @@ The OmniRoute adapter owns:
 
 - configurable base URL, API key and model;
 - non-streaming requests initially;
+- fail-closed OmniRoute scaffold; management snapshots are sanity evidence
+  only, and protected model execution remains disabled until #29 provides
+  authoritative attempt receipts and #30 integrates them with the governor;
 - timeouts and cancellation;
 - capture of useful upstream identifiers;
-- classification of transport, authentication, timeout, empty-response and malformed-response failures.
+- classification of transport, authentication, timeout, rate/capacity,
+  account-safety, empty-response and malformed-response failures;
+- optional sanitized rate-limit/resilience telemetry.
 
 Runstead does not depend on OmniRoute's emulated native tool calling. Model output is treated as text and interpreted through a Runstead-owned action protocol.
 
@@ -106,9 +111,10 @@ The `governor` package is the account-protection boundary above both provider
 adapters. It is account-scoped rather than a generic remote-service router:
 one FIFO lane admits at most one ChatGPT Web attempt, charges rolling/task
 ledgers at attempt start and exposes only sanitized events. Provider safety
-metadata must explicitly declare the M1 single-attempt invariant; the future
-OmniRoute adapter must provide the route evidence that makes that declaration
-trustworthy. See
+metadata must explicitly declare the M1 single-attempt invariant. OmniRoute
+management snapshots are not enough to make that declaration trustworthy;
+the adapter stays unknown until authoritative attempt receipts are integrated.
+See
 [`account-protection.md`](account-protection.md) for the SLO and deferred
 persistence boundary.
 
