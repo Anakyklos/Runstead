@@ -1,0 +1,3 @@
+<runstead_final>
+{"version":"runstead.protocol.v1","status":"complete","summary":"The read-only inspection completed.","evidence":["Five tool observations were returned."]}
+</runstead_final>

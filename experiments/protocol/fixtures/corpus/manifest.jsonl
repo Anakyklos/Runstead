@@ -1,0 +1,11 @@
+{"case":"valid_action","fixture":"valid_action.txt"}
+{"case":"valid_final","fixture":"valid_final.txt"}
+{"case":"mixed_prose_action","fixture":"mixed_prose_action.txt"}
+{"case":"malformed_json","fixture":"malformed_json.txt"}
+{"case":"invalid_schema","fixture":"invalid_schema.txt"}
+{"case":"unknown_tool","fixture":"unknown_tool.txt"}
+{"case":"protocol_refusal","fixture":"protocol_refusal.txt"}
+{"case":"unsupported_claim","fixture":"unsupported_claim.txt"}
+{"case":"repeated_action","fixture":"repeated_action.txt"}
+{"case":"secret_response","fixture":"secret_response.txt"}
+{"case":"secret_json","fixture":"secret_json.txt"}

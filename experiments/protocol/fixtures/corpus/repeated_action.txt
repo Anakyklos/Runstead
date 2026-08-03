@@ -1,0 +1,3 @@
+<runstead_action>
+{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"README.md"}}
+</runstead_action>
