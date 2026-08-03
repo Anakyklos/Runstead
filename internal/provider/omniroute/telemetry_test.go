@@ -27,12 +27,19 @@ func TestSnapshotMapsOnlyPresentTelemetryFields(t *testing.T) {
 				},
 			})
 		case "/api/resilience":
-			json.NewEncoder(w).Encode(map[string]any{
+			var resilience map[string]any
+			if err := json.Unmarshal([]byte(safeResilienceResponse), &resilience); err != nil {
+				t.Fatal(err)
+			}
+			for key, value := range map[string]any{
 				"rateLimited":       true,
 				"capacityExhausted": true,
 				"retryAfter":        9,
 				"upstreamCircuit":   "open",
-			})
+			} {
+				resilience[key] = value
+			}
+			json.NewEncoder(w).Encode(resilience)
 		default:
 			http.NotFound(w, r)
 		}
@@ -76,6 +83,10 @@ func TestSnapshotTreatsManagementAuthFailureAsOptionalTelemetryFailure(t *testin
 
 func TestSnapshotAllowsValidEmptyOptionalObjects(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == resiliencePath {
+			io.WriteString(w, safeResilienceResponse)
+			return
+		}
 		io.WriteString(w, `{}`)
 	}))
 	defer server.Close()

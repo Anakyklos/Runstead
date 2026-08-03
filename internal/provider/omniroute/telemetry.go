@@ -27,6 +27,10 @@ func (c *Client) Snapshot(ctx context.Context) (governor.TelemetrySnapshot, erro
 	if err != nil {
 		return governor.TelemetrySnapshot{}, err
 	}
+	if !safeResilience(resilienceBody) {
+		c.clearVerification()
+		return governor.TelemetrySnapshot{}, &Error{Kind: ErrorTelemetry}
+	}
 	snapshot, err := parseTelemetry(rateBody)
 	if err != nil {
 		return governor.TelemetrySnapshot{}, err

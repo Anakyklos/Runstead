@@ -5,96 +5,218 @@ import (
 	"strings"
 )
 
-type resilienceEvidence struct {
-	RequestQueue *struct {
-		ConcurrentRequests       *int `json:"concurrentRequests"`
-		MinTimeBetweenRequestsMs *int `json:"minTimeBetweenRequestsMs"`
-		MaxWaitMs                *int `json:"maxWaitMs"`
-	} `json:"requestQueue"`
-	ConnectionCooldown *struct {
-		UseUpstreamRetryHints *bool `json:"useUpstreamRetryHints"`
-		MaxBackoffSteps       *int  `json:"maxBackoffSteps"`
-	} `json:"connectionCooldown"`
-	WaitForCooldown *struct {
-		Enabled         *bool `json:"enabled"`
-		MaxRetries      *int  `json:"maxRetries"`
-		MaxRetryWaitSec *int  `json:"maxRetryWaitSec"`
-	} `json:"waitForCooldown"`
-	ComboCooldownWait *struct {
-		Enabled     *bool `json:"enabled"`
-		MaxAttempts *int  `json:"maxAttempts"`
-		MaxWaitMs   *int  `json:"maxWaitMs"`
-	} `json:"comboCooldownWait"`
-	QuotaShareConcurrencyLimit *struct {
-		Enabled *bool `json:"enabled"`
-	} `json:"quotaShareConcurrencyLimit"`
-	ProviderCooldown *struct {
-		Enabled *bool `json:"enabled"`
-	} `json:"providerCooldown"`
-	StreamRecovery *struct {
-		Enabled          *bool `json:"enabled"`
-		MidstreamEnabled *bool `json:"midstreamEnabled"`
-	} `json:"streamRecovery"`
-}
-
 func safeResilience(body []byte) bool {
-	var raw map[string]json.RawMessage
-	if json.Unmarshal(body, &raw) != nil || raw == nil || !onlyKeys(raw, "requestQueue", "connectionCooldown", "waitForCooldown", "comboCooldownWait", "quotaShareConcurrencyLimit", "providerCooldown", "streamRecovery") {
+	root, ok := jsonObject(body)
+	if !ok {
 		return false
 	}
-	var evidence resilienceEvidence
-	if json.Unmarshal(body, &evidence) != nil {
+
+	queue, ok := jsonObjectField(root, "requestQueue")
+	if !ok || !intEquals(queue, "concurrentRequests", 1) || !intEquals(queue, "minTimeBetweenRequestsMs", 0) || !intAtLeast(queue, "maxWaitMs", 0) {
 		return false
 	}
-	if evidence.RequestQueue == nil || evidence.RequestQueue.ConcurrentRequests == nil || *evidence.RequestQueue.ConcurrentRequests != 1 || evidence.RequestQueue.MinTimeBetweenRequestsMs == nil || *evidence.RequestQueue.MinTimeBetweenRequestsMs != 0 || evidence.RequestQueue.MaxWaitMs == nil || *evidence.RequestQueue.MaxWaitMs != 0 {
+
+	cooldown, ok := jsonObjectField(root, "connectionCooldown")
+	if !ok || !safeConnectionCooldown(cooldown, "oauth") || !safeConnectionCooldown(cooldown, "apikey") {
 		return false
 	}
-	if evidence.ConnectionCooldown == nil || evidence.ConnectionCooldown.UseUpstreamRetryHints == nil || *evidence.ConnectionCooldown.UseUpstreamRetryHints || evidence.ConnectionCooldown.MaxBackoffSteps == nil || *evidence.ConnectionCooldown.MaxBackoffSteps != 0 {
+
+	wait, ok := jsonObjectField(root, "waitForCooldown")
+	if !ok || !boolEquals(wait, "enabled", false) || !intEquals(wait, "maxRetries", 0) || !intEquals(wait, "maxRetryWaitSec", 0) {
 		return false
 	}
-	if evidence.WaitForCooldown == nil || evidence.WaitForCooldown.Enabled == nil || *evidence.WaitForCooldown.Enabled || evidence.WaitForCooldown.MaxRetries == nil || *evidence.WaitForCooldown.MaxRetries != 0 || evidence.WaitForCooldown.MaxRetryWaitSec == nil || *evidence.WaitForCooldown.MaxRetryWaitSec != 0 {
+
+	combo, ok := jsonObjectField(root, "comboCooldownWait")
+	if !ok || !boolEquals(combo, "enabled", false) || !intEquals(combo, "maxAttempts", 0) || !intEquals(combo, "maxWaitMs", 0) {
 		return false
 	}
-	if evidence.ComboCooldownWait == nil || evidence.ComboCooldownWait.Enabled == nil || *evidence.ComboCooldownWait.Enabled || evidence.ComboCooldownWait.MaxAttempts == nil || *evidence.ComboCooldownWait.MaxAttempts != 0 || evidence.ComboCooldownWait.MaxWaitMs == nil || *evidence.ComboCooldownWait.MaxWaitMs != 0 {
+
+	quotaShare, ok := jsonObjectField(root, "quotaShareConcurrencyLimit")
+	if !ok || !boolEquals(quotaShare, "enabled", false) {
 		return false
 	}
-	if evidence.QuotaShareConcurrencyLimit == nil || evidence.QuotaShareConcurrencyLimit.Enabled == nil || *evidence.QuotaShareConcurrencyLimit.Enabled {
-		return false
-	}
-	if evidence.ProviderCooldown == nil || evidence.ProviderCooldown.Enabled == nil || *evidence.ProviderCooldown.Enabled {
-		return false
-	}
-	if evidence.StreamRecovery == nil || evidence.StreamRecovery.Enabled == nil || *evidence.StreamRecovery.Enabled || evidence.StreamRecovery.MidstreamEnabled == nil || *evidence.StreamRecovery.MidstreamEnabled {
+
+	providerCooldown, ok := jsonObjectField(root, "providerCooldown")
+	if !ok || !boolEquals(providerCooldown, "enabled", false) {
 		return false
 	}
 	return true
 }
 
-func onlyKeys(values map[string]json.RawMessage, allowed ...string) bool {
-	for key := range values {
-		known := false
-		for _, candidate := range allowed {
-			if key == candidate {
-				known = true
-				break
-			}
-		}
-		if !known {
+func safeConnectionCooldown(root map[string]json.RawMessage, category string) bool {
+	profile, ok := jsonObjectField(root, category)
+	if !ok || !boolEquals(profile, "useUpstreamRetryHints", false) || !intEquals(profile, "maxBackoffSteps", 0) {
+		return false
+	}
+	if raw, exists := profile["useUpstream429BreakerHints"]; exists {
+		var value bool
+		if json.Unmarshal(raw, &value) != nil || value {
 			return false
 		}
 	}
 	return true
 }
 
-func routeModelSafe(model string) bool {
-	model = strings.ToLower(strings.TrimSpace(model))
-	if model == "" || model == "auto" {
+func safeRouteEvidence(model string, evidence map[string][]byte) bool {
+	providerName, _, ok := explicitRouteModel(model)
+	if !ok || !safeSettingsEvidence(model, evidence[settingsPath]) || !safeAliasEvidence(model, evidence[modelAliasesPath]) || !safeSettingsAliasEvidence(model, evidence[settingsModelAliasesPath]) || !safeFallbackEvidence(evidence[fallbackChainsPath]) || !safeCombosEvidence(evidence[combosPath]) || !safeModelComboMappingsEvidence(evidence[modelComboMappingsPath]) || !safeProvidersEvidence(providerName, evidence[providersPath]) {
 		return false
 	}
-	for _, marker := range []string{"combo", "priority", "weighted", "fallback"} {
-		if strings.Contains(model, marker) {
+	return true
+}
+
+func explicitRouteModel(model string) (providerName, modelName string, ok bool) {
+	parts := strings.SplitN(strings.TrimSpace(model), "/", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	providerName = strings.TrimSpace(parts[0])
+	modelName = strings.TrimSpace(parts[1])
+	if providerName == "" || modelName == "" || strings.EqualFold(providerName, "auto") {
+		return "", "", false
+	}
+	return providerName, modelName, true
+}
+
+func safeSettingsEvidence(model string, body []byte) bool {
+	root, ok := jsonObject(body)
+	if !ok {
+		return false
+	}
+	if raw, exists := root["wildcardAliases"]; exists {
+		var aliases []json.RawMessage
+		if json.Unmarshal(raw, &aliases) != nil || len(aliases) != 0 {
+			return false
+		}
+	}
+	if raw, exists := root["modelAliases"]; exists {
+		aliases, ok := jsonObject(raw)
+		if !ok || hasModelAlias(aliases, model) {
+			return false
+		}
+	}
+	if raw, exists := root["globalFallbackModel"]; exists {
+		var fallback string
+		if json.Unmarshal(raw, &fallback) != nil || strings.TrimSpace(fallback) != "" {
 			return false
 		}
 	}
 	return true
+}
+
+func safeAliasEvidence(model string, body []byte) bool {
+	root, ok := jsonObject(body)
+	if !ok {
+		return false
+	}
+	aliases, ok := jsonObjectField(root, "aliases")
+	return ok && !hasModelAlias(aliases, model)
+}
+
+func safeSettingsAliasEvidence(model string, body []byte) bool {
+	root, ok := jsonObject(body)
+	if !ok {
+		return false
+	}
+	aliases, ok := jsonObjectField(root, "all")
+	return ok && !hasModelAlias(aliases, model)
+}
+
+func safeFallbackEvidence(body []byte) bool {
+	var chains []json.RawMessage
+	return json.Unmarshal(body, &chains) == nil && len(chains) == 0
+}
+
+func safeCombosEvidence(body []byte) bool {
+	root, ok := jsonObject(body)
+	if !ok {
+		return false
+	}
+	var combos []json.RawMessage
+	return json.Unmarshal(root["combos"], &combos) == nil && len(combos) == 0
+}
+
+func safeModelComboMappingsEvidence(body []byte) bool {
+	root, ok := jsonObject(body)
+	if !ok {
+		return false
+	}
+	var mappings []json.RawMessage
+	return json.Unmarshal(root["mappings"], &mappings) == nil && len(mappings) == 0
+}
+
+func safeProvidersEvidence(providerName string, body []byte) bool {
+	root, ok := jsonObject(body)
+	if !ok {
+		return false
+	}
+	var connections []map[string]json.RawMessage
+	if json.Unmarshal(root["connections"], &connections) != nil {
+		return false
+	}
+	activeMatches := 0
+	for _, connection := range connections {
+		var provider string
+		var active bool
+		if json.Unmarshal(connection["provider"], &provider) != nil || json.Unmarshal(connection["isActive"], &active) != nil {
+			return false
+		}
+		if active && strings.EqualFold(strings.TrimSpace(provider), providerName) {
+			activeMatches++
+		}
+	}
+	return activeMatches == 1
+}
+
+func hasModelAlias(aliases map[string]json.RawMessage, model string) bool {
+	want := strings.ToLower(strings.TrimSpace(model))
+	for alias := range aliases {
+		if strings.ToLower(strings.TrimSpace(alias)) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func jsonObject(body []byte) (map[string]json.RawMessage, bool) {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(body, &root) != nil || root == nil {
+		return nil, false
+	}
+	return root, true
+}
+
+func jsonObjectField(root map[string]json.RawMessage, key string) (map[string]json.RawMessage, bool) {
+	value, exists := root[key]
+	if !exists {
+		return nil, false
+	}
+	return jsonObject(value)
+}
+
+func boolEquals(root map[string]json.RawMessage, key string, want bool) bool {
+	value, exists := root[key]
+	if !exists {
+		return false
+	}
+	var got bool
+	return json.Unmarshal(value, &got) == nil && got == want
+}
+
+func intEquals(root map[string]json.RawMessage, key string, want int) bool {
+	value, exists := root[key]
+	if !exists {
+		return false
+	}
+	var got int
+	return json.Unmarshal(value, &got) == nil && got == want
+}
+
+func intAtLeast(root map[string]json.RawMessage, key string, minimum int) bool {
+	value, exists := root[key]
+	if !exists {
+		return false
+	}
+	var got int
+	return json.Unmarshal(value, &got) == nil && got >= minimum
 }

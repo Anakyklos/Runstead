@@ -19,13 +19,20 @@ import (
 )
 
 const safeResilienceResponse = `{
-  "requestQueue": {"concurrentRequests": 1, "minTimeBetweenRequestsMs": 0, "maxWaitMs": 0},
-  "connectionCooldown": {"useUpstreamRetryHints": false, "maxBackoffSteps": 0},
+  "requestQueue": {"concurrentRequests": 1, "minTimeBetweenRequestsMs": 0, "maxWaitMs": 15000, "maxQueueDepth": 0},
+  "connectionCooldown": {
+    "oauth": {"baseCooldownMs": 0, "useUpstreamRetryHints": false, "useUpstream429BreakerHints": false, "maxBackoffSteps": 0},
+    "apikey": {"baseCooldownMs": 0, "useUpstreamRetryHints": false, "useUpstream429BreakerHints": false, "maxBackoffSteps": 0}
+  },
+  "providerBreaker": {
+    "oauth": {"failureThreshold": 1, "degradationThreshold": 0, "resetTimeoutMs": 1000},
+    "apikey": {"failureThreshold": 1, "degradationThreshold": 0, "resetTimeoutMs": 1000}
+  },
   "waitForCooldown": {"enabled": false, "maxRetries": 0, "maxRetryWaitSec": 0},
   "comboCooldownWait": {"enabled": false, "maxAttempts": 0, "maxWaitMs": 0},
   "quotaShareConcurrencyLimit": {"enabled": false},
-  "providerCooldown": {"enabled": false},
-  "streamRecovery": {"enabled": false, "midstreamEnabled": false}
+  "providerCooldown": {"enabled": false, "minRetryCooldownMs": 0, "maxRetryCooldownMs": 0},
+  "legacy": {"requestRetry": 0, "maxRetryIntervalSec": 0}
 }`
 
 func testConfig(baseURL string) Config {
@@ -64,6 +71,27 @@ func safeHandler(chat http.HandlerFunc) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, safeResilienceResponse)
+	})
+	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"wildcardAliases":[],"modelAliases":{},"globalFallbackModel":""}`)
+	})
+	mux.HandleFunc("/api/models/alias", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"aliases":{}}`)
+	})
+	mux.HandleFunc("/api/settings/model-aliases", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"builtIn":{},"custom":{},"all":{}}`)
+	})
+	mux.HandleFunc("/api/fallback/chains", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `[]`)
+	})
+	mux.HandleFunc("/api/combos", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"combos":[],"total":0}`)
+	})
+	mux.HandleFunc("/api/model-combo-mappings", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"mappings":[],"total":0}`)
+	})
+	mux.HandleFunc("/api/providers", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"connections":[{"id":"account-1","provider":"chatgpt-web","isActive":true,"defaultModel":"model"}],"total":1}`)
 	})
 	mux.HandleFunc("/v1/chat/completions", chat)
 	return mux
@@ -125,7 +153,7 @@ func TestCompleteSendsOneMinimalNonStreamingRequestAndPreservesModelText(t *test
 	}
 }
 
-func TestCompleteFailsClosedBeforeChatUntilPreflightSucceeds(t *testing.T) {
+func TestCompletePerformsPreflightBeforeChat(t *testing.T) {
 	var posts atomic.Int32
 	server := httptest.NewServer(safeHandler(func(w http.ResponseWriter, r *http.Request) {
 		posts.Add(1)
@@ -139,12 +167,14 @@ func TestCompleteFailsClosedBeforeChatUntilPreflightSucceeds(t *testing.T) {
 	if got := client.RouteSafety(); got.Validate() == nil {
 		t.Fatalf("RouteSafety before preflight = %#v, want unknown", got)
 	}
-	_, err = client.Complete(context.Background(), provider.Request{Prompt: "prompt"})
-	if !errors.Is(err, provider.ErrUnsafeRoute) {
-		t.Fatalf("Complete() error = %v, want unsafe route", err)
+	if _, err = client.Complete(context.Background(), provider.Request{Prompt: "prompt"}); err != nil {
+		t.Fatalf("Complete() error = %v, want fresh preflight followed by chat", err)
 	}
-	if posts.Load() != 0 {
-		t.Fatalf("chat POSTs before preflight = %d, want 0", posts.Load())
+	if posts.Load() != 1 {
+		t.Fatalf("chat POSTs after implicit preflight = %d, want 1", posts.Load())
+	}
+	if got := client.RouteSafety(); got.Validate() != nil {
+		t.Fatalf("RouteSafety after implicit preflight = %#v, want verified", got)
 	}
 }
 
@@ -276,19 +306,17 @@ func TestCompleteRejectsOversizedResponseWithoutRetainingIt(t *testing.T) {
 func TestCompleteDoesNotFollowRedirectsOrReplayThePOST(t *testing.T) {
 	var posts atomic.Int32
 	var replayed atomic.Int32
+	baseHandler := safeHandler(func(w http.ResponseWriter, r *http.Request) {
+		posts.Add(1)
+		w.Header().Set("Location", "/replayed")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/resilience":
-			io.WriteString(w, safeResilienceResponse)
-		case "/v1/chat/completions":
-			posts.Add(1)
-			w.Header().Set("Location", "/replayed")
-			w.WriteHeader(http.StatusTemporaryRedirect)
-		case "/replayed":
+		if r.URL.Path == "/replayed" {
 			replayed.Add(1)
-		default:
-			http.NotFound(w, r)
+			return
 		}
+		baseHandler.ServeHTTP(w, r)
 	}))
 	defer server.Close()
 	client, err := New(testConfig(server.URL), Options{HTTPClient: server.Client()})

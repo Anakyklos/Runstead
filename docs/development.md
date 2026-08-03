@@ -128,8 +128,8 @@ Implemented package responsibilities are deliberately narrow:
 - `internal/provider`: provider-neutral request/response types and a
   deterministic fake;
 - `internal/provider/omniroute`: stdlib-only, non-streaming OmniRoute transport,
-  preflight route proof, sanitized typed errors, classifier and optional
-  telemetry source;
+  current-config route proof, per-request drift revalidation, sanitized typed
+  errors, classifier and optional telemetry source;
 - `internal/trace`: JSON `log/slog` construction and level parsing.
 
 The planned `tools`, `state` and `verifier` packages are intentionally absent

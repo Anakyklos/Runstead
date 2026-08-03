@@ -113,10 +113,17 @@ governor requires the route to explicitly guarantee single-attempt behavior
 and declare internal retry, cooldown replay, account pooling and automatic
 fallback disabled. Unknown or unsafe declarations are rejected before queue
 admission. The #4 OmniRoute adapter starts with an unknown declaration and
-cannot complete a chat request until a preflight proves the configured
-OmniRoute resilience settings are safe. Preflight also rejects automatic,
-combo, weighted and fallback model routes, plus unreported safety-critical
-settings. A later preflight failure clears the verified declaration.
+cannot complete a chat request until a preflight proves the current
+OmniRoute resilience response is safe. The adapter reads the current
+`/api/resilience` contract without rejecting unrelated fields, then checks
+`/api/settings`, `/api/models/alias`, `/api/settings/model-aliases`,
+`/api/fallback/chains`, `/api/combos`, `/api/model-combo-mappings` and
+`/api/providers`. It fails closed on aliases for the configured model,
+wildcards, fallback chains, combos, model-to-combo mappings or more than one
+active connection for the configured provider. It does not infer safety from
+model-name markers. `Complete` repeats this evidence check immediately before
+each chat POST, while a fresh unsafe resilience snapshot clears the verified
+declaration.
 
 ## Telemetry and circuit breaker
 

@@ -41,7 +41,8 @@ The OmniRoute adapter owns:
 
 - configurable base URL, API key and model;
 - non-streaming requests initially;
-- explicit `/api/resilience` preflight before the route is usable;
+- current OmniRoute route-evidence preflight before the route is usable and
+  immediately before each model POST;
 - timeouts and cancellation;
 - capture of useful upstream identifiers;
 - classification of transport, authentication, timeout, rate/capacity,

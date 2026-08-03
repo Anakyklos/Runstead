@@ -21,19 +21,27 @@ import (
 )
 
 const (
-	defaultTimeout       = 30 * time.Second
-	defaultBodyLimit     = 1 << 20
-	defaultChatEndpoint  = "chat/completions"
-	resiliencePath       = "/api/resilience"
-	rateLimitsPath       = "/api/rate-limits"
-	noCacheHeader        = "X-OmniRoute-No-Cache"
-	requestIDHeader      = "X-Request-Id"
-	sessionIDHeader      = "X-OmniRoute-Session-Id"
-	maxOpaqueHeaderBytes = 128
+	defaultTimeout           = 30 * time.Second
+	defaultBodyLimit         = 1 << 20
+	defaultChatEndpoint      = "chat/completions"
+	resiliencePath           = "/api/resilience"
+	rateLimitsPath           = "/api/rate-limits"
+	settingsPath             = "/api/settings"
+	modelAliasesPath         = "/api/models/alias"
+	settingsModelAliasesPath = "/api/settings/model-aliases"
+	fallbackChainsPath       = "/api/fallback/chains"
+	combosPath               = "/api/combos"
+	modelComboMappingsPath   = "/api/model-combo-mappings"
+	providersPath            = "/api/providers"
+	noCacheHeader            = "X-OmniRoute-No-Cache"
+	requestIDHeader          = "X-Request-Id"
+	sessionIDHeader          = "X-OmniRoute-Session-Id"
+	maxOpaqueHeaderBytes     = 128
 )
 
-// Doer is the narrow HTTP seam used by the adapter tests and callers that
-// need a custom transport.
+// Doer is retained as a narrow HTTP seam, but New accepts only *http.Client
+// values backed by the standard *http.Transport so the adapter can enforce
+// redirect and one-attempt behavior.
 type Doer interface {
 	Do(*http.Request) (*http.Response, error)
 }
@@ -96,9 +104,6 @@ func New(config Config, options Options) (*Client, error) {
 	if config.Model == "" {
 		return nil, errors.New("OmniRoute model must not be empty")
 	}
-	if !routeModelSafe(config.Model) {
-		return nil, unsafeError(errors.New("model route is not a single explicit target"))
-	}
 	if config.Timeout <= 0 {
 		config.Timeout = defaultTimeout
 	}
@@ -120,15 +125,26 @@ func New(config Config, options Options) (*Client, error) {
 	if _, err := joinURL(config.ManagementBaseURL, resiliencePath); err != nil {
 		return nil, fmt.Errorf("invalid OmniRoute management endpoint: %w", err)
 	}
+	for _, endpoint := range []string{settingsPath, modelAliasesPath, settingsModelAliasesPath, fallbackChainsPath, combosPath, modelComboMappingsPath, providersPath} {
+		if _, err := joinURL(config.ManagementBaseURL, endpoint); err != nil {
+			return nil, fmt.Errorf("invalid OmniRoute management endpoint: %w", err)
+		}
+	}
 
 	client := options.HTTPClient
 	if client == nil {
+		if !safeTransport(options.Transport) {
+			return nil, unsafeError(errors.New("custom OmniRoute transport cannot be constrained"))
+		}
 		httpClient := &http.Client{Transport: options.Transport}
 		httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		}
 		client = httpClient
 	} else if httpClient, ok := client.(*http.Client); ok {
+		if !safeTransport(httpClient.Transport) {
+			return nil, unsafeError(errors.New("custom OmniRoute HTTP client cannot be constrained"))
+		}
 		// A redirect can replay a POST. Clone injected clients so the adapter
 		// retains its one-attempt contract.
 		clone := *httpClient
@@ -137,6 +153,8 @@ func New(config Config, options Options) (*Client, error) {
 			return http.ErrUseLastResponse
 		}
 		client = &clone
+	} else {
+		return nil, unsafeError(errors.New("opaque OmniRoute HTTP client cannot be constrained"))
 	}
 	now := options.Now
 	if now == nil {
@@ -167,39 +185,19 @@ func (c *Client) Preflight(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return contextError(err, false)
 	}
-	requestURL, err := joinURL(c.config.ManagementBaseURL, resiliencePath)
-	if err != nil {
-		return unsafeError(err)
-	}
-	preflightCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(preflightCtx, http.MethodGet, requestURL, nil)
-	if err != nil {
-		return unsafeError(err)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
-	started := c.now()
-	response, callErr := c.httpClient.Do(req)
-	if callErr != nil {
-		return unsafeError(transportError(callErr, false))
-	}
-	if response == nil {
-		return unsafeError(errors.New("empty preflight response"))
-	}
-	body, readErr := readBody(response, c.config.MaxResponseBytes)
-	metadata := responseMetadata(response, c.now().Sub(started), resiliencePath, c.config.Model, c.now())
-	if readErr != nil {
-		if errors.Is(readErr, errResponseTooLarge) {
-			return unsafeError(&Error{Kind: ErrorResponseTooLarge, StatusCode: metadata.StatusCode, RequestID: metadata.RequestID})
+	evidence := make(map[string][]byte, 1+7)
+	for _, endpoint := range []string{resiliencePath, settingsPath, modelAliasesPath, settingsModelAliasesPath, fallbackChainsPath, combosPath, modelComboMappingsPath, providersPath} {
+		body, err := c.managementEvidence(ctx, endpoint)
+		if err != nil {
+			return err
 		}
-		return unsafeError(readErr)
+		evidence[endpoint] = body
 	}
-	if metadata.StatusCode < http.StatusOK || metadata.StatusCode >= http.StatusMultipleChoices {
-		return unsafeError(httpError(metadata, body))
-	}
-	if !safeResilience(body) {
+	if !safeResilience(evidence[resiliencePath]) {
 		return unsafeError(errors.New("OmniRoute resilience settings are missing or unsafe"))
+	}
+	if !safeRouteEvidence(c.config.Model, evidence) {
+		return unsafeError(errors.New("OmniRoute route evidence is missing or unsafe"))
 	}
 	c.mu.Lock()
 	c.verified = true
@@ -208,8 +206,11 @@ func (c *Client) Preflight(ctx context.Context) error {
 }
 
 func (c *Client) Complete(ctx context.Context, request provider.Request) (provider.Response, error) {
-	if c == nil || !c.isVerified() {
+	if c == nil {
 		return provider.Response{}, unsafeError(nil)
+	}
+	if err := c.Preflight(ctx); err != nil {
+		return provider.Response{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return provider.Response{}, contextError(err, false)
@@ -280,13 +281,32 @@ func (c *Client) Complete(ctx context.Context, request provider.Request) (provid
 	return result, nil
 }
 
-func (c *Client) isVerified() bool {
+func (c *Client) clearVerification() {
 	if c == nil {
-		return false
+		return
 	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.verified
+	c.mu.Lock()
+	c.verified = false
+	c.mu.Unlock()
+}
+
+func (c *Client) managementEvidence(ctx context.Context, endpoint string) ([]byte, error) {
+	body, _, err := c.getTelemetry(ctx, endpoint)
+	if err == nil {
+		return body, nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, err
+	}
+	return nil, unsafeError(err)
+}
+
+func safeTransport(transport http.RoundTripper) bool {
+	if transport == nil {
+		return true
+	}
+	_, ok := transport.(*http.Transport)
+	return ok
 }
 
 var errResponseTooLarge = errors.New("response body exceeds configured limit")
