@@ -116,6 +116,26 @@ func TestListFilesRejectsFinalInternalDirectorySymlink(t *testing.T) {
 	}
 }
 
+func TestListFilesRejectsExternalIntermediateSymlinkBeforeLstat(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "external-link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	registry, err := NewRegistry(Options{Workspace: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	observation := registry.Execute(context.Background(), protocol.Action{
+		Tool:      ToolListFiles,
+		Arguments: arguments(`{"path":"external-link/subdir"}`),
+	})
+	if observation.Success || observation.Failure == nil || observation.Failure.Code != FailureSymlinkEscape {
+		t.Fatalf("observation = %#v, want %q", observation, FailureSymlinkEscape)
+	}
+}
+
 func TestListFilesRejectsWrongAndEscapingTargets(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "file.txt")

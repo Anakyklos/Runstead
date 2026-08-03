@@ -15,13 +15,19 @@ func (r *Registry) executeListFiles(ctx context.Context, observation Observation
 		observation.Failure = failure
 		return observation
 	}
-	candidate := filepath.Join(r.workspace.root, filepath.FromSlash(relative))
-	if !within(r.workspace.root, candidate) {
-		observation.Failure = newFailure(FailurePathTraversal)
+	pathValue := filepath.FromSlash(relative)
+	var parent resolvedPath
+	parent, failure = r.workspace.resolve(filepath.ToSlash(filepath.Dir(pathValue)))
+	if failure != nil {
+		observation.Failure = failure
 		return observation
 	}
-	// Preserve the final path component type before resolve() canonicalizes symlinks.
-	info, err := os.Lstat(candidate)
+	if !parent.info.IsDir() {
+		observation.Failure = newFailure(FailureWrongType)
+		return observation
+	}
+	// Preserve the final path component type after validating its canonical parent.
+	info, err := os.Lstat(filepath.Join(parent.canonical, filepath.Base(pathValue)))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			observation.Failure = newFailure(FailurePathNotFound)
