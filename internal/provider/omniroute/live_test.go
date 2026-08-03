@@ -10,7 +10,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/provider/omniroute"
 )
 
-func TestLiveOmniRouteRejectsUnprovenSingleAttemptRoute(t *testing.T) {
+func TestLiveOmniRouteRemainsDisabledUntilAttemptReceipts(t *testing.T) {
 	if os.Getenv("RUNSTEAD_LIVE_OMNIROUTE") != "1" {
 		t.Skip("set RUNSTEAD_LIVE_OMNIROUTE=1 to enable the live OmniRoute check")
 	}
@@ -23,7 +23,7 @@ func TestLiveOmniRouteRejectsUnprovenSingleAttemptRoute(t *testing.T) {
 		t.Fatalf("live OmniRoute client configuration failed")
 	}
 	if err := client.Preflight(context.Background()); err == nil {
-		t.Fatal("live OmniRoute exposed no verified single-attempt contract but preflight passed")
+		t.Fatal("live OmniRoute has no authoritative attempt receipts but preflight passed")
 	} else {
 		var providerErr *omniroute.Error
 		if !errors.As(err, &providerErr) {

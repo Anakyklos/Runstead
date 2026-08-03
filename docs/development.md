@@ -110,14 +110,16 @@ uses `OMNIROUTE_BASE_URL`, `OMNIROUTE_API_KEY`, `OMNIROUTE_MODEL` and
 `OMNIROUTE_CHAT_ENDPOINT`, with optional management URL and timeout variables;
 the `run` command exposes matching flags. API keys are never logged or
 included in errors, snapshots, telemetry or URLs.
-Protected activation also requires the explicit route declaration variables
+The explicit route declaration variables
 `OMNIROUTE_SINGLE_ATTEMPT_GUARANTEED`,
 `OMNIROUTE_INTERNAL_RETRIES_DISABLED`,
 `OMNIROUTE_COOLDOWN_REPLAY_DISABLED`,
 `OMNIROUTE_ACCOUNT_POOLING_DISABLED` and
-`OMNIROUTE_AUTOMATIC_FALLBACK_DISABLED` to be true, or the equivalent
-`--omniroute-safe-route` declaration. That declaration never bypasses remote
-preflight evidence.
+`OMNIROUTE_AUTOMATIC_FALLBACK_DISABLED`, or the equivalent
+`--omniroute-safe-route` declaration, remain configuration inputs for the
+governor contract. They do not authorize OmniRoute model execution: the
+adapter remains unknown until #29/#30 provide and verify authoritative
+attempt receipts.
 
 Implemented package responsibilities are deliberately narrow:
 
@@ -128,24 +130,26 @@ Implemented package responsibilities are deliberately narrow:
 - `internal/provider`: provider-neutral request/response types and a
   deterministic fake;
 - `internal/provider/omniroute`: stdlib-only, non-streaming OmniRoute transport,
-  fail-closed current-config route proof, per-request drift revalidation,
-  sanitized typed errors, classifier and optional telemetry source. The
-  generic OmniRoute runtime is intentionally rejected until it exposes a
-  verifiable single-attempt contract that disables credential-refresh retry;
+  fail-closed observable-settings checks, sanitized typed errors, classifier
+  and optional telemetry source. It is a scaffold: the proposed
+  `singleAttemptContract` and management snapshots never authorize a model
+  POST. Protected execution remains disabled until #29/#30 provide
+  authoritative attempt receipts and per-attempt governor accounting;
 - `internal/trace`: JSON `log/slog` construction and level parsing.
 
 The planned `tools`, `state` and `verifier` packages are intentionally absent
 until they contain real behavior. The one-call/one-attempt provider contract
 forbids adapter-owned retries, fallback selection, account rotation, queue
 scheduling and quota policy; those decisions belong to the #21 governor above
-the adapter. Construct the OmniRoute client, call `Preflight`, then route each
-turn through `agent.Executor`/`governor.Execute` with `omniroute.Classify`.
-`Complete` accepts provider text—including mixed prose or refusals—without
-protocol parsing. The adapter's live safety check is opt-in:
+the adapter. Construct the OmniRoute client, call `Preflight` for diagnostics,
+then route each turn through `agent.Executor`/`governor.Execute` with
+`omniroute.Classify`; the governor must reject the current unknown route.
+Transport and response parsing are exercised through a package-local test
+seam. The production `Complete` path returns `ErrUnsafeRoute` without a model
+POST. The adapter's live safety check is opt-in:
 `RUNSTEAD_LIVE_OMNIROUTE=1 go test ./internal/provider/omniroute -run Live`;
-it must stop before any model request when the upstream single-attempt
-contract is unavailable. The current generic OmniRoute runtime is expected
-to be refused. Docker support remains optional and pending #15; native
+it must stop before any model request because authoritative attempt receipts
+are unavailable. Docker support remains optional and pending #15; native
 commands are authoritative.
 
 ## Issue #21 account protection

@@ -6,6 +6,9 @@ import (
 )
 
 func safeResilience(body []byte) bool {
+	// These fields are only observable-settings sanity checks. They are not an
+	// authorization for model execution; Complete remains blocked until the
+	// authoritative attempt-receipt contract exists.
 	root, ok := jsonObject(body)
 	if !ok {
 		return false
@@ -45,22 +48,7 @@ func safeResilience(body []byte) bool {
 	if !ok || !intEquals(legacy, "requestRetry", 0) || !intEquals(legacy, "maxRetryIntervalSec", 0) {
 		return false
 	}
-	if !safeSingleAttemptContract(root) {
-		return false
-	}
 	return true
-}
-
-func safeSingleAttemptContract(root map[string]json.RawMessage) bool {
-	contract, ok := jsonObjectField(root, "singleAttemptContract")
-	return ok &&
-		intEquals(contract, "version", 1) &&
-		boolEquals(contract, "guaranteed", true) &&
-		boolEquals(contract, "internalRetries", false) &&
-		boolEquals(contract, "credentialRefreshRetry", false) &&
-		boolEquals(contract, "cooldownReplay", false) &&
-		boolEquals(contract, "accountPooling", false) &&
-		boolEquals(contract, "automaticFallback", false)
 }
 
 func safeConnectionCooldown(root map[string]json.RawMessage, category string) bool {

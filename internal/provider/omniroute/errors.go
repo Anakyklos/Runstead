@@ -35,6 +35,8 @@ const (
 	ErrorTelemetry             ErrorKind = "telemetry"
 )
 
+var errAttemptReceiptsUnavailable = errors.New("OmniRoute authoritative attempt receipts are unavailable")
+
 // Error is intentionally small and sanitized. Cause is retained only for
 // errors.Is checks; its text is never included in Error().
 type Error struct {

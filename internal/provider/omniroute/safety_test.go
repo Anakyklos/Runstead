@@ -34,12 +34,6 @@ func TestPreflightFailsClosedForMissingOrUnsafeResilienceEvidence(t *testing.T) 
 		{name: "legacy retry interval", mutate: func(state *reviewRouteState) {
 			state.resilience = strings.Replace(safeResilienceResponse, `"maxRetryIntervalSec": 0`, `"maxRetryIntervalSec": 1`, 1)
 		}},
-		{name: "credential refresh retry", mutate: func(state *reviewRouteState) {
-			state.resilience = strings.Replace(safeResilienceResponse, `"credentialRefreshRetry": false`, `"credentialRefreshRetry": true`, 1)
-		}},
-		{name: "single-attempt contract disabled", mutate: func(state *reviewRouteState) {
-			state.resilience = strings.Replace(safeResilienceResponse, `"guaranteed": true`, `"guaranteed": false`, 1)
-		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -79,37 +73,27 @@ func TestPreflightRejectsIncompleteSettingsEvidence(t *testing.T) {
 	}
 }
 
-func TestPreflightAllowsUnrelatedResilienceFieldsWithContract(t *testing.T) {
+func TestSafeResilienceIgnoresProposedContractAndUnrelatedFields(t *testing.T) {
 	state := newReviewRouteState()
 	state.resilience = strings.TrimSuffix(strings.TrimSpace(safeResilienceResponse), "}") + `,"unrelatedSetting":{"enabled":false}}`
-	client, server := newReviewClient(t, state, &atomic.Int32{})
-	defer server.Close()
-
-	if err := client.Preflight(context.Background()); err != nil {
-		t.Fatalf("Preflight() error = %v, want unrelated current setting ignored", err)
+	if !safeResilience([]byte(state.resilience)) {
+		t.Fatal("safeResilience() rejected safe observable settings with proposal/unrelated fields")
 	}
-}
-
-func TestPreflightClearsPreviouslyVerifiedRouteOnDrift(t *testing.T) {
-	state := newReviewRouteState()
-	var posts atomic.Int32
-	client, server := newReviewClient(t, state, &posts)
-	defer server.Close()
-	if err := client.Preflight(context.Background()); err != nil {
-		t.Fatal(err)
+	if !safeResilience([]byte(strings.Replace(state.resilience, `"guaranteed": true`, `"guaranteed": false`, 1))) {
+		t.Fatal("safeResilience() treated proposed contract as authorization")
 	}
-	if _, err := client.Complete(context.Background(), provider.Request{Prompt: "prompt"}); err != nil {
-		t.Fatal(err)
-	}
-	state.resilience = strings.Replace(safeResilienceResponse, `"enabled": false`, `"enabled": true`, 1)
-	if err := client.Preflight(context.Background()); !errors.Is(err, provider.ErrUnsafeRoute) {
-		t.Fatalf("drifted Preflight() error = %v, want unsafe route", err)
-	}
-	if _, err := client.Complete(context.Background(), provider.Request{Prompt: "prompt"}); !errors.Is(err, provider.ErrUnsafeRoute) {
-		t.Fatalf("Complete() after drift = %v, want unsafe route", err)
-	}
-	if posts.Load() != 1 {
-		t.Fatalf("chat POSTs = %d, want one before drift", posts.Load())
+	withoutProposal := strings.Replace(state.resilience, `  "singleAttemptContract": {
+    "version": 1,
+    "guaranteed": true,
+    "internalRetries": false,
+    "credentialRefreshRetry": false,
+    "cooldownReplay": false,
+    "accountPooling": false,
+    "automaticFallback": false
+  },
+`, "", 1)
+	if !safeResilience([]byte(withoutProposal)) {
+		t.Fatal("safeResilience() treated missing proposed contract as unsafe configuration")
 	}
 }
 

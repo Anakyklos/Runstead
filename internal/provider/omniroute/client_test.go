@@ -18,6 +18,8 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
+// The proposed singleAttemptContract is intentionally present in this
+// fixture so tests prove it cannot authorize production execution.
 const safeResilienceResponse = `{
   "requestQueue": {"concurrentRequests": 1, "minTimeBetweenRequestsMs": 0, "maxWaitMs": 15000, "maxQueueDepth": 0},
   "singleAttemptContract": {
@@ -56,17 +58,13 @@ func testConfig(baseURL string) Config {
 	}
 }
 
-func newReadyClient(t *testing.T, handler http.Handler) (*Client, *httptest.Server) {
+func newTransportClient(t *testing.T, handler http.Handler) (*Client, *httptest.Server) {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	client, err := New(testConfig(server.URL), Options{HTTPClient: server.Client()})
 	if err != nil {
 		server.Close()
 		t.Fatal(err)
-	}
-	if err := client.Preflight(context.Background()); err != nil {
-		server.Close()
-		t.Fatalf("Preflight() error = %v", err)
 	}
 	return client, server
 }
@@ -106,12 +104,12 @@ func safeHandler(chat http.HandlerFunc) http.Handler {
 	return mux
 }
 
-func TestCompleteSendsOneMinimalNonStreamingRequestAndPreservesModelText(t *testing.T) {
+func TestCompleteTransportSendsOneMinimalNonStreamingRequestAndPreservesModelText(t *testing.T) {
 	var posts atomic.Int32
 	var gotAuthorization string
 	var gotNoCache string
 	var gotBody map[string]any
-	client, server := newReadyClient(t, safeHandler(func(w http.ResponseWriter, r *http.Request) {
+	client, server := newTransportClient(t, safeHandler(func(w http.ResponseWriter, r *http.Request) {
 		posts.Add(1)
 		gotAuthorization = r.Header.Get("Authorization")
 		gotNoCache = r.Header.Get("X-OmniRoute-No-Cache")
@@ -125,7 +123,7 @@ func TestCompleteSendsOneMinimalNonStreamingRequestAndPreservesModelText(t *test
 	}))
 	defer server.Close()
 
-	response, err := client.Complete(context.Background(), provider.Request{
+	response, err := client.completeOnce(context.Background(), provider.Request{
 		Protocol: protocol.Current,
 		Prompt:   "private prompt",
 	})
@@ -162,11 +160,14 @@ func TestCompleteSendsOneMinimalNonStreamingRequestAndPreservesModelText(t *test
 	}
 }
 
-func TestCompletePerformsPreflightBeforeChat(t *testing.T) {
-	var posts atomic.Int32
-	server := httptest.NewServer(safeHandler(func(w http.ResponseWriter, r *http.Request) {
-		posts.Add(1)
+func TestCompleteRejectsBeforeAnyPreflightOrChat(t *testing.T) {
+	var requests atomic.Int32
+	baseHandler := safeHandler(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"choices":[{"message":{"content":"response"}}]}`)
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		baseHandler.ServeHTTP(w, r)
 	}))
 	defer server.Close()
 	client, err := New(testConfig(server.URL), Options{HTTPClient: server.Client()})
@@ -176,28 +177,28 @@ func TestCompletePerformsPreflightBeforeChat(t *testing.T) {
 	if got := client.RouteSafety(); got.Validate() == nil {
 		t.Fatalf("RouteSafety before preflight = %#v, want unknown", got)
 	}
-	if _, err = client.Complete(context.Background(), provider.Request{Prompt: "prompt"}); err != nil {
-		t.Fatalf("Complete() error = %v, want fresh preflight followed by chat", err)
+	if _, err = client.Complete(context.Background(), provider.Request{Prompt: "prompt"}); !errors.Is(err, provider.ErrUnsafeRoute) {
+		t.Fatalf("Complete() error = %v, want unsafe route until receipts exist", err)
 	}
-	if posts.Load() != 1 {
-		t.Fatalf("chat POSTs after implicit preflight = %d, want 1", posts.Load())
+	if requests.Load() != 0 {
+		t.Fatalf("requests after blocked Complete() = %d, want 0", requests.Load())
 	}
-	if got := client.RouteSafety(); got.Validate() != nil {
-		t.Fatalf("RouteSafety after implicit preflight = %#v, want verified", got)
+	if got := client.RouteSafety(); got.Validate() == nil {
+		t.Fatalf("RouteSafety after blocked Complete() = %#v, want unknown", got)
 	}
 }
 
-func TestCompleteAcceptsMixedProseAndRefusalAsProviderText(t *testing.T) {
+func TestCompleteTransportAcceptsMixedProseAndRefusalAsProviderText(t *testing.T) {
 	for _, content := range []string{
 		"before <runstead_final>not a protocol response</runstead_final> after",
 		"I cannot comply with that request.",
 	} {
 		t.Run(content, func(t *testing.T) {
-			client, server := newReadyClient(t, safeHandler(func(w http.ResponseWriter, r *http.Request) {
+			client, server := newTransportClient(t, safeHandler(func(w http.ResponseWriter, r *http.Request) {
 				io.WriteString(w, fmt.Sprintf(`{"choices":[{"message":{"content":%q}}]}`, content))
 			}))
 			defer server.Close()
-			response, err := client.Complete(context.Background(), provider.Request{Prompt: "prompt"})
+			response, err := client.completeOnce(context.Background(), provider.Request{Prompt: "prompt"})
 			if err != nil || response.Text != content {
 				t.Fatalf("Complete() = (%q, %v), want provider text", response.Text, err)
 			}
@@ -205,7 +206,7 @@ func TestCompleteAcceptsMixedProseAndRefusalAsProviderText(t *testing.T) {
 	}
 }
 
-func TestCompleteClassifiesMalformedAndEmptyResponses(t *testing.T) {
+func TestCompleteTransportClassifiesMalformedAndEmptyResponses(t *testing.T) {
 	tests := []struct {
 		name string
 		body string
@@ -219,12 +220,12 @@ func TestCompleteClassifiesMalformedAndEmptyResponses(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, server := newReadyClient(t, safeHandler(func(w http.ResponseWriter, r *http.Request) {
+			client, server := newTransportClient(t, safeHandler(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				io.WriteString(w, tt.body)
 			}))
 			defer server.Close()
-			_, err := client.Complete(context.Background(), provider.Request{Prompt: "prompt"})
+			_, err := client.completeOnce(context.Background(), provider.Request{Prompt: "prompt"})
 			var providerErr *Error
 			if !errors.As(err, &providerErr) || providerErr.Kind != tt.want {
 				t.Fatalf("Complete() error = %T %v, want kind %s", err, err, tt.want)
@@ -233,7 +234,7 @@ func TestCompleteClassifiesMalformedAndEmptyResponses(t *testing.T) {
 	}
 }
 
-func TestCompleteClassifiesHTTPFailuresWithoutRetry(t *testing.T) {
+func TestCompleteTransportClassifiesHTTPFailuresWithoutRetry(t *testing.T) {
 	tests := []struct {
 		name      string
 		status    int
@@ -259,7 +260,7 @@ func TestCompleteClassifiesHTTPFailuresWithoutRetry(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var posts atomic.Int32
-			client, server := newReadyClient(t, safeHandler(func(w http.ResponseWriter, r *http.Request) {
+			client, server := newTransportClient(t, safeHandler(func(w http.ResponseWriter, r *http.Request) {
 				posts.Add(1)
 				for key, value := range tt.headers {
 					w.Header().Set(key, value)
@@ -268,7 +269,7 @@ func TestCompleteClassifiesHTTPFailuresWithoutRetry(t *testing.T) {
 				io.WriteString(w, tt.body)
 			}))
 			defer server.Close()
-			_, err := client.Complete(context.Background(), provider.Request{Prompt: "prompt"})
+			_, err := client.completeOnce(context.Background(), provider.Request{Prompt: "prompt"})
 			var providerErr *Error
 			if !errors.As(err, &providerErr) || providerErr.Kind != tt.want {
 				t.Fatalf("Complete() error = %T %v, want kind %s", err, err, tt.want)
@@ -286,7 +287,7 @@ func TestCompleteClassifiesHTTPFailuresWithoutRetry(t *testing.T) {
 	}
 }
 
-func TestCompleteRejectsOversizedResponseWithoutRetainingIt(t *testing.T) {
+func TestCompleteTransportRejectsOversizedResponseWithoutRetainingIt(t *testing.T) {
 	var posts atomic.Int32
 	server := httptest.NewServer(safeHandler(func(w http.ResponseWriter, r *http.Request) {
 		posts.Add(1)
@@ -299,10 +300,7 @@ func TestCompleteRejectsOversizedResponseWithoutRetainingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Preflight(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	_, err = client.Complete(context.Background(), provider.Request{Prompt: "prompt"})
+	_, err = client.completeOnce(context.Background(), provider.Request{Prompt: "prompt"})
 	var providerErr *Error
 	if !errors.As(err, &providerErr) || providerErr.Kind != ErrorResponseTooLarge {
 		t.Fatalf("Complete() error = %T %v, want response-too-large", err, err)
@@ -312,7 +310,7 @@ func TestCompleteRejectsOversizedResponseWithoutRetainingIt(t *testing.T) {
 	}
 }
 
-func TestCompleteDoesNotFollowRedirectsOrReplayThePOST(t *testing.T) {
+func TestCompleteTransportDoesNotFollowRedirectsOrReplayThePOST(t *testing.T) {
 	var posts atomic.Int32
 	var replayed atomic.Int32
 	baseHandler := safeHandler(func(w http.ResponseWriter, r *http.Request) {
@@ -332,10 +330,7 @@ func TestCompleteDoesNotFollowRedirectsOrReplayThePOST(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Preflight(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	_, err = client.Complete(context.Background(), provider.Request{Prompt: "prompt"})
+	_, err = client.completeOnce(context.Background(), provider.Request{Prompt: "prompt"})
 	var providerErr *Error
 	if !errors.As(err, &providerErr) || providerErr.Kind != ErrorHTTPStatus {
 		t.Fatalf("Complete() error = %T %v, want redirect status", err, err)
@@ -345,7 +340,7 @@ func TestCompleteDoesNotFollowRedirectsOrReplayThePOST(t *testing.T) {
 	}
 }
 
-func TestCompleteHonorsCancellationAndClientTimeout(t *testing.T) {
+func TestCompleteTransportHonorsCancellationAndClientTimeout(t *testing.T) {
 	server := httptest.NewServer(safeHandler(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
@@ -359,10 +354,7 @@ func TestCompleteHonorsCancellationAndClientTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Preflight(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	_, err = client.Complete(context.Background(), provider.Request{Prompt: "prompt"})
+	_, err = client.completeOnce(context.Background(), provider.Request{Prompt: "prompt"})
 	var timeoutErr *Error
 	if !errors.As(err, &timeoutErr) || timeoutErr.Kind != ErrorTimeout {
 		t.Fatalf("timeout Complete() error = %T %v, want timeout", err, err)
@@ -370,7 +362,7 @@ func TestCompleteHonorsCancellationAndClientTimeout(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = client.Complete(ctx, provider.Request{Prompt: "prompt"})
+	_, err = client.completeOnce(ctx, provider.Request{Prompt: "prompt"})
 	var cancelledErr *Error
 	if !errors.As(err, &cancelledErr) || cancelledErr.Kind != ErrorCancelled || !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled Complete() error = %T %v, want cancellation", err, err)
@@ -391,15 +383,15 @@ func TestConfigRedactsAPIKeyFromDiagnostics(t *testing.T) {
 	}
 }
 
-func TestCompleteRejectsOversizedRequestBeforePOST(t *testing.T) {
+func TestCompleteTransportRejectsOversizedRequestBeforePOST(t *testing.T) {
 	var posts atomic.Int32
-	client, server := newReadyClient(t, safeHandler(func(w http.ResponseWriter, r *http.Request) {
+	client, server := newTransportClient(t, safeHandler(func(w http.ResponseWriter, r *http.Request) {
 		posts.Add(1)
 		io.WriteString(w, `{"choices":[{"message":{"content":"response"}}]}`)
 	}))
 	defer server.Close()
 	client.config.MaxRequestBytes = 1
-	_, err := client.Complete(context.Background(), provider.Request{Prompt: "prompt"})
+	_, err := client.completeOnce(context.Background(), provider.Request{Prompt: "prompt"})
 	var providerErr *Error
 	if !errors.As(err, &providerErr) || providerErr.Kind != ErrorRequestTooLarge {
 		t.Fatalf("Complete() error = %T %v, want request-too-large", err, err)

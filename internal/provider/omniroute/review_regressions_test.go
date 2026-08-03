@@ -84,17 +84,37 @@ func newReviewClient(t *testing.T, state *reviewRouteState, posts *atomic.Int32)
 	return client, server
 }
 
-func TestPreflightAcceptsExplicitSingleAttemptContractAndRouteEvidence(t *testing.T) {
+func TestCompleteRejectsProductionExecutionUntilAuthoritativeAttemptReceipts(t *testing.T) {
+	state := newReviewRouteState()
+	var posts atomic.Int32
+	client, server := newReviewClient(t, state, &posts)
+	defer server.Close()
+
+	if _, err := client.Complete(context.Background(), provider.Request{Prompt: "prompt"}); !errors.Is(err, provider.ErrUnsafeRoute) {
+		t.Fatalf("Complete() error = %v, want unsafe route without authoritative receipts", err)
+	}
+	if posts.Load() != 0 {
+		t.Fatalf("chat POSTs with synthetic contract = %d, want 0", posts.Load())
+	}
+	if client.RouteSafety().Validate() == nil {
+		t.Fatalf("RouteSafety with synthetic contract = %#v, want unknown", client.RouteSafety())
+	}
+}
+
+func TestPreflightRejectsProposedSingleAttemptContractUntilReceiptsExist(t *testing.T) {
 	state := newReviewRouteState()
 	client, server := newReviewClient(t, state, &atomic.Int32{})
 	defer server.Close()
 
-	if err := client.Preflight(context.Background()); err != nil {
-		t.Fatalf("Preflight() error = %v, want explicit single-attempt contract accepted", err)
+	if err := client.Preflight(context.Background()); !errors.Is(err, provider.ErrUnsafeRoute) {
+		t.Fatalf("Preflight() error = %v, want unsafe route until receipts exist", err)
+	}
+	if client.RouteSafety().Validate() == nil {
+		t.Fatalf("RouteSafety after proposed contract = %#v, want unknown", client.RouteSafety())
 	}
 }
 
-func TestPreflightRejectsMissingSingleAttemptContract(t *testing.T) {
+func TestPreflightRejectsWithoutProposedContractToo(t *testing.T) {
 	state := newReviewRouteState()
 	state.resilience = strings.Replace(
 		safeResilienceResponse,
@@ -116,10 +136,10 @@ func TestPreflightRejectsMissingSingleAttemptContract(t *testing.T) {
 	defer server.Close()
 
 	if _, err := client.Complete(context.Background(), provider.Request{Prompt: "prompt"}); !errors.Is(err, provider.ErrUnsafeRoute) {
-		t.Fatalf("Complete() error = %v, want unsafe route without single-attempt contract", err)
+		t.Fatalf("Complete() error = %v, want unsafe route without authoritative receipts", err)
 	}
 	if posts.Load() != 0 {
-		t.Fatalf("chat POSTs without single-attempt contract = %d, want 0", posts.Load())
+		t.Fatalf("chat POSTs without proposed contract = %d, want 0", posts.Load())
 	}
 }
 
@@ -178,31 +198,15 @@ func TestPreflightRejectsNormalLookingAliasesFallbacksAndAccountPools(t *testing
 	}
 }
 
-func TestCompleteRevalidatesRouteImmediatelyBeforeChat(t *testing.T) {
-	state := newReviewRouteState()
-	var posts atomic.Int32
-	client, server := newReviewClient(t, state, &posts)
-	defer server.Close()
-	if err := client.Preflight(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	state.fallbacks = `[{"model":"chatgpt-web/model","chain":["chatgpt-web/other"]}]`
-
-	_, err := client.Complete(context.Background(), provider.Request{Prompt: "prompt"})
-	if !errors.Is(err, provider.ErrUnsafeRoute) {
-		t.Fatalf("Complete() error = %v, want unsafe route after drift", err)
-	}
-	if posts.Load() != 0 {
-		t.Fatalf("chat POSTs after route drift = %d, want 0", posts.Load())
-	}
-}
-
-func TestSnapshotClearsVerifiedRouteWhenFreshResilienceIsUnsafe(t *testing.T) {
+func TestSnapshotNeverPublishesRouteSafetyWithoutReceipts(t *testing.T) {
 	state := newReviewRouteState()
 	client, server := newReviewClient(t, state, &atomic.Int32{})
 	defer server.Close()
-	if err := client.Preflight(context.Background()); err != nil {
-		t.Fatal(err)
+	if _, err := client.Snapshot(context.Background()); err != nil {
+		t.Fatalf("Snapshot() with safe observable settings = %v", err)
+	}
+	if client.RouteSafety().Validate() == nil {
+		t.Fatal("RouteSafety from management snapshots is verified")
 	}
 	state.resilience = `{"requestQueue":{"concurrentRequests":2}}`
 
@@ -212,7 +216,7 @@ func TestSnapshotClearsVerifiedRouteWhenFreshResilienceIsUnsafe(t *testing.T) {
 		t.Fatalf("Snapshot() error = %T %v, want telemetry error", err, err)
 	}
 	if client.RouteSafety().Validate() == nil {
-		t.Fatal("RouteSafety after unsafe telemetry drift is still verified")
+		t.Fatal("RouteSafety after unsafe telemetry remains verified")
 	}
 }
 

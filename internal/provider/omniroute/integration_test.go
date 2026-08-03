@@ -2,6 +2,7 @@ package omniroute
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"sync/atomic"
@@ -12,9 +13,9 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
-func TestAdapterUsesGovernorAndExecutorForOneDebitedAttempt(t *testing.T) {
+func TestAdapterRejectsProtectedExecutionUntilAuthoritativeAttemptReceipts(t *testing.T) {
 	var posts atomic.Int32
-	client, server := newReadyClient(t, safeHandler(func(w http.ResponseWriter, r *http.Request) {
+	client, server := newTransportClient(t, safeHandler(func(w http.ResponseWriter, r *http.Request) {
 		posts.Add(1)
 		io.WriteString(w, `{"choices":[{"message":{"content":"governed response"}}]}`)
 	}))
@@ -34,10 +35,10 @@ func TestAdapterUsesGovernorAndExecutorForOneDebitedAttempt(t *testing.T) {
 		ModelPool:       "chatgpt-web/model",
 		ProviderRequest: provider.Request{Prompt: "prompt"},
 	})
-	if result.Err != nil || !result.Admission.Admitted() || result.Response.Text != "governed response" {
-		t.Fatalf("Executor.Execute() = %#v", result)
+	if result.Admission.Admitted() || result.Admission.Code != governor.AdmissionUnsafeProviderAmplification || !errors.Is(result.Admission.Err, provider.ErrUnsafeRoute) {
+		t.Fatalf("Executor.Execute() = %#v, want fail-closed admission", result)
 	}
-	if posts.Load() != 1 || accountGovernor.Snapshot().Budgets.Rolling3hUsed != 1 {
-		t.Fatalf("governed accounting = posts %d, debits %d; want one each", posts.Load(), accountGovernor.Snapshot().Budgets.Rolling3hUsed)
+	if posts.Load() != 0 || accountGovernor.Snapshot().Budgets.Rolling3hUsed != 0 {
+		t.Fatalf("blocked accounting = posts %d, debits %d; want zero each", posts.Load(), accountGovernor.Snapshot().Budgets.Rolling3hUsed)
 	}
 }
