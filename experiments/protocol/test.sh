@@ -56,4 +56,14 @@ if grep -F '"./' "$REPORT_DIR/sessions/session-01/turn-02.observation.json" >/de
   fail 'list_files emitted unstable ./ paths'
 fi
 
+ERROR_REPORT="$TEST_TMP/offline-tool-error"
+set +e
+"$RUN_SCRIPT" --offline --sessions 5 --tool-turns 5 --output "$ERROR_REPORT" >/dev/null
+run_status=$?
+set -e
+[[ $run_status -eq 1 ]] || fail "expected one failed session (exit 1), got $run_status"
+assert_jq "$ERROR_REPORT/report.json" '.sessions.completed == 4 and .sessions.failed == 1'
+assert_jq "$ERROR_REPORT/report.json" '.sessions.completed_with_required_tool_turns == 4'
+assert_jq "$ERROR_REPORT/report.json" '.protocol.tool_turns_failed == 1'
+
 printf 'PASS: protocol parser and offline experiment checks\n'

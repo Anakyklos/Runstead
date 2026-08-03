@@ -385,7 +385,7 @@ correction_message() {
 run_session() {
   local session_number=$1
   local session_name session_dir fixture_file seen_actions
-  local messages request_count tool_turns correction_used correction_pending repeated_actions
+  local messages request_count successful_tool_turns correction_used correction_pending repeated_actions
   local request_file response_file headers_file curl_error_file model_content_file parser_tmp parser_saved observation_file
   local request_json model_content kind executable reason tool fingerprint result observation correction
   local completed=false failure_reason=
@@ -400,7 +400,7 @@ run_session() {
     --arg task 'Inspect the fixture workspace through at least five successful read-only tool turns. Use both read_file and list_files, and finish only after the observations support a concise evidence-based summary.' \
     '[{role:"system",content:$system},{role:"user",content:$task}]')
   request_count=0
-  tool_turns=0
+  successful_tool_turns=0
   correction_used=0
   correction_pending=false
   repeated_actions=0
@@ -411,7 +411,7 @@ run_session() {
   fi
   if [[ -n $failure_reason ]]; then
     rm -f "$seen_actions"
-    write_event "$(jq -cn --arg session "$session_name" --arg reason "$failure_reason" '{event:"session",session:$session,status:"failed",reason:$reason,tool_turns:0,requests:0,corrections:0,repeats:0}')"
+    write_event "$(jq -cn --arg session "$session_name" --arg reason "$failure_reason" '{event:"session",session:$session,status:"failed",reason:$reason,successful_tool_turns:0,requests:0,corrections:0,repeats:0}')"
     return 0
   fi
 
@@ -474,7 +474,7 @@ run_session() {
     write_event "$(jq -cn --arg session "$session_name" --argjson turn "$request_count" --arg class "$TRANSPORT_CLASS" --arg provider "$PROVIDER_CLASS" --arg status "$HTTP_STATUS" --slurpfile parse "$parser_saved" '{event:"model_response",session:$session,turn:$turn,transport_class:$class,provider_class:$provider,http_status:$status,parse:$parse[0]}')"
 
     messages=$(append_message "$messages" assistant "$model_content")
-    if [[ $kind == final && $executable == true && $(jq -r '.status' "$parser_saved") == complete && $tool_turns -ge $TOOL_TURNS ]]; then
+    if [[ $kind == final && $executable == true && $(jq -r '.status' "$parser_saved") == complete && $successful_tool_turns -ge $TOOL_TURNS ]]; then
       if [[ $correction_pending == true ]]; then
         write_event "$(jq -cn --arg session "$session_name" --argjson turn "$request_count" '{event:"correction_success",session:$session,turn:$turn}')"
         correction_pending=false
@@ -492,9 +492,11 @@ run_session() {
         reason=repeated_action
       else
         printf '%s\n' "$fingerprint" >>"$seen_actions"
-        tool_turns=$((tool_turns + 1))
         observation_file="$session_dir/turn-$(printf '%02d' "$request_count").observation.json"
         result=$(execute_tool "$parser_saved")
+        if [[ $(jq -r '.ok' <<<"$result") == true ]]; then
+          successful_tool_turns=$((successful_tool_turns + 1))
+        fi
         observation=$(jq -cn \
           --arg version "$PROTOCOL_VERSION" \
           --arg tool "$tool" \
@@ -531,10 +533,10 @@ run_session() {
 
   rm -f "$seen_actions"
   if [[ $completed == true ]]; then
-    write_event "$(jq -cn --arg session "$session_name" --argjson tool_turns "$tool_turns" --argjson requests "$request_count" --argjson corrections "$correction_used" --argjson repeats "$repeated_actions" '{event:"session",session:$session,status:"completed",tool_turns:$tool_turns,requests:$requests,corrections:$corrections,repeats:$repeats}')"
+    write_event "$(jq -cn --arg session "$session_name" --argjson successful_tool_turns "$successful_tool_turns" --argjson requests "$request_count" --argjson corrections "$correction_used" --argjson repeats "$repeated_actions" '{event:"session",session:$session,status:"completed",successful_tool_turns:$successful_tool_turns,requests:$requests,corrections:$corrections,repeats:$repeats}')"
   else
     [[ -n $failure_reason ]] || failure_reason=max_requests_exhausted
-    write_event "$(jq -cn --arg session "$session_name" --arg reason "$failure_reason" --argjson tool_turns "$tool_turns" --argjson requests "$request_count" --argjson corrections "$correction_used" --argjson repeats "$repeated_actions" '{event:"session",session:$session,status:"failed",reason:$reason,tool_turns:$tool_turns,requests:$requests,corrections:$corrections,repeats:$repeats}')"
+    write_event "$(jq -cn --arg session "$session_name" --arg reason "$failure_reason" --argjson successful_tool_turns "$successful_tool_turns" --argjson requests "$request_count" --argjson corrections "$correction_used" --argjson repeats "$repeated_actions" '{event:"session",session:$session,status:"failed",reason:$reason,successful_tool_turns:$successful_tool_turns,requests:$requests,corrections:$corrections,repeats:$repeats}')"
   fi
 }
 
@@ -548,6 +550,7 @@ generate_report() {
     --argjson correction_limit "$CORRECTION_LIMIT" \
     '
       def n(f): map(select(f)) | length;
+      def required_sessions: n(.event == "session" and .status == "completed" and (.successful_tool_turns // 0) >= $configured_tool_turns);
       {
         schema:$schema,
         run_id:$run_id,
@@ -555,7 +558,8 @@ generate_report() {
         sessions:{
           configured:$configured_sessions,
           completed:n(.event == "session" and .status == "completed"),
-          failed:n(.event == "session" and .status == "failed")
+          failed:n(.event == "session" and .status == "failed"),
+          completed_with_required_tool_turns:required_sessions
         },
         transport:{
           attempts:n(.event == "model_response"),
@@ -589,8 +593,8 @@ generate_report() {
           policy:n(.event == "repeat_detected")
         },
         decision:{
-          status:(if $mode == "live" and (n(.event == "session" and .status == "failed") == 0) and (n(.event == "tool_execution" and .ok == true) >= ($configured_sessions * $configured_tool_turns)) then "adopt" else "revise" end),
-          reason:(if $mode == "live" and (n(.event == "session" and .status == "failed") == 0) and (n(.event == "tool_execution" and .ok == true) >= ($configured_sessions * $configured_tool_turns)) then "Live criteria passed; the candidate is ready for M1 implementation." else "Offline fixtures prove the parser and bounded harness; run --live with three independent sessions before adopting the protocol for M1." end)
+          status:(if $mode == "live" and (n(.event == "session" and .status == "failed") == 0) and required_sessions == $configured_sessions then "adopt" else "revise" end),
+          reason:(if $mode == "live" and (n(.event == "session" and .status == "failed") == 0) and required_sessions == $configured_sessions then "Live criteria passed; the candidate is ready for M1 implementation." else "Offline fixtures prove the parser and bounded harness; run --live with three independent sessions before adopting the protocol for M1." end)
         }
       }
     ' "$EVENTS_FILE" >"$OUTPUT_DIR/report.json"
@@ -603,6 +607,7 @@ generate_report() {
     jq -r '
       "## Evidence\n\n" +
       "- Sessions: " + (.sessions.completed|tostring) + "/" + (.sessions.configured|tostring) + " completed\n" +
+      "- Sessions meeting the per-session turn gate: " + (.sessions.completed_with_required_tool_turns|tostring) + "/" + (.sessions.configured|tostring) + "\n" +
       "- Successful read-only tool turns: " + (.protocol.tool_turns_completed|tostring) + "\n" +
       "- Correction attempts/successes: " + (.protocol.correction_attempts|tostring) + "/" + (.protocol.correction_successes|tostring) + " (limit " + (.protocol.correction_limit|tostring) + ")\n" +
       "- Repeated actions: " + (.protocol.repeated_actions|tostring) + "\n" +

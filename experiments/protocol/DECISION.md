@@ -1,12 +1,10 @@
 # M0 protocol decision
 
-Status: **REVISE BEFORE M1**
+Status: **ADOPT FOR M1**
 
 The experiment adopts `runstead.protocol.v1` as the candidate contract for the
-proof, but the repository does not claim that ChatGPT Web is reliable through
-OmniRoute from offline fixtures alone. The candidate must be revised or
-adopted after a live run with at least three independent sessions and five
-successful read-only tool turns per session.
+proof. The live gate below confirms ChatGPT Web reliability through OmniRoute
+for the configured experiment.
 
 ## What the offline evidence establishes
 
@@ -28,6 +26,15 @@ at least five successful read-only tool turns in each session, no unclassified
 transport/provider failures, and corrections staying within the two-attempt
 budget. Otherwise keep the contract at `REVISE` and use the retained corpus to
 update the prompt/parser before implementing the Go runtime.
+
+## Live evidence
+
+- Run ID: `20260803T000356Z-109669`
+- Model: `chatgpt-web/gpt-5.6-thinking` (ChatGPT Web; no Codex model)
+- Sessions: 3/3 completed; 3/3 met the per-session five-turn gate.
+- Successful read-only tool turns: 15; failed tool turns: 0.
+- Transport/provider failures: 0; correction attempts: 0/2; repeated actions: 0.
+- Decision: **ADOPT**.
 
 ## Known failure modes
 
