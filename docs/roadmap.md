@@ -40,6 +40,7 @@ Deliverables:
 - reproducible Docker development environment that remains optional;
 - configuration through flags and environment variables;
 - minimal provider interface and deterministic fake provider;
+- account-scoped ChatGPT Web request governor with rolling budgets and circuit protection;
 - OmniRoute baseline provider adapter;
 - action parser and validator;
 - read-only tool registry;

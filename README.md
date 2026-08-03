@@ -150,3 +150,6 @@ CLI surface and the provider-neutral one-call/one-attempt seam described in
 and durable recovery remain later milestone work.
 
 See [`docs/architecture.md`](docs/architecture.md), [`docs/roadmap.md`](docs/roadmap.md) and [`docs/development.md`](docs/development.md).
+
+The M1 account-scoped request governor and its internal Account Protection SLO
+are documented in [`docs/account-protection.md`](docs/account-protection.md).
