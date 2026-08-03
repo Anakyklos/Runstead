@@ -2,15 +2,43 @@ package tools
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 )
 
 func (r *Registry) executeListFiles(ctx context.Context, observation Observation, path string) Observation {
+	relative, failure := normalizeRelativePath(path)
+	if failure != nil {
+		observation.Failure = failure
+		return observation
+	}
+	candidate := filepath.Join(r.workspace.root, filepath.FromSlash(relative))
+	if !within(r.workspace.root, candidate) {
+		observation.Failure = newFailure(FailurePathTraversal)
+		return observation
+	}
+	// Preserve the final path component type before resolve() canonicalizes symlinks.
+	info, err := os.Lstat(candidate)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			observation.Failure = newFailure(FailurePathNotFound)
+			return observation
+		}
+		observation.Failure = newFailure(FailureReadFailure)
+		return observation
+	}
+	finalSymlink := info.Mode()&os.ModeSymlink != 0
+
 	resolved, failure := r.workspace.resolve(path)
 	if failure != nil {
 		observation.Failure = failure
+		return observation
+	}
+	if finalSymlink {
+		observation.Failure = newFailure(FailureWrongType)
 		return observation
 	}
 	if !resolved.info.IsDir() {

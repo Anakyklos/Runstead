@@ -28,7 +28,9 @@ func (r *Registry) executeSearchText(ctx context.Context, observation Observatio
 	if r.rgPath != "" {
 		return r.searchWithRG(ctx, observation, query, resolved)
 	}
-	return r.searchWithFallback(ctx, observation, query, resolved)
+	commandContext, cancel := context.WithTimeout(ctx, r.limits.SearchTimeout)
+	defer cancel()
+	return r.searchWithFallback(commandContext, observation, query, resolved)
 }
 
 func (r *Registry) searchWithRG(ctx context.Context, observation Observation, query string, resolved resolvedPath) Observation {

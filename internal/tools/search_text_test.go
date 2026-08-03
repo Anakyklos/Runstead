@@ -200,6 +200,27 @@ func TestSearchTextHonorsCancellationAndTimeout(t *testing.T) {
 	}
 }
 
+func TestSearchTextFallbackHonorsTimeout(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "a.txt", "needle\n")
+	registry, err := NewRegistry(Options{
+		Workspace: root,
+		Limits:    Limits{SearchTimeout: time.Nanosecond},
+		LookPath:  func(string) (string, error) { return "", errors.New("rg unavailable") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	observation := registry.Execute(context.Background(), protocol.Action{
+		Tool:      ToolSearchText,
+		Arguments: arguments(`{"query":"needle","path":"a.txt"}`),
+	})
+	if observation.Failure == nil || observation.Failure.Code != FailureTimeout {
+		t.Fatalf("fallback timeout = %#v", observation)
+	}
+}
+
 func TestSearchTextRejectsExternalSymlinkPath(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")

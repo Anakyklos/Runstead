@@ -93,6 +93,29 @@ func TestListFilesTruncatesWithoutDescendingIntoDirectories(t *testing.T) {
 	}
 }
 
+func TestListFilesRejectsFinalInternalDirectorySymlink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "target-dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, filepath.Join(root, "target-dir"), "nested.txt", "nested")
+	if err := os.Symlink(filepath.Join(root, "target-dir"), filepath.Join(root, "dir-link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	registry, err := NewRegistry(Options{Workspace: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	observation := registry.Execute(context.Background(), protocol.Action{
+		Tool:      ToolListFiles,
+		Arguments: arguments(`{"path":"dir-link"}`),
+	})
+	if observation.Success || observation.Failure == nil || observation.Failure.Code != FailureWrongType {
+		t.Fatalf("observation = %#v, want %q", observation, FailureWrongType)
+	}
+}
+
 func TestListFilesRejectsWrongAndEscapingTargets(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "file.txt")
