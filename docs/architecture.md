@@ -184,9 +184,11 @@ Native `tool_calls` may be accepted later as an additional input format, but the
 - `read_file`
 - `list_files`
 - `search_text`
-- restricted `shell`
 - `git_status`
 - `git_diff`
+
+The issue #6 registry implements these five tools only. Generic shell remains
+out of scope until a separately reviewed policy boundary exists.
 
 ### Write stage
 
