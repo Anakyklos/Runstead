@@ -3,10 +3,12 @@ package governor
 import "time"
 
 const (
-	requestRetentionWindow = 3 * time.Hour
-	maxCompletedRequestIDs = 4096
-	taskRetentionWindow    = 3 * time.Hour
-	maxRetainedTaskStates  = 1024
+	requestRetentionWindow   = 3 * time.Hour
+	maxCompletedRequestIDs   = 4096
+	attemptIDRetentionWindow = 3 * time.Hour
+	maxRetainedAttemptIDs    = 4096
+	taskRetentionWindow      = 3 * time.Hour
+	maxRetainedTaskStates    = 1024
 )
 
 type taskState struct {
@@ -34,6 +36,7 @@ type completedRequest struct {
 }
 
 func (g *Governor) pruneRetentionLocked(now time.Time) {
+	g.pruneAttemptIDsLocked(now)
 	cutoff := now.Add(-requestRetentionWindow)
 	kept := g.completedRequestIDs[:0]
 	for _, entry := range g.completedRequestIDs {
@@ -79,6 +82,29 @@ func (g *Governor) pruneRetentionLocked(now time.Time) {
 			break
 		}
 		delete(g.tasks, oldestID)
+	}
+}
+
+func (g *Governor) pruneAttemptIDsLocked(now time.Time) {
+	cutoff := now.Add(-attemptIDRetentionWindow)
+	for attemptID, seenAt := range g.attemptIDs {
+		if seenAt.Before(cutoff) {
+			delete(g.attemptIDs, attemptID)
+		}
+	}
+	for len(g.attemptIDs) > maxRetainedAttemptIDs {
+		oldestID := ""
+		var oldest time.Time
+		for attemptID, seenAt := range g.attemptIDs {
+			if oldestID == "" || seenAt.Before(oldest) {
+				oldestID = attemptID
+				oldest = seenAt
+			}
+		}
+		if oldestID == "" {
+			break
+		}
+		delete(g.attemptIDs, oldestID)
 	}
 }
 

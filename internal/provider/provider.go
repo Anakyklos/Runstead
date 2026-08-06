@@ -9,7 +9,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/protocol"
 )
 
-var ErrUnsafeRoute = errors.New("provider route cannot guarantee one upstream attempt")
+var ErrUnsafeRoute = errors.New("provider route cannot guarantee authoritative upstream attempt accounting")
 
 type SingleAttemptGuarantee uint8
 
@@ -26,39 +26,86 @@ const (
 	AmplificationEnabled
 )
 
+type AttemptAccounting uint8
+
+const (
+	AttemptAccountingUnknown AttemptAccounting = iota
+	AttemptAccountingSingle
+	AttemptAccountingReceipts
+)
+
 // RouteSafety is an executable declaration of the provider behavior required
 // by the protected account lane. Unknown values fail closed.
 type RouteSafety struct {
+	AttemptAccounting AttemptAccounting
 	SingleAttempt     SingleAttemptGuarantee
 	InternalRetries   AmplificationStatus
 	CooldownReplay    AmplificationStatus
 	AccountPooling    AmplificationStatus
 	AutomaticFallback AmplificationStatus
+	ComboRouting      AmplificationStatus
 }
 
 func SafeRouteSafety() RouteSafety {
 	return RouteSafety{
+		AttemptAccounting: AttemptAccountingSingle,
 		SingleAttempt:     SingleAttemptGuaranteed,
 		InternalRetries:   AmplificationDisabled,
 		CooldownReplay:    AmplificationDisabled,
 		AccountPooling:    AmplificationDisabled,
 		AutomaticFallback: AmplificationDisabled,
+		ComboRouting:      AmplificationDisabled,
+	}
+}
+
+func ReceiptRouteSafety() RouteSafety {
+	// M1 keeps one upstream attempt per protected completion. Executor retries
+	// must re-enter the governor as a new completion until per-request budgets
+	// exist for provider amplification.
+	return RouteSafety{
+		AttemptAccounting: AttemptAccountingReceipts,
+		InternalRetries:   AmplificationDisabled,
+		CooldownReplay:    AmplificationDisabled,
+		AccountPooling:    AmplificationDisabled,
+		AutomaticFallback: AmplificationDisabled,
+		ComboRouting:      AmplificationDisabled,
 	}
 }
 
 func (s RouteSafety) Validate() error {
-	if s.SingleAttempt != SingleAttemptGuaranteed {
-		return fmt.Errorf("%w: single-attempt guarantee is unknown", ErrUnsafeRoute)
-	}
-	for name, value := range map[string]AmplificationStatus{
-		"internal retries":   s.InternalRetries,
-		"cooldown replay":    s.CooldownReplay,
-		"account pooling":    s.AccountPooling,
-		"automatic fallback": s.AutomaticFallback,
-	} {
-		if value != AmplificationDisabled {
-			return fmt.Errorf("%w: %s is not explicitly disabled", ErrUnsafeRoute, name)
+	switch s.AttemptAccounting {
+	case AttemptAccountingSingle:
+		if s.SingleAttempt != SingleAttemptGuaranteed {
+			return fmt.Errorf("%w: single-attempt guarantee is unknown", ErrUnsafeRoute)
 		}
+		for name, value := range map[string]AmplificationStatus{
+			"internal retries":   s.InternalRetries,
+			"cooldown replay":    s.CooldownReplay,
+			"account pooling":    s.AccountPooling,
+			"automatic fallback": s.AutomaticFallback,
+			"combo routing":      s.ComboRouting,
+		} {
+			if value != AmplificationDisabled {
+				return fmt.Errorf("%w: %s is not explicitly disabled", ErrUnsafeRoute, name)
+			}
+		}
+	case AttemptAccountingReceipts:
+		if s.SingleAttempt != SingleAttemptUnknown {
+			return fmt.Errorf("%w: receipt-aware route must not claim single-attempt execution", ErrUnsafeRoute)
+		}
+		for name, value := range map[string]AmplificationStatus{
+			"internal retries":   s.InternalRetries,
+			"cooldown replay":    s.CooldownReplay,
+			"account pooling":    s.AccountPooling,
+			"automatic fallback": s.AutomaticFallback,
+			"combo routing":      s.ComboRouting,
+		} {
+			if value != AmplificationDisabled {
+				return fmt.Errorf("%w: M1 receipt route cannot amplify through %s", ErrUnsafeRoute, name)
+			}
+		}
+	default:
+		return fmt.Errorf("%w: attempt accounting mode is unknown", ErrUnsafeRoute)
 	}
 	return nil
 }
@@ -73,9 +120,17 @@ type SafetyAware interface {
 	RouteSafety() RouteSafety
 }
 
+// AttemptReceiptAware marks a client whose Response metadata must contain a
+// validated authoritative receipt set for each protected Complete call.
+type AttemptReceiptAware interface {
+	AttemptReceiptsEnabled() bool
+}
+
 type Request struct {
-	Protocol protocol.Version
-	Prompt   string
+	Protocol        protocol.Version
+	Prompt          string
+	Model           string
+	ClientRequestID string
 }
 
 type Response struct {
@@ -87,19 +142,20 @@ type Response struct {
 // completed request. It deliberately excludes prompts, response bodies,
 // credentials and raw headers.
 type ResponseMetadata struct {
-	StatusCode int
-	RequestID  string
-	SessionID  string
-	Duration   time.Duration
-	RetryAfter time.Duration
-	ResetAt    time.Time
-	Endpoint   string
-	Model      string
+	StatusCode      int
+	RequestID       string
+	SessionID       string
+	Duration        time.Duration
+	RetryAfter      time.Duration
+	ResetAt         time.Time
+	Endpoint        string
+	Model           string
+	AttemptReceipts *AttemptReceiptSet
 }
 
-// Client performs at most one upstream model attempt per Complete invocation.
-// Implementations must not retry, rotate accounts, select fallbacks, schedule
-// work or apply quota policy; those decisions belong above this boundary.
+// Client performs one logical completion. Legacy clients configured with
+// SafeRouteSafety account for one attempt; receipt-aware clients may produce
+// one or more authoritative attempts in ResponseMetadata.
 type Client interface {
 	Complete(context.Context, Request) (Response, error)
 }

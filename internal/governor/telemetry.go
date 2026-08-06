@@ -156,6 +156,7 @@ func (g *Governor) emitAdmissionLocked(request AttemptRequest, result AdmissionR
 		AccountPolicyID:  g.config.AccountPolicyID,
 		ProviderID:       g.config.ProviderID,
 		ModelPool:        g.config.ModelPool,
+		Model:            g.config.Model,
 		AllowanceProfile: g.config.AllowanceProfile,
 		TaskID:           request.TaskID,
 		ClientRequestID:  request.ClientRequestID,

@@ -10,12 +10,15 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
-// completeOnce is test-only transport/parsing coverage. Production execution
-// must remain on Client.Complete until #29 supplies authoritative attempt
-// receipts and #30 binds every receipt to the governor.
+// completeOnce performs exactly one HTTP request. It never retries or changes
+// accounts; Complete adds the authoritative receipt gate around this seam.
 func (c *Client) completeOnce(ctx context.Context, request provider.Request) (provider.Response, error) {
 	if err := ctx.Err(); err != nil {
 		return provider.Response{}, contextError(err, false)
+	}
+	model := request.Model
+	if model == "" {
+		model = c.config.Model
 	}
 	body, err := json.Marshal(struct {
 		Model    string `json:"model"`
@@ -25,7 +28,7 @@ func (c *Client) completeOnce(ctx context.Context, request provider.Request) (pr
 		} `json:"messages"`
 		Stream bool `json:"stream"`
 	}{
-		Model: c.config.Model,
+		Model: model,
 		Messages: []struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
@@ -52,15 +55,27 @@ func (c *Client) completeOnce(ctx context.Context, request provider.Request) (pr
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
 	req.Header.Set(noCacheHeader, "true")
+	if request.ClientRequestID != "" {
+		req.Header.Set(clientRequestIDHeader, request.ClientRequestID)
+	}
+	req.Header.Set(attemptReceiptRequestHeader, "v1")
 	started := c.now()
 	response, callErr := c.httpClient.Do(req)
 	if callErr != nil {
-		return provider.Response{Metadata: provider.ResponseMetadata{Endpoint: logicalEndpoint(requestURL), Model: c.config.Model, Duration: c.now().Sub(started)}}, transportError(callErr, true)
+		return provider.Response{Metadata: provider.ResponseMetadata{Endpoint: logicalEndpoint(requestURL), Model: model, Duration: c.now().Sub(started)}}, transportError(callErr, true)
 	}
 	if response == nil {
-		return provider.Response{Metadata: provider.ResponseMetadata{Endpoint: logicalEndpoint(requestURL), Model: c.config.Model, Duration: c.now().Sub(started)}}, &Error{Kind: ErrorTransport, UpstreamReached: true}
+		return provider.Response{Metadata: provider.ResponseMetadata{Endpoint: logicalEndpoint(requestURL), Model: model, Duration: c.now().Sub(started)}}, &Error{Kind: ErrorTransport, UpstreamReached: true}
 	}
-	metadata := responseMetadata(response, c.now().Sub(started), requestURL, c.config.Model, c.now())
+	metadata := responseMetadata(response, c.now().Sub(started), requestURL, model, c.now())
+	if rawReceipts := response.Header.Get(attemptReceiptHeader); rawReceipts != "" {
+		set, receiptErr := provider.DecodeAttemptReceiptSet([]byte(rawReceipts))
+		if receiptErr != nil {
+			response.Body.Close()
+			return provider.Response{Metadata: metadata}, &Error{Kind: ErrorAttemptReceiptsInvalid, StatusCode: response.StatusCode, RequestID: metadata.RequestID, UpstreamReached: true, Cause: receiptErr}
+		}
+		metadata.AttemptReceipts = &set
+	}
 	responseBody, readErr := readBody(response, c.config.MaxResponseBytes)
 	result := provider.Response{Metadata: metadata}
 	if readErr != nil {

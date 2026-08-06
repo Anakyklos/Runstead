@@ -19,8 +19,9 @@ protection has priority over task latency.
 - A **client request** is one request submitted by Runstead to a provider
   adapter.
 - An **upstream attempt** is one actual model request that may reach ChatGPT
-  Web. Hidden provider retries are additional upstream attempts and are not
-  allowed in the protected M1 route.
+  Web. M1 allows one attempt per protected provider completion. Executor
+  retries must re-enter governor admission; internal retries, cooldown replay,
+  pooling, fallback and combo routing are disabled in the M1 receipt route.
 - An **account lane** is the FIFO queue and serialized execution state for one
   account policy.
 - A **model pool** is the configured allowance bucket, such as Plus/Go Instant
@@ -65,12 +66,15 @@ Admit -> Start -> provider.Client.Complete -> Finish
 ```
 
 `Admit` acquires the account lane and waits for pacing, cooldowns, reset times,
-telemetry and rolling/task/retry budgets. `Start` is the exact debit point:
-the attempt is added to the account/model-pool and task ledgers only when the
-provider call is about to begin. `Finish` releases the lane, classifies the
-outcome, updates cooldown/circuit state and returns retry eligibility. The
-governor never runs an autonomous retry loop; a future agent loop must request
-each next attempt through `Admit` again.
+telemetry and rolling/task/retry budgets. In the single-attempt route, `Start`
+is the exact debit point. In the receipt-aware route, `Start` reserves the
+logical request and `Finish` validates and debits one unit per authoritative
+receipt. If a valid receipt set violates the M1 one-attempt policy, every unseen
+receipt is still reconciled before the governor marks telemetry unsafe and
+blocks later admission. If receipt authority is missing or structurally
+invalid, the governor records one conservative uncertain debit, marks telemetry
+unsafe and blocks later admission. The governor never runs an autonomous retry
+loop; a future agent loop must request each next attempt through `Admit` again.
 
 `ClientRequestID` is a process-local identity for exact-request suppression: an
 accepted ID cannot be admitted again, while cancellation before `Start` releases
@@ -103,27 +107,27 @@ this process-local pending state; a future durable delivery/backpressure design
 must preserve the mandatory-event invariant. There are currently no
 best-effort event kinds.
 
-## Single-attempt invariant
+## Route and receipt invariants
 
 The provider boundary remains deliberately small: one
-`provider.Client.Complete` invocation represents at most one upstream model
-attempt and owns no retry, quota, fallback, account rotation or scheduling
-policy. M1 additionally requires an executable route-safety declaration: the
-governor requires the route to explicitly guarantee single-attempt behavior
-and declare internal retry, cooldown replay, account pooling and automatic
-fallback disabled. Unknown or unsafe declarations are rejected before queue
-admission.
+`provider.Client.Complete` invocation represents one logical completion and
+owns no quota, account rotation or scheduling policy. The legacy route must
+explicitly guarantee one attempt and disable every amplification mode. The M1
+receipt route must declare account pooling, automatic fallback, combo routing,
+internal retries and cooldown replays disabled. A structurally valid receipt set
+that violates this policy is fully reconciled and then blocks the lane. Unknown
+or unsafe declarations are rejected before queue admission.
 
-The #4 OmniRoute adapter is currently a fail-closed scaffold. Its
-`singleAttemptContract` field is only a proposed/test fixture; it is not an
-authoritative authorization, and the management snapshots cannot prove how
-many upstream attempts the runtime made. `Preflight` may validate observable
-resilience and route settings, but it never marks the route verified.
-`Complete` therefore returns `provider.ErrUnsafeRoute` without a model POST
-until #29 supplies server-side attempt receipts and #30 consumes and charges
-every receipt through the governor. The receipt contract must represent
-credential-refresh retries, executor retries, fallback/combo attempts,
-cancellation, duplicates and missing or unverifiable records.
+The #4 OmniRoute adapter remains fail-closed until its management evidence and
+receipt transport are verified. `Preflight` may validate observable resilience
+and route settings, but it never authorizes execution by itself. An M1 receipt
+set must contain one attempt using one provider, one concrete model and one
+account-lane hash. `ModelPool` is only an allowance bucket and is never
+accepted as the model identity. Attempt IDs are retained for three hours with
+a bounded in-memory cap, timestamps must fit the real `Start` to `Finish`
+interval, and pacing resumes from the authoritative attempt start normalized to
+the local permit interval. Remote timestamp values remain audit data and never
+move rolling-window expiry earlier than the local call.
 
 The adapter still checks `/api/settings`, `/api/models/alias`,
 `/api/settings/model-aliases`, `/api/fallback/chains`, `/api/combos`,
@@ -133,6 +137,12 @@ model, wildcards, fallback chains, combos, model-to-combo mappings or more
 than one active connection for the configured provider. It does not infer
 safety from model-name markers. Transport and response parsing remain covered
 through an internal test seam, not a production authorization path.
+
+Receipt outcomes are typed for rate/capacity, authentication, HTTP 403,
+login challenges, CAPTCHA, suspicious activity, account warnings, feature
+restrictions, transport uncertainty and upstream failures. The governor
+reconciles every receipt outcome before applying the logical completion, so a
+later success cannot erase an earlier security or rate signal from the circuit.
 
 ## Telemetry and circuit breaker
 

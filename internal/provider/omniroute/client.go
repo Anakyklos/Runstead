@@ -21,22 +21,25 @@ import (
 )
 
 const (
-	defaultTimeout           = 30 * time.Second
-	defaultBodyLimit         = 1 << 20
-	defaultChatEndpoint      = "chat/completions"
-	resiliencePath           = "/api/resilience"
-	rateLimitsPath           = "/api/rate-limits"
-	settingsPath             = "/api/settings"
-	modelAliasesPath         = "/api/models/alias"
-	settingsModelAliasesPath = "/api/settings/model-aliases"
-	fallbackChainsPath       = "/api/fallback/chains"
-	combosPath               = "/api/combos"
-	modelComboMappingsPath   = "/api/model-combo-mappings"
-	providersPath            = "/api/providers"
-	noCacheHeader            = "X-OmniRoute-No-Cache"
-	requestIDHeader          = "X-Request-Id"
-	sessionIDHeader          = "X-OmniRoute-Session-Id"
-	maxOpaqueHeaderBytes     = 128
+	defaultTimeout              = 30 * time.Second
+	defaultBodyLimit            = 1 << 20
+	defaultChatEndpoint         = "chat/completions"
+	resiliencePath              = "/api/resilience"
+	rateLimitsPath              = "/api/rate-limits"
+	settingsPath                = "/api/settings"
+	modelAliasesPath            = "/api/models/alias"
+	settingsModelAliasesPath    = "/api/settings/model-aliases"
+	fallbackChainsPath          = "/api/fallback/chains"
+	combosPath                  = "/api/combos"
+	modelComboMappingsPath      = "/api/model-combo-mappings"
+	providersPath               = "/api/providers"
+	noCacheHeader               = "X-OmniRoute-No-Cache"
+	requestIDHeader             = "X-Request-Id"
+	clientRequestIDHeader       = "X-Runstead-Client-Request-Id"
+	attemptReceiptRequestHeader = "X-Runstead-Attempt-Receipts"
+	attemptReceiptHeader        = "X-OmniRoute-Attempt-Receipts"
+	sessionIDHeader             = "X-OmniRoute-Session-Id"
+	maxOpaqueHeaderBytes        = 128
 )
 
 // Doer is retained as a narrow HTTP seam, but New accepts only *http.Client
@@ -47,19 +50,22 @@ type Doer interface {
 }
 
 type Config struct {
-	BaseURL           string
-	ManagementBaseURL string
-	APIKey            string `json:"-"`
-	Model             string
-	ChatEndpoint      string
-	Timeout           time.Duration
-	MaxRequestBytes   int
-	MaxResponseBytes  int
-	RouteSafety       provider.RouteSafety
+	BaseURL               string
+	ManagementBaseURL     string
+	APIKey                string `json:"-"`
+	Model                 string
+	Provider              string
+	AccountLaneHash       string
+	EnableAttemptReceipts bool
+	ChatEndpoint          string
+	Timeout               time.Duration
+	MaxRequestBytes       int
+	MaxResponseBytes      int
+	RouteSafety           provider.RouteSafety
 }
 
 func (c Config) String() string {
-	return fmt.Sprintf("omniroute.Config{BaseURL:%q ManagementBaseURL:%q APIKey:<redacted> Model:%q ChatEndpoint:%q Timeout:%s MaxRequestBytes:%d MaxResponseBytes:%d RouteSafety:%#v}", c.BaseURL, c.ManagementBaseURL, c.Model, c.ChatEndpoint, c.Timeout, c.MaxRequestBytes, c.MaxResponseBytes, c.RouteSafety)
+	return fmt.Sprintf("omniroute.Config{BaseURL:%q ManagementBaseURL:%q APIKey:<redacted> Model:%q Provider:%q AccountLaneHash:%q EnableAttemptReceipts:%t ChatEndpoint:%q Timeout:%s MaxRequestBytes:%d MaxResponseBytes:%d RouteSafety:%#v}", c.BaseURL, c.ManagementBaseURL, c.Model, c.Provider, c.AccountLaneHash, c.EnableAttemptReceipts, c.ChatEndpoint, c.Timeout, c.MaxRequestBytes, c.MaxResponseBytes, c.RouteSafety)
 }
 
 func (c Config) GoString() string { return c.String() }
@@ -98,6 +104,8 @@ func New(config Config, options Options) (*Client, error) {
 	config.ManagementBaseURL = managementURL
 	config.APIKey = strings.TrimSpace(config.APIKey)
 	config.Model = strings.TrimSpace(config.Model)
+	config.Provider = strings.TrimSpace(config.Provider)
+	config.AccountLaneHash = strings.TrimSpace(config.AccountLaneHash)
 	if config.APIKey == "" {
 		return nil, errors.New("OmniRoute API key must not be empty")
 	}
@@ -118,6 +126,15 @@ func New(config Config, options Options) (*Client, error) {
 	}
 	if err := config.RouteSafety.Validate(); err != nil {
 		return nil, unsafeError(err)
+	}
+	if config.EnableAttemptReceipts && config.RouteSafety.AttemptAccounting != provider.AttemptAccountingReceipts {
+		return nil, unsafeError(errors.New("attempt receipts require receipt-aware route safety"))
+	}
+	if config.EnableAttemptReceipts && config.Provider == "" {
+		return nil, unsafeError(errors.New("attempt receipts require a provider identity"))
+	}
+	if config.EnableAttemptReceipts && config.AccountLaneHash == "" {
+		return nil, unsafeError(errors.New("attempt receipts require an account lane hash"))
 	}
 	if _, err := chatURL(config.BaseURL, config.ChatEndpoint); err != nil {
 		return nil, fmt.Errorf("invalid OmniRoute chat endpoint: %w", err)
@@ -169,10 +186,14 @@ func (c *Client) RouteSafety() provider.RouteSafety {
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if !c.verified {
+	if !c.verified && !c.config.EnableAttemptReceipts {
 		return provider.RouteSafety{}
 	}
 	return c.config.RouteSafety
+}
+
+func (c *Client) AttemptReceiptsEnabled() bool {
+	return c != nil && c.config.EnableAttemptReceipts
 }
 
 // Preflight validates observable management settings for diagnostics, but it
@@ -205,11 +226,52 @@ func (c *Client) Preflight(ctx context.Context) error {
 	return unsafeError(errAttemptReceiptsUnavailable)
 }
 
-func (c *Client) Complete(_ context.Context, _ provider.Request) (provider.Response, error) {
+func (c *Client) Complete(ctx context.Context, request provider.Request) (provider.Response, error) {
 	if c == nil {
 		return provider.Response{}, unsafeError(nil)
 	}
-	return provider.Response{}, unsafeError(errAttemptReceiptsUnavailable)
+	if !c.config.EnableAttemptReceipts {
+		return provider.Response{}, unsafeError(errAttemptReceiptsUnavailable)
+	}
+	if c.config.Provider == "" || c.config.AccountLaneHash == "" {
+		return provider.Response{}, &Error{Kind: ErrorAttemptReceiptsInvalid}
+	}
+	if strings.TrimSpace(request.ClientRequestID) == "" {
+		return provider.Response{}, &Error{Kind: ErrorAttemptReceiptsInvalid}
+	}
+	request.Model = strings.TrimSpace(request.Model)
+	if request.Model == "" {
+		request.Model = c.config.Model
+	}
+	if request.Model != c.config.Model {
+		return provider.Response{}, &Error{Kind: ErrorAttemptReceiptsInvalid}
+	}
+	response, callErr := c.completeOnce(ctx, request)
+	var receiptValidationErr *Error
+	if errors.As(callErr, &receiptValidationErr) && receiptValidationErr.Kind == ErrorAttemptReceiptsInvalid {
+		return response, callErr
+	}
+	if response.Metadata.AttemptReceipts == nil {
+		return response, &Error{
+			Kind:            ErrorAttemptReceiptsMissing,
+			StatusCode:      response.Metadata.StatusCode,
+			RequestID:       response.Metadata.RequestID,
+			UpstreamReached: response.Metadata.StatusCode != 0,
+			Cause:           callErr,
+		}
+	}
+	err := provider.ValidateAttemptReceiptSet(*response.Metadata.AttemptReceipts, provider.AttemptReceiptExpectation{
+		ClientRequestID: request.ClientRequestID,
+		Provider:        c.config.Provider,
+		Model:           c.config.Model,
+		AccountLaneHash: c.config.AccountLaneHash,
+		SingleAttempt:   true,
+		Now:             c.now(),
+	})
+	if err != nil {
+		return response, &Error{Kind: ErrorAttemptReceiptsInvalid, StatusCode: response.Metadata.StatusCode, RequestID: response.Metadata.RequestID, UpstreamReached: response.Metadata.StatusCode != 0, Cause: err}
+	}
+	return response, callErr
 }
 
 func (c *Client) clearVerification() {
