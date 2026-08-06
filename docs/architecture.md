@@ -42,8 +42,10 @@ The OmniRoute adapter owns:
 - configurable base URL, API key and model;
 - non-streaming requests initially;
 - fail-closed OmniRoute scaffold; management snapshots are sanity evidence
-  only, and protected model execution remains disabled until #29 provides
-  authoritative attempt receipts and #30 integrates them with the governor;
+  only. The Runstead consumer side of the #29 attempt-receipt contract is
+  merged (PR #33); protected model execution remains disabled until a
+  compatible OmniRoute producer emits authoritative receipts and #30
+  activates the live path;
 - timeouts and cancellation;
 - capture of useful upstream identifiers;
 - classification of transport, authentication, timeout, rate/capacity,
@@ -113,7 +115,9 @@ one FIFO lane admits at most one ChatGPT Web attempt, charges rolling/task
 ledgers at attempt start and exposes only sanitized events. Provider safety
 metadata must explicitly declare the M1 single-attempt invariant. OmniRoute
 management snapshots are not enough to make that declaration trustworthy;
-the adapter stays unknown until authoritative attempt receipts are integrated.
+receipt-aware execution (PR #33) is the only protected path, and the adapter
+stays fail-closed until a compatible OmniRoute producer emits authoritative
+attempt receipts and #30 activates live execution.
 See
 [`account-protection.md`](account-protection.md) for the SLO and deferred
 persistence boundary.

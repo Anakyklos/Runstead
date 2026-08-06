@@ -137,8 +137,10 @@ Implemented package responsibilities are deliberately narrow:
   authoritative attempt receipts and per-attempt governor accounting;
 - `internal/trace`: JSON `log/slog` construction and level parsing.
 
-The planned `tools`, `state` and `verifier` packages are intentionally absent
-until they contain real behavior. The one-call/one-attempt provider contract
+The `internal/tools` package implements the issue #6 read-only registry
+(workspace boundary, typed observations, truncation metadata and evidence
+identifiers). The planned `state` and `verifier` packages remain absent until
+they contain real behavior (M2/M4). The one-call/one-attempt provider contract
 forbids adapter-owned retries, fallback selection, account rotation, queue
 scheduling and quota policy; those decisions belong to the #21 governor above
 the adapter. Construct the OmniRoute client, call `Preflight` for diagnostics,

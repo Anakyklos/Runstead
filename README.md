@@ -146,10 +146,15 @@ The later direct connector is successful only if it matches this capability and 
 
 ## Project status
 
-**M1 foundation.** The repository now contains the native Go module, a small
-CLI surface and the provider-neutral one-call/one-attempt seam described in
-`docs/development.md`. The actual provider adapter, protocol parser, tool loop
-and durable recovery remain later milestone work.
+**M1 in progress.** The repository now contains the native Go module, the
+small CLI surface, the strict `runstead.protocol.v1` parser (#5), the
+read-only tool registry with workspace boundary and evidence identifiers
+(#6), the account-scoped request governor with attempt receipts (#21, PR
+#33) and the fail-closed OmniRoute adapter scaffold (#28). Protected live
+execution remains disabled until a compatible OmniRoute attempt-receipt
+producer exists and #30 activates it. The bounded read-only agent loop
+(#7), durable SQLite state (#8) and recovery (#9) remain later milestone
+work.
 
 See [`docs/architecture.md`](docs/architecture.md), [`docs/roadmap.md`](docs/roadmap.md) and [`docs/development.md`](docs/development.md).
 
