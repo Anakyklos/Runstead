@@ -198,6 +198,10 @@ Exit criteria:
 - distributed workers;
 - semantic or vector memory;
 - unattended long-running autonomy;
+- context compaction for long conversations (deferred until context
+  reconstruction exists; when introduced it must preserve tool-call/result
+  pairs, never discard evidence silently, treat model summaries as
+  non-authoritative, and keep required evidence identifiers verifiable);
 - a general-purpose OpenAI-compatible gateway.
 
 ## Milestone governance

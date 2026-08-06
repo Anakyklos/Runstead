@@ -99,9 +99,8 @@ runstead resume --help
 ```
 
 `run` currently validates configuration and then fails explicitly because the
-full agent loop is deferred. `inspect` and `resume` are
-explicit placeholders because durable state and recovery are not part of this
-bootstrap.
+full agent loop is deferred. `inspect` and `resume` are explicit placeholders
+because durable state and recovery are not part of this bootstrap.
 
 Configuration precedence is deterministic: command-line flags, then
 environment, then conservative defaults. Workspace/logging use
@@ -110,58 +109,78 @@ uses `OMNIROUTE_BASE_URL`, `OMNIROUTE_API_KEY`, `OMNIROUTE_MODEL` and
 `OMNIROUTE_CHAT_ENDPOINT`, with optional management URL and timeout variables;
 the `run` command exposes matching flags. API keys are never logged or
 included in errors, snapshots, telemetry or URLs.
-The explicit route declaration variables
+
+The legacy single-attempt route declaration uses
 `OMNIROUTE_SINGLE_ATTEMPT_GUARANTEED`,
 `OMNIROUTE_INTERNAL_RETRIES_DISABLED`,
 `OMNIROUTE_COOLDOWN_REPLAY_DISABLED`,
-`OMNIROUTE_ACCOUNT_POOLING_DISABLED` and
-`OMNIROUTE_AUTOMATIC_FALLBACK_DISABLED`, or the equivalent
-`--omniroute-safe-route` declaration, remain configuration inputs for the
-governor contract. They do not authorize OmniRoute model execution: the
-adapter remains unknown until #29/#30 provide and verify authoritative
-attempt receipts.
+`OMNIROUTE_ACCOUNT_POOLING_DISABLED`,
+`OMNIROUTE_AUTOMATIC_FALLBACK_DISABLED` and
+`OMNIROUTE_COMBO_ROUTING_DISABLED`, or the equivalent
+`--omniroute-safe-route` declaration. These values are configuration evidence
+for the governor; management snapshots and client-authored declarations never
+prove the number of upstream attempts atomically.
+
+PR #33 added the Runstead consumer side of the authoritative receipt contract:
+provider-neutral receipt types, strict validation, receipt-aware OmniRoute
+transport parsing and per-attempt governor reconciliation. The normal CLI
+configuration does not yet expose receipt-aware activation. Protected live use
+therefore remains fail-closed until a compatible OmniRoute producer emits the
+versioned receipts and issue #30 wires the production configuration and opt-in
+live path. `Preflight` remains diagnostic and does not authorize model
+execution.
 
 Implemented package responsibilities are deliberately narrow:
 
 - `cmd/runstead`: signal-aware process entrypoint, exit codes and CLI help;
 - `internal/config`: flag/environment/default resolution;
 - `internal/agent`: governor-owned executor seam with no loop or retry;
-- `internal/protocol`: the adopted `runstead.protocol.v1` identifier;
-- `internal/provider`: provider-neutral request/response types and a
-  deterministic fake;
-- `internal/provider/omniroute`: stdlib-only, non-streaming OmniRoute transport,
-  fail-closed observable-settings checks, sanitized typed errors, classifier
-  and optional telemetry source. It is a scaffold: the proposed
-  `singleAttemptContract` and management snapshots never authorize a model
-  POST. Protected execution remains disabled until #29/#30 provide
-  authoritative attempt receipts and per-attempt governor accounting;
+- `internal/protocol`: strict `runstead.protocol.v1` action/final parser,
+  typed schema validation, deterministic correction messages, canonical action
+  fingerprints and caller-owned repeat guard;
+- `internal/provider`: provider-neutral requests/responses, route-safety and
+  authoritative attempt-receipt types, validation contracts and deterministic
+  fakes;
+- `internal/provider/omniroute`: stdlib-only, non-streaming OmniRoute
+  transport, fail-closed management checks, sanitized typed errors,
+  classifier, optional telemetry, receipt request/response headers and strict
+  mapping into provider-neutral receipt metadata;
+- `internal/tools`: the issue #6 read-only registry with workspace boundary,
+  typed observations, deterministic truncation and evidence identifiers;
 - `internal/trace`: JSON `log/slog` construction and level parsing.
 
-The planned `tools`, `state` and `verifier` packages are intentionally absent
-until they contain real behavior. The one-call/one-attempt provider contract
-forbids adapter-owned retries, fallback selection, account rotation, queue
-scheduling and quota policy; those decisions belong to the #21 governor above
-the adapter. Construct the OmniRoute client, call `Preflight` for diagnostics,
-then route each turn through `agent.Executor`/`governor.Execute` with
-`omniroute.Classify`; the governor must reject the current unknown route.
-Transport and response parsing are exercised through a package-local test
-seam. The production `Complete` path returns `ErrUnsafeRoute` without a model
-POST. The adapter's live safety check is opt-in:
-`RUNSTEAD_LIVE_OMNIROUTE=1 go test ./internal/provider/omniroute -run Live`;
-it must stop before any model request because authoritative attempt receipts
-are unavailable. Docker support remains optional and pending #15; native
-commands are authoritative.
+The planned `state` and `verifier` packages remain absent until they contain
+real behavior (M2/M4). The provider boundary represents one logical completion,
+not an unaccounted retry loop. Legacy single-attempt clients must explicitly
+declare amplification disabled. Receipt-aware clients return one authoritative
+receipt per real upstream attempt, and the governor reconciles every receipt.
+Adapter-owned retry policy, fallback selection, account rotation, queue
+scheduling and quota policy remain forbidden; those decisions belong to the
+#21 governor above the adapter.
+
+Constructing a `Client` with receipt-aware configuration and a compatible
+producer permits its package-level `Complete` path to make one model POST and
+validate the returned receipt set. Missing, malformed, duplicated,
+out-of-order or mismatched receipts fail closed. The default CLI path does not
+yet construct that configuration, while `Preflight` always remains a
+non-authorizing diagnostic. Production activation, compatible contract/version
+documentation and the opt-in live success test belong to #30. Docker support
+remains optional and pending #15; native commands are authoritative.
 
 ## Issue #21 account protection
 
 The account-scoped governor is process-local M1 policy above every provider
 adapter. It owns admission, one-account serialization, start-to-start pacing,
 rolling budgets, manual reserve, cooldowns, retry eligibility and circuit
-state. `provider.Client.Complete` remains one attempt and never gains retry,
-fallback, account rotation or quota behavior. See
-[`docs/account-protection.md`](account-protection.md) for the SLO, explicit
-Instant/reasoning profiles, single-attempt route safety, telemetry seam and
-the limitations deferred to #7 and #8.
+state. A provider call is one logical completion. On a legacy route, the permit
+start is the single-attempt debit point. On a receipt-aware route, the permit
+reserves the logical request and finish validates and reconciles one debit per
+authoritative upstream-attempt receipt. Missing or structurally invalid
+accounting produces a conservative uncertain debit, marks telemetry unsafe and
+blocks later admission. The governor never runs an autonomous retry loop; each
+executor retry must re-enter admission. See
+[`docs/account-protection.md`](account-protection.md) and
+[`architecture/attempt-receipts.md`](architecture/attempt-receipts.md).
 
 ## Issue #5 protocol parser
 
@@ -173,17 +192,17 @@ single valid envelope is allowed and sets `MixedProse`; prose inside the tagged
 JSON block, multiple/nested/mismatched envelopes, unclosed tags, trailing JSON
 values and unknown JSON fields are rejected without repair. Responses larger
 than 1 MiB or JSON nested beyond 128 levels are rejected as malformed; the
-parser never truncates input and attempts a partial parse.
+parser never truncates input or attempts a partial parse.
 
 Actions contain only `version`, `tool` and `arguments`. The injected
 `protocol.ToolCatalog` seam first identifies a registered tool and then
 validates its typed `protocol.Arguments` object. The issue #6 read-only
 registry lives in `internal/tools` and stays out of this package. A
-schema-valid action can still be rejected as
-`unknown_tool` or `invalid_arguments`; only an accepted action is executable.
-Final responses contain only `version`, `status` (`complete` or `incomplete`),
-`summary` and non-empty string `evidence`. An accepted final response is not a
-tool execution and does not by itself establish task completion.
+schema-valid action can still be rejected as `unknown_tool` or
+`invalid_arguments`; only an accepted action is executable. Final responses
+contain only `version`, `status` (`complete` or `incomplete`), `summary` and
+non-empty string `evidence`. An accepted final response is not a tool execution
+and does not by itself establish task completion.
 
 Failures expose stable codes: `missing_envelope`, `protocol_refusal`,
 `unsupported_execution_claim`, `multiple_envelopes`, `unclosed_envelope`,
