@@ -3,7 +3,7 @@
 **Date:** 2026-08-06
 **Author:** Research agent (Jcode)
 **Status:** Complete
-**Purpose:** Evidence-based reverse engineering of JCode v0.70.1 and its comparison with Runstead, as a basis for architectural decisions and future issues. No functional changes, no copied code, no PR, no commit.
+**Purpose:** Evidence-based reverse engineering of JCode v0.70.1 and its comparison with Runstead, as a basis for architectural decisions and future issues. No functional changes were made and no JCode code was copied. Delivered as commit `94c53fb` on branch `research/jcode-reverse-engineering` (PR #34).
 
 ---
 
@@ -44,15 +44,15 @@ strictness and test-design ideas** that can be ported as concepts or algorithms.
 | 5 | Tool schema central injection of `intent` (why this call is being made) | `crates/jcode-tool-core/src/lib.rs:9-26` | ADAPTAR (as a protocol/prompt contract, not a schema hack) |
 | 6 | `effective_context_tokens_from_usage` provider-accounting normalization | `crates/jcode-compaction-core/src/lib.rs:362-387` | ADIAR (needs token accounting) |
 | 7 | `safe_compaction_cutoff` keeps tool-call/result pairs together | `crates/jcode-compaction-core/src/lib.rs:238-291` | ADIAR (compaction milestone) |
-| 8 | Interrupt signal with fire **epoch** (`reset_if_epoch`) so stale cancels never erase newer cancels | `crates/jcode-agent-runtime/src/lib.rs:33-118` | ADAPTAR AGORA (Go: `context` + epoch counter) |
+| 8 | Interrupt signal with fire **epoch** (`reset_if_epoch`) so stale cancels never erase newer cancels | `crates/jcode-agent-runtime/src/lib.rs:33-118` | CONDICIONADO (test discipline now; epoch machinery only if Runstead needs signal reuse/reset, e.g. a future resume loop) |
 | 9 | Emergency compaction paths that **replace dropped content with explicit markers** instead of silent loss | `crates/jcode-compaction-core/src/lib.rs:449-692` | ADIAR |
 | 10 | Budget/profile presets as **explicit local operating ceilings** (Instant/Reasoning profiles) | `docs/account-protection.md` (Runstead) vs JCode pricing/route tables | Runstead's governor already surpasses JCode here |
 
 ### 1.2 Best 3 for immediate adoption
 
-1. **Journal/snapshot durability invariants** (salvage torn lines, checkpoint after corruption, `write_json_fast` vs `write_bytes` distinction) — directly informs Runstead's future SQLite event store and its append-oriented event history.
+1. **Abstract durability invariants for the SQLite event store** (loss, duplication, uncertainty, replay, diagnostics — inspired by JCode's snapshot+journal *problems*; mechanics defined later with the SQLite driver) — directly informs Runstead's M2 event store and its append-oriented event history.
 2. **Blast-radius risk classification + two-stage gate** (deterministic assess, then a reflection turn for `Confirm`, absolute deny for `Catastrophic`) — directly informs Runstead's future write-tool and shell policy boundary, preserving fail-closed.
-3. **Interrupt/epoch semantics and turn-cancellation tests** — informs the Go `runstead run` signal handling and cancellation tests for the future agent loop.
+3. **Cancellation test discipline** (race-hammer tests) folded into #7; the epoch signal itself stays conditioned on a real reuse/reset need, since Runstead uses one-shot `context.Context` cancellation.
 
 ### 1.3 Best 3 for future adoption
 
@@ -72,9 +72,9 @@ strictness and test-design ideas** that can be ported as concepts or algorithms.
 
 - **Greatest architectural strength of JCode:** the session persistence model (snapshot + journal + corruption salvage + crash recovery) and the honest, well-tested invariant engineering around cancellation (`InterruptSignal` epoch tests, `fire_never_loses_wakeup`).
 - **Greatest architectural weakness of JCode:** execution safety is not structural. The `bash` tool historically ran `rm -rf ~` immediately (documented in `crates/jcode-command-risk/src/lib.rs:1-10` as issue #604); the destructive gate is per-tool, opt-in-ish and unlockable by a model-provided `justification`. The model can also declare completion without external verification. Runstead's governor/protocol/verifier model is strictly stronger.
-- **Greatest opportunity for Runstead:** borrow the *recovery and strictness testing discipline* (corrupt journal replay, torn-write salvage, crash detection, cancel races) and apply it to the SQLite event store, the action parser and the future loop — while keeping the governor as the only authorization boundary.
+- **Greatest opportunity for Runstead:** borrow the *recovery and strictness testing discipline* (corrupt journal replay, torn-write salvage, crash detection, cancel races) and apply it to the SQLite event store, the action parser and the future loop — while keeping the governor as the account-attempt admission boundary (admission, serialization, accounting of upstream attempts) and the protocol/policy/executor/verifier chain as the local-effects authorization boundary.
 - **Greatest risk of copying JCode:** importing its "tool calling as the contract" mindset (native tool calls, per-tool gates, model-controlled schema fields, prompt-dependent safety) would undermine `runstead.protocol.v1`, the fail-closed governor and the verifier. Also, copying its 83-crate structure would destroy the modular-monolith goal.
-- **Final recommendation in one sentence:** Adopt only the *concepts* of journal-style recovery, blast-radius risk classification, epoch-based cancellation and strict truncation/evidence accounting from JCode, reimplemented independently in Go behind the Runstead protocol, governor and verifier; reject everything that makes the model the authority over effects or turns Runstead into a router/framework.
+- **Final recommendation in one sentence:** Adopt only the *concepts* of journal-style recovery (as abstract durability invariants), blast-radius risk classification, cancellation test discipline and strict truncation/evidence accounting from JCode, reimplemented independently in Go behind the Runstead protocol, governor and verifier; keep epoch-based signal machinery conditioned on a demonstrated reuse/reset need; reject everything that makes the model the authority over effects or turns Runstead into a router/framework.
 
 ---
 
@@ -136,14 +136,14 @@ and reconstructed from the git history. This is listed again under limitations.
 3. **No live provider calls were made** (per instructions). No credentials were touched.
 4. **JCode README performance claims** (RAM, time-to-first-frame) are treated as *declared claims*. The methodology artifacts exist (`scripts/bench_startup.py`, `scripts/bench_startup_visible_ready.py`, `scripts/memory_probe.sh`, `scripts/memory_regression_gate.sh`, `scripts/run_terminal_bench_campaign.py`) and were inspected, but the numbers themselves were **not reproduced** on this machine.
 5. Deep-dive reads were prioritized: files cited with line ranges were read; some very large files (e.g. `jcode-tui`'s 201k lines, `jcode-desktop2`) were inspected structurally (function inventory, module lists) rather than line-by-line.
-6. The report distinguishes evidence levels everywhere: **Confirmado no código**, **Confirmado por teste** (tests read statically), **Declarado apenas na documentação**, **Inferência arquitetural**, **Não foi possível verificar**.
+6. The report distinguishes evidence levels everywhere: **Confirmado no código**, **Cobertura de teste encontrada, não executada** (tests read statically), **Declarado apenas na documentação**, **Inferência arquitetural**, **Não foi possível verificar**.
 
 ### 3.3 Evidence legend
 
 Used throughout:
 
 - `C` = **Confirmado no código** (read directly in the analyzed commit).
-- `T` = **Confirmado por teste** (test code read in the analyzed commit; not executed).
+- `T` = **Cobertura de teste encontrada, não executada** (test code read in the analyzed commit; not executed. No Rust toolchain was available, so no test was run; this label never asserts a passing test).
 - `D` = **Declarado apenas na documentação** (README/docs claim, not verified in code).
 - `I` = **Inferência arquitetural** (reasonable inference from code structure).
 - `NV` = **Não foi possível verificar** (missing toolchain/credentials/network).
@@ -492,12 +492,17 @@ This is the single most valuable JCode subsystem for Runstead.
 
 ### 13.5 Runstead translation
 
-Runstead's M2 milestone (SQLite event store) should adopt these *invariants*, not the file format:
+Runstead's M2 milestone (SQLite event store) should adopt these **abstract invariants**, not JCode's file mechanics. JCode's JSONL salvage, checkpoint-after-corruption and `.bak` recovery are file-format solutions; their SQLite equivalents must be defined with the driver, WAL mode and transactional model, and only after those decisions exist:
 1. Append-oriented history: events are immutable appends; derived status is updatable but reconstructible. (Runstead already declares this in `docs/architecture.md`.)
-2. Torn-write tolerance: with SQLite, use WAL + explicit transactions; simulate torn writes in tests and assert replay completeness (mirror `salvage_glued_journal_entries`).
-3. Checkpoint-after-corruption: periodic compaction/checkpoint of the event log; keep forensic copy.
-4. Durable vs fast writes: distinguish "must survive power loss" (checkpoint, fsync) from "must survive process crash" (WAL commit without fsync) in the Go layer.
-5. `ClientRequestID` (Runstead governor) already provides exact-request suppression; SQLite should persist completed IDs for restart-safe dedup (currently in-memory, per `docs/account-protection.md`).
+2. Loss invariant: a committed event is never lost from replay, including after process crash mid-commit.
+3. Duplication invariant: an event is never applied twice; replay is total and idempotent (relates to the governor's `ClientRequestID`).
+4. Uncertainty invariant: an effect whose commit outcome is unknown (crash between effect and commit) is surfaced as uncertain, never silently assumed committed or rolled back.
+5. Replay invariant: replay covers every committed event and skips nothing; partial or corrupt state is isolated and reported, never silently truncating the tail.
+6. Diagnostic invariant: corruption or replay anomalies produce typed, inspectable diagnostics (no silent recovery).
+7. Durable vs fast write tiers: distinguish "must survive power loss" (checkpoint, fsync) from "must survive process crash" (WAL commit without fsync) in the Go layer.
+8. `ClientRequestID` (Runstead governor) already provides exact-request suppression; SQLite should persist completed IDs for restart-safe dedup (currently in-memory, per `docs/account-protection.md`).
+
+The mechanics (row layout, WAL checkpoints, integrity checks) are deliberately left open until the driver and schema are chosen.
 
 ---
 
@@ -668,7 +673,7 @@ Runstead's M2 milestone (SQLite event store) should adopt these *invariants*, no
 
 ### 21.2 Patterns Runstead can adopt immediately
 
-1. **Race-hammer tests for cancellation** (loop N times, assert invariant). Directly applicable to the future Go loop (`context` + epoch cancel): a test that fires cancel concurrently with the loop's wait, asserting no lost cancel and no double-execution.
+1. **Race-hammer tests for cancellation** (loop N times, assert invariant). Directly applicable to the Go loop inside #7: a test that fires cancel concurrently with the loop's wait, asserting no lost cancel and no double-execution, using `context.Context` one-shot semantics.
 2. **Corrupt-input replay tests**: feed torn/glued/corrupt lines and assert replay completeness. Directly applicable to the action parser (already strict) and the future SQLite store (simulated torn transactions).
 3. **Schema snapshot tests**: freeze protocol JSON shapes (Runstead's `runstead.protocol.v1` envelopes) and fail on accidental drift. Cheap, high value.
 4. **Matrix tests without live providers**: Runstead's `internal/provider/fake.go` already provides this; extend the pattern with fixture corpora (already exists in `experiments/protocol/fixtures/`).
@@ -806,9 +811,9 @@ Columns: Componente / Responsabilidade / Arquivos e símbolos / Funcionamento / 
 
 | # | Recommendation | Classification |
 |---|---|---|
-| 1 | Journal/snapshot durability invariants (torn-line salvage, checkpoint-after-corruption) | **Copiar apenas o conceito**; reimplement against SQLite WAL/transactions in Go |
+| 1 | Journal/snapshot durability (torn-line salvage, checkpoint-after-corruption) | **Copiar apenas o conceito, como invariantes abstratos** (loss, duplication, uncertainty, replay, diagnostics); mecânica do SQLite definida depois com driver/WAL |
 | 2 | Blast-radius command classification (tokenizer, wrapper unwrap, redirect detection) | **Portar o algoritmo com implementação independente** (Go); reject the justification gate |
-| 3 | Epoch-based interrupt (`reset_if_epoch`) | **Portar o algoritmo** (~30 lines; Go: atomic counter + context; tests copied as *design*, written fresh) |
+| 3 | Epoch-based interrupt (`reset_if_epoch`) | **Portar o algoritmo apenas se uma necessidade real de reuso/reset aparecer** (Runstead usa `context.Context` one-shot; até lá, adotar apenas a disciplina de testes de corrida na #7) |
 | 4 | Provider error taxonomy / retry-after semantics | **Inspirar uma interface**; Runstead's `omniroute/errors.go` already implements a narrower equivalent |
 | 5 | Tool `intent` field ("why this call is being made") | **Inspirar uma interface**; becomes a mandatory prompt/protocol contract field, not a schema injection |
 | 6 | Explicit truncation + `untrusted` markers | **Reutilizar o desenho de testes**; Runstead already implements the concept better (`docs/tools.md`) |
@@ -827,7 +832,7 @@ Columns: Componente / Responsabilidade / Arquivos e símbolos / Funcionamento / 
 
 - **ADOTAR AGORA** (does not require new upstream capabilities):
   1. Durability invariants for the future SQLite event store (concept + test design). Prerequisite: none (can be written as a design doc + test skeleton now; implementation lands with M2).
-  2. Epoch-based cancel semantics + race-hammer tests in Go (`context` wrapper). Prerequisite: none; `cmd/runstead` already handles signals.
+  2. Cancellation propagation and race-hammer tests folded into #7 (`context.Context` one-shot; epoch signal only on a demonstrated reuse/reset need).
   3. CI budget gates and error-handling discipline (concept). Prerequisite: none.
   4. Blast-radius classification algorithm (Go, independent implementation). Prerequisite: only as part of a future shell policy boundary; can be prototyped as a leaf package with tests without wiring it into tools.
 - **ADAPTAR EM BREVE** (after the read-only loop is stable): action-fingerprint/repeat-guard refinements (already exist), typed tool failure taxonomy alignment with observations, tool status lifecycle in trace output, parser correction policy informed by JCode's response-recovery ideas (bounded counters), streaming event vocabulary when streaming arrives.
@@ -840,10 +845,12 @@ Columns: Componente / Responsabilidade / Arquivos e símbolos / Funcionamento / 
 
 ### A. Adotar agora (no new upstream capability required)
 
+Note: A2 (cancellation) is not an independent item; it is folded into the already-tracked #7, which sits after the critical path #29 → #30 → #4. A1 and A3 can start immediately.
+
 | Candidate | Runstead problem it solves | Adaptation to Go | Package | Interface | Persisted data | Invariants | Tests | Risks | Acceptance | Prereqs |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **A1. Durability/event-store invariants doc + test skeleton** | M2 SQLite store must not lose or duplicate events | Concept: append-only events, WAL transactions, checkpoint-after-corruption, forensic copy | `internal/state` (future) | `Store.Append(event)`, `Store.Replay(from)` | events, checkpoints | every effect has exactly one event; replay is total | torn-write, crash-between-effect-and-commit, duplicate-append tests | over-design; keep SQLite as a file, not a service | replay after simulated crash contains all committed events, no duplicates | none (design + tests only) |
-| **A2. Epoch-based cancel + race tests** | `runstead run` must never lose Ctrl+C and must never double-execute after cancel | `cancel.Signal` = atomic flag + epoch + channel; `ResetIfEpoch` | `internal/agent` | `Signal` type | none | a newer cancel is never erased by a stale reset; fired cancel is always observed | 2000-iteration race hammer in Go | goroutine leaks | cancel observed exactly once, no lost wakeups | none |
+| **A1. Durability/event-store invariants doc + test skeleton** | M2 SQLite store must not lose or duplicate events | Abstract invariants only: append-only events, loss/duplication/uncertainty/replay/diagnostic invariants (section 13.5); mechanics (WAL, transactions, checkpoint) defined later with the driver | `internal/state` (future) | `Store.Append(event)`, `Store.Replay(from)` | events, checkpoints | every effect has exactly one event; replay is total; unknown commit outcomes are surfaced as uncertain | loss, duplication, mid-commit kill, uncertainty, replay, diagnostic tests against a real SQLite file | over-design; keep SQLite as a file, not a service | replay after simulated crash contains all committed events, no duplicates, no silent truncation | none (design + tests only) |
+| **A2. Cancellation propagation + race tests (in #7; epoch conditioned)** | `runstead run` must never lose Ctrl+C and must never double-execute after cancel | One-shot `context.Context` propagation (Runstead's model) through provider/tool/persistence; race-hammer tests; epoch `Signal` only if a reuse/reset need appears | `internal/agent` (inside #7) | `context.Context`; optional `Signal` type | none | a fired cancel is always observed; no double execution after cancel | 2000-iteration race hammer in Go, propagation-through-tool tests | goroutine leaks; speculative epoch machinery | cancel observed exactly once, no lost wakeups, `-race` clean | part of #7, not a prerequisite |
 | **A3. CI budget gates** | prevent regression bloat | small shell/Go checks (file size, test size, `go vet` clean) | CI (`ci.yml`) | n/a | none | budgets fail loudly | CI green | false positives on legit growth | budgets documented and bumpable via PR | none |
 
 ### B. Adaptar após o loop read-only estável
@@ -875,33 +882,33 @@ Ordered to respect current gates (governor, protected provider, read-only loop).
 ### RS-01 — Document event-store durability invariants (inspired by JCode snapshot/journal)
 
 - **Título:** Define durability and replay invariants for the SQLite event store
-- **Objetivo:** Freeze the invariants the M2 store must satisfy before implementation.
-- **Contexto:** JCode's snapshot+journal design (salvage of torn lines, checkpoint-after-corruption, no silent truncation) is the closest working precedent; SQLite WAL changes the mechanics but not the invariants.
-- **Escopo:** Design doc + acceptance test skeleton (Go) simulating torn/duplicate/crash scenarios against a real SQLite file; document durable-vs-fast write tiers.
-- **Fora de escopo:** implementing the store, migrations, `inspect`/`resume`.
-- **Desenho técnico:** events = immutable rows with monotonic ids; derived state = updatable; checkpoint = periodic compaction of the event log with forensic copy; WAL + transactions for atomicity.
+- **Objetivo:** Freeze the *abstract* invariants the M2 store must satisfy before implementation.
+- **Contexto:** JCode's snapshot+journal design demonstrates the *class of problems* (loss, duplication, torn writes, corruption, silent truncation) and its file-format solutions. SQLite WAL changes the mechanics; the invariants to preserve are loss, duplication, uncertainty, replay and diagnostics (section 13.5). No JCode file mechanic is transported directly.
+- **Escopo:** Design doc + acceptance test skeleton (Go) exercising the abstract invariants against a real SQLite file; document durable-vs-fast write tiers.
+- **Fora de escopo:** implementing the store, migrations, `inspect`/`resume`, choosing the driver/WAL mechanics.
+- **Desenho técnico:** events = immutable rows with monotonic ids; derived state = updatable; checkpoints = periodic compaction of the event log; driver, WAL mode and transaction boundaries defined later with the chosen SQLite driver.
 - **Arquivos afetados:** `docs/research/` (this report), `docs/architecture.md`, future `internal/state`.
-- **Invariantes:** replay is total (no committed event lost, no duplicate); a crash between effect and commit leaves the effect uncommitted and detectable; corruption is isolated, never truncates the tail.
-- **Testes:** torn-write, mid-commit kill, duplicate append, corrupt page, checkpoint-then-crash.
-- **Critérios de aceitação:** all skeleton tests pass against a real SQLite file; document records which invariants mirror JCode (`persistence.rs:26-129,151-173`).
+- **Invariantes:** replay is total (no committed event lost, no duplicate); a crash between effect and commit leaves the outcome uncertain and detectable; corruption or anomalies are isolated, reported, and never silently truncate the tail.
+- **Testes:** committed-event loss, duplicate application, mid-commit kill (uncertain outcome), replay completeness, corruption/anomaly diagnostics.
+- **Critérios de aceitação:** all skeleton tests pass against a real SQLite file; the doc records which JCode file mechanics were deliberately *not* transported (salvage, `.bak`, checkpoint-after-corruption) and which abstract invariants they inspired.
 - **Dependências:** none (can start immediately).
-- **Origem:** JCode `jcode-base/src/session/persistence.rs`, `crates/jcode-storage/src/lib.rs:486-685`.
+- **Origem (inspiração):** JCode `jcode-base/src/session/persistence.rs`, `crates/jcode-storage/src/lib.rs:486-685`.
 - **Riscos de sobre-engenharia:** do not build an event-sourcing framework; SQLite is the store, not a bus.
 
-### RS-02 — Epoch-based cancellation signal with race tests
+### RS-02 — Cancellation propagation and race tests (inside #7; epoch signal conditioned)
 
-- **Título:** Add an epoch-based cancel signal for the agent loop
-- **Objetivo:** Guarantee Ctrl+C is never lost and a stale reset never erases a newer cancel.
-- **Contexto:** JCode's `InterruptSignal` (flag + tokio Notify + fire epoch) exists precisely because lost cancels caused real bugs (issue #428); Go's `context` needs the same discipline around `runstead run`.
-- **Escopo:** small `internal/agent` (or `internal/cancel`) type + race-hammer tests; wire into the signal-aware entrypoint.
-- **Fora de escopo:** the agent loop itself.
-- **Desenho técnico:** `Signal{flag atomic.Bool, epoch atomic.Uint64, ch chan struct{}}`; `Fire` bumps epoch; `ResetIfEpoch` restores a racing fire.
-- **Invariantes:** fire never lost; concurrent fire never erased; double-fire idempotent.
-- **Testes:** 2000-iteration race hammer (mirror `fire_never_loses_wakeup`), reset races.
-- **Critérios:** race tests pass under `-race`; no goroutine leaks.
-- **Dependências:** none.
-- **Origem:** JCode `crates/jcode-agent-runtime/src/lib.rs:33-118,180-282`.
-- **Risco:** over-abstracting; keep it one small type, no framework.
+- **Título:** Propagate cancellation through the agent loop with race tests; add epoch signal only if a reuse/reset need appears
+- **Objetivo:** Guarantee Ctrl+C is never lost and never causes double execution, using Runstead's one-shot `context.Context` model.
+- **Contexto:** JCode's `InterruptSignal` (flag + tokio Notify + fire epoch) solves lost cancels in a long-lived multi-session server (issue #428). Runstead is a single-process CLI: `signal.NotifyContext` is the correct one-shot primitive. Epoch/reset machinery addresses signal reuse and concurrent reset, which Runstead does not need yet; it stays conditioned on a real need (e.g. a future resume loop that must distinguish per-turn cancel from whole-task cancel).
+- **Escopo:** inside #7, propagate `context.Context` through provider call, tool execution and persistence writes; add race-hammer cancellation tests; if a reuse need appears, add a small `internal/agent` epoch `Signal` with `ResetIfEpoch`.
+- **Fora de escopo:** standalone cancellation issue before #7; speculative epoch machinery.
+- **Desenho técnico:** `context` propagation + tests; `Signal{flag atomic.Bool, epoch atomic.Uint64, ch chan struct{}}` only if reuse is required.
+- **Invariantes:** a fired cancel is always observed; a stale reset never erases a newer cancel (only if epoch machinery is added); no double execution after cancel.
+- **Testes:** 2000-iteration race hammer (mirror `fire_never_loses_wakeup`), reset races, propagation-through-tool tests.
+- **Critérios:** race tests pass under `-race`; no goroutine leaks; cancel observed exactly once.
+- **Dependências:** #7 loop (this is part of it, not a prerequisite).
+- **Origem:** JCode `crates/jcode-agent-runtime/src/lib.rs:33-118,180-282` (test discipline; epoch machinery only on demonstrated need).
+- **Risco:** over-abstracting; keep it as context propagation unless a reuse case exists.
 
 ### RS-03 — Blast-radius shell risk classifier (leaf, not wired)
 
@@ -914,7 +921,7 @@ Ordered to respect current gates (governor, protected provider, read-only loop).
 - **Invariantes:** parser total; Catastrophic absolute; unknown -> escalate.
 - **Testes:** corpus from JCode's test cases + new Go cases.
 - **Critérios:** corpus pass; `go vet`/`-race` clean.
-- **Dependências:** none (RS-01/RS-02 independent).
+- **Dependências:** none (RS-01 independent; cancellation is inside #7, not a dependency of this leaf).
 - **Origem:** JCode `crates/jcode-command-risk/src/lib.rs:146-361` (algorithm only).
 - **Risco:** scope creep into a shell tool; keep it a leaf package.
 
@@ -944,7 +951,7 @@ Ordered to respect current gates (governor, protected provider, read-only loop).
 - **Invariantes:** budgets are ceilings; exhaustion is a typed outcome, not an error string.
 - **Testes:** budget exhaustion, empty response, truncation, repeated actions.
 - **Critérios:** loop terminates; repeated actions rejected before execution.
-- **Dependências:** #7 loop; RS-02.
+- **Dependências:** #7 loop (includes cancellation propagation from RS-02).
 - **Origem:** JCode `turn_loops.rs:44-52,832-860`, `response_recovery.rs:56-120` (concept only).
 - **Risco:** over-engineering corrections; keep one-envelope-per-turn.
 
@@ -989,15 +996,15 @@ Ordered to respect current gates (governor, protected provider, read-only loop).
 
 ## 29. First issue that is actually worth executing
 
-**RS-02 — Epoch-based cancellation signal with race tests.**
+**There is no independent "cancellation signal" issue worth executing before the critical path.** The current critical path remains the already-tracked upstream work: **#29 (authoritative attempt receipts) → #30 (governor consumption of receipts) → conclusion of #4 (OmniRoute adapter authorization) → #7 (the bounded agent loop)**. Everything below must respect that order.
 
-Rationale:
-- It is the smallest, highest-leverage, dependency-free step. `cmd/runstead` already owns signal-aware startup (`cmd/runstead/main.go:26`), so the type slots in immediately and is testable in isolation with `go test -race`.
-- It unblocks the real loop issue (#7): the loop's cancel semantics are the foundation for "no lost cancel, no double execution", which Runstead's durability goals depend on. Every later issue (RS-04, RS-05) consumes it.
-- It directly imports JCode's best-tested invariant (the `fire_never_loses_wakeup` race hammer), which is exactly the kind of reliability engineering Runstead prioritizes, without pulling any JCode architecture.
-- Everything else must wait: RS-01 is design-only (valuable but not executable code), RS-03 must not be wired before a policy boundary exists, RS-04/RS-05 require the loop (#7) that is explicitly deferred, and the M2 items require SQLite decisions.
+Cancellation guidance for #7 and later:
 
-Concrete capability unlocked: a `runstead run` loop (when #7 lands) that can be canceled safely at any point, resumes from SQLite checkpoints without double-executing the last effect, and has a typed, testable cancellation primitive shared by the loop, the governor (cancellation before `Start` releases the permit) and future tools.
+- Runstead's process model is one-shot cancellation via `context.Context` (`cmd/runstead/main.go:26` uses `signal.NotifyContext`). That is the correct primitive for the current single-process CLI; it must be propagated through the provider call, tool execution and persistence writes, and covered by race tests inside #7.
+- JCode's epoch-based `InterruptSignal` solves a different problem: reusing and concurrently resetting one signal in a long-lived multi-session server (issue #428's lost cancels). Runstead has no such server today. The epoch/reset machinery is **conditioned on a real need** for signal reuse/reset; it should not be built speculatively.
+- If a real reuse need appears (e.g. a future `runstead resume` with a cancellable long-running loop that must distinguish "cancel the current turn" from "cancel the whole task"), then port the epoch semantics and its race tests as an independent Go type. Until then, capture only the *test discipline* (race-hammer cancellation tests) in #7.
+
+Concrete capability of the critical path: with #29/#30/#4/#7 complete, Runstead can run a protected, one-attempt-per-turn agent loop whose cancellation is propagated through `context.Context` and race-tested, and whose attempts are accounted by the governor with authoritative receipts.
 
 ---
 
@@ -1161,16 +1168,16 @@ These remain **Não foi possível verificar** and are the only part of this repo
 
 **Quais partes do JCode realmente tornam o Runstead melhor sem destruir a simplicidade, a segurança e a direção arquitetural do Runstead?**
 
-1. **A disciplina de durabilidade e recuperação** do snapshot+journal do JCode (salvage de linhas corrompidas, checkpoint após corrupção, distinção entre escrita durável e rápida, cópia forense) traduzida em invariantes para o SQLite do M2. Isto fortalece exatamente os pilares do Runstead: recuperação, evidência e previsibilidade.
+1. **A disciplina de durabilidade e recuperação** do snapshot+journal do JCode (perda, duplicação, incerteza, replay e diagnóstico — resolvidos no JCode por salvage de linhas corrompidas, checkpoint após corrupção e cópia forense) traduzida em *invariantes abstratos* para o SQLite do M2, com a mecânica definida junto ao driver/WAL. Isto fortalece exatamente os pilares do Runstead: recuperação, evidência e previsibilidade.
 2. **A classificação determinística de risco por blast radius** (tokenização, desembrulho de wrappers, redirecionamentos e pipes), como *pré-checagem* dentro de uma futura política de shell com aprovação humana — nunca com desbloqueio por justificativa do modelo.
-3. **O sinal de cancelamento com época** (`reset_if_epoch`) e seus testes de corrida, portado como um pequeno tipo Go com `go test -race`, garantindo que Ctrl+C nunca se perca e que um reset atrasado nunca apague um cancelamento mais novo.
+3. **A disciplina de cancelamento** do JCode (`InterruptSignal` com época, `fire_never_loses_wakeup`): para o Runstead, propagação one-shot via `context.Context` com race tests dentro da #7; o mecanismo de época/reset (`reset_if_epoch`) só deve ser portado se surgir uma necessidade real de reuso/reset de sinal (ex.: loop de resume que distingue cancelar o turno de cancelar a tarefa).
 4. **O desenho de testes de confiabilidade** (race hammers, replay de entradas corrompidas, snapshots de schema, budgets de CI, matrizes sem provider real) — o padrão de engenharia mais portável e barato de todos.
 5. **Os marcadores explícitos em vez de perda silenciosa** (truncamento com contagens, substituição de conteúdo por marcadores) — já implementados no modelo de observação do Runstead e confirmados como o padrão correto pela prática do JCode.
 
 **O que deve ser rejeitado:** toda a camada de autoridade do JCode sobre efeitos (tool calling nativo como contrato, gates por ferramenta, desbloqueio por justificativa, ausência de verificação de conclusão), a arquitetura de servidor multi-cliente, memória vetorial, TUI/desktop, swarm/ambient, roteamento de providers e a API pública prematura.
 
-O Runstead não deve se tornar um "JCode em Go". Ele deve permanecer um monólito modular em Go, com o protocolo `runstead.protocol.v1` estrito, o governor fail-closed como única fronteira de autorização e o SQLite como fonte autoritativa — enriquecido apenas pelas ideias acima, adotadas como conceitos e algoritmos reimplementados de forma independente, com proveniência documentada.
+O Runstead não deve se tornar um "JCode em Go". Ele deve permanecer um monólito modular em Go, com o protocolo `runstead.protocol.v1` estrito, o governor fail-closed como fronteira de admissão e contabilização de tentativas upstream da conta, a cadeia protocolo/policy/executor/verifier como autorização e verificação de efeitos locais, e o SQLite como fonte autoritativa — enriquecido apenas pelas ideias acima, adotadas como conceitos e algoritmos reimplementados de forma independente, com proveniência documentada.
 
 ---
 
-*End of report. Analyzed JCode `435fb4a83bee429762acd1cc905ba9987bff65d7` (v0.70.1, 2026-08-05) and Runstead `56d0aa9c5ff79bf68dd1735fd01442668e7a97a4` (2026-08-03). No functional changes were made to either repository; no code was copied; no commit or PR was created.*
+*End of report. Analyzed JCode `435fb4a83bee429762acd1cc905ba9987bff65d7` (v0.70.1, 2026-08-05) and Runstead `56d0aa9c5ff79bf68dd1735fd01442668e7a97a4` (2026-08-03). No functional changes were made to either repository; no JCode code was copied. This report is delivered through this commit and PR.*
