@@ -390,6 +390,7 @@ type Snapshot struct {
 	PendingEvents      int
 	Tasks              map[string]TaskSnapshot
 	RetainedRequestIDs int
+	RetainedAttemptIDs int
 	RetainedTaskStates int
 }
 

@@ -83,27 +83,30 @@ type AttemptReceiptExpectation struct {
 	AccountLaneHash    string
 	RequestStartedAt   time.Time
 	RequestCompletedAt time.Time
+	SingleAttempt      bool
 	Now                time.Time
 }
 
 type AttemptReceiptErrorCode string
 
 const (
-	AttemptReceiptMissing        AttemptReceiptErrorCode = "missing"
-	AttemptReceiptMalformed      AttemptReceiptErrorCode = "malformed"
-	AttemptReceiptUnknownVersion AttemptReceiptErrorCode = "unknown_version"
-	AttemptReceiptNotFinalized   AttemptReceiptErrorCode = "not_finalized"
-	AttemptReceiptEmpty          AttemptReceiptErrorCode = "empty"
-	AttemptReceiptTooMany        AttemptReceiptErrorCode = "too_many"
-	AttemptReceiptTooLarge       AttemptReceiptErrorCode = "too_large"
-	AttemptReceiptInvalidField   AttemptReceiptErrorCode = "invalid_field"
-	AttemptReceiptDuplicateID    AttemptReceiptErrorCode = "duplicate_attempt_id"
-	AttemptReceiptSequence       AttemptReceiptErrorCode = "invalid_sequence"
-	AttemptReceiptCorrelation    AttemptReceiptErrorCode = "correlation_mismatch"
-	AttemptReceiptRouteMismatch  AttemptReceiptErrorCode = "route_mismatch"
-	AttemptReceiptTimestamp      AttemptReceiptErrorCode = "invalid_timestamp"
-	AttemptReceiptUnknownOutcome AttemptReceiptErrorCode = "unknown_outcome"
-	AttemptReceiptUnknownTrigger AttemptReceiptErrorCode = "unknown_trigger"
+	AttemptReceiptMissing         AttemptReceiptErrorCode = "missing"
+	AttemptReceiptMalformed       AttemptReceiptErrorCode = "malformed"
+	AttemptReceiptUnknownVersion  AttemptReceiptErrorCode = "unknown_version"
+	AttemptReceiptNotFinalized    AttemptReceiptErrorCode = "not_finalized"
+	AttemptReceiptEmpty           AttemptReceiptErrorCode = "empty"
+	AttemptReceiptTooMany         AttemptReceiptErrorCode = "too_many"
+	AttemptReceiptTooLarge        AttemptReceiptErrorCode = "too_large"
+	AttemptReceiptInvalidField    AttemptReceiptErrorCode = "invalid_field"
+	AttemptReceiptDuplicateID     AttemptReceiptErrorCode = "duplicate_attempt_id"
+	AttemptReceiptSequence        AttemptReceiptErrorCode = "invalid_sequence"
+	AttemptReceiptCorrelation     AttemptReceiptErrorCode = "correlation_mismatch"
+	AttemptReceiptRouteMismatch   AttemptReceiptErrorCode = "route_mismatch"
+	AttemptReceiptTimestamp       AttemptReceiptErrorCode = "invalid_timestamp"
+	AttemptReceiptUnknownOutcome  AttemptReceiptErrorCode = "unknown_outcome"
+	AttemptReceiptUnknownTrigger  AttemptReceiptErrorCode = "unknown_trigger"
+	AttemptReceiptTriggerMismatch AttemptReceiptErrorCode = "trigger_mismatch"
+	AttemptReceiptAmplification   AttemptReceiptErrorCode = "amplification_disabled"
 )
 
 var ErrInvalidAttemptReceipts = errors.New("invalid attempt receipts")
@@ -165,6 +168,9 @@ func ValidateAttemptReceiptSet(set AttemptReceiptSet, expected AttemptReceiptExp
 	if expected.ClientRequestID != "" && set.ClientRequestID != expected.ClientRequestID {
 		return receiptError(AttemptReceiptCorrelation)
 	}
+	if expected.SingleAttempt && len(set.Receipts) != 1 {
+		return receiptError(AttemptReceiptAmplification)
+	}
 	seen := make(map[string]struct{}, len(set.Receipts))
 	for index, receipt := range set.Receipts {
 		if receipt.SchemaVersion != AttemptReceiptSchemaVersion {
@@ -209,6 +215,13 @@ func ValidateAttemptReceiptSet(set AttemptReceiptSet, expected AttemptReceiptExp
 		}
 		if !validTrigger(receipt.Trigger) {
 			return receiptError(AttemptReceiptUnknownTrigger)
+		}
+		if (index == 0 && receipt.Trigger != AttemptTriggerInitial) ||
+			(index > 0 && receipt.Trigger == AttemptTriggerInitial) {
+			return receiptError(AttemptReceiptTriggerMismatch)
+		}
+		if expected.SingleAttempt && receipt.Trigger != AttemptTriggerInitial {
+			return receiptError(AttemptReceiptTriggerMismatch)
 		}
 		if err := validateTimestamps(receipt.StartedAt, receipt.CompletedAt, expected); err != nil {
 			return err

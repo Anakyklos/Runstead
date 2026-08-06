@@ -51,7 +51,7 @@ type Governor struct {
 	ledger              rollingLedger
 	tasks               map[string]*taskState
 	requestIDs          map[string]requestRecord
-	attemptIDs          map[string]struct{}
+	attemptIDs          map[string]time.Time
 	completedRequestIDs []completedRequest
 	activeTaskID        string
 	circuit             circuitData
@@ -82,7 +82,7 @@ func New(config Config, options Options) (*Governor, error) {
 		nextAttempt:     1,
 		tasks:           make(map[string]*taskState),
 		requestIDs:      make(map[string]requestRecord),
-		attemptIDs:      make(map[string]struct{}),
+		attemptIDs:      make(map[string]time.Time),
 		circuit:         circuitData{state: CircuitClosed},
 	}, nil
 }

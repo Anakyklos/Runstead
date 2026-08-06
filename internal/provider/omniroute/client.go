@@ -265,6 +265,7 @@ func (c *Client) Complete(ctx context.Context, request provider.Request) (provid
 		Provider:        c.config.Provider,
 		Model:           c.config.Model,
 		AccountLaneHash: c.config.AccountLaneHash,
+		SingleAttempt:   true,
 		Now:             c.now(),
 	})
 	if err != nil {

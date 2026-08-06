@@ -103,6 +103,35 @@ func TestAttemptReceiptSetRejectsOverlappingAttempts(t *testing.T) {
 	}
 }
 
+func TestAttemptReceiptSetRequiresInitialThenNonInitialTriggers(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	set := AttemptReceiptSet{
+		SchemaVersion: AttemptReceiptSchemaVersion, ClientRequestID: "request-1", Finalized: true,
+		Receipts: []AttemptReceipt{{
+			SchemaVersion: AttemptReceiptSchemaVersion, AttemptID: "attempt-1", ClientRequestID: "request-1", Sequence: 1,
+			Provider: "provider", Model: "model", AccountLaneHash: "lane", StartedAt: now,
+			CompletedAt: now.Add(time.Second), Outcome: AttemptOutcomeSuccess, Trigger: AttemptTriggerExecutorRetry, UpstreamReached: true,
+		}},
+	}
+	err := ValidateAttemptReceiptSet(set, AttemptReceiptExpectation{SingleAttempt: true, Now: now})
+	var receiptErr *AttemptReceiptError
+	if !errors.As(err, &receiptErr) || receiptErr.Code != AttemptReceiptTriggerMismatch {
+		t.Fatalf("first non-initial trigger error = %v, want trigger mismatch", err)
+	}
+
+	set.Receipts[0].Trigger = AttemptTriggerInitial
+	set.Receipts = append(set.Receipts, set.Receipts[0])
+	set.Receipts[1].AttemptID = "attempt-2"
+	set.Receipts[1].Sequence = 2
+	set.Receipts[1].StartedAt = now.Add(2 * time.Second)
+	set.Receipts[1].CompletedAt = now.Add(3 * time.Second)
+	set.Receipts[1].Trigger = AttemptTriggerInitial
+	err = ValidateAttemptReceiptSet(set, AttemptReceiptExpectation{Now: now})
+	if !errors.As(err, &receiptErr) || receiptErr.Code != AttemptReceiptTriggerMismatch {
+		t.Fatalf("repeated initial trigger error = %v, want trigger mismatch", err)
+	}
+}
+
 func TestDecodeAttemptReceiptSetRejectsUnknownFieldsWithoutEchoingSecrets(t *testing.T) {
 	data, err := json.Marshal(map[string]any{
 		"schema_version":    AttemptReceiptSchemaVersion,

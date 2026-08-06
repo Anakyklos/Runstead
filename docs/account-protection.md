@@ -19,9 +19,9 @@ protection has priority over task latency.
 - A **client request** is one request submitted by Runstead to a provider
   adapter.
 - An **upstream attempt** is one actual model request that may reach ChatGPT
-  Web. Hidden retries are additional attempts and are allowed only when the
-  receipt-aware route reports each one; pooling, fallback and combo routing are
-  disabled in the M1 receipt route.
+  Web. M1 allows one attempt per protected provider completion. Executor
+  retries must re-enter governor admission; internal retries, cooldown replay,
+  pooling, fallback and combo routing are disabled in the M1 receipt route.
 - An **account lane** is the FIFO queue and serialized execution state for one
   account policy.
 - A **model pool** is the configured allowance bucket, such as Plus/Go Instant
@@ -117,12 +117,12 @@ unsafe declarations are rejected before queue admission.
 
 The #4 OmniRoute adapter remains fail-closed until its management evidence and
 receipt transport are verified. `Preflight` may validate observable resilience
-and route settings, but it never authorizes execution by itself. A receipt set
-must use one provider, one concrete model and one account-lane hash for the
-whole request. `ModelPool` is only an allowance bucket and is never accepted as
-the model identity. Attempt IDs are unique for the lifetime of the governor,
-timestamps must fit the real `Start` to `Finish` interval, and pacing resumes
-from the latest authoritative attempt start.
+and route settings, but it never authorizes execution by itself. An M1 receipt
+set must contain one attempt using one provider, one concrete model and one
+account-lane hash. `ModelPool` is only an allowance bucket and is never
+accepted as the model identity. Attempt IDs are retained for three hours with
+a bounded in-memory cap, timestamps must fit the real `Start` to `Finish`
+interval, and pacing resumes from the authoritative attempt start.
 
 The adapter still checks `/api/settings`, `/api/models/alias`,
 `/api/settings/model-aliases`, `/api/fallback/chains`, `/api/combos`,

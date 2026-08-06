@@ -240,19 +240,33 @@ func (p *Permit) FinishWithAttemptReceipts(outcome Outcome, set *provider.Attemp
 			AccountLaneHash:    g.config.AccountLaneHash,
 			RequestStartedAt:   p.startedAt,
 			RequestCompletedAt: now,
+			SingleAttempt:      true,
 			Now:                now,
 		})
 	}
 	if validationErr != nil {
 		return p.finishReceiptFailureLocked(validationErr, !errors.Is(validationErr, ErrAttemptReceiptReplayed))
 	}
+	g.pruneAttemptIDsLocked(now)
+	replayed := false
+	newAttemptIDs := 0
 	for _, receipt := range set.Receipts {
 		if _, seen := g.attemptIDs[receipt.AttemptID]; seen {
-			return p.finishReceiptFailureLocked(ErrAttemptReceiptReplayed, false)
+			replayed = true
+			continue
 		}
+		newAttemptIDs++
+	}
+	if replayed {
+		for _, receipt := range set.Receipts {
+			if _, seen := g.attemptIDs[receipt.AttemptID]; !seen {
+				g.attemptIDs[receipt.AttemptID] = now
+			}
+		}
+		return p.finishReceiptFailureLocked(ErrAttemptReceiptReplayed, newAttemptIDs > 0)
 	}
 	for _, receipt := range set.Receipts {
-		g.attemptIDs[receipt.AttemptID] = struct{}{}
+		g.attemptIDs[receipt.AttemptID] = now
 	}
 	before := g.budgetLocked(now, p.request.TaskID)
 	state := g.taskLocked(p.request.TaskID)

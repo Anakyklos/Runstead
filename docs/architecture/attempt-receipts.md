@@ -12,17 +12,18 @@ with `Permit.StartReceiptAware`, and finishes with
 existing `Start`/`Finish` path and must explicitly declare disabled
 amplification in `provider.RouteSafety`.
 
-M1 accepts one provider, one concrete model and one account lane per receipt
-set. `ModelPool` remains an allowance bucket; it is not a model identity.
-Pooling, automatic fallback and combo routing are rejected by the receipt
-route declaration. Internal retries and cooldown replays are safe only when
-each attempt is represented by its own receipt.
+M1 accepts exactly one receipt per completion, using one provider, one concrete
+model and one account lane. `ModelPool` remains an allowance bucket; it is not
+a model identity.
+Pooling, automatic fallback, combo routing, internal retries and cooldown
+replays are rejected by the M1 receipt route declaration. An executor retry is
+a new governed completion, not an additional receipt in the previous one.
 
 Receipt outcomes map to the governor's typed circuit classes. Reconciliation
 processes every receipt before the logical response outcome, so an internal
 security or rate signal cannot be erased by a later success. Receipt
 timestamps must fit the real permit interval and receipt attempt IDs are
-unique for the lifetime of the governor.
+unique within the bounded three-hour protection horizon of the governor.
 
 If the finalized receipt set is missing or invalid after a provider call,
 Runstead records one conservative uncertain debit, emits an

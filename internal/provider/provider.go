@@ -59,10 +59,13 @@ func SafeRouteSafety() RouteSafety {
 }
 
 func ReceiptRouteSafety() RouteSafety {
+	// M1 keeps one upstream attempt per protected completion. Executor retries
+	// must re-enter the governor as a new completion until per-request budgets
+	// exist for provider amplification.
 	return RouteSafety{
 		AttemptAccounting: AttemptAccountingReceipts,
-		InternalRetries:   AmplificationEnabled,
-		CooldownReplay:    AmplificationEnabled,
+		InternalRetries:   AmplificationDisabled,
+		CooldownReplay:    AmplificationDisabled,
 		AccountPooling:    AmplificationDisabled,
 		AutomaticFallback: AmplificationDisabled,
 		ComboRouting:      AmplificationDisabled,
@@ -93,15 +96,6 @@ func (s RouteSafety) Validate() error {
 		for name, value := range map[string]AmplificationStatus{
 			"internal retries":   s.InternalRetries,
 			"cooldown replay":    s.CooldownReplay,
-			"account pooling":    s.AccountPooling,
-			"automatic fallback": s.AutomaticFallback,
-			"combo routing":      s.ComboRouting,
-		} {
-			if value == AmplificationUnknown {
-				return fmt.Errorf("%w: %s coverage is unknown", ErrUnsafeRoute, name)
-			}
-		}
-		for name, value := range map[string]AmplificationStatus{
 			"account pooling":    s.AccountPooling,
 			"automatic fallback": s.AutomaticFallback,
 			"combo routing":      s.ComboRouting,

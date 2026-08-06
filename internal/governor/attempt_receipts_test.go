@@ -99,7 +99,7 @@ func receiptGovernor(t *testing.T, events *eventSink) (*policy.Governor, *fakeCl
 func TestReceiptAwareExecutionDebitsExactlyOnePerReceipt(t *testing.T) {
 	events := &eventSink{}
 	governor, clock := receiptGovernor(t, events)
-	client := &receiptClient{set: receiptSet(clock.Now(), 2)}
+	client := &receiptClient{set: receiptSet(clock.Now(), 1)}
 	result := governor.Execute(context.Background(), policy.AttemptRequest{
 		TaskID:          "task-1",
 		ClientRequestID: "request-1",
@@ -112,11 +112,11 @@ func TestReceiptAwareExecutionDebitsExactlyOnePerReceipt(t *testing.T) {
 	if client.calls != 1 || client.requestID != "request-1" {
 		t.Fatalf("provider call = %d/%q, want one correlated call", client.calls, client.requestID)
 	}
-	if result.Completion.AttemptDebited != 2 || governor.Snapshot().Budgets.Rolling3hUsed != 2 {
+	if result.Completion.AttemptDebited != 1 || governor.Snapshot().Budgets.Rolling3hUsed != 1 {
 		t.Fatalf("receipt accounting = %#v, snapshot=%#v", result.Completion, governor.Snapshot().Budgets)
 	}
-	if !governor.Snapshot().LastStart.Equal(clock.Now().Add(time.Second)) {
-		t.Fatalf("last start = %s, want latest receipt start %s", governor.Snapshot().LastStart, clock.Now().Add(time.Second))
+	if !governor.Snapshot().LastStart.Equal(clock.Now()) {
+		t.Fatalf("last start = %s, want receipt start %s", governor.Snapshot().LastStart, clock.Now())
 	}
 	governor.DrainEvents()
 	var receiptEvents int
@@ -125,14 +125,14 @@ func TestReceiptAwareExecutionDebitsExactlyOnePerReceipt(t *testing.T) {
 			receiptEvents++
 		}
 	}
-	if receiptEvents != 2 {
-		t.Fatalf("receipt events = %d, want 2", receiptEvents)
+	if receiptEvents != 1 {
+		t.Fatalf("receipt events = %d, want 1", receiptEvents)
 	}
 }
 
 func TestReceiptAwareExecutionPreservesInternalSecuritySignals(t *testing.T) {
 	governor, clock := receiptGovernor(t, &eventSink{})
-	set := receiptSet(clock.Now(), 2)
+	set := receiptSet(clock.Now(), 1)
 	set.Receipts[0].Outcome = provider.AttemptOutcomeCAPTCHA
 	result := governor.Execute(context.Background(), policy.AttemptRequest{
 		TaskID:          "task-1",
@@ -164,6 +164,21 @@ func TestReceiptAwareExecutionDoesNotDoubleChargeTheInitialAttempt(t *testing.T)
 	}
 	if task := governor.Snapshot().Tasks["task-1"]; task.Attempts != 1 || task.Retries != 0 {
 		t.Fatalf("task accounting = %#v, want one non-retry attempt", task)
+	}
+}
+
+func TestReceiptAwareExecutionRejectsInternalAmplificationWithOneConservativeDebit(t *testing.T) {
+	governor, clock := receiptGovernor(t, &eventSink{})
+	result := governor.Execute(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-1",
+		ClientRequestID: "request-1",
+		ModelPool:       "model",
+	}, &receiptClient{set: receiptSet(clock.Now(), 2)}, nil)
+	if result.Completion.Err == nil || result.Completion.AttemptDebited != 1 {
+		t.Fatalf("internal amplification result = %#v, want one conservative debit", result.Completion)
+	}
+	if governor.Snapshot().Budgets.Rolling3hUsed != 1 {
+		t.Fatalf("internal amplification budget = %#v, want one debit", governor.Snapshot().Budgets)
 	}
 }
 
@@ -246,5 +261,46 @@ func TestReceiptAwareExecutionRejectsAttemptIDReplayWithoutSecondDebit(t *testin
 	}
 	if second.Completion.AttemptDebited != 0 || governor.Snapshot().Budgets.Rolling3hUsed != 1 {
 		t.Fatalf("replayed receipt accounting = %#v, snapshot=%#v", second.Completion, governor.Snapshot().Budgets)
+	}
+}
+
+func TestReceiptAttemptIDRetentionIsBoundedToProtectionWindow(t *testing.T) {
+	governor, clock := receiptGovernor(t, &eventSink{})
+	result := governor.Execute(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-1",
+		ClientRequestID: "request-1",
+		ModelPool:       "model",
+	}, &receiptClient{set: receiptSet(clock.Now(), 1)}, nil)
+	if result.Completion.Err != nil || governor.Snapshot().RetainedAttemptIDs != 1 {
+		t.Fatalf("retained attempt IDs after reconciliation = %#v", governor.Snapshot())
+	}
+	clock.Advance(3*time.Hour + time.Second)
+	if got := governor.Snapshot().RetainedAttemptIDs; got != 0 {
+		t.Fatalf("retained attempt IDs after retention window = %d, want 0", got)
+	}
+}
+
+func TestReceiptAwareExecutionRejectsMixedReplayWithUncertainDebit(t *testing.T) {
+	governor, clock := receiptGovernor(t, &eventSink{})
+	first := governor.Execute(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-1",
+		ClientRequestID: "request-1",
+		ModelPool:       "model",
+	}, &receiptClient{set: receiptSet(clock.Now(), 1)}, nil)
+	if first.Completion.Err != nil {
+		t.Fatalf("first receipt execution = %#v", first.Completion)
+	}
+	clock.Advance(time.Second)
+	mixed := rebindReceiptSet(receiptSet(clock.Now(), 2), "request-2")
+	second := governor.Execute(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-2",
+		ClientRequestID: "request-2",
+		ModelPool:       "model",
+	}, &receiptClient{set: mixed}, nil)
+	if second.Completion.Err == nil || second.Completion.AttemptDebited != 1 {
+		t.Fatalf("mixed replay result = %#v, want one uncertain debit", second.Completion)
+	}
+	if governor.Snapshot().Budgets.Rolling3hUsed != 2 {
+		t.Fatalf("mixed replay budget = %#v, want two total debits", governor.Snapshot().Budgets)
 	}
 }

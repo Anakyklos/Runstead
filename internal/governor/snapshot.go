@@ -26,6 +26,7 @@ func (g *Governor) Snapshot() Snapshot {
 		PendingEvents:      len(g.pendingEvents),
 		Tasks:              tasks,
 		RetainedRequestIDs: len(g.requestIDs),
+		RetainedAttemptIDs: len(g.attemptIDs),
 		RetainedTaskStates: len(g.tasks),
 	}
 }
