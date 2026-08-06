@@ -16,17 +16,25 @@ M1 accepts exactly one receipt per completion, using one provider, one concrete
 model and one account lane. `ModelPool` remains an allowance bucket; it is not
 a model identity.
 Pooling, automatic fallback, combo routing, internal retries and cooldown
-replays are rejected by the M1 receipt route declaration. An executor retry is
+replays are disabled by the M1 receipt route declaration. An executor retry is
 a new governed completion, not an additional receipt in the previous one.
 
 Receipt outcomes map to the governor's typed circuit classes. Reconciliation
 processes every receipt before the logical response outcome, so an internal
 security or rate signal cannot be erased by a later success. Receipt
 timestamps must fit the real permit interval and receipt attempt IDs are
-unique within the bounded three-hour protection horizon of the governor.
+unique within the bounded three-hour protection horizon of the governor. Remote
+timestamps remain available for audit, while ledger expiry and pacing clamp them
+to the local permit interval so allowed clock skew cannot release protection
+early.
 
-If the finalized receipt set is missing or invalid after a provider call,
-Runstead records one conservative uncertain debit, emits an
+If a structurally valid set violates the M1 one-receipt policy, the governor
+reconciles every unseen attempt ID, then marks the lane unsafe and blocks later
+admission. A policy violation never turns an observed upstream attempt into a
+single conservative debit.
+
+If the finalized receipt set is missing or structurally invalid after a provider
+call, Runstead records one conservative uncertain debit, emits an
 `uncertain_attempt` event, marks telemetry unsafe and blocks later admission.
 This is deliberately conservative recovery for connection loss; it is not a
 claim that the exact upstream attempt count was recovered.

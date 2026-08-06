@@ -229,55 +229,69 @@ func (p *Permit) FinishWithAttemptReceipts(outcome Outcome, set *provider.Attemp
 	if expectedProvider == "" {
 		expectedProvider = g.config.ProviderID
 	}
+	expected := provider.AttemptReceiptExpectation{
+		ClientRequestID:    p.request.ClientRequestID,
+		Provider:           expectedProvider,
+		Model:              g.config.Model,
+		AccountLaneHash:    g.config.AccountLaneHash,
+		RequestStartedAt:   p.startedAt,
+		RequestCompletedAt: now,
+		Now:                now,
+	}
 	var validationErr error
 	if set == nil {
 		validationErr = provider.ErrInvalidAttemptReceipts
 	} else {
-		validationErr = provider.ValidateAttemptReceiptSet(*set, provider.AttemptReceiptExpectation{
-			ClientRequestID:    p.request.ClientRequestID,
-			Provider:           expectedProvider,
-			Model:              g.config.Model,
-			AccountLaneHash:    g.config.AccountLaneHash,
-			RequestStartedAt:   p.startedAt,
-			RequestCompletedAt: now,
-			SingleAttempt:      true,
-			Now:                now,
-		})
+		validationErr = provider.ValidateAttemptReceiptSet(*set, expected)
 	}
 	if validationErr != nil {
 		return p.finishReceiptFailureLocked(validationErr, !errors.Is(validationErr, ErrAttemptReceiptReplayed))
 	}
+	// Reconcile structural receipt authority before applying the M1 policy so
+	// a violating producer cannot hide observed debits.
 	g.pruneAttemptIDsLocked(now)
 	replayed := false
-	newAttemptIDs := 0
+	newReceipts := make([]provider.AttemptReceipt, 0, len(set.Receipts))
 	for _, receipt := range set.Receipts {
 		if _, seen := g.attemptIDs[receipt.AttemptID]; seen {
 			replayed = true
 			continue
 		}
-		newAttemptIDs++
+		newReceipts = append(newReceipts, receipt)
 	}
-	if replayed {
-		for _, receipt := range set.Receipts {
-			if _, seen := g.attemptIDs[receipt.AttemptID]; !seen {
-				g.attemptIDs[receipt.AttemptID] = now
-			}
-		}
-		return p.finishReceiptFailureLocked(ErrAttemptReceiptReplayed, newAttemptIDs > 0)
-	}
-	for _, receipt := range set.Receipts {
+	for _, receipt := range newReceipts {
 		g.attemptIDs[receipt.AttemptID] = now
+	}
+	var policyErr error
+	if len(set.Receipts) > 1 {
+		policyExpected := expected
+		policyExpected.SingleAttempt = true
+		policyErr = provider.ValidateAttemptReceiptSet(*set, policyExpected)
+	}
+	if policyErr == nil && replayed {
+		policyErr = ErrAttemptReceiptReplayed
+	}
+	if policyErr != nil && len(newReceipts) == 0 {
+		return p.finishReceiptFailureLocked(policyErr, false)
+	}
+	if len(newReceipts) == 0 {
+		return p.finishReceiptFailureLocked(ErrAttemptReceiptReplayed, false)
 	}
 	before := g.budgetLocked(now, p.request.TaskID)
 	state := g.taskLocked(p.request.TaskID)
-	receiptOutcomes := make([]Outcome, len(set.Receipts))
-	for index, receipt := range set.Receipts {
-		g.ledger.add(receipt.StartedAt, p.request.TaskID)
+	receiptOutcomes := make([]Outcome, len(newReceipts))
+	latestStart := time.Time{}
+	for index, receipt := range newReceipts {
+		protectedStartedAt := normalizeReceiptProtectionTime(receipt.StartedAt, p.startedAt, now)
+		g.ledger.add(protectedStartedAt, p.request.TaskID)
+		if protectedStartedAt.After(latestStart) {
+			latestStart = protectedStartedAt
+		}
 		state.attempts++
-		if index > 0 || p.request.Retry {
+		if receipt.Sequence > 1 || p.request.Retry {
 			state.retries++
 		}
-		if index > 0 {
+		if receipt.Sequence > 1 {
 			g.nextAttempt++
 		}
 		if g.telemetry.available != nil {
@@ -315,17 +329,17 @@ func (p *Permit) FinishWithAttemptReceipts(outcome Outcome, set *provider.Attemp
 		aggregate = OutcomeSuccess
 	}
 	var selectedBackoff time.Duration
-	for index, receipt := range set.Receipts {
+	for index := range newReceipts {
 		receiptOutcomeValue := receiptOutcomes[index]
-		if index == len(set.Receipts)-1 && outcome.Class != "" && outcome.Class != OutcomeSuccess && outcome.Class == receiptOutcomeValue.Class {
+		if index == len(newReceipts)-1 && outcome.Class != "" && outcome.Class != OutcomeSuccess && outcome.Class == receiptOutcomeValue.Class {
 			receiptOutcomeValue.RetryAfter = outcome.RetryAfter
 			receiptOutcomeValue.ResetAt = outcome.ResetAt
 		}
-		record := g.recordOutcomeLocked(receipt.CompletedAt, p, receiptOutcomeValue)
+		record := g.recordOutcomeLocked(now, p, receiptOutcomeValue)
 		if record.SelectedBackoff > selectedBackoff {
 			selectedBackoff = record.SelectedBackoff
 		}
-		if index == len(set.Receipts)-1 {
+		if index == len(newReceipts)-1 {
 			result = record
 		}
 		aggregate = strongerOutcome(aggregate, receiptOutcomeValue.Class)
@@ -341,11 +355,17 @@ func (p *Permit) FinishWithAttemptReceipts(outcome Outcome, set *provider.Attemp
 		aggregate = strongerOutcome(aggregate, OutcomeUncertainReached)
 	}
 	result.Outcome = strongerOutcome(OutcomeSuccess, aggregate)
-	result.AttemptDebited = len(set.Receipts)
+	result.AttemptDebited = len(newReceipts)
 	result.SelectedBackoff = selectedBackoff
 	result.Circuit = g.circuitSnapshotLocked()
 	result.RetryEligible = isRecoverableOutcome(result.Outcome) && state.retries < g.config.RetryBudget && g.circuit.state == CircuitClosed
-	latestStart := set.Receipts[len(set.Receipts)-1].StartedAt
+	if policyErr != nil {
+		g.telemetry.unsafe = true
+		result.Err = policyErr
+		result.Outcome = strongerOutcome(result.Outcome, OutcomeUncertainReached)
+		result.RetryEligible = false
+		result.Circuit = g.circuitSnapshotLocked()
+	}
 	if latestStart.After(g.lastStart) {
 		g.lastStart = latestStart
 	}
@@ -374,6 +394,18 @@ func (p *Permit) FinishWithAttemptReceipts(outcome Outcome, set *provider.Attemp
 		TelemetryHealthy: p.telemetryHealthy,
 	})
 	return result
+}
+
+func normalizeReceiptProtectionTime(remote, localStart, localNow time.Time) time.Time {
+	// Keep the remote value in the receipt for audit, but never let clock skew
+	// move protection earlier than the local permit interval or into the future.
+	if remote.Before(localStart) {
+		return localStart
+	}
+	if remote.After(localNow) {
+		return localNow
+	}
+	return remote
 }
 
 func (p *Permit) finishReceiptFailureLocked(err error, debitPossibleAttempt bool) FinishResult {

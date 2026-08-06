@@ -69,10 +69,12 @@ Admit -> Start -> provider.Client.Complete -> Finish
 telemetry and rolling/task/retry budgets. In the single-attempt route, `Start`
 is the exact debit point. In the receipt-aware route, `Start` reserves the
 logical request and `Finish` validates and debits one unit per authoritative
-receipt. If the receipt authority is missing or invalid, the governor records
-one conservative uncertain debit, marks telemetry unsafe and blocks later
-admission. The governor never runs an autonomous retry loop; a future agent
-loop must request each next attempt through `Admit` again.
+receipt. If a valid receipt set violates the M1 one-attempt policy, every unseen
+receipt is still reconciled before the governor marks telemetry unsafe and
+blocks later admission. If receipt authority is missing or structurally
+invalid, the governor records one conservative uncertain debit, marks telemetry
+unsafe and blocks later admission. The governor never runs an autonomous retry
+loop; a future agent loop must request each next attempt through `Admit` again.
 
 `ClientRequestID` is a process-local identity for exact-request suppression: an
 accepted ID cannot be admitted again, while cancellation before `Start` releases
@@ -111,9 +113,10 @@ The provider boundary remains deliberately small: one
 `provider.Client.Complete` invocation represents one logical completion and
 owns no quota, account rotation or scheduling policy. The legacy route must
 explicitly guarantee one attempt and disable every amplification mode. The M1
-receipt route may report internal retries and cooldown replays, but must declare
-account pooling, automatic fallback and combo routing disabled. Unknown or
-unsafe declarations are rejected before queue admission.
+receipt route must declare account pooling, automatic fallback, combo routing,
+internal retries and cooldown replays disabled. A structurally valid receipt set
+that violates this policy is fully reconciled and then blocks the lane. Unknown
+or unsafe declarations are rejected before queue admission.
 
 The #4 OmniRoute adapter remains fail-closed until its management evidence and
 receipt transport are verified. `Preflight` may validate observable resilience
@@ -122,7 +125,9 @@ set must contain one attempt using one provider, one concrete model and one
 account-lane hash. `ModelPool` is only an allowance bucket and is never
 accepted as the model identity. Attempt IDs are retained for three hours with
 a bounded in-memory cap, timestamps must fit the real `Start` to `Finish`
-interval, and pacing resumes from the authoritative attempt start.
+interval, and pacing resumes from the authoritative attempt start normalized to
+the local permit interval. Remote timestamp values remain audit data and never
+move rolling-window expiry earlier than the local call.
 
 The adapter still checks `/api/settings`, `/api/models/alias`,
 `/api/settings/model-aliases`, `/api/fallback/chains`, `/api/combos`,

@@ -78,6 +78,10 @@ func rebindReceiptSet(set provider.AttemptReceiptSet, requestID string) provider
 }
 
 func receiptGovernor(t *testing.T, events *eventSink) (*policy.Governor, *fakeClock) {
+	return receiptGovernorWithConfig(t, events, nil)
+}
+
+func receiptGovernorWithConfig(t *testing.T, events *eventSink, configure func(*policy.Config)) (*policy.Governor, *fakeClock) {
 	t.Helper()
 	clock := newFakeClock()
 	config := fastConfig(t)
@@ -89,6 +93,9 @@ func receiptGovernor(t *testing.T, events *eventSink) (*policy.Governor, *fakeCl
 	config.AttemptProviderID = "provider"
 	config.AccountLaneHash = "lane"
 	config.RouteSafety = provider.ReceiptRouteSafety()
+	if configure != nil {
+		configure(&config)
+	}
 	governor, err := policy.New(config, policy.Options{Clock: clock, Jitter: fixedJitter{}, Events: events})
 	if err != nil {
 		t.Fatal(err)
@@ -167,18 +174,36 @@ func TestReceiptAwareExecutionDoesNotDoubleChargeTheInitialAttempt(t *testing.T)
 	}
 }
 
-func TestReceiptAwareExecutionRejectsInternalAmplificationWithOneConservativeDebit(t *testing.T) {
-	governor, clock := receiptGovernor(t, &eventSink{})
+func TestReceiptAwareExecutionDebitsEveryNewAmplifiedAttemptAndBlocksLane(t *testing.T) {
+	events := &eventSink{}
+	governor, clock := receiptGovernor(t, events)
 	result := governor.Execute(context.Background(), policy.AttemptRequest{
 		TaskID:          "task-1",
 		ClientRequestID: "request-1",
 		ModelPool:       "model",
 	}, &receiptClient{set: receiptSet(clock.Now(), 2)}, nil)
-	if result.Completion.Err == nil || result.Completion.AttemptDebited != 1 {
-		t.Fatalf("internal amplification result = %#v, want one conservative debit", result.Completion)
+	if result.Completion.Err == nil || result.Completion.AttemptDebited != 2 {
+		t.Fatalf("internal amplification result = %#v, want two authoritative debits", result.Completion)
 	}
-	if governor.Snapshot().Budgets.Rolling3hUsed != 1 {
-		t.Fatalf("internal amplification budget = %#v, want one debit", governor.Snapshot().Budgets)
+	if governor.Snapshot().Budgets.Rolling3hUsed != 2 {
+		t.Fatalf("internal amplification budget = %#v, want two debits", governor.Snapshot().Budgets)
+	}
+	governor.DrainEvents()
+	var upstreamEvents int
+	for _, event := range events.Events() {
+		if event.Kind == policy.EventUpstreamAttempt {
+			upstreamEvents++
+		}
+	}
+	if upstreamEvents != 2 {
+		t.Fatalf("amplified attempt events = %d, want two", upstreamEvents)
+	}
+	if next := governor.TryAdmit(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-2",
+		ClientRequestID: "request-2",
+		ModelPool:       "model",
+	}); next.Code != policy.AdmissionUnsafeProviderAmplification {
+		t.Fatalf("post-amplification admission = %#v, want unsafe fail-closed result", next)
 	}
 }
 
@@ -280,7 +305,7 @@ func TestReceiptAttemptIDRetentionIsBoundedToProtectionWindow(t *testing.T) {
 	}
 }
 
-func TestReceiptAwareExecutionRejectsMixedReplayWithUncertainDebit(t *testing.T) {
+func TestReceiptAwareExecutionDebitsExactlyNewIDsInMixedReplay(t *testing.T) {
 	governor, clock := receiptGovernor(t, &eventSink{})
 	first := governor.Execute(context.Background(), policy.AttemptRequest{
 		TaskID:          "task-1",
@@ -291,16 +316,69 @@ func TestReceiptAwareExecutionRejectsMixedReplayWithUncertainDebit(t *testing.T)
 		t.Fatalf("first receipt execution = %#v", first.Completion)
 	}
 	clock.Advance(time.Second)
-	mixed := rebindReceiptSet(receiptSet(clock.Now(), 2), "request-2")
+	mixed := rebindReceiptSet(receiptSet(clock.Now(), 3), "request-2")
 	second := governor.Execute(context.Background(), policy.AttemptRequest{
 		TaskID:          "task-2",
 		ClientRequestID: "request-2",
 		ModelPool:       "model",
 	}, &receiptClient{set: mixed}, nil)
-	if second.Completion.Err == nil || second.Completion.AttemptDebited != 1 {
-		t.Fatalf("mixed replay result = %#v, want one uncertain debit", second.Completion)
+	if second.Completion.Err == nil || second.Completion.AttemptDebited != 2 {
+		t.Fatalf("mixed replay result = %#v, want two new-ID debits", second.Completion)
 	}
-	if governor.Snapshot().Budgets.Rolling3hUsed != 2 {
-		t.Fatalf("mixed replay budget = %#v, want two total debits", governor.Snapshot().Budgets)
+	if governor.Snapshot().Budgets.Rolling3hUsed != 3 {
+		t.Fatalf("mixed replay budget = %#v, want three total debits", governor.Snapshot().Budgets)
+	}
+}
+
+func TestReceiptAwareExecutionUsesLocalStartForPacingWithDelayedClock(t *testing.T) {
+	governor, clock := receiptGovernorWithConfig(t, &eventSink{}, func(config *policy.Config) {
+		config.MinimumStartInterval = 5 * time.Second
+	})
+	localStart := clock.Now()
+	set := receiptSet(localStart, 1)
+	set.Receipts[0].StartedAt = localStart.Add(-4 * time.Minute)
+	set.Receipts[0].CompletedAt = localStart.Add(-4*time.Minute + time.Second)
+	result := governor.Execute(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-1",
+		ClientRequestID: "request-1",
+		ModelPool:       "model",
+	}, &receiptClient{set: set}, nil)
+	if result.Completion.Err != nil {
+		t.Fatalf("delayed-clock receipt execution = %#v", result.Completion)
+	}
+	next := governor.TryAdmit(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-2",
+		ClientRequestID: "request-2",
+		ModelPool:       "model",
+	})
+	if next.Code != policy.AdmissionDelayed || !next.RetryAt.Equal(localStart.Add(5*time.Second)) {
+		t.Fatalf("delayed-clock pacing = %#v, want local five-second delay", next)
+	}
+}
+
+func TestReceiptAwareExecutionUsesLocalStartForRollingWindowWithDelayedClock(t *testing.T) {
+	governor, clock := receiptGovernorWithConfig(t, &eventSink{}, func(config *policy.Config) {
+		config.Rolling10m = 1
+	})
+	localStart := clock.Now()
+	set := receiptSet(localStart, 1)
+	set.Receipts[0].StartedAt = localStart.Add(-4 * time.Minute)
+	set.Receipts[0].CompletedAt = localStart.Add(-4*time.Minute + time.Second)
+	result := governor.Execute(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-1",
+		ClientRequestID: "request-1",
+		ModelPool:       "model",
+	}, &receiptClient{set: set}, nil)
+	if result.Completion.Err != nil {
+		t.Fatalf("delayed-clock receipt execution = %#v", result.Completion)
+	}
+	clock.Advance(7 * time.Minute)
+	next := governor.TryAdmit(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-2",
+		ClientRequestID: "request-2",
+		ModelPool:       "model",
+	})
+	if next.Code != policy.AdmissionDelayed || next.Reason != policy.AdmissionRollingBudgetExhausted || !next.RetryAt.Equal(localStart.Add(10*time.Minute)) {
+		t.Fatalf("delayed-clock rolling budget = %#v, want local ten-minute window", next)
 	}
 }
