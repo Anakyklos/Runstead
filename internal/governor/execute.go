@@ -3,6 +3,7 @@ package governor
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/provider"
@@ -27,6 +28,11 @@ func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client p
 			return ExecutionResult{Admission: g.result(AdmissionMissingAttemptReceipts, AdmissionMissingAttemptReceipts, time.Time{}, provider.ErrInvalidAttemptReceipts)}
 		}
 		receiptAware = true
+	}
+	if model := strings.TrimSpace(request.ProviderRequest.Model); model == "" {
+		request.ProviderRequest.Model = g.config.Model
+	} else if g.config.Model != "" && model != g.config.Model {
+		return ExecutionResult{Admission: g.result(AdmissionUnsafeConfiguration, AdmissionUnsafeConfiguration, time.Time{}, errors.New("request model differs from account policy"))}
 	}
 	admission := g.Admit(ctx, request)
 	if !admission.Admitted() {

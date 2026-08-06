@@ -28,6 +28,7 @@ type Config struct {
 	AccountPolicyID        string
 	ProviderID             string
 	ModelPool              string
+	Model                  string
 	AllowanceProfile       AllowanceProfile
 	Rolling3h              int
 	ManualReserve          int
@@ -122,6 +123,9 @@ func (c Config) Validate() error {
 	}
 	if c.RequireAttemptReceipts && strings.TrimSpace(c.AccountLaneHash) == "" {
 		return errors.New("receipt requirement requires an account lane hash")
+	}
+	if c.RequireAttemptReceipts && strings.TrimSpace(c.Model) == "" {
+		return errors.New("receipt requirement requires a concrete model identity")
 	}
 	if c.RateResponseThreshold <= 0 || c.RateResponseWindow <= 0 || c.ResetSafetyMargin <= 0 {
 		return errors.New("circuit thresholds are invalid")
@@ -294,11 +298,12 @@ func (j *randomJitter) Apply(base time.Duration, _ int) time.Duration {
 type EventKind string
 
 const (
-	EventAdmission       EventKind = "admission"
-	EventAttemptStarted  EventKind = "attempt_started"
-	EventAttemptFinished EventKind = "attempt_finished"
-	EventUpstreamAttempt EventKind = "upstream_attempt"
-	EventCircuit         EventKind = "circuit"
+	EventAdmission        EventKind = "admission"
+	EventAttemptStarted   EventKind = "attempt_started"
+	EventAttemptFinished  EventKind = "attempt_finished"
+	EventUpstreamAttempt  EventKind = "upstream_attempt"
+	EventUncertainAttempt EventKind = "uncertain_attempt"
+	EventCircuit          EventKind = "circuit"
 )
 
 type TelemetrySummary struct {
@@ -332,6 +337,7 @@ type Event struct {
 	AccountPolicyID       string
 	ProviderID            string
 	ModelPool             string
+	Model                 string
 	AllowanceProfile      AllowanceProfile
 	TaskID                string
 	ClientRequestID       string
@@ -371,6 +377,7 @@ type Snapshot struct {
 	AccountPolicyID    string
 	ProviderID         string
 	ModelPool          string
+	Model              string
 	AllowanceProfile   AllowanceProfile
 	InFlight           bool
 	QueueLength        int
@@ -405,6 +412,7 @@ var (
 	ErrPermitStarted           = errors.New("permit already started")
 	ErrGovernorClosed          = errors.New("governor is closed")
 	ErrAttemptReceiptsRequired = errors.New("authoritative attempt receipts are required")
+	ErrAttemptReceiptReplayed  = errors.New("attempt receipt was already reconciled")
 )
 
 type FinishResult struct {

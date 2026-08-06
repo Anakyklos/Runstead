@@ -16,6 +16,7 @@ func (g *Governor) transitionCircuitLocked(state CircuitState, reason OutcomeCla
 			AccountPolicyID:  g.config.AccountPolicyID,
 			ProviderID:       g.config.ProviderID,
 			ModelPool:        g.config.ModelPool,
+			Model:            g.config.Model,
 			AllowanceProfile: g.config.AllowanceProfile,
 			CircuitFrom:      from,
 			CircuitTo:        state,

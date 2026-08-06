@@ -16,6 +16,10 @@ func (c *Client) completeOnce(ctx context.Context, request provider.Request) (pr
 	if err := ctx.Err(); err != nil {
 		return provider.Response{}, contextError(err, false)
 	}
+	model := request.Model
+	if model == "" {
+		model = c.config.Model
+	}
 	body, err := json.Marshal(struct {
 		Model    string `json:"model"`
 		Messages []struct {
@@ -24,7 +28,7 @@ func (c *Client) completeOnce(ctx context.Context, request provider.Request) (pr
 		} `json:"messages"`
 		Stream bool `json:"stream"`
 	}{
-		Model: c.config.Model,
+		Model: model,
 		Messages: []struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
@@ -58,12 +62,12 @@ func (c *Client) completeOnce(ctx context.Context, request provider.Request) (pr
 	started := c.now()
 	response, callErr := c.httpClient.Do(req)
 	if callErr != nil {
-		return provider.Response{Metadata: provider.ResponseMetadata{Endpoint: logicalEndpoint(requestURL), Model: c.config.Model, Duration: c.now().Sub(started)}}, transportError(callErr, true)
+		return provider.Response{Metadata: provider.ResponseMetadata{Endpoint: logicalEndpoint(requestURL), Model: model, Duration: c.now().Sub(started)}}, transportError(callErr, true)
 	}
 	if response == nil {
-		return provider.Response{Metadata: provider.ResponseMetadata{Endpoint: logicalEndpoint(requestURL), Model: c.config.Model, Duration: c.now().Sub(started)}}, &Error{Kind: ErrorTransport, UpstreamReached: true}
+		return provider.Response{Metadata: provider.ResponseMetadata{Endpoint: logicalEndpoint(requestURL), Model: model, Duration: c.now().Sub(started)}}, &Error{Kind: ErrorTransport, UpstreamReached: true}
 	}
-	metadata := responseMetadata(response, c.now().Sub(started), requestURL, c.config.Model, c.now())
+	metadata := responseMetadata(response, c.now().Sub(started), requestURL, model, c.now())
 	if rawReceipts := response.Header.Get(attemptReceiptHeader); rawReceipts != "" {
 		set, receiptErr := provider.DecodeAttemptReceiptSet([]byte(rawReceipts))
 		if receiptErr != nil {

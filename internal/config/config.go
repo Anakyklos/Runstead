@@ -29,6 +29,7 @@ const (
 	EnvOmniRouteCooldownReplayDisabled  = "OMNIROUTE_COOLDOWN_REPLAY_DISABLED"
 	EnvOmniRouteAccountPoolingDisabled  = "OMNIROUTE_ACCOUNT_POOLING_DISABLED"
 	EnvOmniRouteFallbackDisabled        = "OMNIROUTE_AUTOMATIC_FALLBACK_DISABLED"
+	EnvOmniRouteComboRoutingDisabled    = "OMNIROUTE_COMBO_ROUTING_DISABLED"
 
 	DefaultWorkspace        = "."
 	DefaultLogLevel         = "info"
@@ -284,6 +285,9 @@ func resolveRouteSafety(overrides OmniRouteOverrides, read func(string) (string,
 		return provider.RouteSafety{}, configured, err
 	}
 	if err := setDisabled(EnvOmniRouteFallbackDisabled, &safety.AutomaticFallback); err != nil {
+		return provider.RouteSafety{}, configured, err
+	}
+	if err := setDisabled(EnvOmniRouteComboRoutingDisabled, &safety.ComboRouting); err != nil {
 		return provider.RouteSafety{}, configured, err
 	}
 	return safety, configured, nil

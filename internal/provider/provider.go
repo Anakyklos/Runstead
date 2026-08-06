@@ -43,6 +43,7 @@ type RouteSafety struct {
 	CooldownReplay    AmplificationStatus
 	AccountPooling    AmplificationStatus
 	AutomaticFallback AmplificationStatus
+	ComboRouting      AmplificationStatus
 }
 
 func SafeRouteSafety() RouteSafety {
@@ -53,6 +54,7 @@ func SafeRouteSafety() RouteSafety {
 		CooldownReplay:    AmplificationDisabled,
 		AccountPooling:    AmplificationDisabled,
 		AutomaticFallback: AmplificationDisabled,
+		ComboRouting:      AmplificationDisabled,
 	}
 }
 
@@ -61,8 +63,9 @@ func ReceiptRouteSafety() RouteSafety {
 		AttemptAccounting: AttemptAccountingReceipts,
 		InternalRetries:   AmplificationEnabled,
 		CooldownReplay:    AmplificationEnabled,
-		AccountPooling:    AmplificationEnabled,
-		AutomaticFallback: AmplificationEnabled,
+		AccountPooling:    AmplificationDisabled,
+		AutomaticFallback: AmplificationDisabled,
+		ComboRouting:      AmplificationDisabled,
 	}
 }
 
@@ -77,6 +80,7 @@ func (s RouteSafety) Validate() error {
 			"cooldown replay":    s.CooldownReplay,
 			"account pooling":    s.AccountPooling,
 			"automatic fallback": s.AutomaticFallback,
+			"combo routing":      s.ComboRouting,
 		} {
 			if value != AmplificationDisabled {
 				return fmt.Errorf("%w: %s is not explicitly disabled", ErrUnsafeRoute, name)
@@ -91,9 +95,19 @@ func (s RouteSafety) Validate() error {
 			"cooldown replay":    s.CooldownReplay,
 			"account pooling":    s.AccountPooling,
 			"automatic fallback": s.AutomaticFallback,
+			"combo routing":      s.ComboRouting,
 		} {
 			if value == AmplificationUnknown {
 				return fmt.Errorf("%w: %s coverage is unknown", ErrUnsafeRoute, name)
+			}
+		}
+		for name, value := range map[string]AmplificationStatus{
+			"account pooling":    s.AccountPooling,
+			"automatic fallback": s.AutomaticFallback,
+			"combo routing":      s.ComboRouting,
+		} {
+			if value != AmplificationDisabled {
+				return fmt.Errorf("%w: M1 receipt route cannot amplify through %s", ErrUnsafeRoute, name)
 			}
 		}
 	default:
@@ -121,6 +135,7 @@ type AttemptReceiptAware interface {
 type Request struct {
 	Protocol        protocol.Version
 	Prompt          string
+	Model           string
 	ClientRequestID string
 }
 

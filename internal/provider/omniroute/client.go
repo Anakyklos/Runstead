@@ -239,6 +239,13 @@ func (c *Client) Complete(ctx context.Context, request provider.Request) (provid
 	if strings.TrimSpace(request.ClientRequestID) == "" {
 		return provider.Response{}, &Error{Kind: ErrorAttemptReceiptsInvalid}
 	}
+	request.Model = strings.TrimSpace(request.Model)
+	if request.Model == "" {
+		request.Model = c.config.Model
+	}
+	if request.Model != c.config.Model {
+		return provider.Response{}, &Error{Kind: ErrorAttemptReceiptsInvalid}
+	}
 	response, callErr := c.completeOnce(ctx, request)
 	var receiptValidationErr *Error
 	if errors.As(callErr, &receiptValidationErr) && receiptValidationErr.Kind == ErrorAttemptReceiptsInvalid {

@@ -108,6 +108,7 @@ func TestResolveOmniRouteConfigurationPrecedenceAndSafety(t *testing.T) {
 		EnvOmniRouteCooldownReplayDisabled:  "true",
 		EnvOmniRouteAccountPoolingDisabled:  "true",
 		EnvOmniRouteFallbackDisabled:        "true",
+		EnvOmniRouteComboRoutingDisabled:    "true",
 	}
 	got, err := Resolve(Overrides{OmniRoute: OmniRouteOverrides{
 		BaseURL:    "http://flag.example/v1",

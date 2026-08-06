@@ -15,6 +15,7 @@ const (
 	MaxAttemptReceiptSerializedBytes = 8 << 10
 	MaxAttemptReceiptIdentifierBytes = 256
 	MaxAttemptReceiptDuration        = 24 * time.Hour
+	MaxAttemptReceiptClockSkew       = 5 * time.Minute
 )
 
 type AttemptTrigger string
@@ -31,13 +32,26 @@ const (
 type AttemptOutcome string
 
 const (
-	AttemptOutcomeSuccess        AttemptOutcome = "success"
-	AttemptOutcomeError          AttemptOutcome = "error"
-	AttemptOutcomeHTTPError      AttemptOutcome = "http_error"
-	AttemptOutcomeTransportError AttemptOutcome = "transport_error"
-	AttemptOutcomeTimeout        AttemptOutcome = "timeout"
-	AttemptOutcomeCancelled      AttemptOutcome = "cancelled"
-	AttemptOutcomeUncertain      AttemptOutcome = "uncertain"
+	AttemptOutcomeSuccess               AttemptOutcome = "success"
+	AttemptOutcomeError                 AttemptOutcome = "error"
+	AttemptOutcomeHTTPError             AttemptOutcome = "http_error"
+	AttemptOutcomeTransportError        AttemptOutcome = "transport_error"
+	AttemptOutcomeRateCapacity          AttemptOutcome = "rate_or_capacity"
+	AttemptOutcomeAuthenticationExpired AttemptOutcome = "authentication_expired"
+	AttemptOutcomeAuthenticationDenied  AttemptOutcome = "authentication_denied"
+	AttemptOutcomeHTTP403               AttemptOutcome = "http_403"
+	AttemptOutcomeLoginChallenge        AttemptOutcome = "login_challenge"
+	AttemptOutcomeCAPTCHA               AttemptOutcome = "captcha"
+	AttemptOutcomeSuspiciousActivity    AttemptOutcome = "suspicious_activity"
+	AttemptOutcomeAccountWarning        AttemptOutcome = "account_warning"
+	AttemptOutcomeFeatureRestriction    AttemptOutcome = "feature_restriction"
+	AttemptOutcomeConnectionReset       AttemptOutcome = "connection_reset"
+	AttemptOutcomeTimeout               AttemptOutcome = "timeout"
+	AttemptOutcomeEmptyResponse         AttemptOutcome = "empty_response"
+	AttemptOutcomeMalformedUpstream     AttemptOutcome = "malformed_upstream_response"
+	AttemptOutcomeUpstreamServerFailure AttemptOutcome = "upstream_server_failure"
+	AttemptOutcomeCancelled             AttemptOutcome = "cancelled"
+	AttemptOutcomeUncertain             AttemptOutcome = "uncertain"
 )
 
 type AttemptReceipt struct {
@@ -63,11 +77,13 @@ type AttemptReceiptSet struct {
 }
 
 type AttemptReceiptExpectation struct {
-	ClientRequestID string
-	Provider        string
-	Model           string
-	AccountLaneHash string
-	Now             time.Time
+	ClientRequestID    string
+	Provider           string
+	Model              string
+	AccountLaneHash    string
+	RequestStartedAt   time.Time
+	RequestCompletedAt time.Time
+	Now                time.Time
 }
 
 type AttemptReceiptErrorCode string
@@ -194,8 +210,11 @@ func ValidateAttemptReceiptSet(set AttemptReceiptSet, expected AttemptReceiptExp
 		if !validTrigger(receipt.Trigger) {
 			return receiptError(AttemptReceiptUnknownTrigger)
 		}
-		if err := validateTimestamps(receipt.StartedAt, receipt.CompletedAt, expected.Now); err != nil {
+		if err := validateTimestamps(receipt.StartedAt, receipt.CompletedAt, expected); err != nil {
 			return err
+		}
+		if index > 0 && receipt.StartedAt.Before(set.Receipts[index-1].CompletedAt) {
+			return receiptError(AttemptReceiptTimestamp)
 		}
 	}
 	serialized, err := json.Marshal(set)
@@ -217,17 +236,26 @@ func validateIdentifier(value string) error {
 	return nil
 }
 
-func validateTimestamps(started, completed, now time.Time) error {
+func validateTimestamps(started, completed time.Time, expected AttemptReceiptExpectation) error {
 	if started.IsZero() || completed.IsZero() || completed.Before(started) || completed.Sub(started) > MaxAttemptReceiptDuration {
 		return receiptError(AttemptReceiptTimestamp)
 	}
 	if started.Year() < 2000 || completed.Year() < 2000 {
 		return receiptError(AttemptReceiptTimestamp)
 	}
-	if !now.IsZero() && (started.Before(now.Add(-MaxAttemptReceiptDuration)) ||
-		completed.Before(now.Add(-MaxAttemptReceiptDuration)) ||
-		started.After(now.Add(MaxAttemptReceiptDuration)) ||
-		completed.After(now.Add(MaxAttemptReceiptDuration))) {
+	if !expected.RequestStartedAt.IsZero() && started.Before(expected.RequestStartedAt.Add(-MaxAttemptReceiptClockSkew)) {
+		return receiptError(AttemptReceiptTimestamp)
+	}
+	if !expected.RequestCompletedAt.IsZero() {
+		latest := expected.RequestCompletedAt.Add(MaxAttemptReceiptClockSkew)
+		if started.After(latest) || completed.After(latest) {
+			return receiptError(AttemptReceiptTimestamp)
+		}
+	}
+	if !expected.Now.IsZero() && (started.Before(expected.Now.Add(-MaxAttemptReceiptDuration)) ||
+		completed.Before(expected.Now.Add(-MaxAttemptReceiptDuration)) ||
+		started.After(expected.Now.Add(MaxAttemptReceiptDuration)) ||
+		completed.After(expected.Now.Add(MaxAttemptReceiptDuration))) {
 		return receiptError(AttemptReceiptTimestamp)
 	}
 	return nil
@@ -235,7 +263,13 @@ func validateTimestamps(started, completed, now time.Time) error {
 
 func validOutcome(outcome AttemptOutcome) bool {
 	switch outcome {
-	case AttemptOutcomeSuccess, AttemptOutcomeError, AttemptOutcomeHTTPError, AttemptOutcomeTransportError, AttemptOutcomeTimeout, AttemptOutcomeCancelled, AttemptOutcomeUncertain:
+	case AttemptOutcomeSuccess, AttemptOutcomeError, AttemptOutcomeHTTPError, AttemptOutcomeTransportError,
+		AttemptOutcomeRateCapacity, AttemptOutcomeAuthenticationExpired, AttemptOutcomeAuthenticationDenied,
+		AttemptOutcomeHTTP403, AttemptOutcomeLoginChallenge, AttemptOutcomeCAPTCHA,
+		AttemptOutcomeSuspiciousActivity, AttemptOutcomeAccountWarning, AttemptOutcomeFeatureRestriction,
+		AttemptOutcomeConnectionReset, AttemptOutcomeTimeout, AttemptOutcomeEmptyResponse,
+		AttemptOutcomeMalformedUpstream, AttemptOutcomeUpstreamServerFailure,
+		AttemptOutcomeCancelled, AttemptOutcomeUncertain:
 		return true
 	default:
 		return false
@@ -253,7 +287,9 @@ func validTrigger(trigger AttemptTrigger) bool {
 
 func (s AttemptReceiptSet) ContainsUncertain() bool {
 	for _, receipt := range s.Receipts {
-		if receipt.Outcome == AttemptOutcomeUncertain || receipt.Outcome == AttemptOutcomeCancelled || receipt.Outcome == AttemptOutcomeTimeout {
+		switch receipt.Outcome {
+		case AttemptOutcomeError, AttemptOutcomeHTTPError, AttemptOutcomeTransportError,
+			AttemptOutcomeConnectionReset, AttemptOutcomeTimeout, AttemptOutcomeCancelled, AttemptOutcomeUncertain:
 			return true
 		}
 	}

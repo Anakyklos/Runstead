@@ -42,6 +42,67 @@ func TestAttemptReceiptSetAcceptsValidVersionedSet(t *testing.T) {
 	}
 }
 
+func TestAttemptReceiptSetAcceptsTypedCircuitOutcomes(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	set := AttemptReceiptSet{
+		SchemaVersion: AttemptReceiptSchemaVersion, ClientRequestID: "request-1", Finalized: true,
+		Receipts: []AttemptReceipt{{
+			SchemaVersion: AttemptReceiptSchemaVersion, AttemptID: "attempt-1", ClientRequestID: "request-1", Sequence: 1,
+			Provider: "provider", Model: "model", AccountLaneHash: "lane", StartedAt: now,
+			CompletedAt: now.Add(time.Second), Trigger: AttemptTriggerInitial, UpstreamReached: true,
+		}},
+	}
+	for _, outcome := range []AttemptOutcome{
+		AttemptOutcomeRateCapacity, AttemptOutcomeAuthenticationExpired, AttemptOutcomeAuthenticationDenied,
+		AttemptOutcomeHTTP403, AttemptOutcomeLoginChallenge, AttemptOutcomeCAPTCHA,
+		AttemptOutcomeSuspiciousActivity, AttemptOutcomeAccountWarning, AttemptOutcomeFeatureRestriction,
+		AttemptOutcomeConnectionReset, AttemptOutcomeTimeout, AttemptOutcomeEmptyResponse,
+		AttemptOutcomeMalformedUpstream, AttemptOutcomeUpstreamServerFailure,
+	} {
+		set.Receipts[0].Outcome = outcome
+		if err := ValidateAttemptReceiptSet(set, AttemptReceiptExpectation{Now: now}); err != nil {
+			t.Fatalf("typed outcome %q rejected: %v", outcome, err)
+		}
+	}
+}
+
+func TestAttemptReceiptSetBindsTimestampsToRequestInterval(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	set := AttemptReceiptSet{
+		SchemaVersion: AttemptReceiptSchemaVersion, ClientRequestID: "request-1", Finalized: true,
+		Receipts: []AttemptReceipt{{
+			SchemaVersion: AttemptReceiptSchemaVersion, AttemptID: "attempt-1", ClientRequestID: "request-1", Sequence: 1,
+			Provider: "provider", Model: "model", AccountLaneHash: "lane", StartedAt: now,
+			CompletedAt: now.Add(time.Second), Outcome: AttemptOutcomeSuccess, Trigger: AttemptTriggerInitial, UpstreamReached: true,
+		}},
+	}
+	expected := AttemptReceiptExpectation{RequestStartedAt: now, RequestCompletedAt: now.Add(2 * time.Second), Now: now}
+	set.Receipts[0].StartedAt = now.Add(-MaxAttemptReceiptClockSkew - time.Second)
+	set.Receipts[0].CompletedAt = set.Receipts[0].StartedAt.Add(time.Second)
+	if err := ValidateAttemptReceiptSet(set, expected); err == nil {
+		t.Fatal("receipt before request interval was accepted")
+	}
+	set.Receipts[0].StartedAt = now.Add(MaxAttemptReceiptClockSkew + 3*time.Second)
+	set.Receipts[0].CompletedAt = set.Receipts[0].StartedAt.Add(time.Second)
+	if err := ValidateAttemptReceiptSet(set, expected); err == nil {
+		t.Fatal("receipt after request interval was accepted")
+	}
+}
+
+func TestAttemptReceiptSetRejectsOverlappingAttempts(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	set := AttemptReceiptSet{
+		SchemaVersion: AttemptReceiptSchemaVersion, ClientRequestID: "request-1", Finalized: true,
+		Receipts: []AttemptReceipt{
+			{SchemaVersion: AttemptReceiptSchemaVersion, AttemptID: "attempt-1", ClientRequestID: "request-1", Sequence: 1, Provider: "provider", Model: "model", AccountLaneHash: "lane", StartedAt: now, CompletedAt: now.Add(time.Second), Outcome: AttemptOutcomeSuccess, Trigger: AttemptTriggerInitial, UpstreamReached: true},
+			{SchemaVersion: AttemptReceiptSchemaVersion, AttemptID: "attempt-2", ClientRequestID: "request-1", Sequence: 2, Provider: "provider", Model: "model", AccountLaneHash: "lane", StartedAt: now.Add(500 * time.Millisecond), CompletedAt: now.Add(1500 * time.Millisecond), Outcome: AttemptOutcomeSuccess, Trigger: AttemptTriggerExecutorRetry, UpstreamReached: true},
+		},
+	}
+	if err := ValidateAttemptReceiptSet(set, AttemptReceiptExpectation{Now: now}); err == nil {
+		t.Fatal("overlapping receipt intervals were accepted")
+	}
+}
+
 func TestDecodeAttemptReceiptSetRejectsUnknownFieldsWithoutEchoingSecrets(t *testing.T) {
 	data, err := json.Marshal(map[string]any{
 		"schema_version":    AttemptReceiptSchemaVersion,

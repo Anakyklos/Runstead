@@ -13,6 +13,7 @@ func (g *Governor) Snapshot() Snapshot {
 		AccountPolicyID:    g.config.AccountPolicyID,
 		ProviderID:         g.config.ProviderID,
 		ModelPool:          g.config.ModelPool,
+		Model:              g.config.Model,
 		AllowanceProfile:   g.config.AllowanceProfile,
 		InFlight:           g.inFlight,
 		QueueLength:        len(g.queue),

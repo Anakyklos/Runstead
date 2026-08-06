@@ -24,6 +24,7 @@ func (s *PolicySink) Emit(event governor.Event) {
 		"account_policy_id", event.AccountPolicyID,
 		"provider", event.ProviderID,
 		"model_pool", event.ModelPool,
+		"model", event.Model,
 		"allowance_profile", event.AllowanceProfile,
 		"task_id", event.TaskID,
 		"client_request_id", event.ClientRequestID,

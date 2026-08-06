@@ -12,6 +12,24 @@ with `Permit.StartReceiptAware`, and finishes with
 existing `Start`/`Finish` path and must explicitly declare disabled
 amplification in `provider.RouteSafety`.
 
-The receipt set is deliberately request-scoped and in-memory. Persistence,
-automatic activation, CLI configuration, streaming terminal artifacts, and
-live rollout policy are outside this boundary.
+M1 accepts one provider, one concrete model and one account lane per receipt
+set. `ModelPool` remains an allowance bucket; it is not a model identity.
+Pooling, automatic fallback and combo routing are rejected by the receipt
+route declaration. Internal retries and cooldown replays are safe only when
+each attempt is represented by its own receipt.
+
+Receipt outcomes map to the governor's typed circuit classes. Reconciliation
+processes every receipt before the logical response outcome, so an internal
+security or rate signal cannot be erased by a later success. Receipt
+timestamps must fit the real permit interval and receipt attempt IDs are
+unique for the lifetime of the governor.
+
+If the finalized receipt set is missing or invalid after a provider call,
+Runstead records one conservative uncertain debit, emits an
+`uncertain_attempt` event, marks telemetry unsafe and blocks later admission.
+This is deliberately conservative recovery for connection loss; it is not a
+claim that the exact upstream attempt count was recovered.
+
+The receipt set is request-scoped and in-memory. Persistence, automatic
+activation, CLI configuration, streaming terminal artifacts, and live rollout
+policy are outside this boundary.

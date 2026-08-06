@@ -57,7 +57,7 @@ func receiptSet(now time.Time, count int) provider.AttemptReceiptSet {
 			ClientRequestID: "request-1",
 			Sequence:        i,
 			Provider:        "provider",
-			Model:           "model",
+			Model:           "concrete-model",
 			AccountLaneHash: "lane",
 			StartedAt:       now.Add(time.Duration(i-1) * time.Second),
 			CompletedAt:     now.Add(time.Duration(i) * time.Second),
@@ -69,12 +69,21 @@ func receiptSet(now time.Time, count int) provider.AttemptReceiptSet {
 	return set
 }
 
+func rebindReceiptSet(set provider.AttemptReceiptSet, requestID string) provider.AttemptReceiptSet {
+	set.ClientRequestID = requestID
+	for index := range set.Receipts {
+		set.Receipts[index].ClientRequestID = requestID
+	}
+	return set
+}
+
 func receiptGovernor(t *testing.T, events *eventSink) (*policy.Governor, *fakeClock) {
 	t.Helper()
 	clock := newFakeClock()
 	config := fastConfig(t)
 	config.ProviderID = "provider"
 	config.ModelPool = "model"
+	config.Model = "concrete-model"
 	config.RequireSingleAttempt = false
 	config.RequireAttemptReceipts = true
 	config.AttemptProviderID = "provider"
@@ -106,6 +115,9 @@ func TestReceiptAwareExecutionDebitsExactlyOnePerReceipt(t *testing.T) {
 	if result.Completion.AttemptDebited != 2 || governor.Snapshot().Budgets.Rolling3hUsed != 2 {
 		t.Fatalf("receipt accounting = %#v, snapshot=%#v", result.Completion, governor.Snapshot().Budgets)
 	}
+	if !governor.Snapshot().LastStart.Equal(clock.Now().Add(time.Second)) {
+		t.Fatalf("last start = %s, want latest receipt start %s", governor.Snapshot().LastStart, clock.Now().Add(time.Second))
+	}
 	governor.DrainEvents()
 	var receiptEvents int
 	for _, event := range events.Events() {
@@ -115,6 +127,23 @@ func TestReceiptAwareExecutionDebitsExactlyOnePerReceipt(t *testing.T) {
 	}
 	if receiptEvents != 2 {
 		t.Fatalf("receipt events = %d, want 2", receiptEvents)
+	}
+}
+
+func TestReceiptAwareExecutionPreservesInternalSecuritySignals(t *testing.T) {
+	governor, clock := receiptGovernor(t, &eventSink{})
+	set := receiptSet(clock.Now(), 2)
+	set.Receipts[0].Outcome = provider.AttemptOutcomeCAPTCHA
+	result := governor.Execute(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-1",
+		ClientRequestID: "request-1",
+		ModelPool:       "model",
+	}, &receiptClient{set: set}, nil)
+	if result.Completion.Outcome != policy.OutcomeCAPTCHA || result.Completion.Circuit.State != policy.CircuitHumanReviewRequired {
+		t.Fatalf("internal security signal = %#v, want human-review circuit", result.Completion)
+	}
+	if next := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task-2", ClientRequestID: "request-2", ModelPool: "model"}); next.Code != policy.AdmissionHumanAcknowledgementRequired {
+		t.Fatalf("post-CAPTCHA admission = %#v, want acknowledgement gate", next)
 	}
 }
 
@@ -162,8 +191,8 @@ func TestReceiptAwareExecutionCountsUncertainAttemptAndBlocksOnMissingProof(t *t
 		ClientRequestID: "request-2",
 		ModelPool:       "model",
 	}, missingReceiptClient{}, nil)
-	if missing.Completion.Err == nil || missing.Completion.AttemptDebited != 0 {
-		t.Fatalf("missing receipt result = %#v, want fail-closed zero debit", missing.Completion)
+	if missing.Completion.Err == nil || missing.Completion.AttemptDebited != 1 {
+		t.Fatalf("missing receipt result = %#v, want fail-closed uncertain debit", missing.Completion)
 	}
 	if next := missingGovernor.TryAdmit(context.Background(), policy.AttemptRequest{
 		TaskID:          "task-3",
@@ -183,8 +212,8 @@ func TestReceiptAwareExecutionRejectsPreUpstreamReceiptWithoutDebiting(t *testin
 		ClientRequestID: "request-1",
 		ModelPool:       "model",
 	}, &receiptClient{set: set}, nil)
-	if result.Completion.Err == nil || result.Completion.AttemptDebited != 0 {
-		t.Fatalf("pre-upstream receipt result = %#v, want fail-closed zero debit", result.Completion)
+	if result.Completion.Err == nil || result.Completion.AttemptDebited != 1 {
+		t.Fatalf("pre-upstream receipt result = %#v, want fail-closed uncertain debit", result.Completion)
 	}
 	if next := governor.TryAdmit(context.Background(), policy.AttemptRequest{
 		TaskID:          "task-2",
@@ -192,5 +221,30 @@ func TestReceiptAwareExecutionRejectsPreUpstreamReceiptWithoutDebiting(t *testin
 		ModelPool:       "model",
 	}); next.Code != policy.AdmissionUnsafeProviderAmplification {
 		t.Fatalf("post-invalid admission = %#v, want unsafe fail-closed result", next)
+	}
+}
+
+func TestReceiptAwareExecutionRejectsAttemptIDReplayWithoutSecondDebit(t *testing.T) {
+	governor, clock := receiptGovernor(t, &eventSink{})
+	first := governor.Execute(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-1",
+		ClientRequestID: "request-1",
+		ModelPool:       "model",
+	}, &receiptClient{set: receiptSet(clock.Now(), 1)}, nil)
+	if first.Completion.Err != nil {
+		t.Fatalf("first receipt execution = %#v", first.Completion)
+	}
+	clock.Advance(time.Second)
+	secondSet := rebindReceiptSet(receiptSet(clock.Now(), 1), "request-2")
+	second := governor.Execute(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-2",
+		ClientRequestID: "request-2",
+		ModelPool:       "model",
+	}, &receiptClient{set: secondSet}, nil)
+	if second.Completion.Err == nil || second.Completion.Err.Error() != policy.ErrAttemptReceiptReplayed.Error() {
+		t.Fatalf("replayed receipt execution = %#v, want replay error", second.Completion)
+	}
+	if second.Completion.AttemptDebited != 0 || governor.Snapshot().Budgets.Rolling3hUsed != 1 {
+		t.Fatalf("replayed receipt accounting = %#v, snapshot=%#v", second.Completion, governor.Snapshot().Budgets)
 	}
 }
