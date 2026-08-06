@@ -25,26 +25,29 @@ const (
 )
 
 type Config struct {
-	AccountPolicyID       string
-	ProviderID            string
-	ModelPool             string
-	AllowanceProfile      AllowanceProfile
-	Rolling3h             int
-	ManualReserve         int
-	Rolling1h             int
-	Rolling10m            int
-	TaskBudget            int
-	RetryBudget           int
-	QueueCapacity         int
-	FairnessQuantum       int
-	MinimumStartInterval  time.Duration
-	BurstCapacity         int
-	MaxInFlight           int
-	RequireSingleAttempt  bool
-	RateResponseThreshold int
-	RateResponseWindow    time.Duration
-	ResetSafetyMargin     time.Duration
-	RouteSafety           provider.RouteSafety
+	AccountPolicyID        string
+	ProviderID             string
+	ModelPool              string
+	AllowanceProfile       AllowanceProfile
+	Rolling3h              int
+	ManualReserve          int
+	Rolling1h              int
+	Rolling10m             int
+	TaskBudget             int
+	RetryBudget            int
+	QueueCapacity          int
+	FairnessQuantum        int
+	MinimumStartInterval   time.Duration
+	BurstCapacity          int
+	MaxInFlight            int
+	RequireSingleAttempt   bool
+	RequireAttemptReceipts bool
+	AttemptProviderID      string
+	AccountLaneHash        string
+	RateResponseThreshold  int
+	RateResponseWindow     time.Duration
+	ResetSafetyMargin      time.Duration
+	RouteSafety            provider.RouteSafety
 }
 
 func DefaultInstantConfig(accountPolicyID, providerID, modelPool string, safety provider.RouteSafety) Config {
@@ -108,8 +111,17 @@ func (c Config) Validate() error {
 	if c.MaxInFlight != 1 {
 		return errors.New("max_in_flight must be exactly one for a personal ChatGPT Web account")
 	}
-	if !c.RequireSingleAttempt {
-		return errors.New("single-attempt requirement must be enabled")
+	if c.RequireSingleAttempt == c.RequireAttemptReceipts {
+		return errors.New("exactly one attempt-accounting requirement must be enabled")
+	}
+	if c.RequireSingleAttempt && c.RouteSafety.AttemptAccounting != provider.AttemptAccountingSingle {
+		return errors.New("single-attempt requirement requires single-attempt route safety")
+	}
+	if c.RequireAttemptReceipts && c.RouteSafety.AttemptAccounting != provider.AttemptAccountingReceipts {
+		return errors.New("receipt requirement requires receipt-aware route safety")
+	}
+	if c.RequireAttemptReceipts && strings.TrimSpace(c.AccountLaneHash) == "" {
+		return errors.New("receipt requirement requires an account lane hash")
 	}
 	if c.RateResponseThreshold <= 0 || c.RateResponseWindow <= 0 || c.ResetSafetyMargin <= 0 {
 		return errors.New("circuit thresholds are invalid")
@@ -140,6 +152,7 @@ const (
 	AdmissionAuthenticationRefreshRequired AdmissionCode = "authentication_refresh_required"
 	AdmissionDuplicateClientRequest        AdmissionCode = "duplicate_client_request"
 	AdmissionGovernorClosed                AdmissionCode = "governor_closed"
+	AdmissionMissingAttemptReceipts        AdmissionCode = "missing_attempt_receipts"
 )
 
 type AttemptRequest struct {
@@ -284,6 +297,7 @@ const (
 	EventAdmission       EventKind = "admission"
 	EventAttemptStarted  EventKind = "attempt_started"
 	EventAttemptFinished EventKind = "attempt_finished"
+	EventUpstreamAttempt EventKind = "upstream_attempt"
 	EventCircuit         EventKind = "circuit"
 )
 
@@ -314,28 +328,32 @@ type BudgetSnapshot struct {
 }
 
 type Event struct {
-	Kind             EventKind
-	AccountPolicyID  string
-	ProviderID       string
-	ModelPool        string
-	AllowanceProfile AllowanceProfile
-	TaskID           string
-	ClientRequestID  string
-	AttemptSequence  int
-	Admission        AdmissionCode
-	Reason           AdmissionCode
-	Delay            time.Duration
-	RetryAt          time.Time
-	BudgetsBefore    BudgetSnapshot
-	BudgetsAfter     BudgetSnapshot
-	Telemetry        TelemetrySummary
-	Outcome          OutcomeClass
-	CooldownUntil    time.Time
-	SelectedBackoff  time.Duration
-	CircuitFrom      CircuitState
-	CircuitTo        CircuitState
-	CircuitReason    OutcomeClass
-	TelemetryHealthy bool
+	Kind                  EventKind
+	AccountPolicyID       string
+	ProviderID            string
+	ModelPool             string
+	AllowanceProfile      AllowanceProfile
+	TaskID                string
+	ClientRequestID       string
+	AttemptSequence       int
+	AttemptID             string
+	AttemptTrigger        provider.AttemptTrigger
+	AttemptReceiptOutcome provider.AttemptOutcome
+	UpstreamReached       bool
+	Admission             AdmissionCode
+	Reason                AdmissionCode
+	Delay                 time.Duration
+	RetryAt               time.Time
+	BudgetsBefore         BudgetSnapshot
+	BudgetsAfter          BudgetSnapshot
+	Telemetry             TelemetrySummary
+	Outcome               OutcomeClass
+	CooldownUntil         time.Time
+	SelectedBackoff       time.Duration
+	CircuitFrom           CircuitState
+	CircuitTo             CircuitState
+	CircuitReason         OutcomeClass
+	TelemetryHealthy      bool
 }
 
 type EventSink interface {
@@ -382,10 +400,11 @@ type Options struct {
 }
 
 var (
-	ErrPermitCompleted  = errors.New("permit already completed")
-	ErrPermitNotStarted = errors.New("permit has not started")
-	ErrPermitStarted    = errors.New("permit already started")
-	ErrGovernorClosed   = errors.New("governor is closed")
+	ErrPermitCompleted         = errors.New("permit already completed")
+	ErrPermitNotStarted        = errors.New("permit has not started")
+	ErrPermitStarted           = errors.New("permit already started")
+	ErrGovernorClosed          = errors.New("governor is closed")
+	ErrAttemptReceiptsRequired = errors.New("authoritative attempt receipts are required")
 )
 
 type FinishResult struct {

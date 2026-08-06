@@ -20,6 +20,14 @@ func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client p
 	if err := safety.Validate(); err != nil || !safety.Equal(g.config.RouteSafety) {
 		return ExecutionResult{Admission: g.result(AdmissionUnsafeProviderAmplification, AdmissionUnsafeProviderAmplification, time.Time{}, provider.ErrUnsafeRoute)}
 	}
+	receiptAware := false
+	if g.config.RequireAttemptReceipts {
+		capability, ok := client.(provider.AttemptReceiptAware)
+		if !ok || !capability.AttemptReceiptsEnabled() {
+			return ExecutionResult{Admission: g.result(AdmissionMissingAttemptReceipts, AdmissionMissingAttemptReceipts, time.Time{}, provider.ErrInvalidAttemptReceipts)}
+		}
+		receiptAware = true
+	}
 	admission := g.Admit(ctx, request)
 	if !admission.Admitted() {
 		return ExecutionResult{Admission: admission, Err: admission.Err}
@@ -30,7 +38,14 @@ func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client p
 		admission.Err = &AdmissionError{Code: admission.Code, Cause: err}
 		return ExecutionResult{Admission: admission, Err: admission.Err}
 	}
-	if err := admission.Permit.Start(); err != nil {
+	request.ProviderRequest.ClientRequestID = request.ClientRequestID
+	var startErr error
+	if receiptAware {
+		startErr = admission.Permit.StartReceiptAware()
+	} else {
+		startErr = admission.Permit.Start()
+	}
+	if err := startErr; err != nil {
 		return ExecutionResult{Admission: admission, Err: err}
 	}
 	response, callErr := client.Complete(ctx, request.ProviderRequest)
@@ -41,6 +56,14 @@ func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client p
 	if outcome.Class == OutcomeCancelledBeforeUpstream {
 		outcome.Class = OutcomeUncertainReached
 	}
-	completion := admission.Permit.Finish(outcome)
+	var completion FinishResult
+	if receiptAware {
+		completion = admission.Permit.FinishWithAttemptReceipts(outcome, response.Metadata.AttemptReceipts)
+		if completion.Err != nil && callErr == nil {
+			callErr = completion.Err
+		}
+	} else {
+		completion = admission.Permit.Finish(outcome)
+	}
 	return ExecutionResult{Admission: admission, Response: response, Completion: completion, Err: callErr}
 }

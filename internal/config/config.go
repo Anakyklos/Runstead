@@ -249,6 +249,7 @@ func resolveRouteSafety(overrides OmniRouteOverrides, read func(string) (string,
 			return fmt.Errorf("invalid OmniRoute route safety value")
 		}
 		if parsed {
+			safety.AttemptAccounting = provider.AttemptAccountingSingle
 			safety.SingleAttempt = provider.SingleAttemptGuaranteed
 		}
 		return nil

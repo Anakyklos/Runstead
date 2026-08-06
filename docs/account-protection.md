@@ -1,188 +1,39 @@
-# ChatGPT Web Account Protection
+# Authoritative upstream attempt receipts
 
-## Purpose and SLO
+Runstead treats an OmniRoute response as a logical completion. A protected
+account lane must debit the number of upstream attempts that OmniRoute actually
+started, including retries, credential refreshes, fallbacks, combos, cooldown
+replays, timeouts, and cancellations after the upstream call began.
 
-Runstead's Account Protection SLO is an internal operating target for a
-personal ChatGPT Web account used through an adapter such as OmniRoute. It is
-not an SLA, an OpenAI guarantee, or evidence that unofficial ChatGPT Web
-automation is permitted or safe. OpenAI's terms and product restrictions still
-apply; throttling cannot make unofficial automation compliant, and Runstead
-must not bypass limits or safeguards.
+## Contract
 
-The M1 governor accounts 100% of observed upstream attempts, keeps one request
-in flight per account, prevents bursts, preserves a manual-use reserve, and
-fails closed on authentication or suspicious-activity signals. Account
-protection has priority over task latency.
+The versioned receipt set is carried in the `X-OmniRoute-Attempt-Receipts`
+response header when a non-streaming response has reached a finalized state.
+Runstead sends `X-Runstead-Client-Request-Id` and requests the extension with
+`X-Runstead-Attempt-Receipts: v1`.
 
-## Vocabulary
+Each receipt contains a schema version, immutable attempt ID, correlated client
+request ID, contiguous sequence, provider, model, stable account-lane hash,
+start and completion timestamps, typed outcome and trigger, and
+`upstream_reached`. Receipt payloads never contain prompts, responses, cookies,
+tokens, keys, raw headers, or direct account identifiers.
 
-- A **client request** is one request submitted by Runstead to a provider
-  adapter.
-- An **upstream attempt** is one actual model request that may reach ChatGPT
-  Web. Hidden provider retries are additional upstream attempts and are not
-  allowed in the protected M1 route.
-- An **account lane** is the FIFO queue and serialized execution state for one
-  account policy.
-- A **model pool** is the configured allowance bucket, such as Plus/Go Instant
-  or a separate reasoning pool.
+The consumer rejects unknown versions and fields, missing or duplicate IDs,
+correlation or route mismatches, sequence gaps, invalid outcomes or triggers,
+bad timestamps, oversized identifiers, more than 16 receipts, or serialized
+payloads over 8 KiB. Missing or invalid authority fails closed and blocks later
+admission; Runstead does not invent a charge for an unverified attempt.
 
-## Profiles and budgets
+## Accounting
 
-`PlusGoInstant` is an explicit local operating profile based on a published
-160-message/3-hour family. Runstead defaults are 140 upstream attempts per
-rolling 3 hours, an independent 20-attempt manual reserve, 80 per rolling
-hour, 25 per rolling 10 minutes, 80 attempts per task, two recoverable retries
-per task, queue capacity 16, a five-second minimum start-to-start interval and
-one request in flight. These are Runstead ceilings, not limits approved or
-guaranteed by OpenAI.
+`StartReceiptAware` reserves the logical request without debiting the initial
+attempt. `FinishWithAttemptReceipts` validates the complete set under the
+governor lock and debits exactly one ledger/task/telemetry unit per receipt.
+The initial receipt is therefore charged once, while a two-receipt retry chain
+is charged twice. An uncertain, timeout, or cancelled receipt is still
+consumed and makes the logical outcome uncertain. A sanitized
+`upstream_attempt` event is emitted for every receipt.
 
-`Reasoning` and `Unknown` profiles do not inherit the Instant numbers. They
-require explicit local rolling ceilings and an explicit manual reserve, keep a
-separate model-pool ledger, and can use remaining/reset telemetry when it is
-available. Successful recent calls never raise a local hard ceiling. The
-manual reserve is tracked separately from automated consumption and is only
-spent when the configured policy explicitly changes it.
-
-Rolling ledgers use event timestamps and expire events relative to the current
-time; they are not clock-aligned buckets. Local ceilings remain effective when
-telemetry is absent or fails. Telemetry may reduce admission, but cannot make
-it more permissive without an explicit configuration change.
-
-For automated admission, the allowance headroom is the strictest known
-constraint after preserving the reserve:
-`min(local allowance remaining, trusted upstream remaining - manual_reserve)`.
-The Instant local ceiling of 140 already represents the automated portion of
-the published 160-message family, so the reserve is not subtracted a second
-time from that rolling ledger. The 10-minute and 1-hour burst guards remain
-independent local windows.
-
-## Governor flow
-
-Every possible model attempt follows:
-
-```text
-Admit -> Start -> provider.Client.Complete -> Finish
-```
-
-`Admit` acquires the account lane and waits for pacing, cooldowns, reset times,
-telemetry and rolling/task/retry budgets. `Start` is the exact debit point:
-the attempt is added to the account/model-pool and task ledgers only when the
-provider call is about to begin. `Finish` releases the lane, classifies the
-outcome, updates cooldown/circuit state and returns retry eligibility. The
-governor never runs an autonomous retry loop; a future agent loop must request
-each next attempt through `Admit` again.
-
-`ClientRequestID` is a process-local identity for exact-request suppression: an
-accepted ID cannot be admitted again, while cancellation before `Start` releases
-the pending identity.
-
-Every successful `Start` has exactly one terminal `Finish`; a late cancellation,
-timeout, provider error or uncertain result still finishes with an uncertain
-classification and keeps the debit. Only cancellation before `Start` can
-remove a permit without an attempt.
-
-The five-second interval is start-to-start. A response that takes five
-seconds or longer already satisfies the next interval, while fast responses
-and fast failures wait for the remaining interval. Cancellation while queued,
-or after admission but before `Start`, consumes no attempt and does not reset
-pacing or create a release burst.
-
-The lane is FIFO, with a configurable task fairness quantum. If another task
-is waiting, the current task yields after its quantum of consecutive starts to
-the oldest different task still waiting in the lane.
-There are no scheduler goroutines, daemon workers or distributed queues.
-
-Configured event sinks use a process-local in-memory queue. Governor operations only
-enqueue sanitized events; callers explicitly invoke `DrainEvents` to perform
-sink I/O outside the account lane. All current admission, attempt and circuit
-events are mandatory and remain queued until delivered; they are never
-dropped. The agent `Executor` owns one drain after each execution, while direct
-governor callers may drain explicitly. M1 does not create a background
-dispatcher or a durable event queue, so a permanently blocked sink can grow
-this process-local pending state; a future durable delivery/backpressure design
-must preserve the mandatory-event invariant. There are currently no
-best-effort event kinds.
-
-## Single-attempt invariant
-
-The provider boundary remains deliberately small: one
-`provider.Client.Complete` invocation represents at most one upstream model
-attempt and owns no retry, quota, fallback, account rotation or scheduling
-policy. M1 additionally requires an executable route-safety declaration: the
-governor requires the route to explicitly guarantee single-attempt behavior
-and declare internal retry, cooldown replay, account pooling and automatic
-fallback disabled. Unknown or unsafe declarations are rejected before queue
-admission.
-
-The #4 OmniRoute adapter is currently a fail-closed scaffold. Its
-`singleAttemptContract` field is only a proposed/test fixture; it is not an
-authoritative authorization, and the management snapshots cannot prove how
-many upstream attempts the runtime made. `Preflight` may validate observable
-resilience and route settings, but it never marks the route verified.
-`Complete` therefore returns `provider.ErrUnsafeRoute` without a model POST
-until #29 supplies server-side attempt receipts and #30 consumes and charges
-every receipt through the governor. The receipt contract must represent
-credential-refresh retries, executor retries, fallback/combo attempts,
-cancellation, duplicates and missing or unverifiable records.
-
-The adapter still checks `/api/settings`, `/api/models/alias`,
-`/api/settings/model-aliases`, `/api/fallback/chains`, `/api/combos`,
-`/api/model-combo-mappings` and `/api/providers` as fail-closed observable
-sanity checks. It rejects absent settings evidence, aliases for the configured
-model, wildcards, fallback chains, combos, model-to-combo mappings or more
-than one active connection for the configured provider. It does not infer
-safety from model-name markers. Transport and response parsing remain covered
-through an internal test seam, not a production authorization path.
-
-## Telemetry and circuit breaker
-
-The optional OmniRoute telemetry source reads `/api/rate-limits` and
-`/api/resilience`, carrying only sanitized equivalents of remaining allowance,
-reset time, cooldown, rate/capacity state and an upstream breaker. Malformed
-or unavailable optional telemetry returns an unhealthy source signal; it never
-replaces or disables the governor's local limits. It does not export OmniRoute
-HTTP types. `Retry-After` and reliable reset
-times take precedence over local jittered backoff. Without authoritative
-guidance, the recorded backoff sequence is 15s, 30s, 60s and 120s with
-injectable jitter whose baseline is a floor; selecting a backoff never performs
-a retry.
-
-The circuit has explicit `closed`, `open_until` and
-`human_review_required` states. Authentication denial, HTTP 403 equivalents,
-login challenges, CAPTCHA, suspicious activity, account warnings and feature
-restrictions open it for human review immediately. An expired credential
-blocks model requests and exposes only a separate, single credential-refresh
-seam; the refresh path is not a model attempt. A second rate/capacity response
-before the previous reset opens the circuit through that reset plus five
-minutes. Three rate/capacity responses in a rolling hour require explicit
-human acknowledgement. Severe circuits do not reopen automatically and no
-classification selects another account, session, proxy, IP, provider or
-model.
-
-The adapter uses one non-streaming POST per `Complete` call, with no adapter
-retry, cooldown wait, fallback, account rotation, pooling, pacing or model
-swap. Its typed errors classify transport, timeout/cancellation, authentication,
-403, rate/capacity, login challenge, CAPTCHA, suspicious activity, account
-warning, feature restriction, connection reset, empty/malformed response and
-upstream failure; `omniroute.Classify` maps those errors into governor
-outcomes. Events and snapshots contain only policy/account identifiers, provider/model
-pool, profile, task and client request identifiers, attempt sequence,
-admission/result codes, budget summaries, telemetry summaries, backoff,
-cooldown and circuit transitions. Prompts, responses, tokens, cookies,
-credentials, personal account identifiers and raw HTTP bodies are excluded.
-
-## M1 state boundary and future work
-
-Ledger, task, lane, request-identity and circuit state are process-local and
-exposed through sanitized snapshots. Completed request identities are retained
-for three hours with a bounded in-memory cap, while pending and active
-identities are never pruned; task state is likewise bounded and protected
-while queued or active. Restart-safe cooldown, ledger and identity persistence
-is deferred to #8; M1 does not pretend that restarting Runstead preserves
-protection.
-The #4 OmniRoute adapter reuses this governor. #7 must route every agent turn
-through it. #13 adds stress and failure evidence, #14 publishes
-consumption/SLO evidence, and #16/#17 reuse
-the same account policy without an independent provider quota policy. #8
-provides durable state; direct-connector work and any later transport changes
-remain behind the same boundary.
+This contract is preparatory until a caller explicitly supplies a receipt-aware
+provider client. It does not activate a protected live path or close any
+separate activation or operational configuration work.
