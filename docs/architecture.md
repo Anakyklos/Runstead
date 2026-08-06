@@ -110,17 +110,21 @@ agent loop
 ```
 
 The `governor` package is the account-protection boundary above both provider
-adapters. It is account-scoped rather than a generic remote-service router:
-one FIFO lane admits at most one ChatGPT Web attempt, charges rolling/task
-ledgers at attempt start and exposes only sanitized events. Provider safety
-metadata must explicitly declare the M1 single-attempt invariant. OmniRoute
-management snapshots are not enough to make that declaration trustworthy;
-receipt-aware execution (PR #33) is the only protected path, and the adapter
-stays fail-closed until a compatible OmniRoute producer emits authoritative
-attempt receipts and #30 activates live execution.
-See
-[`account-protection.md`](account-protection.md) for the SLO and deferred
-persistence boundary.
+adapters. It is account-scoped rather than a generic remote-service router: one
+FIFO lane admits at most one in-flight provider completion for an account. On a
+legacy single-attempt route, the permit start charges the rolling and task
+ledgers. On a receipt-aware route, start reserves the logical request and
+finish validates and reconciles one debit per authoritative upstream-attempt
+receipt. M1 accepts one receipt per protected completion; observed amplification
+is still fully accounted, then marks the lane unsafe and blocks later
+admission. Missing or structurally invalid accounting produces a conservative
+uncertain debit and also fails closed. Provider safety metadata and management
+snapshots are diagnostic inputs, not proof of actual attempt count. The
+Runstead consumer side is merged in PR #33, while protected OmniRoute rollout
+remains disabled until a compatible producer emits authoritative receipts and
+#30 activates the live path. See
+[`account-protection.md`](account-protection.md) and
+[`architecture/attempt-receipts.md`](architecture/attempt-receipts.md).
 
 Packages separate responsibilities, but they do not become services. Internal interfaces are introduced only where real substitution or test isolation is required.
 
