@@ -14,6 +14,10 @@ import (
 const (
 	EnvWorkspace = "RUNSTEAD_WORKSPACE"
 	EnvLogLevel  = "RUNSTEAD_LOG_LEVEL"
+	EnvTask      = "RUNSTEAD_TASK"
+
+	EnvScriptedResponses = "RUNSTEAD_SCRIPTED_RESPONSES"
+	EnvMinStartInterval  = "RUNSTEAD_MIN_START_INTERVAL"
 
 	EnvOmniRouteBaseURL           = "OMNIROUTE_BASE_URL"
 	EnvOmniRouteAPIKey            = "OMNIROUTE_API_KEY"
