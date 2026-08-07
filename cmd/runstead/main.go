@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -263,36 +264,88 @@ func resolveScripted(flags *flag.FlagSet, scripted string) (string, bool) {
 
 func resolveLimits(flags *flag.FlagSet, maxSteps, maxCorrections, maxRepeatedActions int, timeBudget string, providerBudget int) (agent.Limits, error) {
 	limits := agent.DefaultLimits()
+	parsePositiveInt := func(name, value string) (int, error) {
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || parsed <= 0 {
+			return 0, fmt.Errorf("invalid %s %q: must be a positive integer", name, value)
+		}
+		return parsed, nil
+	}
+	parseNonNegativeInt := func(name, value string) (int, error) {
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || parsed < 0 {
+			return 0, fmt.Errorf("invalid %s %q: must be a non-negative integer", name, value)
+		}
+		return parsed, nil
+	}
+	parseDuration := func(name, value string) (time.Duration, error) {
+		parsed, err := time.ParseDuration(strings.TrimSpace(value))
+		if err != nil || parsed <= 0 {
+			return 0, fmt.Errorf("invalid %s %q: must be a positive duration", name, value)
+		}
+		return parsed, nil
+	}
+
 	if flagWasSet(flags, "max-steps") {
 		if maxSteps <= 0 {
 			return agent.Limits{}, fmt.Errorf("max-steps must be positive")
 		}
 		limits.MaxSteps = maxSteps
+	} else if value, ok := os.LookupEnv(config.EnvMaxSteps); ok {
+		parsed, err := parsePositiveInt(config.EnvMaxSteps, value)
+		if err != nil {
+			return agent.Limits{}, err
+		}
+		limits.MaxSteps = parsed
 	}
 	if flagWasSet(flags, "max-corrections") {
 		if maxCorrections < 0 {
 			return agent.Limits{}, fmt.Errorf("max-corrections must not be negative")
 		}
 		limits.MaxCorrections = maxCorrections
+	} else if value, ok := os.LookupEnv(config.EnvMaxCorrections); ok {
+		parsed, err := parseNonNegativeInt(config.EnvMaxCorrections, value)
+		if err != nil {
+			return agent.Limits{}, err
+		}
+		limits.MaxCorrections = parsed
 	}
 	if flagWasSet(flags, "max-repeated-actions") {
 		if maxRepeatedActions < 0 {
 			return agent.Limits{}, fmt.Errorf("max-repeated-actions must not be negative")
 		}
 		limits.MaxRepeatedActions = maxRepeatedActions
+	} else if value, ok := os.LookupEnv(config.EnvMaxRepeatedActions); ok {
+		parsed, err := parseNonNegativeInt(config.EnvMaxRepeatedActions, value)
+		if err != nil {
+			return agent.Limits{}, err
+		}
+		limits.MaxRepeatedActions = parsed
 	}
 	if flagWasSet(flags, "time-budget") {
-		budget, err := time.ParseDuration(strings.TrimSpace(timeBudget))
-		if err != nil || budget <= 0 {
-			return agent.Limits{}, fmt.Errorf("invalid time budget %q", timeBudget)
+		parsed, err := parseDuration("time-budget", timeBudget)
+		if err != nil {
+			return agent.Limits{}, err
 		}
-		limits.TimeBudget = budget
+		limits.TimeBudget = parsed
+	} else if value, ok := os.LookupEnv(config.EnvTimeBudget); ok {
+		parsed, err := parseDuration(config.EnvTimeBudget, value)
+		if err != nil {
+			return agent.Limits{}, err
+		}
+		limits.TimeBudget = parsed
 	}
 	if flagWasSet(flags, "provider-budget") {
 		if providerBudget <= 0 {
 			return agent.Limits{}, fmt.Errorf("provider-budget must be positive")
 		}
 		limits.ProviderBudget = providerBudget
+	} else if value, ok := os.LookupEnv(config.EnvProviderBudget); ok {
+		parsed, err := parsePositiveInt(config.EnvProviderBudget, value)
+		if err != nil {
+			return agent.Limits{}, err
+		}
+		limits.ProviderBudget = parsed
 	}
 	return limits, nil
 }

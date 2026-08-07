@@ -271,6 +271,19 @@ check in `internal/provider/omniroute/live_test.go` stays skipped by default.
 | `--time-budget` | 10m | `time_budget_exhausted` / `account_delay_timeout` |
 | `--provider-budget` | 80 | `provider_budget_exhausted` |
 
+Every budget can also be set through the environment variable named in the
+CLI help: `RUNSTEAD_MAX_STEPS`, `RUNSTEAD_MAX_CORRECTIONS`,
+`RUNSTEAD_MAX_REPEATED_ACTIONS`, `RUNSTEAD_TIME_BUDGET` and
+`RUNSTEAD_PROVIDER_BUDGET`. Precedence is flags > environment > defaults,
+matching the rest of the CLI.
+
+`--max-corrections 0` and `--max-repeated-actions 0` (and the matching
+environment values) are valid explicit values that disable the corresponding
+allowance: the loop stops with `corrections_exhausted` or `repeated_action`
+without granting a single correction or repeat. In the `agent.Limits` struct,
+zero has the same meaning; only negative values for those two fields fall back
+to the defaults.
+
 The account governor below the loop enforces its own rolling 3h/1h/10m ceilings,
 manual reserve, task budget, retry budget, start-to-start pacing, cooldowns and
 circuit state. Every model turn, including the initial request, tool-follow-up

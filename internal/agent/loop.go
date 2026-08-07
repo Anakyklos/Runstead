@@ -37,10 +37,17 @@ type AttemptRunner interface {
 
 // Limits bound one loop run. Defaults are conservative; the account governor
 // enforces its own rolling, task and retry budgets below this layer.
+// MaxCorrections and MaxRepeatedActions treat zero as a valid explicit value
+// that disables the corresponding allowance: the loop stops with
+// corrections_exhausted or repeated_action without granting a single
+// correction or repeat. Only negative values for those two fields fall back to
+// the defaults. The remaining fields treat zero or negative as "use the
+// default", since zero steps, zero elapsed time or zero provider attempts are
+// meaningless budgets.
 type Limits struct {
 	MaxSteps           int           // total model turns
-	MaxCorrections     int           // protocol correction attempts
-	MaxRepeatedActions int           // repeated-action corrections before stopping
+	MaxCorrections     int           // protocol correction attempts; 0 disables
+	MaxRepeatedActions int           // repeated-action corrections; 0 disables
 	TimeBudget         time.Duration // elapsed task time
 	ProviderBudget     int           // governed provider attempts per task
 }
@@ -99,10 +106,10 @@ func NewLoop(config Config) (*Loop, error) {
 	if limits.MaxSteps <= 0 {
 		limits.MaxSteps = DefaultLimits().MaxSteps
 	}
-	if limits.MaxCorrections <= 0 {
+	if limits.MaxCorrections < 0 {
 		limits.MaxCorrections = DefaultLimits().MaxCorrections
 	}
-	if limits.MaxRepeatedActions <= 0 {
+	if limits.MaxRepeatedActions < 0 {
 		limits.MaxRepeatedActions = DefaultLimits().MaxRepeatedActions
 	}
 	if limits.TimeBudget <= 0 {

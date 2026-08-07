@@ -470,6 +470,51 @@ func TestLoopCorrectionsExhausted(t *testing.T) {
 	}
 }
 
+func TestLoopZeroCorrectionsStopsImmediately(t *testing.T) {
+	// MaxCorrections=0 is a valid explicit value: the first protocol failure
+	// terminates with corrections_exhausted without granting a single
+	// correction turn.
+	workspace := t.TempDir()
+	h := newHarness(t, workspace, nil,
+		provider.Response{Text: "I refuse to use the protocol."},
+	)
+	loop := h.loop(t, agent.Limits{MaxCorrections: 0})
+
+	result := loop.Run(context.Background(), testTask("task-1"))
+	if result.Outcome != agent.OutcomeCorrectionsExhausted {
+		t.Fatalf("outcome = %q, want corrections_exhausted", result.Outcome)
+	}
+	if result.Corrections != 0 {
+		t.Fatalf("corrections = %d, want 0", result.Corrections)
+	}
+	if h.provider.Attempts() != 1 {
+		t.Fatalf("provider attempts = %d, want 1 (no correction turn)", h.provider.Attempts())
+	}
+}
+
+func TestLoopZeroRepeatedActionsStopsImmediately(t *testing.T) {
+	// MaxRepeatedActions=0 is a valid explicit value: the first repeated action
+	// terminates with repeated_action after the first tool execution.
+	workspace := t.TempDir()
+	writeFixture(t, workspace, "a.txt", "alpha\n")
+	h := newHarness(t, workspace, nil,
+		actionResponse("read_file", `{"path":"a.txt"}`),
+		actionResponse("read_file", `{"path":"a.txt"}`),
+	)
+	loop := h.loop(t, agent.Limits{MaxRepeatedActions: 0})
+
+	result := loop.Run(context.Background(), testTask("task-1"))
+	if result.Outcome != agent.OutcomeRepeatedAction {
+		t.Fatalf("outcome = %q, want repeated_action", result.Outcome)
+	}
+	if result.Observations != 1 {
+		t.Fatalf("observations = %d, want 1 tool execution", result.Observations)
+	}
+	if result.Repeated != 1 {
+		t.Fatalf("repeated = %d, want 1", result.Repeated)
+	}
+}
+
 func TestLoopRepeatedActionGuardStopsWithoutReExecution(t *testing.T) {
 	workspace := t.TempDir()
 	writeFixture(t, workspace, "a.txt", "alpha\n")
@@ -553,9 +598,11 @@ func TestLoopFabricatedEvidenceRejected(t *testing.T) {
 func TestLoopStepsExhausted(t *testing.T) {
 	workspace := t.TempDir()
 	writeFixture(t, workspace, "a.txt", "alpha\n")
+	// Distinct actions keep the repeat guard out of the way so the step budget
+	// is the only limit under test.
 	h := newHarness(t, workspace, nil,
 		actionResponse("read_file", `{"path":"a.txt"}`),
-		actionResponse("read_file", `{"path":"a.txt"}`),
+		actionResponse("list_files", `{"path":"."}`),
 		actionResponse("read_file", `{"path":"a.txt"}`),
 	)
 	loop := h.loop(t, agent.Limits{MaxSteps: 2})
@@ -592,9 +639,11 @@ func TestLoopTimeBudgetExhausted(t *testing.T) {
 func TestLoopProviderBudgetExhausted(t *testing.T) {
 	workspace := t.TempDir()
 	writeFixture(t, workspace, "a.txt", "alpha\n")
+	// Distinct actions keep the repeat guard out of the way so the provider
+	// budget is the only limit under test.
 	h := newHarness(t, workspace, nil,
 		actionResponse("read_file", `{"path":"a.txt"}`),
-		actionResponse("read_file", `{"path":"a.txt"}`),
+		actionResponse("list_files", `{"path":"."}`),
 		actionResponse("read_file", `{"path":"a.txt"}`),
 	)
 	loop := h.loop(t, agent.Limits{ProviderBudget: 2})

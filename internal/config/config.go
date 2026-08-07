@@ -19,6 +19,12 @@ const (
 	EnvScriptedResponses = "RUNSTEAD_SCRIPTED_RESPONSES"
 	EnvMinStartInterval  = "RUNSTEAD_MIN_START_INTERVAL"
 
+	EnvMaxSteps           = "RUNSTEAD_MAX_STEPS"
+	EnvMaxCorrections     = "RUNSTEAD_MAX_CORRECTIONS"
+	EnvMaxRepeatedActions = "RUNSTEAD_MAX_REPEATED_ACTIONS"
+	EnvTimeBudget         = "RUNSTEAD_TIME_BUDGET"
+	EnvProviderBudget     = "RUNSTEAD_PROVIDER_BUDGET"
+
 	EnvOmniRouteBaseURL           = "OMNIROUTE_BASE_URL"
 	EnvOmniRouteAPIKey            = "OMNIROUTE_API_KEY"
 	EnvOmniRouteModel             = "OMNIROUTE_MODEL"
