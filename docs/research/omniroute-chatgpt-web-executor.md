@@ -91,13 +91,13 @@ GitHub issues referencing this document):
 
 | Area | Issue | Purpose |
 |---|---|---|
-| Delivery contract | DeliveryState + idempotency key in `provider.Client` | complements #29/#30 |
-| Telemetry | minimal request telemetry in `ResponseMetadata` | first-token latency, adapter version, session fingerprint |
-| Drift detection | health probe on the OmniRoute adapter | healthy / degraded / protocol_changed, fail-closed on ambiguity |
-| Session vault | `sessionvault` package (AES-256-GCM, rotation, redaction) | Stage 2 foundation, no use yet |
-| Stream reconciliation | `internal/stream` with `FinalTurn` and stale detection | Stage 2 pattern from the cumulative-SSE echo suppression |
-| Contract tests | redacted fixtures + mock server for cookie→token→conversation | drift guards and parser tests |
-| Decision record | this document + architecture section | practices rejected and provider boundary |
+| Delivery contract | [#38](https://github.com/RenyEnnos/Runstead/issues/38) — delivery states + idempotency key in `provider.Client` | complements #29/#30 |
+| Telemetry | [#39](https://github.com/RenyEnnos/Runstead/issues/39) — minimal request telemetry in `ResponseMetadata` | first-token latency, adapter version, session fingerprint |
+| Drift detection | [#40](https://github.com/RenyEnnos/Runstead/issues/40) — health probe on the OmniRoute adapter | healthy / degraded / protocol_changed, fail-closed on ambiguity |
+| Session vault | [#41](https://github.com/RenyEnnos/Runstead/issues/41) — `sessionvault` package (AES-256-GCM, rotation, redaction) | Stage 2 foundation, no use yet |
+| Stream reconciliation | [#42](https://github.com/RenyEnnos/Runstead/issues/42) — `internal/stream` with `FinalTurn` and stale detection | Stage 2 pattern from the cumulative-SSE echo suppression |
+| Contract tests | [#43](https://github.com/RenyEnnos/Runstead/issues/43) — redacted fixtures + mock server for the provider boundary | drift guards and parser tests |
+| Decision record | this document + architecture section ([PR #37](https://github.com/RenyEnnos/Runstead/pull/37)) | practices rejected and provider boundary |
 
 ## Open questions
 
