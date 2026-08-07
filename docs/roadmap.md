@@ -61,6 +61,7 @@ Exit criteria:
 
 Deliverables:
 
+- durable-execution contract ([`adr/0001-durable-execution.md`](adr/0001-durable-execution.md), #25);
 - SQLite schema and explicit migrations;
 - append-oriented event history;
 - persisted actions and tool results;
