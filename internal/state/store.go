@@ -71,6 +71,9 @@ type Options struct {
 	// DirMode and FileMode are optional overrides for created paths.
 	DirMode  os.FileMode
 	FileMode os.FileMode
+	// BusyTimeout overrides the default 5s busy timeout (a second process
+	// waits this long for the writer before failing). Tests shorten it.
+	BusyTimeout time.Duration
 }
 
 // Store is the narrow persistence boundary of the modular monolith. It owns
@@ -78,10 +81,11 @@ type Options struct {
 // append-only events journal and the persisted governor protection state.
 // It implements agent.Persistence and governor.Persistence.
 type Store struct {
-	db       *sql.DB
-	clock    Clock
-	dirMode  os.FileMode
-	fileMode os.FileMode
+	db          *sql.DB
+	clock       Clock
+	dirMode     os.FileMode
+	fileMode    os.FileMode
+	busyTimeout time.Duration
 }
 
 // crashPoint is a deterministic test seam invoked at named persistence
@@ -117,13 +121,17 @@ func Open(options Options) (*Store, error) {
 	}
 	db.SetMaxOpenConns(maxOpenConns)
 	store := &Store{
-		db:       db,
-		clock:    options.Clock,
-		dirMode:  modeOr(options.DirMode, DefaultDirMode),
-		fileMode: modeOr(options.FileMode, DefaultFileMode),
+		db:          db,
+		clock:       options.Clock,
+		dirMode:     modeOr(options.DirMode, DefaultDirMode),
+		fileMode:    modeOr(options.FileMode, DefaultFileMode),
+		busyTimeout: options.BusyTimeout,
 	}
 	if store.clock == nil {
 		store.clock = realClock{}
+	}
+	if store.busyTimeout <= 0 {
+		store.busyTimeout = busyTimeout * time.Millisecond
 	}
 	if err := store.configure(); err != nil {
 		db.Close()
@@ -155,7 +163,7 @@ func modeOr(value, fallback os.FileMode) os.FileMode {
 // single connection.
 func (s *Store) configure() error {
 	statements := []string{
-		fmt.Sprintf("PRAGMA busy_timeout = %d", busyTimeout),
+		fmt.Sprintf("PRAGMA busy_timeout = %d", s.busyTimeout.Milliseconds()),
 		fmt.Sprintf("PRAGMA journal_mode = %s", journalMode),
 		fmt.Sprintf("PRAGMA synchronous = %s", syncMode),
 		"PRAGMA foreign_keys = ON",

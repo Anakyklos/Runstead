@@ -79,7 +79,9 @@ Later direct ChatGPT Web work may require outbound access to ChatGPT endpoints a
 
 ## Issue #3 Go foundation
 
-The native bootstrap has no external Go dependencies. Build and test it with:
+The Go foundation has exactly one external runtime dependency:
+`modernc.org/sqlite` (pure Go, no CGO), added by issue #8 for durable state.
+Build and test it with:
 
 ```bash
 gofmt -w <changed-go-files>
@@ -98,13 +100,17 @@ runstead inspect --help
 runstead resume --help
 ```
 
-`run` executes one bounded read-only task with the issue #7 agent loop. `inspect`
-and `resume` are explicit placeholders because durable state and recovery are
-not part of this milestone.
+`run` executes one bounded read-only task with the issue #7 agent loop and
+persists its durable state to SQLite (issue #8). `inspect <task-id>` renders
+the persisted task, attempts, journal and governor state after the run process
+exits (see [`persistence.md`](persistence.md)). `resume` remains an explicit
+placeholder because recovery/resume is issue #9.
 
 Configuration precedence is deterministic: command-line flags, then
 environment, then conservative defaults. Workspace/logging use
-`RUNSTEAD_WORKSPACE` and `RUNSTEAD_LOG_LEVEL`. The optional OmniRoute config
+`RUNSTEAD_WORKSPACE` and `RUNSTEAD_LOG_LEVEL`; the durable state directory
+uses `RUNSTEAD_STATE_DIR` (default `$XDG_DATA_HOME/runstead` or
+`~/.local/share/runstead`). The optional OmniRoute config
 uses `OMNIROUTE_BASE_URL`, `OMNIROUTE_API_KEY`, `OMNIROUTE_MODEL` and
 `OMNIROUTE_CHAT_ENDPOINT`, with optional management URL and timeout variables;
 the `run` command exposes matching flags. API keys are never logged or
