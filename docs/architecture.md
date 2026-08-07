@@ -73,6 +73,35 @@ The first-party connector may need to own:
 
 This connector is intentionally narrow. It will not expose a public OpenAI-compatible API, manage many accounts, implement quota routing or reproduce OmniRoute's provider catalog.
 
+### Reverse-engineering input (2026-08-07)
+
+A static audit of OmniRoute's `ChatGptWebExecutor` (release/v3.8.50,
+SHA `976d670ff3a7712df0c695f13095c43eace5e29b`) informs both adapter stages.
+Full findings and evidence: [`research/omniroute-chatgpt-web-executor.md`](research/omniroute-chatgpt-web-executor.md).
+
+Key consequences for this architecture:
+
+- **Conversation-per-request.** OmniRoute starts a fresh Temporary Chat per
+  turn and folds history into the system message. Runstead must not assume
+  conversation continuity through the provider.
+- **Cumulative SSE with echo suppression.** Deltas are diffs of cumulative
+  text; echoes of prior turns are suppressed until the current turn is
+  `in_progress`. This is the reference pattern for Runstead's future stream
+  reconciliation and stale-return prevention.
+- **No retry of the text conversation-model POST inside the web executor.**
+  401/403 clears the token cache and the request fails; account fallback
+  happens above the executor. (Auxiliary image/handoff recovery paths exist
+  upstream but are irrelevant to Runstead's text-only path.) The delivery
+  states (`not_sent` / `sent_confirmed` / `sent_unconfirmed` /
+  `response_started` / `completed`) remain the correct unit for idempotency.
+- **Usage from this path is estimated** (`ceil(len/4)`), not real.
+- **Rejected practices:** TLS impersonation, browser-fingerprint mimicry in
+  Sentinel prekeys, page-load warmup, hard-coded frontend build values without
+  a drift probe, silent account fallback, and encryption fail-open (plaintext
+  passthrough / plaintext fallback on cipher failure; only the `enc:v1:`
+  envelope is reference for a future vault). A first-party connector must not
+  reproduce these; the OmniRoute adapter stays the baseline.
+
 ### Stage 3 — Bake-off and migration
 
 The OmniRoute and direct adapters must run the same protocol test corpus and end-to-end tasks.
