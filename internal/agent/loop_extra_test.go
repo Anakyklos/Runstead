@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -145,6 +146,79 @@ func TestLoopMixedProseRecordedButNotExecuted(t *testing.T) {
 	if h.provider.Attempts() != 2 {
 		t.Fatalf("provider attempts = %d, want 2 (prose was not executed as a tool)", h.provider.Attempts())
 	}
+}
+
+func TestLoopConcurrentCancellationRace(t *testing.T) {
+	// Multiple goroutines cancel the same one-shot context while the loop is
+	// blocked waiting behind another task on the account lane. Exactly one
+	// canceled outcome must surface, no attempt may be double-executed and no
+	// goroutine may leak.
+	workspace := t.TempDir()
+	writeFixture(t, workspace, "a.txt", "alpha\n")
+	clock := newFakeClock()
+	config := governor.DefaultInstantConfig("policy-loop-test", "fake", "instant", provider.SafeRouteSafety())
+	config.MinimumStartInterval = time.Nanosecond
+	accountGovernor, err := governor.New(config, governor.Options{Clock: clock, Jitter: fixedJitter{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocking := provider.NewBlockingFake()
+	executor, err := agent.NewExecutor(accountGovernor, blocking, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.Options{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newLoop := func() *agent.Loop {
+		loop, err := agent.NewLoop(agent.Config{Runner: executor, Registry: registry, Limits: agent.Limits{}, Clock: clock})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return loop
+	}
+
+	before := runtime.NumGoroutine()
+	ctxA, cancelA := context.WithCancel(context.Background())
+	doneA := make(chan agent.Result, 1)
+	go func() { doneA <- newLoop().Run(ctxA, testTask("task-a")) }()
+	waitFor(t, func() bool { return accountGovernor.Snapshot().InFlight }, "task A never entered the lane")
+
+	ctxB, cancelB := context.WithCancel(context.Background())
+	defer cancelB()
+	doneB := make(chan agent.Result, 1)
+	go func() { doneB <- newLoop().Run(ctxB, testTask("task-b")) }()
+	waitFor(t, func() bool { return accountGovernor.Snapshot().QueueLength >= 1 }, "task B never queued behind A")
+
+	// Race two cancellations against the same context.
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cancelB()
+		}()
+	}
+	wg.Wait()
+
+	resultB := <-doneB
+	if resultB.Outcome != agent.OutcomeCanceled {
+		t.Fatalf("queued task outcome = %q, want canceled", resultB.Outcome)
+	}
+	if blocking.Attempts() != 1 {
+		t.Fatalf("provider attempts after B cancellation = %d, want 1 (task A only; no double execution)", blocking.Attempts())
+	}
+
+	cancelA()
+	resultA := <-doneA
+	if resultA.Outcome != agent.OutcomeCanceled {
+		t.Fatalf("task A outcome = %q, want canceled", resultA.Outcome)
+	}
+	if blocking.Attempts() != 1 {
+		t.Fatalf("provider attempts after A release = %d, want 1", blocking.Attempts())
+	}
+	waitForGoroutines(t, before)
 }
 
 func TestLoopConcurrentTasksShareAccountLane(t *testing.T) {
