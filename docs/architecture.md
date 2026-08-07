@@ -267,20 +267,21 @@ Policy decisions must be explicit and logged.
 
 ## Durable state
 
-SQLite is the authoritative task store.
+SQLite is the authoritative task store. The durable-execution contract for M2
+(identities, attempt state machines, transaction ordering around external
+effects, recovery classes, schema invariants, and the distinction between
+state reconstruction and re-execution) is defined canonically in
+[`adr/0001-durable-execution.md`](adr/0001-durable-execution.md). M1 keeps all
+task state process-local; #8 implements the schema and #9 implements recovery
+from that contract.
 
-Initial entities:
+The event history is append-oriented. Each operational projection change and
+its corresponding event are committed in the same SQLite transaction. Derived
+task status may be updated for convenience, but reconstructing state never
+means re-executing historical calls.
 
-- `tasks`
-- `events`
-- `messages`
-- `actions`
-- `tool_results`
-- `checkpoints`
-
-The event history should be append-oriented. Derived task status may be updated for convenience, but it must remain possible to reconstruct what happened from persisted events.
-
-Provider-specific session identifiers may be recorded as disposable metadata. They are never the source of task truth.
+Provider-specific session identifiers may be recorded as disposable metadata.
+They are never the source of task truth.
 
 ## Recovery model
 
