@@ -88,14 +88,18 @@ Key consequences for this architecture:
   text; echoes of prior turns are suppressed until the current turn is
   `in_progress`. This is the reference pattern for Runstead's future stream
   reconciliation and stale-return prevention.
-- **No retry inside the web executor.** 401/403 clears the token cache and the
-  request fails; account fallback happens above the executor. The delivery
+- **No retry of the text conversation-model POST inside the web executor.**
+  401/403 clears the token cache and the request fails; account fallback
+  happens above the executor. (Auxiliary image/handoff recovery paths exist
+  upstream but are irrelevant to Runstead's text-only path.) The delivery
   states (`not_sent` / `sent_confirmed` / `sent_unconfirmed` /
   `response_started` / `completed`) remain the correct unit for idempotency.
 - **Usage from this path is estimated** (`ceil(len/4)`), not real.
 - **Rejected practices:** TLS impersonation, browser-fingerprint mimicry in
   Sentinel prekeys, page-load warmup, hard-coded frontend build values without
-  a drift probe, silent account fallback. A first-party connector must not
+  a drift probe, silent account fallback, and encryption fail-open (plaintext
+  passthrough / plaintext fallback on cipher failure; only the `enc:v1:`
+  envelope is reference for a future vault). A first-party connector must not
   reproduce these; the OmniRoute adapter stays the baseline.
 
 ### Stage 3 — Bake-off and migration

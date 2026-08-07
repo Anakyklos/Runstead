@@ -6,8 +6,7 @@
 
 **Audited reference:** OmniRoute `release/v3.8.50`
 **Fixed SHA:** `976d670ff3a7712df0c695f13095c43eace5e29b` (MIT)
-**Full report (pt-BR):** `~/Downloads/omniroute-chatgpt-web-reversa-2026-08-07.md`
-**Audit clone:** `~/Downloads/omniroute-audit/omniroute` (isolated, static inspection only)
+**Full report (pt-BR):** [`omniroute-chatgpt-web-reverse-engineering.md`](omniroute-chatgpt-web-reverse-engineering.md) (in-repo, with permalinks to the fixed SHA)
 
 ## Purpose
 
@@ -51,11 +50,15 @@ cookie (__Secure-next-auth.session-token) → GET /api/auth/session → JWT (cac
    could collide and leak one user's token to another), bounded to 200 FIFO
    entries. Cookie rotation from `Set-Cookie` is persisted back via
    `onCredentialsRefreshed`.
-4. **No retry inside the executor.** The chatgpt-web executor overrides
-   `execute()` entirely; the base executor's 429/WAF retry loop does not apply.
-   401/403 clears the token cache. Delivery states (`not_sent` / `sent_confirmed`
-   / `sent_unconfirmed` / `response_started` / `completed`) are the right unit
-   for Runstead's idempotency work and complement issues #29/#30.
+4. **No retry of the text conversation-model POST inside the ChatGPT Web
+   executor.** The chatgpt-web executor overrides `execute()` entirely; the
+   base executor's 429/WAF retry loop does not apply to it. 401/403 clears the
+   token cache. Retry exists only in auxiliary recovery paths (single
+   WebSocket reconnect + poll for async image, read-only resume offsets 0..2
+   for handoff), which are irrelevant to Runstead's text-only path. Delivery
+   states (`not_sent` / `sent_confirmed` / `sent_unconfirmed` /
+   `response_started` / `completed`) are the right unit for Runstead's
+   idempotency work and complement issues #29/#30.
 5. **Tool calling is prompt-emulated.** When `tools` are present, a `<tool>`
    contract is injected and parsed back into `tool_calls`; streaming is
    buffered in tool mode. Runstead already refuses this path: model output is
@@ -65,9 +68,13 @@ cookie (__Secure-next-auth.session-token) → GET /api/auth/session → JWT (cac
 7. **Hard-coded frontend values.** `OAI-Client-Version` / `OAI-Client-Build-Number`
    captured from a real session (April 2026) are brittle; a drift detector is
    required for any adapter that depends on such values.
-8. **Encryption at rest exists upstream.** OmniRoute stores fields as
-   AES-256-GCM `enc:v1:<iv>:<ct>:<tag>` (see `src/lib/db/encryption.ts`). This
-   is the reference for the session vault Runstead plans for Stage 2.
+8. **Encryption at rest exists upstream — envelope yes, failure policy no.**
+   OmniRoute stores fields as AES-256-GCM `enc:v1:<iv>:<ct>:<tag>` (see
+   `src/lib/db/encryption.ts`). Only the envelope/algorithm is reference for
+   the session vault Runstead plans for Stage 2; the failure policy is
+   fail-open (plaintext passthrough when `STORAGE_ENCRYPTION_KEY` is unset,
+   plaintext fallback when `encrypt()` fails) and is rejected for Runstead
+   (see practices below and issue #41).
 
 ## Practices rejected for Runstead
 
@@ -79,6 +86,10 @@ cookie (__Secure-next-auth.session-token) → GET /api/auth/session → JWT (cac
 - Silent account fallback and cooldown replay.
 - Retry after ambiguous delivery without an idempotency key.
 - Prompt-emulated tool calling for the critical path.
+- **Encryption fail-open**: plaintext passthrough without
+  `STORAGE_ENCRYPTION_KEY` and plaintext fallback on encryption failure, as in
+  OmniRoute's `src/lib/db/encryption.ts`. Runstead's vault must fail closed:
+  refuse to store without a key and never return plaintext on cipher failure.
 
 The OmniRoute adapter remains the baseline; these findings document what a
 first-party connector must not reproduce and what the runtime must assume
@@ -93,9 +104,9 @@ GitHub issues referencing this document):
 |---|---|---|
 | Delivery contract | [#38](https://github.com/RenyEnnos/Runstead/issues/38) — delivery states + idempotency key in `provider.Client` | complements #29/#30 |
 | Telemetry | [#39](https://github.com/RenyEnnos/Runstead/issues/39) — minimal request telemetry in `ResponseMetadata` | first-token latency, adapter version, session fingerprint |
-| Drift detection | [#40](https://github.com/RenyEnnos/Runstead/issues/40) — health probe on the OmniRoute adapter | healthy / degraded / protocol_changed, fail-closed on ambiguity |
+| Drift detection | [#40](https://github.com/RenyEnnos/Runstead/issues/40) — health probe on the OmniRoute adapter | measures **gateway contract drift** (management-API shape), not upstream ChatGPT Web/Sentinel health; fail-closed on ambiguity |
 | Session vault | [#41](https://github.com/RenyEnnos/Runstead/issues/41) — `sessionvault` package (AES-256-GCM, rotation, redaction) | Stage 2 foundation, no use yet |
-| Stream reconciliation | [#42](https://github.com/RenyEnnos/Runstead/issues/42) — `internal/stream` with `FinalTurn` and stale detection | Stage 2 pattern from the cumulative-SSE echo suppression |
+| Stream reconciliation | [#42](https://github.com/RenyEnnos/Runstead/issues/42) — `internal/stream` with `FinalTurn` and stale detection | **deferred/blocked until Stage 2 / #16 / #17**; pattern comes from the cumulative-SSE echo suppression, must not anticipate connector infrastructure |
 | Contract tests | [#43](https://github.com/RenyEnnos/Runstead/issues/43) — redacted fixtures + mock server for the provider boundary | drift guards and parser tests |
 | Decision record | this document + architecture section ([PR #37](https://github.com/RenyEnnos/Runstead/pull/37)) | practices rejected and provider boundary |
 
@@ -110,9 +121,10 @@ GitHub issues referencing this document):
 
 ## Evidence index
 
-Full evidence table (file → function → test) lives in the pt-BR report. Key
-files at the pinned SHA: `open-sse/executors/chatgpt-web.ts` (+ `models.ts`,
-`citations.ts`, `handoff.ts`), `open-sse/executors/base.ts`,
+The full evidence table with permalinks to the fixed SHA lives in
+[`omniroute-chatgpt-web-reverse-engineering.md`](omniroute-chatgpt-web-reverse-engineering.md#17-evidencias)
+(§17). Key files at the pinned SHA: `open-sse/executors/chatgpt-web.ts`
+(+ `models.ts`, `citations.ts`, `handoff.ts`), `open-sse/executors/base.ts`,
 `open-sse/utils/nextAuthCookie.ts`, `open-sse/services/chatgptTlsClient.ts`,
 `src/app/api/v1/{chat/completions,messages,responses}/route.ts`,
 `tests/unit/chatgpt-web*.test.ts`.
