@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -146,6 +147,56 @@ func TestLoopMixedProseRecordedButNotExecuted(t *testing.T) {
 	if h.provider.Attempts() != 2 {
 		t.Fatalf("provider attempts = %d, want 2 (prose was not executed as a tool)", h.provider.Attempts())
 	}
+}
+
+func TestLoopGitToolsProduceGroundedEvidence(t *testing.T) {
+	// The loop's git path (git_status, git_diff) is exercised end to end: a
+	// real repository is created with an uncommitted change, the loop executes
+	// both git tools through the real registry and grounds the final answer on
+	// their observation IDs.
+	workspace := t.TempDir()
+	runGit(t, workspace, "init", "--quiet")
+	runGit(t, workspace, "config", "user.email", "runstead@example.invalid")
+	runGit(t, workspace, "config", "user.name", "Runstead Test")
+	writeFixture(t, workspace, "tracked.txt", "before\n")
+	runGit(t, workspace, "add", "tracked.txt")
+	runGit(t, workspace, "commit", "--quiet", "-m", "fixture")
+	writeFixture(t, workspace, "tracked.txt", "after\n")
+
+	h := newHarness(t, workspace, nil,
+		actionResponse("git_status", `{}`),
+		actionResponse("git_diff", `{}`),
+		finalResponse("complete", "The working tree has an uncommitted modification.", "obs-000001", "obs-000002"),
+	)
+	loop := h.loop(t, agent.Limits{})
+
+	result := loop.Run(context.Background(), testTask("task-1"))
+	if result.Outcome != agent.OutcomeCompleted {
+		t.Fatalf("outcome = %q stop_reason=%q, want completed", result.Outcome, result.StopReason)
+	}
+	if result.Observations != 2 {
+		t.Fatalf("observations = %d, want 2 git observations", result.Observations)
+	}
+	// The git observations must be untrusted data in the follow-up prompt and
+	// never leak into the system contract.
+	prompts := h.provider.Requests()
+	if len(prompts) != 3 {
+		t.Fatalf("provider turns = %d, want 3", len(prompts))
+	}
+	if !strings.Contains(prompts[1], `"tool":"git_status"`) || !strings.Contains(prompts[1], `"untrusted":true`) {
+		t.Fatalf("git observation not framed as untrusted data:\n%s", prompts[1])
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
+	return string(output)
 }
 
 func TestLoopConcurrentCancellationRace(t *testing.T) {

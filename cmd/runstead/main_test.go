@@ -246,3 +246,91 @@ func TestRunScriptedCorrectionsExhaustedExitCode(t *testing.T) {
 		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, agent.OutcomeCorrectionsExhausted.ExitCode(), errOut.String())
 	}
 }
+
+func TestRunScriptedStepsExhaustedExitCode(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "a.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Two actions exhaust a one-step budget before any final arrives.
+	script := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"list_files","arguments":{"path":"."}}</runstead_action>`,
+	)
+	var out, errOut bytes.Buffer
+
+	code := run(context.Background(), []string{
+		"run", "--task", "Inspect the workspace.",
+		"--workspace", workspace,
+		"--scripted", script,
+		"--min-start-interval", "1ms",
+		"--max-steps", "1",
+		"--log-level", "error",
+	}, &out, &errOut)
+
+	if code != agent.OutcomeStepsExhausted.ExitCode() {
+		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, agent.OutcomeStepsExhausted.ExitCode(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "outcome: steps_exhausted") {
+		t.Fatalf("stdout missing outcome: %s", out.String())
+	}
+}
+
+func TestRunScriptedRepeatedActionExitCode(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "a.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The same action three times with one allowed repeated-action correction
+	// must stop with repeated_action after a single tool execution.
+	script := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
+	)
+	var out, errOut bytes.Buffer
+
+	code := run(context.Background(), []string{
+		"run", "--task", "Inspect the workspace.",
+		"--workspace", workspace,
+		"--scripted", script,
+		"--min-start-interval", "1ms",
+		"--max-repeated-actions", "1",
+		"--log-level", "error",
+	}, &out, &errOut)
+
+	if code != agent.OutcomeRepeatedAction.ExitCode() {
+		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, agent.OutcomeRepeatedAction.ExitCode(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "outcome: repeated_action") {
+		t.Fatalf("stdout missing outcome: %s", out.String())
+	}
+}
+
+func TestRunScriptedProviderBudgetExitCode(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "a.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
+	)
+	var out, errOut bytes.Buffer
+
+	code := run(context.Background(), []string{
+		"run", "--task", "Inspect the workspace.",
+		"--workspace", workspace,
+		"--scripted", script,
+		"--min-start-interval", "1ms",
+		"--provider-budget", "1",
+		"--log-level", "error",
+	}, &out, &errOut)
+
+	if code != agent.OutcomeProviderBudgetExhausted.ExitCode() {
+		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, agent.OutcomeProviderBudgetExhausted.ExitCode(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "outcome: provider_budget_exhausted") {
+		t.Fatalf("stdout missing outcome: %s", out.String())
+	}
+}
