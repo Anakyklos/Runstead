@@ -136,6 +136,23 @@ func TestInspectTaskIDMayPrecedeStateDirFlag(t *testing.T) {
 	}
 }
 
+func TestInspectUnavailableDatabaseFailsClearly(t *testing.T) {
+	// A regular file as the state directory parent cannot be created as a
+	// directory, so the store open must fail with a clear diagnostic.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{"inspect", "task-1", "--state-dir", filepath.Join(blocker, "state")}, &out, &errOut)
+	if code != exitUnavailable {
+		t.Fatalf("inspect exit code = %d, want %d\nstderr:\n%s", code, exitUnavailable, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "state database unavailable") {
+		t.Fatalf("inspect diagnostic = %q", errOut.String())
+	}
+}
+
 func extractTaskID(t *testing.T, stderr string) string {
 	t.Helper()
 	for _, line := range strings.Split(stderr, "\n") {
