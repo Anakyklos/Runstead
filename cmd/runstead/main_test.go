@@ -334,3 +334,58 @@ func TestRunScriptedProviderBudgetExitCode(t *testing.T) {
 		t.Fatalf("stdout missing outcome: %s", out.String())
 	}
 }
+
+func TestRunScriptedTimeBudgetExitCode(t *testing.T) {
+	workspace := t.TempDir()
+	// A 1ns time budget is already elapsed before the first turn, so the loop
+	// stops deterministically with time_budget_exhausted before any provider
+	// attempt or tool execution.
+	script := writeScript(t, `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"too late","evidence":["obs-000001"]}</runstead_final>`)
+	var out, errOut bytes.Buffer
+
+	code := run(context.Background(), []string{
+		"run", "--task", "Inspect the workspace.",
+		"--workspace", workspace,
+		"--scripted", script,
+		"--min-start-interval", "1ms",
+		"--time-budget", "1ns",
+		"--log-level", "error",
+	}, &out, &errOut)
+
+	if code != agent.OutcomeTimeBudgetExhausted.ExitCode() {
+		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, agent.OutcomeTimeBudgetExhausted.ExitCode(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "outcome: time_budget_exhausted") {
+		t.Fatalf("stdout missing outcome: %s", out.String())
+	}
+	if strings.Contains(errOut.String(), "runstead: attempt") {
+		t.Fatalf("time budget should stop before any provider attempt:\n%s", errOut.String())
+	}
+}
+
+func TestRunScriptedFinalIncompleteExitCode(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "a.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"incomplete","summary":"I could not answer fully.","evidence":["obs-000001"]}</runstead_final>`,
+	)
+	var out, errOut bytes.Buffer
+
+	code := run(context.Background(), []string{
+		"run", "--task", "Inspect the workspace.",
+		"--workspace", workspace,
+		"--scripted", script,
+		"--min-start-interval", "1ms",
+		"--log-level", "error",
+	}, &out, &errOut)
+
+	if code != agent.OutcomeFinalIncomplete.ExitCode() {
+		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, agent.OutcomeFinalIncomplete.ExitCode(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "outcome: final_incomplete") {
+		t.Fatalf("stdout missing outcome: %s", out.String())
+	}
+}

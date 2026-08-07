@@ -188,6 +188,39 @@ func TestLoopGitToolsProduceGroundedEvidence(t *testing.T) {
 	}
 }
 
+func TestLoopSearchTextProducesGroundedEvidence(t *testing.T) {
+	// search_text is the one remaining tool without loop-level coverage: it
+	// runs through the real registry (rg or fallback), returns an untrusted
+	// observation, and grounds a final answer.
+	workspace := t.TempDir()
+	writeFixture(t, workspace, "a.txt", "needle appears here\n")
+	writeFixture(t, workspace, "b.txt", "nothing relevant\n")
+
+	h := newHarness(t, workspace, nil,
+		actionResponse("search_text", `{"query":"needle","path":"."}`),
+		finalResponse("complete", "Found the needle in the workspace.", "obs-000001"),
+	)
+	loop := h.loop(t, agent.Limits{})
+
+	result := loop.Run(context.Background(), testTask("task-1"))
+	if result.Outcome != agent.OutcomeCompleted {
+		t.Fatalf("outcome = %q stop_reason=%q, want completed", result.Outcome, result.StopReason)
+	}
+	if result.Observations != 1 {
+		t.Fatalf("observations = %d, want 1 search observation", result.Observations)
+	}
+	prompts := h.provider.Requests()
+	if len(prompts) != 2 {
+		t.Fatalf("provider turns = %d, want 2", len(prompts))
+	}
+	if !strings.Contains(prompts[1], `"tool":"search_text"`) || !strings.Contains(prompts[1], `"untrusted":true`) {
+		t.Fatalf("search observation not framed as untrusted data:\n%s", prompts[1])
+	}
+	if strings.Contains(extractSection(prompts[1], "system"), "needle appears here") {
+		t.Fatal("search output leaked into the system section")
+	}
+}
+
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", args...)
