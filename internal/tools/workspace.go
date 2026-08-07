@@ -12,6 +12,14 @@ type workspace struct {
 	root string
 }
 
+// Workspace returns the canonical root the registry is bound to.
+func (r *Registry) Workspace() string {
+	if r == nil {
+		return ""
+	}
+	return r.workspace.root
+}
+
 type resolvedPath struct {
 	relative  string
 	canonical string
