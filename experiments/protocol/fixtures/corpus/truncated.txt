@@ -1,0 +1,1 @@
+<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{}
