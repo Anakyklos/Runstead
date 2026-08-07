@@ -69,6 +69,24 @@ func (p *Permit) Start() error {
 	return p.start(false)
 }
 
+// AttemptSequence returns the governor attempt sequence assigned at start.
+// It is only meaningful after Start succeeded.
+func (p *Permit) AttemptSequence() int {
+	if p == nil {
+		return 0
+	}
+	return p.attemptSequence
+}
+
+// StartedAt returns the permit start time. It is only meaningful after Start
+// succeeded.
+func (p *Permit) StartedAt() time.Time {
+	if p == nil {
+		return time.Time{}
+	}
+	return p.startedAt
+}
+
 func (p *Permit) StartReceiptAware() error {
 	return p.start(true)
 }

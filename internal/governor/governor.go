@@ -40,6 +40,7 @@ type Governor struct {
 	jitter          Jitter
 	telemetrySource TelemetrySource
 	events          EventSink
+	persistence     Persistence
 
 	closed              bool
 	inFlight            bool
@@ -73,18 +74,23 @@ func New(config Config, options Options) (*Governor, error) {
 	if jitter == nil {
 		jitter = &randomJitter{rng: rand.New(rand.NewSource(time.Now().UnixNano()))}
 	}
-	return &Governor{
+	governor := &Governor{
 		config:          config,
 		clock:           clock,
 		jitter:          jitter,
 		telemetrySource: options.Telemetry,
 		events:          options.Events,
+		persistence:     options.Persistence,
 		nextAttempt:     1,
 		tasks:           make(map[string]*taskState),
 		requestIDs:      make(map[string]requestRecord),
 		attemptIDs:      make(map[string]time.Time),
 		circuit:         circuitData{state: CircuitClosed},
-	}, nil
+	}
+	if options.Restore != nil {
+		governor.RestorePersistedState(*options.Restore)
+	}
+	return governor, nil
 }
 
 func (g *Governor) Config() Config {

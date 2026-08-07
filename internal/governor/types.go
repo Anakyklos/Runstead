@@ -405,6 +405,12 @@ type Options struct {
 	Jitter    Jitter
 	Telemetry TelemetrySource
 	Events    EventSink
+	// Persistence is the optional durable-state boundary (issue #8). When
+	// nil, the governor keeps the M1 in-memory behavior.
+	Persistence Persistence
+	// Restore is an optional persisted protection projection applied at
+	// construction so a restart does not reset account protection (#21).
+	Restore *PersistedState
 }
 
 var (

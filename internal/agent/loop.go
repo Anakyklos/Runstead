@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/protocol"
 	"github.com/RenyEnnos/Runstead/internal/provider"
+	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
 )
 
@@ -69,8 +71,9 @@ type Task struct {
 }
 
 // Loop is the bounded read-only agent loop. It owns no provider client, no
-// writes, no shell and no persistence; it only coordinates the existing
-// governor executor, protocol parser, repeat guard and tool registry.
+// writes, no shell and no raw SQL; it coordinates the governor executor,
+// protocol parser, repeat guard, tool registry and the semantic persistence
+// boundary (issue #8).
 type Loop struct {
 	runner   AttemptRunner
 	registry *tools.Registry
@@ -79,6 +82,7 @@ type Loop struct {
 	clock    Clock
 	trace    TraceSink
 	model    string
+	state    state.Persistence
 }
 
 // Config wires one loop instance at the composition root.
@@ -89,6 +93,9 @@ type Config struct {
 	Clock    Clock
 	Trace    TraceSink
 	Model    string
+	// State is the optional semantic persistence boundary. A nil value
+	// disables persistence (the M1 in-memory behavior).
+	State state.Persistence
 }
 
 func NewLoop(config Config) (*Loop, error) {
@@ -134,6 +141,7 @@ func NewLoop(config Config) (*Loop, error) {
 		clock:    clock,
 		trace:    traceSink,
 		model:    strings.TrimSpace(config.Model),
+		state:    config.State,
 	}, nil
 }
 
@@ -152,31 +160,73 @@ func (l *Loop) Run(ctx context.Context, task Task) Result {
 		defer cancel()
 	}
 
+	// Persist the durable task root before the first provider attempt: the
+	// task row must exist before any attempt row can reference it, and a
+	// crash before the first TX 1 leaves a reconstructable task with no
+	// attempts. The bootstrap must not depend on the run deadline: a task
+	// with an already-elapsed budget still gets a durable terminal outcome.
+	if l.state != nil {
+		if err := l.state.CreateTask(context.Background(), state.TaskRecord{
+			TaskID:     task.ID,
+			Objective:  task.Prompt,
+			Workspace:  l.registry.Workspace(),
+			Model:      l.model,
+			ConfigJSON: l.configSnapshot(),
+		}); err != nil {
+			return persistenceFailure(err)
+		}
+		if err := l.state.StartTask(context.Background(), task.ID); err != nil {
+			return persistenceFailure(err)
+		}
+	}
+
 	transcript := newTranscript(l.contract, task.Prompt)
 	evidence := NewEvidenceSet()
 	guard := newRepeatGuard()
 
-	state := runState{}
+	run := runState{}
 	emit := func(line TraceLine) {
-		state.sequence++
-		line.Sequence = state.sequence
+		run.sequence++
+		line.Sequence = run.sequence
 		l.trace(line)
 	}
 	stop := func(outcome Outcome, reason string, extra func(*Result)) Result {
 		result := Result{
 			Outcome:      outcome,
 			StopReason:   reason,
-			Turns:        state.turns,
-			Attempts:     state.attempts,
+			Turns:        run.turns,
+			Attempts:     run.attempts,
 			Observations: evidence.Count(),
-			Corrections:  state.corrections,
-			Repeated:     state.repeated,
-			MixedProse:   state.mixedProse,
+			Corrections:  run.corrections,
+			Repeated:     run.repeated,
+			MixedProse:   run.mixedProse,
 		}
 		if extra != nil {
 			extra(&result)
 		}
-		emit(TraceLine{Kind: TraceStop, Status: string(outcome), StopReason: reason})
+		if l.state != nil {
+			// Finalize must not depend on the (possibly canceled) run
+			// context: the terminal outcome has to be persisted even when
+			// the run stopped because the context was canceled.
+			if err := l.state.FinalizeTask(context.Background(), state.TaskFinalize{
+				TaskID:         task.ID,
+				Outcome:        string(result.Outcome),
+				StopReason:     result.StopReason,
+				Summary:        result.Summary,
+				Classification: result.Classification,
+				Evidence:       result.Evidence,
+				Turns:          result.Turns,
+				Attempts:       result.Attempts,
+				Observations:   result.Observations,
+				Corrections:    result.Corrections,
+				Repeated:       result.Repeated,
+				MixedProse:     result.MixedProse,
+			}); err != nil && outcome != OutcomePersistenceFailure {
+				result.Outcome = OutcomePersistenceFailure
+				result.StopReason = fmt.Sprintf("durable state could not be persisted: %v", err)
+			}
+		}
+		emit(TraceLine{Kind: TraceStop, Status: string(result.Outcome), StopReason: result.StopReason})
 		return result
 	}
 
@@ -190,14 +240,14 @@ func (l *Loop) Run(ctx context.Context, task Task) Result {
 		if deadlineReached(l.clock.Now(), deadline) {
 			return stop(OutcomeTimeBudgetExhausted, OutcomeTimeBudgetExhausted.StopReason(), nil)
 		}
-		if state.turns >= l.limits.MaxSteps {
+		if run.turns >= l.limits.MaxSteps {
 			return stop(OutcomeStepsExhausted, OutcomeStepsExhausted.StopReason(), nil)
 		}
-		if state.attempts >= l.limits.ProviderBudget {
+		if run.attempts >= l.limits.ProviderBudget {
 			return stop(OutcomeProviderBudgetExhausted, OutcomeProviderBudgetExhausted.StopReason(), nil)
 		}
 
-		if turn, terminal := l.modelTurn(ctx, task, transcript, evidence, guard, deadline, &state, emit, stop); terminal {
+		if turn, terminal := l.modelTurn(ctx, task, transcript, evidence, guard, deadline, &run, emit, stop); terminal {
 			return turn
 		}
 	}
@@ -210,6 +260,35 @@ type runState struct {
 	corrections int
 	repeated    int
 	mixedProse  int
+}
+
+// configSnapshot renders the meaningful execution configuration as a
+// sanitized JSON snapshot for the durable task row. It contains no secrets:
+// only workspace, model and the loop limits.
+func (l *Loop) configSnapshot() []byte {
+	encoded, err := json.Marshal(map[string]any{
+		"workspace":            l.registry.Workspace(),
+		"model":                l.model,
+		"max_steps":            l.limits.MaxSteps,
+		"max_corrections":      l.limits.MaxCorrections,
+		"max_repeated_actions": l.limits.MaxRepeatedActions,
+		"time_budget_ns":       int64(l.limits.TimeBudget),
+		"provider_budget":      l.limits.ProviderBudget,
+	})
+	if err != nil {
+		return []byte("{}")
+	}
+	return encoded
+}
+
+// persistenceFailure builds the terminal result for a failed persistence
+// operation. The stop reason carries the error so the failure is
+// diagnosable; the outcome is typed so exit codes stay stable.
+func persistenceFailure(err error) Result {
+	return Result{
+		Outcome:    OutcomePersistenceFailure,
+		StopReason: fmt.Sprintf("durable state could not be persisted: %v", err),
+	}
 }
 
 func outcomeReasonCanceled(err error) string {
@@ -233,14 +312,14 @@ func (l *Loop) modelTurn(
 	evidence *EvidenceSet,
 	guard *repeatGuard,
 	deadline time.Time,
-	state *runState,
+	run *runState,
 	emit func(TraceLine),
 	stop func(Outcome, string, func(*Result)) Result,
 ) (Result, bool) {
 	attemptStart := l.clock.Now()
-	state.turns++
-	state.attempts++
-	requestID := fmt.Sprintf("%s-%04d", task.ID, state.turns)
+	run.turns++
+	run.attempts++
+	requestID := fmt.Sprintf("%s-%04d", task.ID, run.turns)
 	// Account pressure is sampled before admission: when the task deadline
 	// fires while the governor is delaying the request, the delay was caused
 	// by the account lane (pacing, cooldown, circuit, busy lane or budgets).
@@ -284,18 +363,18 @@ func (l *Loop) modelTurn(
 	transcript.assistant(text)
 	parse := protocol.Parse(text, l.registry)
 	if parse.MixedProse {
-		state.mixedProse++
+		run.mixedProse++
 		emit(TraceLine{Kind: TraceDeviation, Status: "mixed_prose"})
 	}
 	if parse.Failure != nil {
-		return l.handleParseFailure(parse.Failure, transcript, state, emit, stop)
+		return l.handleParseFailure(parse.Failure, transcript, run, emit, stop)
 	}
 
 	switch parse.Kind {
 	case protocol.KindAction:
-		return l.handleAction(ctx, parse.Action, transcript, evidence, guard, state, emit, stop)
+		return l.handleAction(ctx, task, parse.Action, transcript, evidence, guard, run, emit, stop)
 	case protocol.KindFinal:
-		return l.handleFinal(parse.Final, evidence, state, emit, stop)
+		return l.handleFinal(parse.Final, evidence, run, emit, stop)
 	default:
 		return stop(OutcomeProviderFailure, "provider failure: unrecognized envelope kind", nil), true
 	}
@@ -359,15 +438,15 @@ func (l *Loop) classifyAdmission(
 func (l *Loop) handleParseFailure(
 	failure *protocol.ParseFailure,
 	transcript *transcript,
-	state *runState,
+	run *runState,
 	emit func(TraceLine),
 	stop func(Outcome, string, func(*Result)) Result,
 ) (Result, bool) {
-	if !failure.CorrectionReasonable || state.corrections >= l.limits.MaxCorrections {
+	if !failure.CorrectionReasonable || run.corrections >= l.limits.MaxCorrections {
 		return stop(OutcomeCorrectionsExhausted, fmt.Sprintf("protocol correction exhausted: %s", failure.Code), nil), true
 	}
-	state.corrections++
-	retriesRemaining := l.limits.MaxCorrections - state.corrections
+	run.corrections++
+	retriesRemaining := l.limits.MaxCorrections - run.corrections
 	message, err := protocol.GenerateCorrectionMessage(failure.Code, retriesRemaining)
 	if err != nil {
 		return stop(OutcomeProviderFailure, "provider failure: correction message generation failed", nil), true
@@ -379,11 +458,12 @@ func (l *Loop) handleParseFailure(
 
 func (l *Loop) handleAction(
 	ctx context.Context,
+	task Task,
 	action *protocol.Action,
 	transcript *transcript,
 	evidence *EvidenceSet,
 	guard *repeatGuard,
-	state *runState,
+	run *runState,
 	emit func(TraceLine),
 	stop func(Outcome, string, func(*Result)) Result,
 ) (Result, bool) {
@@ -405,12 +485,38 @@ func (l *Loop) handleAction(
 		return signature
 	}
 
+	// Every accepted envelope becomes a distinct logical action BEFORE the
+	// repeat guard decision, so a proposal the guard rejects is still
+	// represented as a rejected logical action.
+	actionID := ""
+	if l.state != nil {
+		arguments, marshalErr := json.Marshal(action.Arguments)
+		if marshalErr != nil {
+			arguments = []byte("{}")
+		}
+		var err error
+		actionID, err = l.state.RecordAction(ctx, state.ActionRecord{
+			TaskID:      task.ID,
+			Tool:        action.Tool,
+			Arguments:   arguments,
+			Fingerprint: protocol.ActionFingerprint(*action),
+		})
+		if err != nil {
+			return stop(OutcomePersistenceFailure, fmt.Sprintf("%s: %v", OutcomePersistenceFailure.StopReason(), err), nil), true
+		}
+	}
+
 	if guard.repeat(*action, signatureFor()) {
-		state.repeated++
-		if state.repeated > l.limits.MaxRepeatedActions {
+		run.repeated++
+		if run.repeated > l.limits.MaxRepeatedActions {
 			return stop(OutcomeRepeatedAction, OutcomeRepeatedAction.StopReason(), nil), true
 		}
-		retriesRemaining := l.limits.MaxRepeatedActions - state.repeated
+		if l.state != nil {
+			if err := l.state.RejectAction(ctx, task.ID, actionID, "repeated_action"); err != nil {
+				return stop(OutcomePersistenceFailure, fmt.Sprintf("%s: %v", OutcomePersistenceFailure.StopReason(), err), nil), true
+			}
+		}
+		retriesRemaining := l.limits.MaxRepeatedActions - run.repeated
 		message, err := protocol.GenerateCorrectionMessage(protocol.FailureRepeatedAction, retriesRemaining)
 		if err != nil {
 			return stop(OutcomeProviderFailure, "provider failure: correction message generation failed", nil), true
@@ -418,6 +524,26 @@ func (l *Loop) handleAction(
 		emit(TraceLine{Kind: TraceCorrection, Status: string(protocol.FailureRepeatedAction), Code: string(protocol.FailureRepeatedAction), RetriesRemaining: retriesRemaining})
 		transcript.correction(message)
 		return Result{}, false
+	}
+
+	// TX 1: persist the concrete tool execution intent before the effect.
+	executionID := ""
+	if l.state != nil {
+		arguments, marshalErr := json.Marshal(action.Arguments)
+		if marshalErr != nil {
+			arguments = []byte("{}")
+		}
+		var err error
+		executionID, err = l.state.PrepareToolAttempt(ctx, state.ToolAttemptPrepared{
+			TaskID:        task.ID,
+			ActionID:      actionID,
+			Tool:          action.Tool,
+			Arguments:     arguments,
+			RecoveryClass: 1, // all five registered tools are replay-safe observations (ADR recovery class 1)
+		})
+		if err != nil {
+			return stop(OutcomePersistenceFailure, fmt.Sprintf("%s: %v", OutcomePersistenceFailure.StopReason(), err), nil), true
+		}
 	}
 
 	executionStart := l.clock.Now()
@@ -436,6 +562,34 @@ func (l *Loop) handleAction(
 		observationStatus = "failed"
 	}
 	emit(TraceLine{Kind: TraceObservation, Status: observationStatus, EvidenceID: observation.ID, Duration: executionDuration})
+
+	// TX 2: persist the tool result and evidence after the effect returned.
+	if l.state != nil {
+		attemptStatus := "completed"
+		classification := ""
+		if !observation.Success {
+			attemptStatus = "failed"
+			if observation.Failure != nil {
+				classification = string(observation.Failure.Code)
+			}
+		}
+		evidenceID := ""
+		if observation.Success {
+			evidenceID = observation.ID
+		}
+		if err := l.state.CompleteToolAttempt(ctx, state.ToolAttemptCompleted{
+			TaskID:         task.ID,
+			ExecutionID:    executionID,
+			Status:         attemptStatus,
+			Classification: classification,
+			EvidenceID:     evidenceID,
+			DurationNanos:  int64(executionDuration),
+			Observation:    observation,
+		}); err != nil {
+			return stop(OutcomePersistenceFailure, fmt.Sprintf("%s: %v", OutcomePersistenceFailure.StopReason(), err), nil), true
+		}
+	}
+
 	guard.record(*action, signatureFor())
 	evidence.Add(observation)
 	transcript.observation(observation)
@@ -445,7 +599,7 @@ func (l *Loop) handleAction(
 func (l *Loop) handleFinal(
 	final *protocol.FinalResponse,
 	evidence *EvidenceSet,
-	state *runState,
+	run *runState,
 	emit func(TraceLine),
 	stop func(Outcome, string, func(*Result)) Result,
 ) (Result, bool) {

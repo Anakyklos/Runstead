@@ -3,6 +3,7 @@ package governor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -54,6 +55,37 @@ func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client p
 	if err := startErr; err != nil {
 		return ExecutionResult{Admission: admission, Err: err}
 	}
+
+	// TX 1: persist the provider attempt intent and the post-start governor
+	// protection state BEFORE the provider call. A crash after this commit
+	// leaves durable evidence that the upstream may have been reached. If the
+	// durable intent cannot be committed, the provider call must not proceed:
+	// the effect is not executed, the permit is finished conservatively and
+	// the run stops fail-closed.
+	if g.persistence != nil {
+		prepared := ProviderPrepared{
+			TaskID:           request.TaskID,
+			ClientRequestID:  request.ClientRequestID,
+			ProviderID:       g.config.ProviderID,
+			ModelPool:        g.config.ModelPool,
+			Model:            g.config.Model,
+			AllowanceProfile: g.config.AllowanceProfile,
+			AttemptSequence:  admission.Permit.AttemptSequence(),
+			StartedAt:        admission.Permit.StartedAt(),
+			ReceiptAware:     receiptAware,
+			TelemetryHealthy: admission.TelemetryHealthy,
+			State:            g.PersistedState(),
+		}
+		if err := g.persistence.RecordProviderPrepared(ctx, prepared); err != nil {
+			completion := admission.Permit.Finish(Outcome{Class: OutcomeCancelledBeforeUpstream})
+			return ExecutionResult{
+				Admission:  admission,
+				Completion: completion,
+				Err:        fmt.Errorf("durable provider intent could not be persisted: %w", err),
+			}
+		}
+	}
+
 	response, callErr := client.Complete(ctx, request.ProviderRequest)
 	if classifier == nil {
 		classifier = defaultOutcome
@@ -71,5 +103,60 @@ func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client p
 	} else {
 		completion = admission.Permit.Finish(outcome)
 	}
+
+	// TX 2: persist the classified outcome, receipt evidence and the
+	// post-finish governor protection state. A crash before this commit
+	// leaves the attempt 'prepared' in the store: ambiguous, never a silent
+	// re-execution.
+	if g.persistence != nil {
+		finished := ProviderFinished{
+			TaskID:           request.TaskID,
+			ClientRequestID:  request.ClientRequestID,
+			Outcome:          completion.Outcome,
+			UpstreamReached:  outcome.UpstreamReached,
+			Uncertain:        completion.Outcome == OutcomeUncertainReached,
+			AttemptDebited:   completion.AttemptDebited,
+			SelectedBackoff:  completion.SelectedBackoff,
+			Circuit:          completion.Circuit,
+			RetryEligible:    completion.RetryEligible,
+			Receipts:         receiptEvidence(response.Metadata.AttemptReceipts),
+			ReceiptErrorCode: receiptErrorCode(completion.Err),
+			State:            g.PersistedState(),
+		}
+		if err := g.persistence.RecordProviderFinished(ctx, finished); err != nil {
+			return ExecutionResult{
+				Admission:  admission,
+				Response:   response,
+				Completion: completion,
+				Err:        fmt.Errorf("durable provider outcome could not be persisted: %w", err),
+			}
+		}
+	}
 	return ExecutionResult{Admission: admission, Response: response, Completion: completion, Err: callErr}
+}
+
+// receiptEvidence flattens the sanitized receipt set for persistence. The
+// receipt attempt IDs are upstream-owned evidence identities, never Runstead
+// execution identities.
+func receiptEvidence(set *provider.AttemptReceiptSet) []provider.AttemptReceipt {
+	if set == nil {
+		return nil
+	}
+	return append([]provider.AttemptReceipt(nil), set.Receipts...)
+}
+
+// receiptErrorCode extracts the structural receipt validation code, if any,
+// from a completion error. Only the code is persisted, never raw error text.
+func receiptErrorCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	var receiptErr *provider.AttemptReceiptError
+	if errors.As(err, &receiptErr) {
+		return string(receiptErr.Code)
+	}
+	if errors.Is(err, provider.ErrInvalidAttemptReceipts) {
+		return string(provider.AttemptReceiptMalformed)
+	}
+	return ""
 }

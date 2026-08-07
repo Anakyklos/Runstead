@@ -12,10 +12,16 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/agent"
 )
 
+// withStateDir appends a fresh deterministic state directory so tests never
+// touch the user's real state location.
+func withStateDir(t *testing.T, args []string) []string {
+	t.Helper()
+	return append(append([]string{}, args...), "--state-dir", t.TempDir())
+}
 func TestRootHelp(t *testing.T) {
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{"--help"}, &out, &errOut)
+	code := run(context.Background(), withStateDir(t, []string{"--help"}), &out, &errOut)
 
 	if code != exitSuccess {
 		t.Fatalf("help exit code = %d, want %d", code, exitSuccess)
@@ -43,9 +49,6 @@ func TestCommandHelp(t *testing.T) {
 			if !strings.Contains(out.String(), "Usage: runstead "+command) {
 				t.Errorf("%s help missing usage:\n%s", command, out.String())
 			}
-			if !strings.Contains(out.String(), "not implemented") && command != "run" {
-				t.Errorf("%s help should identify the placeholder:\n%s", command, out.String())
-			}
 			if errOut.Len() != 0 {
 				t.Fatalf("%s help wrote diagnostics: %s", command, errOut.String())
 			}
@@ -53,10 +56,23 @@ func TestCommandHelp(t *testing.T) {
 	}
 }
 
+func TestResumeHelpIdentifiesPlaceholder(t *testing.T) {
+	var out, errOut bytes.Buffer
+
+	code := run(context.Background(), []string{"resume", "--help"}, &out, &errOut)
+
+	if code != exitSuccess {
+		t.Fatalf("resume help exit code = %d, want %d", code, exitSuccess)
+	}
+	if !strings.Contains(out.String(), "placeholder") {
+		t.Fatalf("resume help should identify the placeholder:\n%s", out.String())
+	}
+}
+
 func TestUnknownCommandFailsWithDiagnostic(t *testing.T) {
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{"unknown"}, &out, &errOut)
+	code := run(context.Background(), withStateDir(t, []string{"unknown"}), &out, &errOut)
 
 	if code != exitUsage {
 		t.Fatalf("unknown command exit code = %d, want %d", code, exitUsage)
@@ -69,7 +85,7 @@ func TestUnknownCommandFailsWithDiagnostic(t *testing.T) {
 func TestInvalidRunFlagFailsWithDiagnostic(t *testing.T) {
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{"run", "--not-a-flag"}, &out, &errOut)
+	code := run(context.Background(), withStateDir(t, []string{"run", "--not-a-flag"}), &out, &errOut)
 
 	if code != exitUsage {
 		t.Fatalf("invalid flag exit code = %d, want %d", code, exitUsage)
@@ -82,7 +98,7 @@ func TestInvalidRunFlagFailsWithDiagnostic(t *testing.T) {
 func TestRunWithoutProviderFailsClearly(t *testing.T) {
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{"run", "--task", "inspect the repo"}, &out, &errOut)
+	code := run(context.Background(), withStateDir(t, []string{"run", "--task", "inspect the repo"}), &out, &errOut)
 
 	if code != exitUnavailable {
 		t.Fatalf("run exit code = %d, want %d", code, exitUnavailable)
@@ -95,7 +111,7 @@ func TestRunWithoutProviderFailsClearly(t *testing.T) {
 func TestRunRequiresTask(t *testing.T) {
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{"run"}, &out, &errOut)
+	code := run(context.Background(), withStateDir(t, []string{"run"}), &out, &errOut)
 
 	if code != exitUsage {
 		t.Fatalf("run exit code = %d, want %d", code, exitUsage)
@@ -105,20 +121,16 @@ func TestRunRequiresTask(t *testing.T) {
 	}
 }
 
-func TestPlaceholderCommandsFailClearly(t *testing.T) {
-	for _, command := range []string{"inspect", "resume"} {
-		t.Run(command, func(t *testing.T) {
-			var out, errOut bytes.Buffer
+func TestResumePlaceholderFailsClearly(t *testing.T) {
+	var out, errOut bytes.Buffer
 
-			code := run(context.Background(), []string{command}, &out, &errOut)
+	code := run(context.Background(), []string{"resume"}, &out, &errOut)
 
-			if code != exitUnavailable {
-				t.Fatalf("%s exit code = %d, want %d", command, code, exitUnavailable)
-			}
-			if !strings.Contains(errOut.String(), "not implemented") {
-				t.Fatalf("%s diagnostic = %q", command, errOut.String())
-			}
-		})
+	if code != exitUnavailable {
+		t.Fatalf("resume exit code = %d, want %d", code, exitUnavailable)
+	}
+	if !strings.Contains(errOut.String(), "not implemented") {
+		t.Fatalf("resume diagnostic = %q", errOut.String())
 	}
 }
 
@@ -127,7 +139,7 @@ func TestCanceledRunReturnsInterruptedCode(t *testing.T) {
 	cancel()
 	var out, errOut bytes.Buffer
 
-	code := run(ctx, []string{"run", "--task", "inspect the repo"}, &out, &errOut)
+	code := run(ctx, withStateDir(t, []string{"run", "--task", "inspect the repo"}), &out, &errOut)
 
 	if code != agent.OutcomeCanceled.ExitCode() {
 		t.Fatalf("canceled run exit code = %d, want %d", code, agent.OutcomeCanceled.ExitCode())
@@ -169,13 +181,13 @@ func TestRunScriptedCompletesGroundedTask(t *testing.T) {
 	)
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{
+	code := run(context.Background(), withStateDir(t, []string{
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
 		"--min-start-interval", "1ms",
 		"--log-level", "error",
-	}, &out, &errOut)
+	}), &out, &errOut)
 
 	if code != agent.OutcomeCompleted.ExitCode() {
 		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, agent.OutcomeCompleted.ExitCode(), errOut.String())
@@ -208,13 +220,13 @@ func TestRunScriptedFabricatedEvidenceExitCode(t *testing.T) {
 	)
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{
+	code := run(context.Background(), withStateDir(t, []string{
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
 		"--min-start-interval", "1ms",
 		"--log-level", "error",
-	}, &out, &errOut)
+	}), &out, &errOut)
 
 	if code != agent.OutcomeFinalNotGrounded.ExitCode() {
 		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, agent.OutcomeFinalNotGrounded.ExitCode(), errOut.String())
@@ -233,14 +245,14 @@ func TestRunScriptedCorrectionsExhaustedExitCode(t *testing.T) {
 	)
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{
+	code := run(context.Background(), withStateDir(t, []string{
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
 		"--min-start-interval", "1ms",
 		"--max-corrections", "2",
 		"--log-level", "error",
-	}, &out, &errOut)
+	}), &out, &errOut)
 
 	if code != agent.OutcomeCorrectionsExhausted.ExitCode() {
 		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, agent.OutcomeCorrectionsExhausted.ExitCode(), errOut.String())
@@ -259,14 +271,14 @@ func TestRunScriptedStepsExhaustedExitCode(t *testing.T) {
 	)
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{
+	code := run(context.Background(), withStateDir(t, []string{
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
 		"--min-start-interval", "1ms",
 		"--max-steps", "1",
 		"--log-level", "error",
-	}, &out, &errOut)
+	}), &out, &errOut)
 
 	if code != agent.OutcomeStepsExhausted.ExitCode() {
 		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, agent.OutcomeStepsExhausted.ExitCode(), errOut.String())
@@ -290,14 +302,14 @@ func TestRunScriptedRepeatedActionExitCode(t *testing.T) {
 	)
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{
+	code := run(context.Background(), withStateDir(t, []string{
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
 		"--min-start-interval", "1ms",
 		"--max-repeated-actions", "1",
 		"--log-level", "error",
-	}, &out, &errOut)
+	}), &out, &errOut)
 
 	if code != agent.OutcomeRepeatedAction.ExitCode() {
 		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, agent.OutcomeRepeatedAction.ExitCode(), errOut.String())
@@ -318,14 +330,14 @@ func TestRunScriptedProviderBudgetExitCode(t *testing.T) {
 	)
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{
+	code := run(context.Background(), withStateDir(t, []string{
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
 		"--min-start-interval", "1ms",
 		"--provider-budget", "1",
 		"--log-level", "error",
-	}, &out, &errOut)
+	}), &out, &errOut)
 
 	if code != agent.OutcomeProviderBudgetExhausted.ExitCode() {
 		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, agent.OutcomeProviderBudgetExhausted.ExitCode(), errOut.String())
@@ -343,14 +355,14 @@ func TestRunScriptedTimeBudgetExitCode(t *testing.T) {
 	script := writeScript(t, `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"too late","evidence":["obs-000001"]}</runstead_final>`)
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{
+	code := run(context.Background(), withStateDir(t, []string{
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
 		"--min-start-interval", "1ms",
 		"--time-budget", "1ns",
 		"--log-level", "error",
-	}, &out, &errOut)
+	}), &out, &errOut)
 
 	if code != agent.OutcomeTimeBudgetExhausted.ExitCode() {
 		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, agent.OutcomeTimeBudgetExhausted.ExitCode(), errOut.String())
@@ -374,13 +386,13 @@ func TestRunScriptedFinalIncompleteExitCode(t *testing.T) {
 	)
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{
+	code := run(context.Background(), withStateDir(t, []string{
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
 		"--min-start-interval", "1ms",
 		"--log-level", "error",
-	}, &out, &errOut)
+	}), &out, &errOut)
 
 	if code != agent.OutcomeFinalIncomplete.ExitCode() {
 		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, agent.OutcomeFinalIncomplete.ExitCode(), errOut.String())

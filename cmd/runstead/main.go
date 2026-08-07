@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -16,12 +18,14 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/config"
 	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/provider"
+	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
 	"github.com/RenyEnnos/Runstead/internal/trace"
 )
 
 const (
 	exitSuccess     = 0
+	exitNotFound    = 1
 	exitUsage       = 2
 	exitUnavailable = 3
 )
@@ -43,7 +47,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	case "run":
 		return runCommand(ctx, args[1:], out, errOut)
 	case "inspect":
-		return placeholderCommand(ctx, "inspect", args[1:], out, errOut)
+		return inspectCommand(ctx, args[1:], out, errOut)
 	case "resume":
 		return placeholderCommand(ctx, "resume", args[1:], out, errOut)
 	default:
@@ -78,10 +82,12 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	omniChatEndpoint := ""
 	omniTimeout := ""
 	omniSafeRoute := false
+	stateDir := ""
 	flags.StringVar(&workspace, "workspace", "", "workspace path (default: RUNSTEAD_WORKSPACE or .)")
 	flags.StringVar(&logLevel, "log-level", "", "log level: debug, info, warn or error")
 	flags.StringVar(&task, "task", "", "task prompt (RUNSTEAD_TASK)")
 	flags.StringVar(&scripted, "scripted", "", "JSONL file of scripted model responses for a deterministic offline run (RUNSTEAD_SCRIPTED_RESPONSES)")
+	flags.StringVar(&stateDir, "state-dir", "", "durable state directory (RUNSTEAD_STATE_DIR; default: $XDG_DATA_HOME/runstead or ~/.local/share/runstead)")
 	flags.IntVar(&maxSteps, "max-steps", 0, "maximum model turns (RUNSTEAD_MAX_STEPS, default 24)")
 	flags.IntVar(&maxCorrections, "max-corrections", 0, "protocol correction attempts (RUNSTEAD_MAX_CORRECTIONS, default 2)")
 	flags.IntVar(&maxRepeatedActions, "max-repeated-actions", 0, "repeated-action corrections before stopping (RUNSTEAD_MAX_REPEATED_ACTIONS, default 2)")
@@ -188,7 +194,34 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "run: %v\n", err)
 		return exitUsage
 	}
-	accountGovernor, err := governor.New(accountConfig, governor.Options{Events: trace.NewPolicySink(logger)})
+
+	// Open the durable store before any execution: persistence is part of the
+	// runtime, not an afterthought. A store that cannot be created or opened
+	// is a hard failure.
+	stateDirPath, err := resolveStateDir(stateDir, flagWasSet(flags, "state-dir"))
+	if err != nil {
+		fmt.Fprintf(errOut, "run: %v\n", err)
+		return exitUsage
+	}
+	store, err := openStore(stateDirPath)
+	if err != nil {
+		fmt.Fprintf(errOut, "run: %v\n", err)
+		return exitUnavailable
+	}
+	defer store.Close()
+	var restored *governor.PersistedState
+	if snapshot, ok, loadErr := store.GovernorState(ctx); loadErr != nil {
+		fmt.Fprintf(errOut, "run: cannot restore account protection state: %v\n", loadErr)
+		return exitUnavailable
+	} else if ok {
+		restored = &snapshot
+	}
+
+	accountGovernor, err := governor.New(accountConfig, governor.Options{
+		Events:      trace.NewPolicySink(logger),
+		Persistence: store,
+		Restore:     restored,
+	})
 	if err != nil {
 		fmt.Fprintf(errOut, "run: invalid account policy: %v\n", err)
 		return exitUsage
@@ -227,6 +260,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		Limits:   limits,
 		Model:    model,
 		Trace:    cliTraceSink(errOut),
+		State:    store,
 	})
 	if err != nil {
 		fmt.Fprintf(errOut, "run: loop unavailable: %v\n", err)
@@ -235,6 +269,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 
 	taskID := "cli-" + fmt.Sprint(time.Now().UnixNano())
 	logger.InfoContext(ctx, "run started", "task_id", taskID, "provider", "scripted", "workspace", cfg.Workspace)
+	fmt.Fprintf(errOut, "task: %s\n", taskID)
 	result := loop.Run(ctx, agent.Task{ID: taskID, Prompt: taskPrompt})
 	printResult(out, errOut, result)
 	return result.Outcome.ExitCode()
@@ -427,6 +462,120 @@ func cliTraceSink(errOut io.Writer) agent.TraceSink {
 	}
 }
 
+// inspectCommand renders the durable state of one task after the original
+// `runstead run` process has exited. The human-readable output is produced by
+// the store renderer: stable sections, no raw SQLite rows, no secrets.
+func inspectCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
+	if hasHelp(args) {
+		printInspectHelp(out)
+		return exitSuccess
+	}
+
+	// Parse manually so --state-dir may appear before or after the task id
+	// (the flag package stops at the first positional argument).
+	taskID := ""
+	stateDir := ""
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		switch {
+		case arg == "--state-dir":
+			if index+1 >= len(args) {
+				fmt.Fprintln(errOut, "inspect: --state-dir requires a path")
+				return exitUsage
+			}
+			index++
+			stateDir = args[index]
+		case strings.HasPrefix(arg, "--state-dir="):
+			stateDir = strings.TrimPrefix(arg, "--state-dir=")
+		case strings.HasPrefix(arg, "-"):
+			fmt.Fprintf(errOut, "inspect: unknown flag %q\n", arg)
+			printInspectHelp(errOut)
+			return exitUsage
+		default:
+			if taskID != "" {
+				fmt.Fprintln(errOut, "inspect: exactly one task id is required")
+				printInspectHelp(errOut)
+				return exitUsage
+			}
+			taskID = arg
+		}
+	}
+	if taskID == "" {
+		fmt.Fprintln(errOut, "inspect: exactly one task id is required")
+		printInspectHelp(errOut)
+		return exitUsage
+	}
+	if err := ctx.Err(); err != nil {
+		fmt.Fprintf(errOut, "inspect: canceled\n")
+		return agent.OutcomeCanceled.ExitCode()
+	}
+
+	dir, err := resolveStateDir(stateDir, stateDir != "")
+	if err != nil {
+		fmt.Fprintf(errOut, "inspect: %v\n", err)
+		return exitUsage
+	}
+	store, err := openStore(dir)
+	if err != nil {
+		fmt.Fprintf(errOut, "inspect: %v\n", err)
+		return exitUnavailable
+	}
+	defer store.Close()
+	if err := store.RenderInspect(ctx, out, taskID); err != nil {
+		if errors.Is(err, state.ErrTaskNotFound) {
+			fmt.Fprintf(errOut, "inspect: task %q not found in %s\n", taskID, dir)
+			return exitNotFound
+		}
+		fmt.Fprintf(errOut, "inspect: %v\n", err)
+		return exitUnavailable
+	}
+	return exitSuccess
+}
+
+// resolveStateDir resolves the durable state directory from flag, then
+// RUNSTEAD_STATE_DIR, then the XDG data home, then the home directory
+// fallback. The directory itself is created by openStore.
+func resolveStateDir(flagValue string, flagSet bool) (string, error) {
+	if flagSet {
+		value := strings.TrimSpace(flagValue)
+		if value == "" {
+			return "", errors.New("state directory must not be empty")
+		}
+		return value, nil
+	}
+	if value, ok := os.LookupEnv(config.EnvStateDir); ok {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return "", fmt.Errorf("%s must not be empty", config.EnvStateDir)
+		}
+		return value, nil
+	}
+	if value, ok := os.LookupEnv("XDG_DATA_HOME"); ok {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return filepath.Join(value, "runstead"), nil
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve the default state directory: %w", err)
+	}
+	return filepath.Join(home, ".local", "share", "runstead"), nil
+}
+
+// openStore opens (or creates) the state database inside the state
+// directory. The directory and file permissions follow the documented
+// persistence policy (0700 directory, 0600 database file).
+func openStore(dir string) (*state.Store, error) {
+	store, err := state.Open(state.Options{
+		Path: filepath.Join(dir, state.DefaultDBFile),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("state database unavailable: %w", err)
+	}
+	return store, nil
+}
+
 func placeholderCommand(ctx context.Context, name string, args []string, out, errOut io.Writer) int {
 	if hasHelp(args) {
 		printPlaceholderHelp(out, name)
@@ -482,12 +631,12 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage: runstead <command> [flags]")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Commands:")
-	fmt.Fprintln(out, "  run       run a bounded read-only agent task")
-	fmt.Fprintln(out, "  inspect   inspect durable task state (placeholder)")
+	fmt.Fprintln(out, "  run       run a bounded read-only agent task with durable state")
+	fmt.Fprintln(out, "  inspect   inspect durable task state by task id")
 	fmt.Fprintln(out, "  resume    resume durable task state (placeholder)")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Configuration precedence: flags > environment > defaults")
-	fmt.Fprintf(out, "  %s, %s, %s\n", config.EnvWorkspace, config.EnvLogLevel, config.EnvTask)
+	fmt.Fprintf(out, "  %s, %s, %s, %s\n", config.EnvWorkspace, config.EnvLogLevel, config.EnvTask, config.EnvStateDir)
 	fmt.Fprintf(out, "  OmniRoute: %s, %s, %s, %s\n", config.EnvOmniRouteBaseURL, config.EnvOmniRouteAPIKey, config.EnvOmniRouteModel, config.EnvOmniRouteChatEndpoint)
 	fmt.Fprintln(out, "Use 'runstead <command> --help' for command-specific help.")
 }
@@ -498,7 +647,9 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "Runs one bounded read-only agent task: every model turn is admitted by the")
 	fmt.Fprintln(out, "account governor, actions are validated and executed by the read-only tool")
 	fmt.Fprintln(out, "registry, and a final answer is accepted only when grounded in real evidence")
-	fmt.Fprintln(out, "IDs produced in this run. The task never writes, shells out or persists.")
+	fmt.Fprintln(out, "IDs produced in this run. The task never writes or shells out; durable task,")
+	fmt.Fprintln(out, "action, attempt, evidence, journal and account-protection state is persisted")
+	fmt.Fprintln(out, "to SQLite (issue #8) and can be inspected with 'runstead inspect <task-id>'.")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "The deterministic offline mode replays scripted model responses (JSONL with")
 	fmt.Fprintln(out, "one {\"text\":\"...\"} object per line) through the real governor and tools.")
@@ -509,6 +660,7 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --task PROMPT             task prompt (RUNSTEAD_TASK)")
 	fmt.Fprintln(out, "  --scripted FILE           scripted responses for a deterministic offline run (RUNSTEAD_SCRIPTED_RESPONSES)")
 	fmt.Fprintln(out, "  --workspace PATH          workspace path (RUNSTEAD_WORKSPACE, default .)")
+	fmt.Fprintln(out, "  --state-dir PATH          durable state directory (RUNSTEAD_STATE_DIR, default $XDG_DATA_HOME/runstead or ~/.local/share/runstead)")
 	fmt.Fprintln(out, "  --log-level LEVEL         debug, info, warn or error (RUNSTEAD_LOG_LEVEL, default info)")
 	fmt.Fprintln(out, "  --max-steps N             maximum model turns (default 24)")
 	fmt.Fprintln(out, "  --max-corrections N       protocol correction attempts (default 2)")
@@ -523,6 +675,19 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --omniroute-chat-endpoint PATH       endpoint (OMNIROUTE_CHAT_ENDPOINT)")
 	fmt.Fprintln(out, "  --omniroute-timeout DURATION         timeout (OMNIROUTE_TIMEOUT)")
 	fmt.Fprintln(out, "  --omniroute-safe-route               static declaration; remote preflight remains mandatory")
+}
+
+func printInspectHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage: runstead inspect <task-id> [--state-dir PATH]")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Renders the durable state of one task after the original run process has")
+	fmt.Fprintln(out, "exited: task identity, objective, status and typed outcome, the chronological")
+	fmt.Fprintln(out, "event journal, logical actions, tool and provider attempts with evidence,")
+	fmt.Fprintln(out, "uncertain or prepared states, and the relevant account-governor consumption,")
+	fmt.Fprintln(out, "cooldown and circuit state. The output is stable, human-readable and")
+	fmt.Fprintln(out, "sanitized; it never contains credentials or raw provider responses.")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Exit codes: 0 rendered, 1 task not found, 2 usage, 3 state database unavailable.")
 }
 
 func printPlaceholderHelp(out io.Writer, name string) {

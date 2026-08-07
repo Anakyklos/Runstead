@@ -41,6 +41,11 @@ const (
 	// returned an unusable response; the concrete classification is preserved
 	// in the stop reason.
 	OutcomeProviderFailure Outcome = "provider_failure"
+	// OutcomePersistenceFailure means the run had to stop because durable
+	// state could not be maintained (issue #8). Persisted state is
+	// authoritative, so a failed projection/journal write mid-run is a
+	// terminal condition rather than something to silently continue past.
+	OutcomePersistenceFailure Outcome = "persistence_failure"
 	// OutcomeFinalIncomplete means the model emitted a grounded final with
 	// status incomplete: the run ends honestly without claiming completion.
 	OutcomeFinalIncomplete Outcome = "final_incomplete"
@@ -48,6 +53,8 @@ const (
 
 // exitSuccess, exitCanceled and the usage/unavailable codes are shared with the
 // CLI composition root; every other outcome owns a distinct stable code.
+// exitOutcomeBase + 10 (30) is the reserved code for unrecognized outcomes;
+// persistence_failure uses exitOutcomeBase + 11 (31).
 const (
 	exitSuccess     = 0
 	exitCanceled    = 130
@@ -80,6 +87,8 @@ func (o Outcome) ExitCode() int {
 		return exitOutcomeBase + 7
 	case OutcomeProviderFailure:
 		return exitOutcomeBase + 8
+	case OutcomePersistenceFailure:
+		return exitOutcomeBase + 11
 	case OutcomeFinalIncomplete:
 		return exitOutcomeBase + 9
 	default:
@@ -112,6 +121,8 @@ func (o Outcome) StopReason() string {
 		return "final evidence not grounded"
 	case OutcomeProviderFailure:
 		return "provider attempt failed"
+	case OutcomePersistenceFailure:
+		return "durable state could not be persisted"
 	case OutcomeFinalIncomplete:
 		return "grounded final reported incomplete"
 	default:
