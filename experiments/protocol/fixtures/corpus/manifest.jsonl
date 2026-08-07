@@ -9,3 +9,7 @@
 {"case":"repeated_action","fixture":"repeated_action.txt"}
 {"case":"secret_response","fixture":"secret_response.txt"}
 {"case":"secret_json","fixture":"secret_json.txt"}
+{"case":"truncated","fixture":"truncated.txt"}
+{"case":"duplicate_key","fixture":"duplicate_key.txt"}
+{"case":"unknown_field","fixture":"unknown_field.txt"}
+{"case":"unsupported_version","fixture":"unsupported_version.txt"}

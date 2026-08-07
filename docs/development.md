@@ -98,9 +98,9 @@ runstead inspect --help
 runstead resume --help
 ```
 
-`run` currently validates configuration and then fails explicitly because the
-full agent loop is deferred. `inspect` and `resume` are explicit placeholders
-because durable state and recovery are not part of this bootstrap.
+`run` executes one bounded read-only task with the issue #7 agent loop. `inspect`
+and `resume` are explicit placeholders because durable state and recovery are
+not part of this milestone.
 
 Configuration precedence is deterministic: command-line flags, then
 environment, then conservative defaults. Workspace/logging use
@@ -134,7 +134,10 @@ Implemented package responsibilities are deliberately narrow:
 
 - `cmd/runstead`: signal-aware process entrypoint, exit codes and CLI help;
 - `internal/config`: flag/environment/default resolution;
-- `internal/agent`: governor-owned executor seam with no loop or retry;
+- `internal/agent`: the governor-owned executor seam plus the issue #7 bounded
+  read-only loop: typed terminal outcomes, deterministic system contract,
+  untrusted observation framing, evidence grounding, workspace-aware repeat
+  guard, sanitized lifecycle trace and one-shot context cancellation;
 - `internal/protocol`: strict `runstead.protocol.v1` action/final parser,
   typed schema validation, deterministic correction messages, canonical action
   fingerprints and caller-owned repeat guard;
@@ -221,10 +224,131 @@ disposable M0 shell implementation remains unchanged.
 SHA-256. `RepeatGuard` is caller-owned session state; its `Check` method returns
 the typed `repeated_action` failure and the parser itself keeps no history, so
 repeated actions can be rejected before execution. Actual tool
-registration/execution is implemented by the issue #6 read-only registry;
-correction budgets plus the agent loop remain #7 work. See
+registration/execution is implemented by the issue #6 read-only registry, and
+the issue #7 loop owns the correction budget and workspace-aware repeat guard.
+See
 [`tools.md`](tools.md) for its strict contracts, workspace boundary and
 bounded observation semantics.
+
+## Issue #7 bounded read-only agent loop
+
+`internal/agent` implements the bounded read-only loop. The composition root is
+`cmd/runstead run`, which wires one task, one workspace, the account-scoped
+governor, the read-only tool registry and the loop.
+
+### Running a read-only task
+
+The deterministic offline mode runs the real loop without any network access:
+the model responses are replayed from a JSONL file (`{"text":"..."}` per line)
+through the real governor, parser and tools.
+
+```bash
+runstead run \
+  --task "What does this repository's README describe?" \
+  --workspace /path/to/repository \
+  --scripted /path/to/responses.jsonl
+```
+
+Each turn must contain exactly one `runstead.protocol.v1` envelope; the final
+envelope must cite observation IDs (`obs-000001`, ...) that the run actually
+produced. Scripted responses therefore reference the deterministic IDs of the
+tools they execute. The command prints `outcome:`/`summary:`/`evidence:` to
+stdout, a sanitized lifecycle trace to stderr, and exits with the typed outcome
+code.
+
+Live OmniRoute configuration is accepted but refused before execution: protected
+live use remains blocked until a compatible OmniRoute attempt-receipt producer
+exists and #30 activates the live path (#29 -> #30 -> #4). The opt-in live
+check in `internal/provider/omniroute/live_test.go` stays skipped by default.
+
+### Loop budgets and defaults
+
+| Bound | Default | Outcome when exhausted |
+| --- | ---: | --- |
+| `--max-steps` | 24 | `steps_exhausted` |
+| `--max-corrections` | 2 | `corrections_exhausted` |
+| `--max-repeated-actions` | 2 | `repeated_action` |
+| `--time-budget` | 10m | `time_budget_exhausted` / `account_delay_timeout` |
+| `--provider-budget` | 80 | `provider_budget_exhausted` |
+
+Every budget can also be set through the environment variable named in the
+CLI help: `RUNSTEAD_MAX_STEPS`, `RUNSTEAD_MAX_CORRECTIONS`,
+`RUNSTEAD_MAX_REPEATED_ACTIONS`, `RUNSTEAD_TIME_BUDGET` and
+`RUNSTEAD_PROVIDER_BUDGET`. Precedence is flags > environment > defaults,
+matching the rest of the CLI.
+
+`--max-corrections 0` and `--max-repeated-actions 0` (and the matching
+environment values) are valid explicit values that disable the corresponding
+allowance: the loop stops with `corrections_exhausted` or `repeated_action`
+without granting a single correction or repeat. In the `agent.Limits` struct,
+zero has the same meaning; only negative values for those two fields fall back
+to the defaults.
+
+The account governor below the loop enforces its own rolling 3h/1h/10m ceilings,
+manual reserve, task budget, retry budget, start-to-start pacing, cooldowns and
+circuit state. Every model turn, including the initial request, tool-follow-up
+turns, corrections and any retry, re-enters governor admission and counts
+against the task request budget; no retry can bypass the governor.
+
+### Typed outcomes and exit codes
+
+Every loop exit is a typed `agent.Outcome` with one stable process exit code:
+
+| Outcome | Exit code |
+| --- | ---: |
+| `completed` | 0 |
+| `steps_exhausted` | 20 |
+| `corrections_exhausted` | 21 |
+| `repeated_action` | 22 |
+| `time_budget_exhausted` | 23 |
+| `provider_budget_exhausted` | 24 |
+| `account_delay_timeout` | 25 |
+| `account_circuit_open` | 26 |
+| `final_not_grounded` | 27 |
+| `provider_failure` | 28 |
+| `final_incomplete` | 29 |
+| `canceled` | 130 |
+
+The mapping is centralized in `agent.Outcome.ExitCode`. `canceled` follows the
+shell convention; the remaining outcomes start at 20 so CLI usage errors (2) and
+unavailable paths (3) stay distinct. Provider failures preserve the concrete
+governor classification (`rate_or_capacity`, `authentication_denied`, ...) in
+the stop reason.
+
+### Trace
+
+The loop emits one sanitized lifecycle line per provider attempt, action,
+observation, correction, protocol deviation and terminal stop. Lines carry
+sequence, kind, status, duration, evidence ID, tool, correction code and stop
+reason only. Prompts, response bodies, credentials, tokens, cookies and account
+identifiers are never traced. The CLI prints these lines to stderr; tests use an
+in-memory sink.
+
+### Grounding and untrusted observations
+
+Repository content and tool output are structurally separated from the system
+contract: observations are appended under a distinct `observation` transcript
+role with the #6 `untrusted` marker and never become system instructions,
+permissions, policy or approval. A `runstead_final` is syntax only; `completed`
+is accepted only when every cited evidence ID was produced by a successful
+observation in the current run. Fabricated IDs produce `final_not_grounded`, and
+an `incomplete` final is a grounded terminal `final_incomplete`.
+
+### Safety invariants
+
+- No `provider.Client` reference and no `provider.Client.Complete` call exists
+  in the loop implementation; a source-level test enforces the boundary.
+- No write tool, shell, arbitrary subprocess, network tool, persistence,
+  resume, daemon, background execution or multi-agent behavior in this
+  milestone.
+- Cancellation is one-shot `context.Context` propagated through governor
+  admission, provider I/O and tool execution. Cancellation before admission
+  consumes no upstream attempt; cancellation after the upstream may have been
+  reached stays conservatively debited by the governor.
+- Concurrent tasks share one account lane: admission is serialized by the
+  governor, no attempt is double-executed, and race tests assert the absence
+  of goroutine leaks.
+
 
 ## Native path remains authoritative
 

@@ -161,27 +161,39 @@ The provider interface should remain small enough to support deterministic fake 
 
 ## Main execution loop
 
+Issue #7 implements the bounded read-only agent loop in `internal/agent`.
+
 ```text
-load task state
+task
     ↓
-build bounded context
+build deterministic system contract (protocol version + registered tools)
     ↓
-request next model decision through provider adapter
+governed model turn (account-scoped attempt executor)
     ↓
-parse Runstead action
+parse exactly one envelope (runstead.protocol.v1)
     ↓
-validate schema and policy
+action → repeat guard → read-only registry validation and execution
     ↓
-execute local tool
+observation with evidence ID returned as UNTRUSTED data
     ↓
-verify observable result
+next governed model turn
     ↓
-persist event and checkpoint
+final → grounding check against evidence IDs produced this run
     ↓
-return observation to model
-    ↓
-continue or finish with evidence
+terminal outcome
 ```
+
+The loop owns no provider client and no `provider.Client.Complete` call: its
+only provider seam is the governor-owned `agent.Executor`, so every model turn
+re-enters account admission. Tool output and repository content are carried as
+untrusted observations in a separate transcript role and never become system
+instructions, permissions, policy or approval. Fingerprints from #5 act only as
+a workspace-aware loop guard, not as permanent idempotency keys: an identical
+observational action may run again after the workspace changes. The loop enforces
+bounded steps, corrections, repeated actions, elapsed task time and provider
+attempts, and every terminal exit maps to a typed outcome with a stable exit
+code (see [`development.md`](development.md)). There is no write tool, shell,
+persistence, background execution or resume in this milestone.
 
 The model never executes a tool directly. It proposes an action. Runstead remains responsible for whether that action is valid, permitted, executed and proven.
 

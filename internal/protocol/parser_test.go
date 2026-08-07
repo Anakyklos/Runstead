@@ -98,17 +98,21 @@ func TestCorpusFixtures(t *testing.T) {
 		mixed      bool
 		tool       string
 	}{
-		"valid_action":       {kind: KindAction, accepted: true, executable: true, tool: "read_file"},
-		"valid_final":        {kind: KindFinal, accepted: true},
-		"mixed_prose_action": {kind: KindAction, accepted: true, executable: true, mixed: true, tool: "list_files"},
-		"malformed_json":     {code: FailureMalformedJSON, kind: KindInvalid},
-		"invalid_schema":     {code: FailureInvalidActionSchema, kind: KindAction},
-		"unknown_tool":       {code: FailureUnknownTool, kind: KindAction},
-		"protocol_refusal":   {code: FailureProtocolRefusal, kind: KindInvalid},
-		"unsupported_claim":  {code: FailureUnsupportedExecutionClaim, kind: KindInvalid},
-		"repeated_action":    {kind: KindAction, accepted: true, executable: true, tool: "read_file"},
-		"secret_response":    {kind: KindAction, accepted: true, executable: true, mixed: true, tool: "read_file"},
-		"secret_json":        {code: FailureMissingEnvelope, kind: KindInvalid},
+		"valid_action":        {kind: KindAction, accepted: true, executable: true, tool: "read_file"},
+		"valid_final":         {kind: KindFinal, accepted: true},
+		"mixed_prose_action":  {kind: KindAction, accepted: true, executable: true, mixed: true, tool: "list_files"},
+		"malformed_json":      {code: FailureMalformedJSON, kind: KindInvalid},
+		"invalid_schema":      {code: FailureInvalidActionSchema, kind: KindAction},
+		"unknown_tool":        {code: FailureUnknownTool, kind: KindAction},
+		"protocol_refusal":    {code: FailureProtocolRefusal, kind: KindInvalid},
+		"unsupported_claim":   {code: FailureUnsupportedExecutionClaim, kind: KindInvalid},
+		"repeated_action":     {kind: KindAction, accepted: true, executable: true, tool: "read_file"},
+		"secret_response":     {kind: KindAction, accepted: true, executable: true, mixed: true, tool: "read_file"},
+		"secret_json":         {code: FailureMissingEnvelope, kind: KindInvalid},
+		"truncated":           {code: FailureUnclosedEnvelope, kind: KindInvalid},
+		"duplicate_key":       {code: FailureMalformedJSON, kind: KindInvalid},
+		"unknown_field":       {code: FailureInvalidActionSchema, kind: KindAction},
+		"unsupported_version": {code: FailureUnsupportedProtocolVersion, kind: KindAction},
 	}
 
 	scanner := bufio.NewScanner(manifest)
