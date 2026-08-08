@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,18 +22,48 @@ import (
 // the database with `runstead inspect` to prove which durable state survived.
 
 // TestRuntimeCrashHelper is the subprocess entry point. It installs the
-// store crash seam and runs the real CLI run command.
+// store crash seam and runs the real CLI run command. RUNSTEAD_RUNTIME_CRASH_AFTER
+// (optional) makes the crash fire on the Nth occurrence of the crash point,
+// so tests can kill the process after a completed transition instead of on
+// the first occurrence.
 func TestRuntimeCrashHelper(t *testing.T) {
 	if os.Getenv("RUNSTEAD_RUNTIME_CRASH_HELPER") == "" {
 		t.Skip("runtime crash helper")
 	}
 	point := os.Getenv("RUNSTEAD_RUNTIME_CRASH_POINT")
+	after := 1
+	if value := os.Getenv("RUNSTEAD_RUNTIME_CRASH_AFTER"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			after = parsed
+		}
+	}
+	state.SetCrashPoint(func(name string) {
+		if name == point {
+			after--
+			if after == 0 {
+				os.Exit(42)
+			}
+		}
+	})
+	args := strings.Split(os.Getenv("RUNSTEAD_RUNTIME_CRASH_ARGS"), "\x1f")
+	code := run(context.Background(), args, os.Stdout, os.Stderr)
+	os.Exit(code)
+}
+
+// TestRuntimeResumeCrashHelper is the subprocess entry point for crashing the
+// resume command itself at a recovery persistence boundary, proving that a
+// crash during recovery leaves a consistent, re-resumable state.
+func TestRuntimeResumeCrashHelper(t *testing.T) {
+	if os.Getenv("RUNSTEAD_RUNTIME_RESUME_CRASH_HELPER") == "" {
+		t.Skip("resume crash helper")
+	}
+	point := os.Getenv("RUNSTEAD_RUNTIME_RESUME_CRASH_POINT")
 	state.SetCrashPoint(func(name string) {
 		if name == point {
 			os.Exit(42)
 		}
 	})
-	args := strings.Split(os.Getenv("RUNSTEAD_RUNTIME_CRASH_ARGS"), "\x1f")
+	args := strings.Split(os.Getenv("RUNSTEAD_RUNTIME_RESUME_ARGS"), "\x1f")
 	code := run(context.Background(), args, os.Stdout, os.Stderr)
 	os.Exit(code)
 }

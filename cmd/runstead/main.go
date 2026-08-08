@@ -49,7 +49,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	case "inspect":
 		return inspectCommand(ctx, args[1:], out, errOut)
 	case "resume":
-		return placeholderCommand(ctx, "resume", args[1:], out, errOut)
+		return resumeCommand(ctx, args[1:], out, errOut)
 	default:
 		fmt.Fprintf(errOut, "runstead: unknown command %q\n\n", args[0])
 		printRootHelp(errOut)
@@ -576,32 +576,6 @@ func openStore(dir string) (*state.Store, error) {
 	return store, nil
 }
 
-func placeholderCommand(ctx context.Context, name string, args []string, out, errOut io.Writer) int {
-	if hasHelp(args) {
-		printPlaceholderHelp(out, name)
-		return exitSuccess
-	}
-
-	flags := flag.NewFlagSet(name, flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	if err := flags.Parse(args); err != nil {
-		fmt.Fprintf(errOut, "%s: invalid flags: %v\n", name, err)
-		printPlaceholderHelp(errOut, name)
-		return exitUsage
-	}
-	if flags.NArg() != 0 {
-		fmt.Fprintf(errOut, "%s: unexpected argument %q\n", name, flags.Arg(0))
-		printPlaceholderHelp(errOut, name)
-		return exitUsage
-	}
-	if err := ctx.Err(); err != nil {
-		fmt.Fprintf(errOut, "%s: canceled\n", name)
-		return agent.OutcomeCanceled.ExitCode()
-	}
-	fmt.Fprintf(errOut, "%s: persistent state and recovery are not implemented in issue #3\n", name)
-	return exitUnavailable
-}
-
 func flagWasSet(flags *flag.FlagSet, name string) bool {
 	wasSet := false
 	flags.Visit(func(flag *flag.Flag) {
@@ -633,7 +607,7 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "Commands:")
 	fmt.Fprintln(out, "  run       run a bounded read-only agent task with durable state")
 	fmt.Fprintln(out, "  inspect   inspect durable task state by task id")
-	fmt.Fprintln(out, "  resume    resume durable task state (placeholder)")
+	fmt.Fprintln(out, "  resume    resume an interrupted task from durable state")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Configuration precedence: flags > environment > defaults")
 	fmt.Fprintf(out, "  %s, %s, %s, %s\n", config.EnvWorkspace, config.EnvLogLevel, config.EnvTask, config.EnvStateDir)
@@ -688,10 +662,4 @@ func printInspectHelp(out io.Writer) {
 	fmt.Fprintln(out, "sanitized; it never contains credentials or raw provider responses.")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Exit codes: 0 rendered, 1 task not found, 2 usage, 3 state database unavailable.")
-}
-
-func printPlaceholderHelp(out io.Writer, name string) {
-	fmt.Fprintf(out, "Usage: runstead %s\n\n", name)
-	fmt.Fprintf(out, "The %s command is an explicit placeholder; persistent state and recovery are not implemented in issue #3.\n", name)
-	fmt.Fprintln(out, "No flags are currently supported.")
 }

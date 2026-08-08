@@ -56,7 +56,7 @@ func TestCommandHelp(t *testing.T) {
 	}
 }
 
-func TestResumeHelpIdentifiesPlaceholder(t *testing.T) {
+func TestResumeHelpDescribesRecovery(t *testing.T) {
 	var out, errOut bytes.Buffer
 
 	code := run(context.Background(), []string{"resume", "--help"}, &out, &errOut)
@@ -64,8 +64,13 @@ func TestResumeHelpIdentifiesPlaceholder(t *testing.T) {
 	if code != exitSuccess {
 		t.Fatalf("resume help exit code = %d, want %d", code, exitSuccess)
 	}
-	if !strings.Contains(out.String(), "placeholder") {
-		t.Fatalf("resume help should identify the placeholder:\n%s", out.String())
+	for _, want := range []string{"Usage: runstead resume <task-id>", "durable local state", "human_review_required", "--scripted"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("resume help should describe recovery, missing %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "placeholder") {
+		t.Fatalf("resume help should not identify a placeholder:\n%s", out.String())
 	}
 }
 
@@ -121,16 +126,60 @@ func TestRunRequiresTask(t *testing.T) {
 	}
 }
 
-func TestResumePlaceholderFailsClearly(t *testing.T) {
+func TestResumeRequiresTaskID(t *testing.T) {
 	var out, errOut bytes.Buffer
 
 	code := run(context.Background(), []string{"resume"}, &out, &errOut)
 
-	if code != exitUnavailable {
-		t.Fatalf("resume exit code = %d, want %d", code, exitUnavailable)
+	if code != exitUsage {
+		t.Fatalf("resume exit code = %d, want %d", code, exitUsage)
 	}
-	if !strings.Contains(errOut.String(), "not implemented") {
+	if !strings.Contains(errOut.String(), "task id is required") {
 		t.Fatalf("resume diagnostic = %q", errOut.String())
+	}
+}
+
+func TestResumeUnknownTaskFailsClearly(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{"resume", "missing-task", "--state-dir", t.TempDir()}, &out, &errOut)
+	if code != exitNotFound {
+		t.Fatalf("resume exit code = %d, want %d\nstderr:\n%s", code, exitNotFound, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "not found") {
+		t.Fatalf("resume diagnostic = %q", errOut.String())
+	}
+}
+
+func TestResumeCompletedTaskIsNotResumable(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "a.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+	)
+	stateDir := t.TempDir()
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), withStateDirArgs(stateDir, []string{
+		"run", "--task", "Inspect the workspace.",
+		"--workspace", workspace,
+		"--scripted", script,
+		"--min-start-interval", "1ms",
+		"--log-level", "error",
+	}), &out, &errOut)
+	if code != exitSuccess {
+		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, exitSuccess, errOut.String())
+	}
+	taskID := extractTaskID(t, errOut.String())
+
+	var resumeOut, resumeErr bytes.Buffer
+	code = run(context.Background(), []string{"resume", taskID, "--state-dir", stateDir, "--scripted", script}, &resumeOut, &resumeErr)
+	if code != exitNotResumable {
+		t.Fatalf("resume exit code = %d, want %d\nstderr:\n%s", code, exitNotResumable, resumeErr.String())
+	}
+	if !strings.Contains(resumeErr.String(), "not resumable") || !strings.Contains(resumeErr.String(), "completed") {
+		t.Fatalf("resume diagnostic = %q", resumeErr.String())
 	}
 }
 

@@ -20,7 +20,7 @@ type TraceLine struct {
 }
 
 // Trace kinds: one lifecycle line per provider attempt, action, observation,
-// correction, protocol deviation and terminal stop.
+// correction, protocol deviation, recovery transition and terminal stop.
 const (
 	TraceAttempt     = "attempt"
 	TraceAction      = "action"
@@ -28,6 +28,16 @@ const (
 	TraceCorrection  = "correction"
 	TraceDeviation   = "deviation"
 	TraceStop        = "stop"
+
+	// Recovery trace kinds (issue #9): the pre-loop pipeline emits the
+	// interruption, reconciliation and context-reconstruction lines, and the
+	// loop emits the recovery boundary line when the resumed execution begins.
+	TraceRecoveryStart     = "recovery_start"
+	TraceRecoveryReconcile = "reconcile"
+	TraceRecoveryUncertain = "recovery_uncertain"
+	TraceRecoveryContext   = "recovery_context"
+	TraceRecoveryBoundary  = "recovery_boundary"
+	TraceRecoveryBlocked   = "recovery_blocked"
 )
 
 // TraceSink receives lifecycle lines. A nil sink is a no-op.

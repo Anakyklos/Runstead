@@ -83,6 +83,7 @@ type Loop struct {
 	trace    TraceSink
 	model    string
 	state    state.Persistence
+	recovery *RecoverySeed
 }
 
 // Config wires one loop instance at the composition root.
@@ -96,6 +97,11 @@ type Config struct {
 	// State is the optional semantic persistence boundary. A nil value
 	// disables persistence (the M1 in-memory behavior).
 	State state.Persistence
+	// Recovery is the optional reconstructed state of an interrupted task
+	// (issue #9). A nil value starts a fresh run; a non-nil value resumes the
+	// same durable task from persisted state without replaying historical
+	// model calls or re-executing completed effects.
+	Recovery *RecoverySeed
 }
 
 func NewLoop(config Config) (*Loop, error) {
@@ -142,6 +148,7 @@ func NewLoop(config Config) (*Loop, error) {
 		trace:    traceSink,
 		model:    strings.TrimSpace(config.Model),
 		state:    config.State,
+		recovery: config.Recovery,
 	}, nil
 }
 
@@ -160,12 +167,25 @@ func (l *Loop) Run(ctx context.Context, task Task) Result {
 		defer cancel()
 	}
 
+	transcript := newTranscript(l.contract, task.Prompt)
+	evidence := NewEvidenceSet()
+	guard := newRepeatGuard()
+
+	run := runState{}
+	emit := func(line TraceLine) {
+		run.sequence++
+		line.Sequence = run.sequence
+		l.trace(line)
+	}
+
 	// Persist the durable task root before the first provider attempt: the
 	// task row must exist before any attempt row can reference it, and a
 	// crash before the first TX 1 leaves a reconstructable task with no
 	// attempts. The bootstrap must not depend on the run deadline: a task
 	// with an already-elapsed budget still gets a durable terminal outcome.
-	if l.state != nil {
+	// A resumed run skips this: the task row already exists and the recovery
+	// pipeline reconciled its interrupted attempts.
+	if l.state != nil && l.recovery == nil {
 		if err := l.state.CreateTask(context.Background(), state.TaskRecord{
 			TaskID:     task.ID,
 			Objective:  task.Prompt,
@@ -180,15 +200,28 @@ func (l *Loop) Run(ctx context.Context, task Task) Result {
 		}
 	}
 
-	transcript := newTranscript(l.contract, task.Prompt)
-	evidence := NewEvidenceSet()
-	guard := newRepeatGuard()
-
-	run := runState{}
-	emit := func(line TraceLine) {
-		run.sequence++
-		line.Sequence = run.sequence
-		l.trace(line)
+	if l.recovery != nil {
+		// A resumed run continues from the reconstructed durable state: the
+		// recovery context is appended to the transcript, the grounding set is
+		// seeded with persisted evidence, the repeat guard is seeded with the
+		// workspace signatures recorded when historical actions were accepted,
+		// and the run counters continue so the loop budgets do not reset.
+		if l.recovery.Context != "" {
+			transcript.recovery(l.recovery.Context)
+		}
+		for _, observation := range l.recovery.Evidence {
+			evidence.Add(observation)
+		}
+		for fingerprint, signature := range l.recovery.Guard {
+			guard.seed(fingerprint, signature)
+		}
+		run.turns = maxInt(run.turns, l.recovery.Turns)
+		run.attempts = maxInt(run.attempts, l.recovery.Attempts)
+		run.repeated = maxInt(run.repeated, l.recovery.Repeated)
+		run.sequence = maxInt(run.sequence, l.recovery.TraceSequence)
+		// The recovery boundary marks where reconciliation ends and new
+		// governed execution begins in the resumed trace.
+		emit(TraceLine{Kind: TraceRecoveryBoundary, Status: "new execution begins"})
 	}
 	stop := func(outcome Outcome, reason string, extra func(*Result)) Result {
 		result := Result{
@@ -296,6 +329,13 @@ func outcomeReasonCanceled(err error) string {
 		return OutcomeCanceled.StopReason()
 	}
 	return fmt.Sprintf("%s: %v", OutcomeCanceled.StopReason(), err)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func deadlineReached(now time.Time, deadline time.Time) bool {
@@ -487,7 +527,9 @@ func (l *Loop) handleAction(
 
 	// Every accepted envelope becomes a distinct logical action BEFORE the
 	// repeat guard decision, so a proposal the guard rejects is still
-	// represented as a rejected logical action.
+	// represented as a rejected logical action. The workspace signature is
+	// captured at acceptance time and persisted as repeat/loop evidence so a
+	// resumed run can seed its repeat guard (issue #9).
 	actionID := ""
 	if l.state != nil {
 		arguments, marshalErr := json.Marshal(action.Arguments)
@@ -496,10 +538,11 @@ func (l *Loop) handleAction(
 		}
 		var err error
 		actionID, err = l.state.RecordAction(ctx, state.ActionRecord{
-			TaskID:      task.ID,
-			Tool:        action.Tool,
-			Arguments:   arguments,
-			Fingerprint: protocol.ActionFingerprint(*action),
+			TaskID:             task.ID,
+			Tool:               action.Tool,
+			Arguments:          arguments,
+			Fingerprint:        protocol.ActionFingerprint(*action),
+			WorkspaceSignature: signatureFor(),
 		})
 		if err != nil {
 			return stop(OutcomePersistenceFailure, fmt.Sprintf("%s: %v", OutcomePersistenceFailure.StopReason(), err), nil), true

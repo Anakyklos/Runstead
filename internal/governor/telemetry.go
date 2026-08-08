@@ -139,6 +139,7 @@ func (g *Governor) telemetrySummaryLocked() TelemetrySummary {
 		RateLimited:       g.telemetry.rateLimited,
 		CapacityExhausted: g.telemetry.capacityExhausted,
 		UpstreamCircuit:   g.telemetry.upstreamCircuit,
+		Unsafe:            g.telemetry.unsafe,
 	}
 }
 

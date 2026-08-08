@@ -344,3 +344,193 @@ implemented:
 The schema keeps a compatible seam for those milestones (for example
 `provider_attempt_receipts` is one-to-many and `recovery_class` is stored on
 tool attempts), but no future functionality is presented as implemented.
+
+## Resume and recovery (issue #9)
+
+`runstead resume <task-id>` reconstructs an interrupted read-only task from
+durable state and continues it through the normal governed agent loop. Recovery
+is defined as:
+
+```text
+persisted state
++ environment reconciliation
++ bounded context reconstruction
++ new governed execution attempts
+```
+
+It is **not** replaying the old workflow until the same history happens again:
+historical provider calls are never re-issued to reproduce the old conversation
+(provider response text is not persisted at all), completed tool effects are
+never executed again merely because the task resumes, uncertain attempts stay
+conservatively accounted, and the persisted governor protection state is
+restored unchanged.
+
+### Pipeline
+
+`internal/recovery.Resume` implements the explicit recovery pipeline:
+
+1. **load task** — `state.LoadRecoverySnapshot` reads the task root, logical
+   actions (with fingerprints and recorded workspace signatures), tool
+   attempts, provider attempts and citable evidence from SQLite;
+2. **classify existing attempts** — completed/failed attempts are terminal
+   progress; class-1 prepared attempts are interrupted replay-safe
+   observations; any other non-terminal tool attempt (recovery class 2-4) is
+   unreconcilable by the read-only runtime; provider attempts that may have
+   reached upstream are treated conservatively;
+3. **reconcile interrupted attempts** — each transition commits atomically
+   with its journal event (`tool_attempt_reconciled`,
+   `provider_attempt_reconciled`) through `state.ReconcileToolAttempt` /
+   `state.ReconcileProviderAttempt`. A class-1 prepared observation is
+   reconciled as `replay_safe_observation`; a provider request that may have
+   reached upstream is reconciled as `upstream_may_have_been_reached` with
+   `uncertain = 1` and `attempt_debited = 1`. A plain attempt was already
+   debited in the governor ledger at TX 1 (`Start`); a receipt-aware attempt
+   interrupted before TX 2 was **not** (StartReceiptAware defers all debits to
+   the receipt finish path), so recovery applies the #29 conservative debit to
+   the persisted governor protection projection in the same transaction —
+   task attempt count +1, one rolling ledger event, telemetry unsafe —
+   mirroring `finishReceiptFailureLocked`. The ledger event is dated with the
+   **original permit start** (`provider_attempts.prepared_at`), never the
+   resume time, so the 10m/1h/3h windows represent when the upstream attempt
+   possibly happened; `lastStart` moves to that timestamp and
+   `telemetry.available` is decremented when known, exactly like the governor's
+   own `p.startedAt` fallback-to-now. A receipt-aware attempt persisted as
+   `uncertain` was already debited at TX 2 and is never re-debited.
+   Reconciling an already terminal attempt fails with `ErrNotReconcilable`, so
+   a second resume never rewrites history;
+4. **decide whether automatic continuation is safe** — an unreconcilable
+   effect stops with the typed `human_review_required` outcome
+   (`state.MarkHumanReviewRequired` persists the task status, stop reason and
+   the structured attempt list); the restored governor may also report that
+   continuation is blocked by account protection (circuit, cooldown, rolling
+   or task budget), in which case `recovery_blocked` is journaled and the task
+   stays pending;
+5. **reconstruct bounded model context** — `internal/recovery.BuildContext`
+   renders a deterministic, budgeted summary (see below);
+6. **establish recovery boundary** — `recovery_started` (with the persisted
+   `resume_count` projection), `recovery_context_reconstructed` and
+   `recovery_continued` journal events mark where historical execution ends
+   and new governed execution begins;
+7. **continue through the normal agent loop** — the loop receives an
+   `agent.RecoverySeed` (counters, evidence, repeat guard, context) and runs
+   with the same governor admission, provider accounting, protocol parsing,
+   registry validation, grounding and persistence as a fresh `run`. There is
+   no separate "resume executor".
+
+### Identities preserved
+
+The resume path never collapses the ADR identities:
+
+- `task_id` — one durable task;
+- `action_id` — one logical proposal; every accepted envelope is a distinct
+  action, so a re-proposed envelope after resume creates a new action row even
+  when the fingerprint matches;
+- `execution_id` — one concrete attempt; a re-execution is a new attempt, the
+  reconciled historical attempt stays terminal;
+- `client_request_id` — the interrupted request id is never re-issued; new
+  turns continue the `<task-id>-NNNN` sequence from the persisted attempt
+  count, so `UNIQUE(task_id, client_request_id)` holds;
+- `receipt_attempt_id` — upstream evidence identities remain upstream-owned;
+- fingerprint — recorded per action together with the workspace signature at
+  acceptance time (`actions.workspace_signature`, migration 0003). Resume
+  seeds the repeat guard from executed actions only, so an identical proposal
+  is rejected only while the workspace signature is unchanged. After an
+  external workspace change the same action may run again and produce fresh
+  evidence: **fingerprint equality is loop/repetition evidence, never an
+  idempotency or result-reuse key**.
+
+### Recovery classes and reconciliation rules
+
+The ADR recovery classes are represented by `tool_attempts.recovery_class`
+(class 1 for all five registered read-only tools) and the typed reconciliation
+reasons stored in `tool_attempts.recovery_reason` /
+`provider_attempts.recovery_reason` (migration 0003) and rendered by
+`runstead inspect`.
+
+| Persisted state | Classification | Recovery decision |
+| --- | --- | --- |
+| tool attempt `completed` | verified progress | eligible for context reconstruction, evidence seeding and guard seeding; never re-executed |
+| tool attempt `failed` | deterministic failure | retained in context as an unresolved failure; guard-seeded like a fresh run |
+| tool attempt `prepared` (class 1) | interrupted replay-safe observation | reconciled `replay_safe_observation`; a re-proposal executes as a NEW attempt with fresh evidence; no guard seed, no evidence |
+| tool attempt non-terminal (class 2-4) | unreconcilable effect | `human_review_required`; no automatic continuation |
+| provider attempt `prepared`/`running`/`uncertain` | may have reached upstream | reconciled `upstream_may_have_been_reached`; `uncertain = 1`, `attempt_debited = 1`; the request is never re-issued; a receipt-aware attempt interrupted before TX 2 also applies the conservative debit to the persisted governor projection (unsafe telemetry), so the restored governor blocks continuation fail-closed |
+| provider attempt `completed`/`failed` | terminal classified outcome | no action; counted in the resumed turn budget |
+| provider attempt `human_review_required` | already-required review | task stops with the unresolved human-review outcome |
+
+A crash during recovery itself (for example after a reconciliation commit)
+leaves the journaled prefix consistent: `recovery_started` and the completed
+reconciliations survive, no `recovery_continued` is written, and a second
+resume completes the task without re-reconciling.
+
+### Bounded context reconstruction
+
+`internal/recovery.Budget` bounds the model-facing recovery context
+deterministically (default 32 KiB total, 8 observations with content, 4 KiB per
+observation). The policy retains what continuation requires and drops
+irrelevant historic noise by construction:
+
+- the original objective, workspace and consumed-budget constraints always
+  survive;
+- every citable evidence ID is always listed (never silently discard evidence
+  required to justify completion);
+- unresolved failures and uncertain attempts are always listed (bounded);
+- observation content is rendered newest-first up to the per-observation and
+  per-count caps; a hard truncation carries an explicit marker.
+
+The reconstructed context is built exclusively from already-sanitized
+persisted state and re-passes `state.Redact`. It never contains hidden
+provider reasoning or historical assistant turns. The resumed registry
+continues the task-scoped evidence ID space from the persisted maximum
+(`tools.Options.NextEvidenceSequence`), so new observations never collide with
+persisted `(task_id, evidence_id)` rows.
+
+### Governor restoration
+
+The resumed run rebuilds the account governor from the persisted protection
+projection (`store.GovernorState` → `governor.Options.Restore`) before the
+pipeline runs. Restart/resume never resets account protection: task
+provider-attempt usage, rolling usage, cooldown, circuit state, retained
+request/attempt records and rate-response history all survive. When the
+restored governor reports that continuation is currently blocked
+(`recovery.GovernorBlocks`: circuit not closed, active cooldown, exhausted
+rolling or task budget), resume journals `recovery_blocked` and exits with the
+typed `governor_blocked` code, leaving the task pending instead of finalizing
+it on account-protection grounds. The resumed loop remains the authoritative
+admission path for anything the pre-check does not cover.
+
+### `runstead resume` CLI
+
+```text
+runstead resume <task-id> [flags]
+  --scripted FILE            provider input for the new conversation (required)
+  --state-dir PATH           state directory (RUNSTEAD_STATE_DIR)
+  --log-level LEVEL          log level (RUNSTEAD_LOG_LEVEL, default info)
+  --min-start-interval DURATION  governor pacing override
+```
+
+The task workspace is part of its durable identity: resume always operates on
+the persisted workspace and there is deliberately no `--workspace` override,
+because continuing the same task in a different directory would let a final
+ground claims on evidence produced in the original workspace while executing
+tools elsewhere. Loop budgets come from the persisted configuration snapshot
+(`config_json`), so a resumed run keeps the same `max_steps`, `provider_budget`,
+time budget and correction/repeat limits as the interrupted run; the provider
+input is supplied again at resume time (the old remote conversation is
+disposable metadata, never an authority over task state). Exit codes:
+0 resumed and finished, 1 task not found, 2 usage, 3 state database
+unavailable, 4 task not resumable (already terminal), 5 human review required
+(unresolved or newly required), 6 corrupted/incompatible state, 7 continuation
+blocked by restored account protection (including a conservative-debit unsafe
+state); the agent outcome codes (20+ and 130) apply when the resumed loop stops
+with a typed loop outcome.
+
+### Scope of #9
+
+Issue #9 implements resume for the current read-only M2 runtime only. It does
+not implement safe write tools (#10), the process runner (#26), the verifier
+(#11), arbitrary shell, first-party ChatGPT Web work, provider routing,
+account rotation, automatic fallback, generic Event Sourcing,
+Temporal-style deterministic replay, a broad checkpoint framework, or the
+streaming reconciliation milestone (#42). The reconciliation seam is the
+`recovery_class` + typed-reason model, so future write/process tools can add
+their own reconciliation contracts without changing the pipeline shape.

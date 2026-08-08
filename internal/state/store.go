@@ -308,6 +308,12 @@ type ActionRecord struct {
 	Arguments []byte
 	// Fingerprint is repeat/loop evidence only.
 	Fingerprint string
+	// WorkspaceSignature is the workspace state marker recorded when the
+	// action was accepted. It is repeat/loop evidence only (issue #9): resume
+	// seeds the repeat guard with it so an identical proposal is rejected only
+	// while the workspace signature is unchanged. It is never an idempotency
+	// key and never authorizes reusing an old observation.
+	WorkspaceSignature string
 }
 
 // ToolAttemptPrepared is the TX 1 intent for one concrete tool execution.

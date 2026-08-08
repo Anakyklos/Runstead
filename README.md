@@ -89,12 +89,18 @@ task: cli-...
 runstead inspect cli-... --state-dir ~/.local/share/runstead
 ```
 
+An interrupted read-only task can be resumed from that durable state (issue #9)
+with a new provider conversation, without replaying completed effects:
+
+```text
+runstead resume cli-... --state-dir ~/.local/share/runstead --scripted responses.jsonl
+```
+
 The persistence architecture, SQLite driver decision, pragmas, database
-location, migrations, `runstead inspect`, governor durability,
-security/redaction and the boundary with the future recovery/resume milestone
-are documented in [`docs/persistence.md`](docs/persistence.md). The
-durable-execution contract is canonical in
-[`docs/adr/0001-durable-execution.md`](docs/adr/0001-durable-execution.md).
+location, migrations, `runstead inspect`, `runstead resume`, governor
+durability, security/redaction and the recovery contract
+(`docs/persistence.md`, `docs/adr/0001-durable-execution.md`) document the
+implemented behavior.
 
 ## Development environment
 
