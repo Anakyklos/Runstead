@@ -19,7 +19,8 @@ projections** in one SQLite database:
 - operational tables (`tasks`, `actions`, `tool_attempts`, `tool_results`,
   `provider_attempts`, `provider_attempt_receipts`, `governor_state`,
   `governor_ledger`, `governor_task_states`, `governor_request_records`,
-  `governor_attempt_ids`) hold the current state the runtime needs directly;
+  `governor_attempt_ids`, `governor_rate_events`) hold the current state the
+  runtime needs directly;
 - an append-only `events` journal records meaningful transitions with
   deterministic task-scoped ordering `UNIQUE(task_id, sequence)`;
 - every projection change and its corresponding event commit in the **same
@@ -134,6 +135,9 @@ Versioned SQL migrations are embedded in the executable
 - fresh database creation is deterministic (verified: two fresh databases
   produce identical `sqlite_master` schemas);
 - migrations are ordered and versioned explicitly (`0001_initial.sql`, ...);
+  versions must be contiguous from 1, so a partial set (for example 1,3)
+  cannot be applied and then make the database look newer than the migrations
+  that actually produced it;
 - reopening an up-to-date database is a no-op;
 - each migration runs inside its own SQLite transaction and `user_version` is
   committed atomically with the statements, so a failed upgrade rolls back
@@ -213,10 +217,15 @@ COMMIT
 
 No SQLite transaction ever spans an external effect. If TX 1 cannot be
 committed, the provider call does not proceed and the run stops fail-closed
-(`persistence_failure`). A crash after TX 1 leaves the attempt `prepared`:
-durable evidence that the effect may have started, never proof that it did
-not, and never authorization to re-execute blindly. A crash after the effect
-but before TX 2 leaves the same `prepared` state (the ADR crash table).
+(`persistence_failure`). The started permit is aborted through
+`Permit.CancelAfterStart`: no additional debit is recorded and the account
+lane is fully released. This abort path is valid for receipt-aware permits
+too, whose normal `Finish` path would refuse to run without receipts: an
+upstream call that never happened must not leave the lane stuck. A crash after
+TX 1 leaves the attempt `prepared`: durable evidence that the effect may have
+started, never proof that it did not, and never authorization to re-execute
+blindly. A crash after the effect but before TX 2 leaves the same `prepared`
+state (the ADR crash table).
 
 Crash-window coverage (subprocess tests with the deterministic `SetCrashPoint`
 test seam): task created, task started, provider TX 1 committed, provider TX 2
@@ -237,6 +246,10 @@ TX 2 boundaries through `governor.Persistence`:
 - cooldown state (`governor_state.cooldown_until`);
 - circuit state, reason, open-until, refresh-required, rate-response events
   and last rate reset;
+- the retained rate-response history (`governor_rate_events`): the #21
+  threshold of three rate/capacity responses within the window is not reset
+  by a restart, so a restarted process still opens the circuit on the third
+  response;
 - telemetry evidence that affects admission (available allowance, rate limit,
   capacity, upstream circuit, unsafe flag);
 - retained request records (duplicate detection) and receipt attempt IDs
@@ -248,9 +261,11 @@ Restore preserves the governor invariants: usage is additive with the
 restored ledger, expired circuit windows normalize to closed, and retention
 pruning applies. In-flight and queue state are process-local and deliberately
 not persisted. Tests prove protection survives restart both in-process
-(cooldown, circuit, task budget, request dedup) and across real subprocess
-restarts (a restarted process refuses admission with the restored task
-budget, never reaches the provider, and retains the rolling ledger).
+(cooldown, circuit, task budget, request dedup, rate-response threshold) and
+across real subprocess restarts (a restarted process refuses admission with
+the restored task budget, never reaches the provider, and retains the rolling
+ledger). A dedicated test proves two rate/capacity responses before a restart
+plus a third after the restart open the circuit to `human_review_required`.
 
 The conservative accounting semantics of #29/#33 are unchanged: an uncertain
 outcome keeps its charge visible, `telemetry.unsafe` is persisted, and a
@@ -273,7 +288,10 @@ reopens the database and renders a stable, human-readable reconstruction:
 - prepared and uncertain states flagged explicitly ("the effect may have
   started; reconcile before re-execution", "the upstream may have been
   reached; never auto-retry");
-- governor consumption against ceilings, cooldown and circuit state.
+- governor consumption against ceilings, cooldown and circuit state: the
+  windowed rolling counts exclude ledger entries outside the window, and the
+  task-attempt figure is the inspected task's own attempt usage (from
+  `governor_task_states.attempts`), never the number of retained tasks.
 
 Output is deterministic (two renders of the same task are byte-identical),
 ordered, and never dumps raw SQLite rows or opaque JSON blobs. Exit codes:

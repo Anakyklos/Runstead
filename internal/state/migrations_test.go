@@ -220,3 +220,72 @@ func dumpSchema(t *testing.T, db *sql.DB) string {
 	}
 	return builder.String()
 }
+
+func TestMigrationsRejectVersionGaps(t *testing.T) {
+	db := openTestDB(t)
+	// A set with a gap (1,3) must fail before applying anything: the database
+	// must never reach a state where it looks newer than the migrations that
+	// actually produced it.
+	files := testMigrations(t, map[int]string{
+		1: "CREATE TABLE one (id INTEGER PRIMARY KEY);",
+		3: "CREATE TABLE three (id INTEGER PRIMARY KEY);",
+	})
+	err := migrateFS(db, files)
+	if err == nil || !strings.Contains(err.Error(), "not contiguous") {
+		t.Fatalf("version gap must fail clearly: %v", err)
+	}
+	version, err := schemaVersion(db)
+	if err != nil {
+		t.Fatalf("schemaVersion() error = %v", err)
+	}
+	if version != 0 {
+		t.Fatalf("version gap must not apply any migration: version = %d, want 0", version)
+	}
+	if _, err := db.Exec("SELECT 1 FROM one LIMIT 0"); err == nil {
+		t.Fatal("version gap must not create tables from the partial set")
+	}
+}
+
+// TestMigrationsUpgradeEmbeddedV1ToV2 proves the real embedded migration set
+// upgrades a database created by the previous release (schema version 1) to
+// the current version without losing data.
+func TestMigrationsUpgradeEmbeddedV1ToV2(t *testing.T) {
+	db := openTestDB(t)
+	// Build a v1 database from the real embedded 0001 SQL, then upgrade it
+	// with the full embedded set.
+	v1SQL, err := fs.ReadFile(migrationFS, "migrations/0001_initial.sql")
+	if err != nil {
+		t.Fatalf("read embedded v1 migration: %v", err)
+	}
+	v1Only := testMigrations(t, map[int]string{1: string(v1SQL)})
+	if err := migrateFS(db, v1Only); err != nil {
+		t.Fatalf("migrate to v1 error = %v", err)
+	}
+	version, err := schemaVersion(db)
+	if err != nil || version != 1 {
+		t.Fatalf("schema version after v1 = %d (err %v), want 1", version, err)
+	}
+	if _, err := db.Exec(`INSERT INTO tasks (task_id, objective, status, workspace, created_at, started_at)
+		VALUES ('task-v1', 'objective', 'running', '/ws', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed v1 data: %v", err)
+	}
+
+	if err := migrate(db); err != nil {
+		t.Fatalf("upgrade to v2 error = %v", err)
+	}
+	version, err = schemaVersion(db)
+	if err != nil || version != 2 {
+		t.Fatalf("schema version after upgrade = %d (err %v), want 2", version, err)
+	}
+	if _, err := db.Exec("SELECT 1 FROM governor_rate_events LIMIT 0"); err != nil {
+		t.Fatalf("governor_rate_events missing after upgrade: %v", err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE task_id = 'task-v1'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("v1 task lost after upgrade: count=%d err=%v", count, err)
+	}
+	// Re-running on the upgraded database is a no-op.
+	if err := migrate(db); err != nil {
+		t.Fatalf("re-migrate after upgrade error = %v", err)
+	}
+}

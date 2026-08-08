@@ -3,6 +3,7 @@ package state
 import (
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -45,13 +46,24 @@ func migrateFS(db *sql.DB, files fs.FS) error {
 		sorted = append(sorted, version)
 	}
 	sort.Ints(sorted)
+	if len(sorted) == 0 {
+		return errors.New("no migrations found")
+	}
+	// Versions must be contiguous from 1: a gap (for example 1,3) would let a
+	// partial set be applied and then make the database look newer than it is.
+	for index, version := range sorted {
+		if version != index+1 {
+			return fmt.Errorf("migration versions are not contiguous: expected version %d, found %d", index+1, version)
+		}
+	}
+	supported := sorted[len(sorted)-1]
 
 	current, err := schemaVersion(db)
 	if err != nil {
 		return err
 	}
-	if current > len(sorted) {
-		return fmt.Errorf("database schema version %d exceeds the supported version %d; the database was created by a newer Runstead and cannot be downgraded", current, len(sorted))
+	if current > supported {
+		return fmt.Errorf("database schema version %d exceeds the supported version %d; the database was created by a newer Runstead and cannot be downgraded", current, supported)
 	}
 	for _, version := range sorted {
 		if version <= current {
