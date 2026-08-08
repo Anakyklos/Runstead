@@ -106,7 +106,14 @@ func mustProviderPrepared(t *testing.T, store *state.Store, taskID, requestID st
 // StartReceiptAware (debits deferred to the receipt finish path).
 func mustProviderReceiptAwarePrepared(t *testing.T, store *state.Store, taskID, requestID string, sequence int) {
 	t.Helper()
-	now := time.Now().UTC()
+	mustProviderReceiptAwarePreparedAt(t, store, taskID, requestID, sequence, time.Now().UTC())
+}
+
+// mustProviderReceiptAwarePreparedAt is the variant with an explicit original
+// permit start time, so temporal accounting tests can place TX 1 far before
+// the resume.
+func mustProviderReceiptAwarePreparedAt(t *testing.T, store *state.Store, taskID, requestID string, sequence int, startedAt time.Time) {
+	t.Helper()
 	persisted := governor.PersistedState{
 		AccountPolicyID: "runstead-cli", ProviderID: "scripted", ModelPool: "instant", Model: "scripted",
 		AllowanceProfile: governor.ProfileInstant, NextAttempt: sequence + 1,
@@ -116,7 +123,7 @@ func mustProviderReceiptAwarePrepared(t *testing.T, store *state.Store, taskID, 
 	if err := store.RecordProviderPrepared(context.Background(), governor.ProviderPrepared{
 		TaskID: taskID, ClientRequestID: requestID, ProviderID: "scripted", ModelPool: "instant",
 		Model: "scripted", AllowanceProfile: governor.ProfileInstant, AttemptSequence: sequence,
-		StartedAt: now, ReceiptAware: true, State: persisted,
+		StartedAt: startedAt, ReceiptAware: true, State: persisted,
 	}); err != nil {
 		t.Fatalf("RecordProviderPrepared() error = %v", err)
 	}
@@ -685,13 +692,15 @@ func TestResumeFailedToolAttemptIsUnresolvedFailure(t *testing.T) {
 // TestResumeReceiptAwareAttemptKeepsGovernorProtection covers the reviewer
 // blocker end to end: a receipt-aware provider attempt interrupted before TX 2
 // (TX 1 with zero debit) is reconciled by the pipeline, the conservative #29
-// debit is applied to the persisted governor projection atomically, and a
-// restored governor sees the debit, unsafe telemetry and therefore blocks
-// continuation.
+// debit is applied to the persisted governor projection atomically and dated
+// with the ORIGINAL attempt time, and a restored governor sees the debit,
+// unsafe telemetry and therefore blocks continuation.
 func TestResumeReceiptAwareAttemptKeepsGovernorProtection(t *testing.T) {
 	store := openStore(t)
 	mustCreate(t, store, fixtureTask)
-	mustProviderReceiptAwarePrepared(t, store, fixtureTask, "task-1-0001", 1)
+	// Attempt started 2h50m before the resume: still inside the 3h window.
+	startedAt := time.Now().UTC().Add(-2*time.Hour - 50*time.Minute)
+	mustProviderReceiptAwarePreparedAt(t, store, fixtureTask, "task-1-0001", 1, startedAt)
 
 	plan, err := recovery.Resume(context.Background(), store, recovery.Options{TaskID: fixtureTask})
 	if err != nil {
@@ -708,14 +717,16 @@ func TestResumeReceiptAwareAttemptKeepsGovernorProtection(t *testing.T) {
 			t.Errorf("reconciled receipt-aware attempt = %+v", attempt)
 		}
 	}
-	// The persisted governor projection now carries the conservative debit and
-	// unsafe telemetry, exactly like the governor's own finishReceiptFailure.
+	// The persisted governor projection now carries the conservative debit
+	// dated with the ORIGINAL attempt start, unsafe telemetry, lastStart moved
+	// to the attempt start and telemetry.available decremented when known,
+	// exactly like the governor's own finishReceiptFailure.
 	persisted, ok, err := store.GovernorState(context.Background())
 	if err != nil || !ok {
 		t.Fatalf("GovernorState() = %v, %v", ok, err)
 	}
-	if len(persisted.RollingEvents) != 1 || persisted.RollingEvents[0].TaskID != fixtureTask {
-		t.Errorf("ledger after pipeline = %v, want one fixture task event", persisted.RollingEvents)
+	if len(persisted.RollingEvents) != 1 || !persisted.RollingEvents[0].At.Equal(startedAt) {
+		t.Errorf("ledger after pipeline = %v, want one event at the original attempt time %v", persisted.RollingEvents, startedAt)
 	}
 	if len(persisted.TaskStates) != 1 || persisted.TaskStates[0].Attempts != 1 {
 		t.Errorf("task states after pipeline = %v, want attempts=1", persisted.TaskStates)
@@ -723,8 +734,12 @@ func TestResumeReceiptAwareAttemptKeepsGovernorProtection(t *testing.T) {
 	if !persisted.Telemetry.Unsafe {
 		t.Error("persisted telemetry must be unsafe after the conservative debit")
 	}
+	if !persisted.LastStart.Equal(startedAt) {
+		t.Errorf("lastStart = %v, want %v (original attempt time)", persisted.LastStart, startedAt)
+	}
 	// A governor restored from that projection blocks continuation: the same
-	// fail-closed semantics as #29 survive restart.
+	// fail-closed semantics as #29 survive restart, and the in-window ledger
+	// event counts toward the rolling 3h budget at its original time.
 	accountConfig := governor.DefaultInstantConfig("runstead-cli", "scripted", "instant", provider.SafeRouteSafety())
 	accountGovernor, err := governor.New(accountConfig, governor.Options{Restore: &persisted})
 	if err != nil {
@@ -736,6 +751,9 @@ func TestResumeReceiptAwareAttemptKeepsGovernorProtection(t *testing.T) {
 	}
 	if !strings.Contains(reason, "unsafe") {
 		t.Fatalf("block reason = %q, want unsafe", reason)
+	}
+	if used := accountGovernor.Snapshot().Budgets.Rolling3hUsed; used != 1 {
+		t.Errorf("rolling 3h used = %d, want 1 (event inside the window at its original time)", used)
 	}
 	if taskUsage, ok := accountGovernor.Snapshot().Tasks[fixtureTask]; !ok || taskUsage.Attempts != 1 {
 		t.Errorf("restored governor task usage = %+v, want attempts=1", taskUsage)

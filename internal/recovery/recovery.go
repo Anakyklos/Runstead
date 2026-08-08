@@ -220,6 +220,7 @@ func Resume(ctx context.Context, store *state.Store, options Options) (*Plan, er
 				Reason:                 "upstream_may_have_been_reached",
 				Uncertain:              true,
 				AttemptDebited:         1,
+				DebitAt:                attempt.PreparedAt,
 				ApplyConservativeDebit: applyDebit,
 			}); err != nil {
 				return nil, fmt.Errorf("reconcile provider attempt %s: %w", attempt.ExecutionID, err)

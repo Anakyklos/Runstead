@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/governor"
+	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
 func containsString(values []string, want string) bool {
@@ -318,6 +321,152 @@ func TestReconcileReceiptAwareAttemptAppliesConservativeDebit(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("provider_attempt_reconciled events = %d, want 1", count)
+	}
+}
+
+// TestReconcileReceiptAwareDebitKeepsOriginalAttemptTime covers the temporal
+// accounting blocker: the conservative rolling-ledger debit must be dated with
+// the ORIGINAL permit start (provider_attempts.prepared_at), not with the
+// resume/reconciliation time, so the 10m/1h/3h windows represent when the
+// upstream attempt possibly happened. A task interrupted 3h1m before the
+// resume must NOT get a fresh debit at resume time that keeps it inside the 3h
+// window.
+func TestReconcileReceiptAwareDebitKeepsOriginalAttemptTime(t *testing.T) {
+	clock := newFixedClock() // store clock: 2026-01-01T12:00:00Z
+	store, err := Open(Options{
+		Path:  filepath.Join(t.TempDir(), "runstead.db"),
+		Clock: clock,
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	mustTask(t, store, "task-1")
+
+	now := clock.Now()
+	past := now.Add(-3*time.Hour - time.Minute) // outside the 3h rolling window
+	persisted := governor.PersistedState{
+		AccountPolicyID: "runstead-cli", ProviderID: "scripted", ModelPool: "instant", Model: "scripted",
+		AllowanceProfile: governor.ProfileInstant, NextAttempt: 2,
+		Circuit:  governor.CircuitSnapshot{State: governor.CircuitClosed},
+		Ceilings: governor.BudgetCeilings{Rolling3h: 140, Rolling1h: 80, Rolling10m: 25, TaskBudget: 80, RetryBudget: 2},
+	}
+	if err := store.RecordProviderPrepared(context.Background(), governor.ProviderPrepared{
+		TaskID: "task-1", ClientRequestID: "task-1-0001", ProviderID: "scripted", ModelPool: "instant",
+		Model: "scripted", AllowanceProfile: governor.ProfileInstant, AttemptSequence: 1,
+		StartedAt: past, ReceiptAware: true, State: persisted,
+	}); err != nil {
+		t.Fatalf("RecordProviderPrepared() error = %v", err)
+	}
+	snapshot, err := store.LoadRecoverySnapshot(context.Background(), "task-1")
+	if err != nil {
+		t.Fatalf("LoadRecoverySnapshot() error = %v", err)
+	}
+	if !snapshot.ProviderAttempts[0].PreparedAt.Equal(past) {
+		t.Fatalf("recovery snapshot PreparedAt = %v, want %v", snapshot.ProviderAttempts[0].PreparedAt, past)
+	}
+	attempt := snapshot.ProviderAttempts[0]
+
+	if err := store.ReconcileProviderAttempt(context.Background(), ReconcileProviderAttempt{
+		TaskID: "task-1", ExecutionID: attempt.ExecutionID, ClientRequestID: attempt.ClientRequestID,
+		Status: "reconciled", Reason: "upstream_may_have_been_reached", Uncertain: true,
+		AttemptDebited: 1, DebitAt: attempt.PreparedAt, ApplyConservativeDebit: true,
+	}); err != nil {
+		t.Fatalf("ReconcileProviderAttempt() error = %v", err)
+	}
+
+	after, ok, err := store.GovernorState(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("GovernorState() = %v, %v", ok, err)
+	}
+	// The ledger event keeps the ORIGINAL attempt time, not the resume time,
+	// and lastStart moved to it exactly like finishReceiptFailureLocked.
+	if len(after.RollingEvents) != 1 || !after.RollingEvents[0].At.Equal(past) {
+		t.Fatalf("ledger event = %v, want At=%v (original attempt time)", after.RollingEvents, past)
+	}
+	if !after.LastStart.Equal(past) {
+		t.Errorf("lastStart = %v, want %v", after.LastStart, past)
+	}
+
+	// A governor restored at the current time must NOT count the expired event
+	// in the 3h window (it happened 3h1m ago). The persisted projection is
+	// authoritative and retains the task attempt count; the runtime governor
+	// prunes an untouched task state after its 3h retention window (existing
+	// #8 behavior), so the in-memory task map is empty for a 3h1m-old attempt.
+	config := governor.DefaultInstantConfig("runstead-cli", "scripted", "instant", provider.SafeRouteSafety())
+	accountGovernor, err := governor.New(config, governor.Options{Clock: &governorFakeClock{now: now}, Restore: &after})
+	if err != nil {
+		t.Fatalf("governor.New() error = %v", err)
+	}
+	budgets := accountGovernor.Snapshot().Budgets
+	if budgets.Rolling3hUsed != 0 {
+		t.Errorf("rolling 3h used = %d, want 0 (event expired from the window)", budgets.Rolling3hUsed)
+	}
+	if len(after.TaskStates) != 1 || after.TaskStates[0].Attempts != 1 {
+		t.Errorf("persisted task projection = %+v, want attempts=1 (conservative debit retained)", after.TaskStates)
+	}
+}
+
+// TestReconcileReceiptAwareDebitStaysInsideWindow is the in-window complement:
+// an attempt started 2h50m before the resume keeps its ledger event inside the
+// 3h window at the ORIGINAL time, exactly as the normal receipt-failure path
+// would have dated it.
+func TestReconcileReceiptAwareDebitStaysInsideWindow(t *testing.T) {
+	clock := newFixedClock()
+	store, err := Open(Options{
+		Path:  filepath.Join(t.TempDir(), "runstead.db"),
+		Clock: clock,
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	mustTask(t, store, "task-1")
+
+	now := clock.Now()
+	inWindow := now.Add(-2*time.Hour - 50*time.Minute)
+	persisted := governor.PersistedState{
+		AccountPolicyID: "runstead-cli", ProviderID: "scripted", ModelPool: "instant", Model: "scripted",
+		AllowanceProfile: governor.ProfileInstant, NextAttempt: 2,
+		Circuit:  governor.CircuitSnapshot{State: governor.CircuitClosed},
+		Ceilings: governor.BudgetCeilings{Rolling3h: 140, Rolling1h: 80, Rolling10m: 25, TaskBudget: 80, RetryBudget: 2},
+	}
+	if err := store.RecordProviderPrepared(context.Background(), governor.ProviderPrepared{
+		TaskID: "task-1", ClientRequestID: "task-1-0001", ProviderID: "scripted", ModelPool: "instant",
+		Model: "scripted", AllowanceProfile: governor.ProfileInstant, AttemptSequence: 1,
+		StartedAt: inWindow, ReceiptAware: true, State: persisted,
+	}); err != nil {
+		t.Fatalf("RecordProviderPrepared() error = %v", err)
+	}
+	snapshot, err := store.LoadRecoverySnapshot(context.Background(), "task-1")
+	if err != nil {
+		t.Fatalf("LoadRecoverySnapshot() error = %v", err)
+	}
+	attempt := snapshot.ProviderAttempts[0]
+	if err := store.ReconcileProviderAttempt(context.Background(), ReconcileProviderAttempt{
+		TaskID: "task-1", ExecutionID: attempt.ExecutionID, ClientRequestID: attempt.ClientRequestID,
+		Status: "reconciled", Reason: "upstream_may_have_been_reached", Uncertain: true,
+		AttemptDebited: 1, DebitAt: attempt.PreparedAt, ApplyConservativeDebit: true,
+	}); err != nil {
+		t.Fatalf("ReconcileProviderAttempt() error = %v", err)
+	}
+	after, ok, err := store.GovernorState(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("GovernorState() = %v, %v", ok, err)
+	}
+	if len(after.RollingEvents) != 1 || !after.RollingEvents[0].At.Equal(inWindow) {
+		t.Fatalf("ledger event = %v, want At=%v", after.RollingEvents, inWindow)
+	}
+	config := governor.DefaultInstantConfig("runstead-cli", "scripted", "instant", provider.SafeRouteSafety())
+	accountGovernor, err := governor.New(config, governor.Options{Clock: &governorFakeClock{now: now}, Restore: &after})
+	if err != nil {
+		t.Fatalf("governor.New() error = %v", err)
+	}
+	if used := accountGovernor.Snapshot().Budgets.Rolling3hUsed; used != 1 {
+		t.Errorf("rolling 3h used = %d, want 1 (event still inside the window)", used)
+	}
+	if used := accountGovernor.Snapshot().Budgets.Rolling1hUsed; used != 0 {
+		t.Errorf("rolling 1h used = %d, want 0 (event outside the 1h window)", used)
 	}
 }
 

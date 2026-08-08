@@ -55,14 +55,22 @@ type ReconcileProviderAttempt struct {
 	// AttemptDebited preserves the conservative debit recorded in the
 	// governor ledger at TX 1.
 	AttemptDebited int
+	// DebitAt is the ORIGINAL permit start time of the interrupted attempt
+	// (provider_attempts.prepared_at). The conservative rolling-ledger debit
+	// is dated with this timestamp so the 10m/1h/3h windows represent when the
+	// upstream attempt possibly happened, exactly like the governor's own
+	// finishReceiptFailureLocked (which uses p.startedAt with a fallback to
+	// now). Zero falls back to the reconciliation time defensively.
+	DebitAt time.Time
 	// ApplyConservativeDebit applies the #29 conservative accounting to the
 	// persisted governor protection projection in the same transaction: the
-	// task attempt count is incremented, a rolling ledger event is appended
-	// and telemetry is marked unsafe. It is true only for receipt-aware
-	// attempts interrupted before TX 2: StartReceiptAware defers all debits to
-	// the receipt finish path, so the TX 1 projection has no debit and
-	// restart must not reset that protection. Plain attempts were already
-	// debited at TX 1 (Start) and receipt-aware attempts persisted as
+	// task attempt count is incremented, a rolling ledger event is appended at
+	// DebitAt, telemetry is marked unsafe, lastStart is moved to DebitAt and
+	// telemetry.available is decremented when known. It is true only for
+	// receipt-aware attempts interrupted before TX 2: StartReceiptAware defers
+	// all debits to the receipt finish path, so the TX 1 projection has no
+	// debit and restart must not reset that protection. Plain attempts were
+	// already debited at TX 1 (Start) and receipt-aware attempts persisted as
 	// 'uncertain' were already debited at TX 2, so neither re-applies.
 	ApplyConservativeDebit bool
 }
@@ -173,7 +181,7 @@ func (s *Store) ReconcileProviderAttempt(ctx context.Context, record ReconcilePr
 		return fmt.Errorf("reconcile provider attempt %q for task %q: %w", record.ExecutionID, record.TaskID, ErrNotReconcilable)
 	}
 	if record.ApplyConservativeDebit {
-		if err := s.applyConservativeGovernorDebit(ctx, tx, record.TaskID, now); err != nil {
+		if err := s.applyConservativeGovernorDebit(ctx, tx, record.TaskID, record.DebitAt); err != nil {
 			return err
 		}
 	}
@@ -196,13 +204,20 @@ func (s *Store) ReconcileProviderAttempt(ctx context.Context, record ReconcilePr
 }
 
 // applyConservativeGovernorDebit applies the #29 fail-closed accounting to the
-// persisted governor protection projection inside the caller's transaction:
-// the task attempt count is incremented, a rolling ledger event is appended at
-// the reconciliation time and telemetry is marked unsafe (conservative
-// accounting is active). It mirrors the governor's own
-// finishReceiptFailureLocked semantics for a receipt-aware request that may
-// have reached upstream but whose TX 2 receipt finish never persisted.
-func (s *Store) applyConservativeGovernorDebit(ctx context.Context, tx *sql.Tx, taskID, at string) error {
+// persisted governor protection projection inside the caller's transaction,
+// mirroring Permit.finishReceiptFailureLocked semantics:
+//
+//   - the rolling ledger event is dated with debitAt (the ORIGINAL permit
+//     start, provider_attempts.prepared_at) so the 10m/1h/3h windows represent
+//     when the upstream attempt possibly happened, exactly like the governor's
+//     own p.startedAt fallback-to-now;
+//   - lastStart is moved to debitAt;
+//   - telemetry.available is decremented when known;
+//   - telemetry is marked unsafe;
+//   - the task attempt count is incremented (the retry count is deliberately
+//     NOT incremented: recovery reconciliation is not a retry, it is the
+//     conservative settlement of an uncertain attempt).
+func (s *Store) applyConservativeGovernorDebit(ctx context.Context, tx *sql.Tx, taskID string, debitAt time.Time) error {
 	state, ok, err := loadGovernorState(ctx, tx)
 	if err != nil {
 		return fmt.Errorf("load governor state for conservative debit: %w", err)
@@ -216,11 +231,18 @@ func (s *Store) applyConservativeGovernorDebit(ctx context.Context, tx *sql.Tx, 
 			Circuit:          governor.CircuitSnapshot{State: governor.CircuitClosed},
 		}
 	}
-	debitAt := parseTime(at)
 	if debitAt.IsZero() {
+		// Defensive fallback identical to finishReceiptFailureLocked: only when
+		// the persisted permit start is absent/invalid.
 		debitAt = time.Now().UTC()
 	}
+	debitAt = debitAt.UTC()
 	state.Telemetry.Unsafe = true
+	if state.Telemetry.Available != nil && *state.Telemetry.Available > 0 {
+		value := *state.Telemetry.Available - 1
+		state.Telemetry.Available = &value
+	}
+	state.LastStart = debitAt
 	found := false
 	for index := range state.TaskStates {
 		if state.TaskStates[index].TaskID == taskID {
@@ -236,7 +258,7 @@ func (s *Store) applyConservativeGovernorDebit(ctx context.Context, tx *sql.Tx, 
 		})
 	}
 	state.RollingEvents = append(state.RollingEvents, governor.LedgerEvent{At: debitAt, TaskID: taskID})
-	if err := s.saveGovernorStateInTx(ctx, tx, state, taskID, at); err != nil {
+	if err := s.saveGovernorStateInTx(ctx, tx, state, taskID, s.now()); err != nil {
 		return fmt.Errorf("persist conservative governor debit: %w", err)
 	}
 	return nil
@@ -353,7 +375,12 @@ type RecoveryProviderAttempt struct {
 	AttemptDebited  int
 	AttemptSequence int
 	ReceiptAware    bool
-	RecoveryReason  string
+	// PreparedAt is the ORIGINAL permit start time persisted at TX 1
+	// (provider_attempts.prepared_at). Recovery dates the conservative ledger
+	// debit with it so rolling windows represent when the upstream attempt
+	// possibly happened, not when the resume ran.
+	PreparedAt     time.Time
+	RecoveryReason string
 }
 
 // RecoveryEvidence is one citable observation reconstructed from tool_results
@@ -447,7 +474,7 @@ func (s *Store) loadRecoveryToolAttempts(ctx context.Context, taskID string) ([]
 
 func (s *Store) loadRecoveryProviderAttempts(ctx context.Context, taskID string) ([]RecoveryProviderAttempt, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT execution_id, client_request_id, status, outcome, upstream_reached, uncertain, attempt_debited, attempt_sequence, receipt_aware, recovery_reason
+		`SELECT execution_id, client_request_id, status, outcome, upstream_reached, uncertain, attempt_debited, attempt_sequence, receipt_aware, prepared_at, recovery_reason
 		 FROM provider_attempts WHERE task_id = ? ORDER BY created_at, execution_id`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load recovery provider attempts: %w", err)
@@ -456,11 +483,13 @@ func (s *Store) loadRecoveryProviderAttempts(ctx context.Context, taskID string)
 	var attempts []RecoveryProviderAttempt
 	for rows.Next() {
 		var attempt RecoveryProviderAttempt
+		var preparedAt string
 		if err := rows.Scan(&attempt.ExecutionID, &attempt.ClientRequestID, &attempt.Status, &attempt.Outcome,
 			&attempt.UpstreamReached, &attempt.Uncertain, &attempt.AttemptDebited, &attempt.AttemptSequence,
-			&attempt.ReceiptAware, &attempt.RecoveryReason); err != nil {
+			&attempt.ReceiptAware, &preparedAt, &attempt.RecoveryReason); err != nil {
 			return nil, fmt.Errorf("scan recovery provider attempt: %w", err)
 		}
+		attempt.PreparedAt = parseTime(preparedAt)
 		attempts = append(attempts, attempt)
 	}
 	return attempts, rows.Err()

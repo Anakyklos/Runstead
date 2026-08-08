@@ -387,9 +387,14 @@ restored unchanged.
    debited in the governor ledger at TX 1 (`Start`); a receipt-aware attempt
    interrupted before TX 2 was **not** (StartReceiptAware defers all debits to
    the receipt finish path), so recovery applies the #29 conservative debit to
-   the persisted governor protection projection in the same transaction — task
-   attempt count +1, one rolling ledger event, telemetry unsafe — mirroring
-   `finishReceiptFailureLocked`. A receipt-aware attempt persisted as
+   the persisted governor protection projection in the same transaction —
+   task attempt count +1, one rolling ledger event, telemetry unsafe —
+   mirroring `finishReceiptFailureLocked`. The ledger event is dated with the
+   **original permit start** (`provider_attempts.prepared_at`), never the
+   resume time, so the 10m/1h/3h windows represent when the upstream attempt
+   possibly happened; `lastStart` moves to that timestamp and
+   `telemetry.available` is decremented when known, exactly like the governor's
+   own `p.startedAt` fallback-to-now. A receipt-aware attempt persisted as
    `uncertain` was already debited at TX 2 and is never re-debited.
    Reconciling an already terminal attempt fails with `ErrNotReconcilable`, so
    a second resume never rewrites history;
