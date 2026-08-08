@@ -57,5 +57,25 @@ func (r *Registry) Describe() []ToolSpec {
 			Summary:  "Show unstaged working tree changes.",
 			ReadOnly: true,
 		},
+		{
+			Name:    ToolWriteFile,
+			Summary: "Write a UTF-8 text file inside the workspace. Stale-state protected: expected_before_hash must be the sha256 reported by read_file for an existing file, or \"absent\" for a new file.",
+			Arguments: []ArgumentSpec{
+				{Name: "path", Type: "string", Required: true, Note: "relative path inside the workspace; the parent directory must exist"},
+				{Name: "content", Type: "string", Required: true, Note: "UTF-8 file content"},
+				{Name: "expected_before_hash", Type: "string", Required: true, Note: "sha256 of the current file content from read_file, or \"absent\" for a new file"},
+			},
+			ReadOnly: false,
+		},
+		{
+			Name:    ToolApplyPatch,
+			Summary: "Apply a strict unified diff to one existing file inside the workspace. Stale-state protected: expected_before_hash must match the file's current sha256 from read_file.",
+			Arguments: []ArgumentSpec{
+				{Name: "path", Type: "string", Required: true, Note: "relative path of an existing regular file"},
+				{Name: "patch", Type: "string", Required: true, Note: "strict unified diff: --- / +++ headers matching path, @@ -S,C +S,C @@ hunks, context/removal/addition lines"},
+				{Name: "expected_before_hash", Type: "string", Required: true, Note: "sha256 of the current file content from read_file"},
+			},
+			ReadOnly: false,
+		},
 	}
 }

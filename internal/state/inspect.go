@@ -42,18 +42,19 @@ type inspectAction struct {
 }
 
 type inspectToolAttempt struct {
-	ExecutionID    string
-	ActionID       string
-	Tool           string
-	Status         string
-	Classification string
-	RecoveryClass  int
-	EvidenceID     string
-	RecoveryReason string
-	DurationNanos  int64
-	CreatedAt      string
-	PreparedAt     string
-	CompletedAt    string
+	ExecutionID     string
+	ActionID        string
+	Tool            string
+	Status          string
+	Classification  string
+	RecoveryClass   int
+	EvidenceID      string
+	RecoveryReason  string
+	EffectAfterHash string
+	DurationNanos   int64
+	CreatedAt       string
+	PreparedAt      string
+	CompletedAt     string
 }
 
 type inspectProviderAttempt struct {
@@ -113,6 +114,14 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 		return err
 	}
 	receipts, err := s.loadInspectReceipts(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	writeDecisions, err := s.loadInspectWritePolicyDecisions(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	approvals, err := s.loadInspectApprovals(ctx, taskID)
 	if err != nil {
 		return err
 	}
@@ -192,6 +201,9 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 		if attempt.EvidenceID != "" {
 			fmt.Fprintf(&builder, "    evidence=%s\n", attempt.EvidenceID)
 		}
+		if attempt.EffectAfterHash != "" {
+			fmt.Fprintf(&builder, "    effect_after_hash=%s\n", shortID(attempt.EffectAfterHash))
+		}
 		if attempt.Status == "prepared" {
 			fmt.Fprintf(&builder, "    uncertain=prepared: the effect may have started; reconcile before re-execution\n")
 		}
@@ -236,6 +248,22 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 	for _, receipt := range receipts {
 		fmt.Fprintf(&builder, "  receipt=%s execution=%s sequence=%d outcome=%s trigger=%s upstream=%t\n",
 			receipt.ReceiptAttemptID, receipt.ExecutionID, receipt.Sequence, receipt.Outcome, receipt.Trigger, receipt.UpstreamReached)
+	}
+
+	builder.WriteString("\nWrite policy decisions:\n")
+	if len(writeDecisions) == 0 {
+		builder.WriteString("  (none)\n")
+	}
+	for _, decision := range writeDecisions {
+		fmt.Fprintf(&builder, "  %s %s decision=%s reason=%s\n", decision.CreatedAt, decision.ActionID, decision.Decision, decision.Reason)
+	}
+
+	builder.WriteString("\nApprovals:\n")
+	if len(approvals) == 0 {
+		builder.WriteString("  (none)\n")
+	}
+	for _, approval := range approvals {
+		fmt.Fprintf(&builder, "  %s action=%s decision=%s actor=%s reason=%s\n", approval.CreatedAt, approval.ActionID, approval.Decision, approval.Actor, approval.Reason)
 	}
 
 	builder.WriteString("\nGovernor state:\n")
@@ -303,7 +331,7 @@ func (s *Store) loadInspectActions(ctx context.Context, taskID string) ([]inspec
 
 func (s *Store) loadInspectToolAttempts(ctx context.Context, taskID string) ([]inspectToolAttempt, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT execution_id, action_id, tool, status, classification, recovery_class, evidence_id, recovery_reason, duration_ns, created_at, prepared_at, completed_at
+		`SELECT execution_id, action_id, tool, status, classification, recovery_class, evidence_id, recovery_reason, effect_after_hash, duration_ns, created_at, prepared_at, completed_at
 		 FROM tool_attempts WHERE task_id = ? ORDER BY created_at, execution_id`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load tool attempts: %w", err)
@@ -313,7 +341,7 @@ func (s *Store) loadInspectToolAttempts(ctx context.Context, taskID string) ([]i
 	for rows.Next() {
 		var attempt inspectToolAttempt
 		if err := rows.Scan(&attempt.ExecutionID, &attempt.ActionID, &attempt.Tool, &attempt.Status, &attempt.Classification,
-			&attempt.RecoveryClass, &attempt.EvidenceID, &attempt.RecoveryReason, &attempt.DurationNanos, &attempt.CreatedAt, &attempt.PreparedAt, &attempt.CompletedAt); err != nil {
+			&attempt.RecoveryClass, &attempt.EvidenceID, &attempt.RecoveryReason, &attempt.EffectAfterHash, &attempt.DurationNanos, &attempt.CreatedAt, &attempt.PreparedAt, &attempt.CompletedAt); err != nil {
 			return nil, fmt.Errorf("scan tool attempt: %w", err)
 		}
 		attempts = append(attempts, attempt)
@@ -365,6 +393,57 @@ func (s *Store) loadInspectReceipts(ctx context.Context, taskID string) ([]inspe
 		receipts = append(receipts, receipt)
 	}
 	return receipts, rows.Err()
+}
+
+type inspectWritePolicyDecision struct {
+	ActionID  string
+	Decision  string
+	Reason    string
+	CreatedAt string
+}
+
+type inspectApproval struct {
+	ActionID  string
+	Decision  string
+	Reason    string
+	Actor     string
+	CreatedAt string
+}
+
+func (s *Store) loadInspectWritePolicyDecisions(ctx context.Context, taskID string) ([]inspectWritePolicyDecision, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT action_id, decision, reason, created_at FROM write_policy_decisions WHERE task_id = ? ORDER BY id`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("load write policy decisions: %w", err)
+	}
+	defer rows.Close()
+	var decisions []inspectWritePolicyDecision
+	for rows.Next() {
+		var decision inspectWritePolicyDecision
+		if err := rows.Scan(&decision.ActionID, &decision.Decision, &decision.Reason, &decision.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan write policy decision: %w", err)
+		}
+		decisions = append(decisions, decision)
+	}
+	return decisions, rows.Err()
+}
+
+func (s *Store) loadInspectApprovals(ctx context.Context, taskID string) ([]inspectApproval, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT action_id, decision, reason, actor, created_at FROM approvals WHERE task_id = ? ORDER BY created_at, action_id`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("load approvals: %w", err)
+	}
+	defer rows.Close()
+	var approvals []inspectApproval
+	for rows.Next() {
+		var approval inspectApproval
+		if err := rows.Scan(&approval.ActionID, &approval.Decision, &approval.Reason, &approval.Actor, &approval.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan approval: %w", err)
+		}
+		approvals = append(approvals, approval)
+	}
+	return approvals, rows.Err()
 }
 
 type inspectGovernor struct {

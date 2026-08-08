@@ -154,10 +154,16 @@ func Resume(ctx context.Context, store *state.Store, options Options) (*Plan, er
 	}
 	var humanReview []string
 
+	// The evidence sequence continues from the highest persisted evidence id
+	// so reconciled write evidence allocated during this recovery never
+	// collides with the resumed registry's observation ids.
+	nextEvidence := maxEvidenceSequence(snapshot.Evidence)
+
 	// Classify and reconcile interrupted tool attempts. Completed attempts are
 	// verified progress (eligible for context reconstruction); failed attempts
 	// are deterministic failures; class-1 prepared attempts reconcile as
-	// replay-safe; any other non-terminal attempt requires human review.
+	// replay-safe; class-2 write attempts are reconciled from observable
+	// filesystem state; any other non-terminal attempt requires human review.
 	for _, attempt := range snapshot.ToolAttempts {
 		switch classifyToolAttempt(attempt) {
 		case toolVerified:
@@ -178,6 +184,20 @@ func Resume(ctx context.Context, store *state.Store, options Options) (*Plan, er
 			plan.ReconciledToolAttempts++
 			trace.emit(agent.TraceRecoveryReconcile,
 				fmt.Sprintf("tool attempt %s reconciled as replay_safe_observation", attempt.ExecutionID))
+		case toolWriteReconcile:
+			review, err := reconcileWriteAttempt(ctx, store, options.TaskID, snapshot.Task.Workspace, attempt, &nextEvidence)
+			if err != nil {
+				return nil, fmt.Errorf("reconcile write attempt %s: %w", attempt.ExecutionID, err)
+			}
+			plan.ReconciledToolAttempts++
+			if review {
+				humanReview = append(humanReview, attempt.ExecutionID)
+				trace.emit(agent.TraceRecoveryUncertain,
+					fmt.Sprintf("write attempt %s requires human review: the filesystem state matches neither the recorded precondition nor the expected after-state", attempt.ExecutionID))
+			} else {
+				trace.emit(agent.TraceRecoveryReconcile,
+					fmt.Sprintf("write attempt %s reconciled from observable filesystem state", attempt.ExecutionID))
+			}
 		case toolHumanReview:
 			if err := store.ReconcileToolAttempt(ctx, state.ReconcileToolAttempt{
 				TaskID:      options.TaskID,
@@ -245,6 +265,15 @@ func Resume(ctx context.Context, store *state.Store, options Options) (*Plan, er
 		return plan, nil
 	}
 
+	// Reconciliation may have produced new citable evidence (verified write
+	// completions) and completed their actions. Reload the authoritative
+	// snapshot so the reconstructed context, evidence set and repeat guard
+	// include the reconciled state instead of the pre-reconciliation view.
+	snapshot, err = store.LoadRecoverySnapshot(ctx, options.TaskID)
+	if err != nil {
+		return nil, fmt.Errorf("reload recovery snapshot after reconciliation: %w", err)
+	}
+
 	// Account-protection state is authoritative across restart: when the
 	// restored governor reports that continuation is currently blocked
 	// (circuit, cooldown or budget), the task remains pending with a journaled
@@ -279,7 +308,7 @@ func Resume(ctx context.Context, store *state.Store, options Options) (*Plan, er
 		context.Chars, len(context.EvidenceIDs)))
 
 	seed := buildSeed(snapshot, context, trace.sequence)
-	plan.NextEvidenceSequence = maxEvidenceSequence(snapshot.Evidence)
+	plan.NextEvidenceSequence = nextEvidence
 	if err := store.AppendRecoveryEvent(ctx, options.TaskID, "recovery_continued", map[string]any{
 		"turns":         seed.Turns,
 		"attempts":      seed.Attempts,
@@ -388,12 +417,14 @@ const (
 	toolFailed
 	toolNoop
 	toolReplaySafe
+	toolWriteReconcile
 	toolHumanReview
 )
 
 // classifyToolAttempt maps a persisted tool attempt to its recovery behavior.
-// The current runtime persists 'prepared', 'completed' and 'failed'; the other
-// schema states are classified defensively from the ADR recovery classes.
+// Class-1 attempts (read-only observations) reconcile as replay-safe; class-2
+// attempts (write tools) reconcile from observable filesystem state; any
+// other non-terminal attempt requires human review.
 func classifyToolAttempt(attempt state.RecoveryToolAttempt) toolClass {
 	switch attempt.Status {
 	case "completed":
@@ -405,13 +436,59 @@ func classifyToolAttempt(attempt state.RecoveryToolAttempt) toolClass {
 	case "human_review_required":
 		return toolHumanReview
 	default:
-		// planned/prepared/running/observed/verified/uncertain/verification_failed:
-		// class 1 (replay-safe observation) reconciles as replay-safe; any
-		// other class cannot be reconciled safely by the read-only runtime.
-		if attempt.RecoveryClass == 1 {
+		// planned/prepared/running/observed/verified/uncertain/verification_failed
+		switch {
+		case attempt.RecoveryClass == 1:
 			return toolReplaySafe
+		case attempt.RecoveryClass == 2 && isWriteTool(attempt.Tool):
+			return toolWriteReconcile
+		default:
+			return toolHumanReview
 		}
-		return toolHumanReview
+	}
+}
+
+// isWriteTool reports whether the tool is a policy-gated write tool.
+func isWriteTool(tool string) bool {
+	return tool == tools.ToolWriteFile || tool == tools.ToolApplyPatch
+}
+
+// reconcileWriteAttempt reconciles one interrupted write attempt (ADR
+// recovery class 2) against the current filesystem state. It never repeats
+// the effect. It returns true when the attempt escalated to
+// human_review_required (so the caller stops automatic continuation).
+func reconcileWriteAttempt(ctx context.Context, store *state.Store, taskID, workspaceRoot string, attempt state.RecoveryToolAttempt, nextEvidence *int) (bool, error) {
+	result := tools.ReconcileWrite(ctx, workspaceRoot, tools.WriteIntent{
+		Tool:              attempt.Tool,
+		Arguments:         []byte(attempt.ArgumentsJSON),
+		ExpectedAfterHash: attempt.EffectAfterHash,
+	})
+	switch result.Status {
+	case tools.ReconcileNotStarted:
+		return false, store.ReconcileToolAttempt(ctx, state.ReconcileToolAttempt{
+			TaskID:      taskID,
+			ExecutionID: attempt.ExecutionID,
+			Status:      "reconciled",
+			Reason:      "write_effect_not_started",
+		})
+	case tools.ReconcileCompleted:
+		*nextEvidence++
+		evidenceID := fmt.Sprintf("obs-%06d", *nextEvidence)
+		return false, store.ReconcileWriteAttempt(ctx, state.ReconcileWriteAttempt{
+			TaskID:      taskID,
+			ExecutionID: attempt.ExecutionID,
+			Status:      "reconciled",
+			Reason:      "write_effect_completed",
+			EvidenceID:  evidenceID,
+			Evidence:    result.Evidence,
+		})
+	default:
+		return true, store.ReconcileToolAttempt(ctx, state.ReconcileToolAttempt{
+			TaskID:      taskID,
+			ExecutionID: attempt.ExecutionID,
+			Status:      "human_review_required",
+			Reason:      "write_effect_unreconcilable",
+		})
 	}
 }
 
@@ -470,7 +547,12 @@ func reconstructedObservations(snapshot *state.RecoverySnapshot) []tools.Observa
 	seen := make(map[string]bool)
 	var observations []tools.Observation
 	for _, attempt := range snapshot.ToolAttempts {
-		if attempt.Status != "completed" || attempt.EvidenceID == "" || seen[attempt.EvidenceID] {
+		// Completed attempts and write attempts reconciled as verified
+		// completed carry citable evidence; every other attempt does not.
+		if attempt.Status != "completed" && attempt.Status != "reconciled" {
+			continue
+		}
+		if attempt.EvidenceID == "" || seen[attempt.EvidenceID] {
 			continue
 		}
 		evidence, ok := byEvidence[attempt.EvidenceID]
@@ -509,6 +591,15 @@ func reconstructedGuard(snapshot *state.RecoverySnapshot) map[string]string {
 	for _, attempt := range snapshot.ToolAttempts {
 		switch attempt.Status {
 		case "completed", "failed":
+			// An executed attempt (completed or deterministically failed)
+			// seeds the guard: an identical proposal is rejected while the
+			// workspace signature is unchanged.
+		case "reconciled":
+			// Only a write attempt reconciled as verified-completed was
+			// executed; a replay-safe read reconciliation was not.
+			if attempt.RecoveryReason != "write_effect_completed" {
+				continue
+			}
 		default:
 			continue
 		}

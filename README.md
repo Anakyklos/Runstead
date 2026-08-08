@@ -72,16 +72,18 @@ Runstead begins as a modular monolith:
 
 The initial project will not use agent frameworks, an ORM, Redis, message brokers, microservices, Kubernetes, a web UI or a vector database.
 
-The current read-only registry contract is documented in
-[`docs/tools.md`](docs/tools.md).
+The current tool registry contract is documented in
+[`docs/tools.md`](docs/tools.md); safe writes, approval and crash behavior in
+[`docs/writes.md`](docs/writes.md).
 
 ## Durable state
 
-Runstead persists task state, execution attempts, the event journal and
-account-protection state to a local SQLite database (issue #8): every accepted
-action, every concrete tool/provider attempt, every observation evidence id
-and every meaningful transition is durably recorded, and a task can be
-inspected after the original process exits with:
+Runstead persists task state, execution attempts, the event journal,
+write-policy decisions, approvals and account-protection state to a local
+SQLite database (issues #8/#10): every accepted action, every concrete
+tool/provider attempt, every observation evidence id and every meaningful
+transition is durably recorded, and a task can be inspected after the original
+process exits with:
 
 ```text
 runstead run --task "inspect the repo" --workspace /path --scripted responses.jsonl
@@ -89,11 +91,13 @@ task: cli-...
 runstead inspect cli-... --state-dir ~/.local/share/runstead
 ```
 
-An interrupted read-only task can be resumed from that durable state (issue #9)
-with a new provider conversation, without replaying completed effects:
+An interrupted task can be resumed from that durable state (issues #9/#10)
+with a new provider conversation, without replaying completed effects, and
+write approvals are recorded by the operator control plane:
 
 ```text
 runstead resume cli-... --state-dir ~/.local/share/runstead --scripted responses.jsonl
+runstead decide cli-... action-000005 approved --state-dir ~/.local/share/runstead
 ```
 
 The persistence architecture, SQLite driver decision, pragmas, database
@@ -147,10 +151,9 @@ Read-only tools come first:
 - `git_status`
 - `git_diff`
 
-Write tools are introduced only after the read-only loop is stable:
-
-- `write_file`
-- `apply_patch`
+Write tools (`write_file`, `apply_patch`) are implemented (issue #10) with
+workspace containment, stale-state protection, durable intent/effect/result
+ordering, structured evidence and control-plane approval.
 
 ## Explicit non-goals for the OmniRoute-backed v0.1
 
@@ -173,20 +176,21 @@ The later direct connector is successful only if it matches this capability and 
 
 ## Project status
 
-**M1 in progress.** The repository now contains the native Go module, the
-small CLI surface, the strict `runstead.protocol.v1` parser (#5), the
-read-only tool registry with workspace boundary and evidence identifiers
-(#6), the account-scoped request governor with attempt receipts (#21, PR
-#33), the fail-closed OmniRoute adapter scaffold (#28) and the bounded
-read-only agent loop (#7). `runstead run` now executes a deterministic
-read-only task end to end: every model turn is admitted by the account
-governor, actions are validated and executed by the read-only registry,
-observations return as untrusted data, and a final answer is accepted only
-when grounded in evidence IDs produced during the run. The deterministic
-offline mode replays scripted model responses through the real governor and
-tools (`--scripted FILE`); live OmniRoute execution remains disabled until a
-compatible attempt-receipt producer exists and #30 activates it. Durable
-SQLite state (#8) and recovery (#9) remain later milestone work.
+The repository now contains the native Go module, the small CLI surface, the
+strict `runstead.protocol.v1` parser (#5), the tool registry with workspace
+boundary and evidence identifiers (#6), the account-scoped request governor
+with attempt receipts (#21, PR #33), the fail-closed OmniRoute adapter
+scaffold (#28), the bounded agent loop (#7), durable SQLite state (#8),
+resume/recovery (#9) and the policy-gated safe write tools (#10). `runstead
+run` executes a deterministic task end to end: every model turn is admitted
+by the account governor, actions are validated and executed by the registry
+(read-only tools plus policy-gated `write_file`/`apply_patch` with stale-state
+protection), observations return as untrusted data, and a final answer is
+accepted only when grounded in evidence IDs produced during the run. The
+deterministic offline mode replays scripted model responses through the real
+governor and tools (`--scripted FILE`); live OmniRoute execution remains
+disabled until a compatible attempt-receipt producer exists and #30 activates
+it.
 
 See [`docs/architecture.md`](docs/architecture.md), [`docs/roadmap.md`](docs/roadmap.md) and [`docs/development.md`](docs/development.md).
 

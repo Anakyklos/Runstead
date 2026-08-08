@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/governor"
+	"github.com/RenyEnnos/Runstead/internal/policy"
 	"github.com/RenyEnnos/Runstead/internal/protocol"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/state"
@@ -83,6 +84,7 @@ type Loop struct {
 	trace    TraceSink
 	model    string
 	state    state.Persistence
+	policy   policy.Policy
 	recovery *RecoverySeed
 }
 
@@ -97,6 +99,10 @@ type Config struct {
 	// State is the optional semantic persistence boundary. A nil value
 	// disables persistence (the M1 in-memory behavior).
 	State state.Persistence
+	// Policy is the optional control-plane decision seam for write actions
+	// (issue #10). A nil policy fails closed: no write tool executes, and
+	// every write proposal is denied with the typed reason "no_write_policy".
+	Policy policy.Policy
 	// Recovery is the optional reconstructed state of an interrupted task
 	// (issue #9). A nil value starts a fresh run; a non-nil value resumes the
 	// same durable task from persisted state without replaying historical
@@ -148,6 +154,7 @@ func NewLoop(config Config) (*Loop, error) {
 		trace:    traceSink,
 		model:    strings.TrimSpace(config.Model),
 		state:    config.State,
+		policy:   config.Policy,
 		recovery: config.Recovery,
 	}, nil
 }
@@ -549,6 +556,36 @@ func (l *Loop) handleAction(
 		}
 	}
 
+	// Write proposals are gated by the control-plane policy BEFORE any
+	// execution decision. The decision is persisted (allowed, denied,
+	// approval_required) with its typed reason, and model prose can never
+	// influence it. A denied write is rejected as a logical action and the
+	// model receives a correction; an approval-required write stays planned
+	// pending operator approval.
+	if l.registry.IsWriteTool(action.Tool) {
+		outcome, err := l.evaluateWritePolicy(ctx, task, actionID, action)
+		if err != nil {
+			return stop(OutcomePersistenceFailure, fmt.Sprintf("%s: %v", OutcomePersistenceFailure.StopReason(), err), nil), true
+		}
+		switch outcome.Decision {
+		case policy.Denied:
+			if l.state != nil {
+				if err := l.state.RejectAction(ctx, task.ID, actionID, outcome.Reason); err != nil {
+					return stop(OutcomePersistenceFailure, fmt.Sprintf("%s: %v", OutcomePersistenceFailure.StopReason(), err), nil), true
+				}
+			}
+			emit(TraceLine{Kind: TraceAction, Status: string(outcome.Decision), Tool: action.Tool, Classification: outcome.Reason})
+			return l.writePolicyCorrection(transcript, outcome, run, emit, stop)
+		case policy.ApprovalRequired:
+			// The action stays 'planned' so a later operator approval can
+			// unlock the same proposal on a subsequent turn.
+			emit(TraceLine{Kind: TraceAction, Status: string(outcome.Decision), Tool: action.Tool, Classification: outcome.Reason})
+			return l.writePolicyCorrection(transcript, outcome, run, emit, stop)
+		case policy.Allowed:
+			// Fall through to the repeat guard and execution.
+		}
+	}
+
 	if guard.repeat(*action, signatureFor()) {
 		run.repeated++
 		// The proposal was rejected by the repeat guard, so its durable
@@ -573,7 +610,10 @@ func (l *Loop) handleAction(
 		return Result{}, false
 	}
 
-	// TX 1: persist the concrete tool execution intent before the effect.
+	// TX 1: persist the concrete tool execution intent before the effect. For
+	// write tools the deterministic expected after-state hash is computed from
+	// the real arguments and persisted with the intent so recovery can
+	// reconcile an interruption from observable filesystem state.
 	executionID := ""
 	if l.state != nil {
 		arguments, marshalErr := json.Marshal(action.Arguments)
@@ -582,11 +622,12 @@ func (l *Loop) handleAction(
 		}
 		var err error
 		executionID, err = l.state.PrepareToolAttempt(ctx, state.ToolAttemptPrepared{
-			TaskID:        task.ID,
-			ActionID:      actionID,
-			Tool:          action.Tool,
-			Arguments:     arguments,
-			RecoveryClass: 1, // all five registered tools are replay-safe observations (ADR recovery class 1)
+			TaskID:          task.ID,
+			ActionID:        actionID,
+			Tool:            action.Tool,
+			Arguments:       arguments,
+			RecoveryClass:   recoveryClassFor(action.Tool),
+			EffectAfterHash: l.registry.PlanWriteEffect(*action),
 		})
 		if err != nil {
 			return stop(OutcomePersistenceFailure, fmt.Sprintf("%s: %v", OutcomePersistenceFailure.StopReason(), err), nil), true
@@ -596,6 +637,11 @@ func (l *Loop) handleAction(
 	executionStart := l.clock.Now()
 	observation := l.registry.Execute(ctx, *action)
 	executionDuration := l.clock.Now().Sub(executionStart)
+	// Attach the execution identities to successful write evidence before TX 2
+	// so the persisted evidence carries action/execution ids.
+	if l.registry.IsWriteTool(action.Tool) {
+		l.registry.AnnotateWriteEvidence(&observation, actionID, executionID)
+	}
 	status := "executed"
 	if !observation.Success {
 		status = "failed"
@@ -666,4 +712,92 @@ func (l *Loop) handleFinal(
 		result.Summary = final.Summary
 		result.Evidence = append([]string(nil), final.Evidence...)
 	}), true
+}
+
+// evaluateWritePolicy computes and persists the control-plane decision for one
+// write proposal. The decision is persisted with its typed reason (allowed,
+// denied, approval_required) before any execution decision; model prose is
+// never an input to the policy.
+func (l *Loop) evaluateWritePolicy(ctx context.Context, task Task, actionID string, action *protocol.Action) (policy.Outcome, error) {
+	outcome := policy.Outcome{Decision: policy.Denied, Reason: "no_write_policy"}
+	if l.policy != nil {
+		outcome = l.policy.Evaluate(ctx, policy.Request{
+			TaskID:      task.ID,
+			ActionID:    actionID,
+			Tool:        action.Tool,
+			Fingerprint: protocol.ActionFingerprint(*action),
+			Workspace:   l.registry.Workspace(),
+		})
+	}
+	if l.state != nil {
+		if err := l.state.RecordWritePolicyDecision(ctx, state.WritePolicyDecision{
+			TaskID:   task.ID,
+			ActionID: actionID,
+			Tool:     action.Tool,
+			Decision: string(outcome.Decision),
+			Reason:   outcome.Reason,
+		}); err != nil {
+			return policy.Outcome{}, err
+		}
+	}
+	return outcome, nil
+}
+
+// writePolicyCorrection reports a non-executed write to the model as a
+// correction and applies the correction budget.
+func (l *Loop) writePolicyCorrection(transcript *transcript, outcome policy.Outcome, run *runState, emit func(TraceLine), stop func(Outcome, string, func(*Result)) Result) (Result, bool) {
+	if run.corrections >= l.limits.MaxCorrections {
+		return stop(OutcomeCorrectionsExhausted, fmt.Sprintf("correction exhausted: write %s", outcome.Decision), func(result *Result) {
+			result.Classification = string(outcome.Decision)
+		}), true
+	}
+	run.corrections++
+	retriesRemaining := l.limits.MaxCorrections - run.corrections
+	message, err := writePolicyMessage(outcome, retriesRemaining)
+	if err != nil {
+		return stop(OutcomeProviderFailure, "provider failure: write policy correction generation failed", nil), true
+	}
+	emit(TraceLine{Kind: TraceCorrection, Status: string(outcome.Decision), Code: string(outcome.Decision), RetriesRemaining: retriesRemaining})
+	transcript.correction(message)
+	return Result{}, false
+}
+
+// writePolicyMessage renders a deterministic correction payload for a
+// non-executed write. It is structurally identical to protocol corrections
+// but carries the typed policy decision and reason.
+func writePolicyMessage(outcome policy.Outcome, retriesRemaining int) (string, error) {
+	message := struct {
+		ProtocolVersion  protocol.Version `json:"protocol_version"`
+		Type             string           `json:"type"`
+		OK               bool             `json:"ok"`
+		ErrorCode        string           `json:"error_code"`
+		RetriesRemaining int              `json:"retries_remaining"`
+		Decision         string           `json:"decision"`
+		Reason           string           `json:"reason"`
+		Required         string           `json:"required"`
+	}{
+		ProtocolVersion:  protocol.Current,
+		Type:             "write_policy",
+		OK:               false,
+		ErrorCode:        "write_" + string(outcome.Decision),
+		RetriesRemaining: retriesRemaining,
+		Decision:         string(outcome.Decision),
+		Reason:           outcome.Reason,
+		Required:         "The write action was not approved by the control plane and did not execute. Model prose can never approve a write; request approval through the control plane or propose a different action.",
+	}
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+// recoveryClassFor maps a tool to its ADR recovery class: read-only
+// observations are class 1 (replay-safe); write tools are class 2 (local
+// effect with deterministic reconciliation).
+func recoveryClassFor(tool string) int {
+	if tool == tools.ToolWriteFile || tool == tools.ToolApplyPatch {
+		return 2
+	}
+	return 1
 }

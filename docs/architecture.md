@@ -161,7 +161,8 @@ The provider interface should remain small enough to support deterministic fake 
 
 ## Main execution loop
 
-Issue #7 implements the bounded read-only agent loop in `internal/agent`.
+Issue #7 implements the bounded agent loop in `internal/agent`; issue #10 adds
+policy-gated write tools to it.
 
 ```text
 task
@@ -172,7 +173,9 @@ governed model turn (account-scoped attempt executor)
     ↓
 parse exactly one envelope (runstead.protocol.v1)
     ↓
-action → repeat guard → read-only registry validation and execution
+action → write tools: control-plane policy gate (allow/deny/approval_required)
+    ↓
+action → repeat guard → registry validation and execution
     ↓
 observation with evidence ID returned as UNTRUSTED data
     ↓
@@ -189,13 +192,20 @@ re-enters account admission. Tool output and repository content are carried as
 untrusted observations in a separate transcript role and never become system
 instructions, permissions, policy or approval. Fingerprints from #5 act only as
 a workspace-aware loop guard, not as permanent idempotency keys: an identical
-observational action may run again after the workspace changes. The loop enforces
-bounded steps, corrections, repeated actions, elapsed task time and provider
-attempts, and every terminal exit maps to a typed outcome with a stable exit
-code (see [`development.md`](development.md)). Durable state (issue #8)
-persists the loop's task, action, attempt and evidence lifecycle through the
-semantic persistence boundary; there is still no write tool, shell,
-background execution or resume in this milestone.
+observational action may run again after the workspace changes. Write tools
+(`write_file`, `apply_patch`) are gated by the control-plane policy before any
+execution decision; approval comes only from persisted operator records, never
+from model output. The loop enforces bounded steps, corrections, repeated
+actions, elapsed task time and provider attempts, and every terminal exit maps
+to a typed outcome with a stable exit code (see
+[`development.md`](development.md)). Durable state (issue #8) persists the
+loop's task, action, attempt, evidence, write-policy decision and approval
+lifecycle through the semantic persistence boundary. Write effects follow the
+ADR two-transaction ordering (intent → effect outside SQLite → observed
+result), stale-state preconditions refuse overwrites, and interrupted writes
+are reconciled from observable filesystem state on resume (see
+[`writes.md`](writes.md)). There is still no shell, background execution or
+automatic Git operation in this milestone.
 
 The model never executes a tool directly. It proposes an action. Runstead remains responsible for whether that action is valid, permitted, executed and proven.
 

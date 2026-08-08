@@ -26,6 +26,11 @@ const (
 	EnvTimeBudget         = "RUNSTEAD_TIME_BUDGET"
 	EnvProviderBudget     = "RUNSTEAD_PROVIDER_BUDGET"
 
+	// EnvWritePolicy configures the write-tool policy modes (issue #10), for
+	// example "write_file=allow,apply_patch=approval_required". The default
+	// is approval_required for every write tool.
+	EnvWritePolicy = "RUNSTEAD_WRITE_POLICY"
+
 	EnvOmniRouteBaseURL           = "OMNIROUTE_BASE_URL"
 	EnvOmniRouteAPIKey            = "OMNIROUTE_API_KEY"
 	EnvOmniRouteModel             = "OMNIROUTE_MODEL"

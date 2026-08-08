@@ -100,11 +100,18 @@ runstead inspect --help
 runstead resume --help
 ```
 
-`run` executes one bounded read-only task with the issue #7 agent loop and
-persists its durable state to SQLite (issue #8). `inspect <task-id>` renders
-the persisted task, attempts, journal and governor state after the run process
-exits (see [`persistence.md`](persistence.md)). `resume` remains an explicit
-placeholder because recovery/resume is issue #9.
+`run` executes one bounded task with the issue #7 agent loop, the policy-gated
+write tools from issue #10 and durable SQLite state (issue #8). `inspect
+<task-id>` renders the persisted task, attempts, journal, write-policy
+decisions, approvals and governor state after the run process exits (see
+[`persistence.md`](persistence.md)). `resume` reconciles interrupted attempts
+from durable state (issue #9, extended by #10 for writes). `decide <task-id>
+<action-id> approved|rejected` is the operator control plane that records
+write approvals; model output can never approve a write.
+
+Write-tool policy is configured with `--write-policy tool=mode,...` (or
+`RUNSTEAD_WRITE_POLICY`); the default is `approval_required` for every write
+tool. See [`writes.md`](writes.md) for the full safe-writes contract.
 
 Configuration precedence is deterministic: command-line flags, then
 environment, then conservative defaults. Workspace/logging use
@@ -141,9 +148,10 @@ Implemented package responsibilities are deliberately narrow:
 - `cmd/runstead`: signal-aware process entrypoint, exit codes and CLI help;
 - `internal/config`: flag/environment/default resolution;
 - `internal/agent`: the governor-owned executor seam plus the issue #7 bounded
-  read-only loop: typed terminal outcomes, deterministic system contract,
-  untrusted observation framing, evidence grounding, workspace-aware repeat
-  guard, sanitized lifecycle trace and one-shot context cancellation;
+  loop: typed terminal outcomes, deterministic system contract, untrusted
+  observation framing, evidence grounding, workspace-aware repeat guard,
+  control-plane write policy enforcement (issue #10), sanitized lifecycle
+  trace and one-shot context cancellation;
 - `internal/protocol`: strict `runstead.protocol.v1` action/final parser,
   typed schema validation, deterministic correction messages, canonical action
   fingerprints and caller-owned repeat guard;
@@ -154,12 +162,21 @@ Implemented package responsibilities are deliberately narrow:
   transport, fail-closed management checks, sanitized typed errors,
   classifier, optional telemetry, receipt request/response headers and strict
   mapping into provider-neutral receipt metadata;
-- `internal/tools`: the issue #6 read-only registry with workspace boundary,
-  typed observations, deterministic truncation and evidence identifiers;
+- `internal/tools`: the issue #6 registry with workspace boundary, typed
+  observations, deterministic truncation and evidence identifiers, plus the
+  issue #10 policy-gated `write_file`/`apply_patch` effects with stale-state
+  protection and structured write evidence;
+- `internal/policy`: the issue #10 control-plane write-policy seam (allow,
+  deny, approval_required) with operator-approval lookup; model output is
+  never an input to a decision;
+- `internal/state`: SQLite persistence for tasks, actions, attempts, evidence,
+  journal, write-policy decisions, approvals and governor protection;
+- `internal/recovery`: the issue #9 resume/reconciliation pipeline, extended
+  by #10 to reconcile interrupted writes from observable filesystem state;
 - `internal/trace`: JSON `log/slog` construction and level parsing.
 
-The planned `state` and `verifier` packages remain absent until they contain
-real behavior (M2/M4). The provider boundary represents one logical completion,
+The planned `verifier` package remains absent until it contains real behavior
+(M4). The provider boundary represents one logical completion,
 not an unaccounted retry loop. Legacy single-attempt clients must explicitly
 declare amplification disabled. Receipt-aware clients return one authoritative
 receipt per real upstream attempt, and the governor reconciles every receipt.
@@ -205,10 +222,10 @@ parser never truncates input or attempts a partial parse.
 
 Actions contain only `version`, `tool` and `arguments`. The injected
 `protocol.ToolCatalog` seam first identifies a registered tool and then
-validates its typed `protocol.Arguments` object. The issue #6 read-only
-registry lives in `internal/tools` and stays out of this package. A
-schema-valid action can still be rejected as `unknown_tool` or
-`invalid_arguments`; only an accepted action is executable. Final responses
+validates its typed `protocol.Arguments` object. The issue #6/#10 registry
+lives in `internal/tools` and stays out of this package. A schema-valid action
+can still be rejected as `unknown_tool` or `invalid_arguments`; only an
+accepted action is executable. Final responses
 contain only `version`, `status` (`complete` or `incomplete`), `summary` and
 non-empty string `evidence`. An accepted final response is not a tool execution
 and does not by itself establish task completion.
@@ -230,19 +247,21 @@ disposable M0 shell implementation remains unchanged.
 SHA-256. `RepeatGuard` is caller-owned session state; its `Check` method returns
 the typed `repeated_action` failure and the parser itself keeps no history, so
 repeated actions can be rejected before execution. Actual tool
-registration/execution is implemented by the issue #6 read-only registry, and
-the issue #7 loop owns the correction budget and workspace-aware repeat guard.
-See
-[`tools.md`](tools.md) for its strict contracts, workspace boundary and
-bounded observation semantics.
+registration/execution is implemented by the issue #6/#10 registry, and the
+issue #7 loop owns the correction budget, the workspace-aware repeat guard and
+the control-plane write-policy gate for `write_file`/`apply_patch` (issue
+#10). See
+[`tools.md`](tools.md) for the strict tool contracts and workspace boundary,
+and [`writes.md`](writes.md) for the safe-writes model.
 
-## Issue #7 bounded read-only agent loop
+## Issue #7 bounded agent loop
 
-`internal/agent` implements the bounded read-only loop. The composition root is
+`internal/agent` implements the bounded loop. The composition root is
 `cmd/runstead run`, which wires one task, one workspace, the account-scoped
-governor, the read-only tool registry and the loop.
+governor, the tool registry (read-only tools plus policy-gated writes) and the
+loop.
 
-### Running a read-only task
+### Running a task
 
 The deterministic offline mode runs the real loop without any network access:
 the model responses are replayed from a JSONL file (`{"text":"..."}` per line)

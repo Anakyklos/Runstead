@@ -43,6 +43,16 @@ func (r *Registry) Execute(ctx context.Context, action protocol.Action) Observat
 		return r.executeSearchText(ctx, observation, query, path)
 	case ToolGitStatus, ToolGitDiff:
 		return r.executeGit(ctx, observation, action.Tool)
+	case ToolWriteFile:
+		path, _ := stringArgument(action.Arguments, "path")
+		content, _ := stringArgumentAllowEmpty(action.Arguments, "content")
+		expected, _ := stringArgument(action.Arguments, "expected_before_hash")
+		return r.executeWriteFile(ctx, observation, path, content, expected)
+	case ToolApplyPatch:
+		path, _ := stringArgument(action.Arguments, "path")
+		patch, _ := stringArgumentAllowEmpty(action.Arguments, "patch")
+		expected, _ := stringArgument(action.Arguments, "expected_before_hash")
+		return r.executeApplyPatch(ctx, observation, path, patch, expected)
 	default:
 		observation.Failure = newFailure(FailureInvalidArguments)
 		return observation
@@ -75,6 +85,24 @@ func normalizedArguments(action protocol.Action) any {
 			if normalized, failure := normalizeRelativePath(path); failure == nil {
 				arguments["query"] = query
 				arguments["path"] = normalized
+			}
+		}
+	case ToolWriteFile, ToolApplyPatch:
+		path, pathFailure := stringArgument(action.Arguments, "path")
+		expected, expectedFailure := stringArgument(action.Arguments, "expected_before_hash")
+		if pathFailure == nil && expectedFailure == nil {
+			if normalized, failure := normalizeRelativePath(path); failure == nil {
+				arguments["path"] = normalized
+				arguments["expected_before_hash"] = expected
+				if action.Tool == ToolWriteFile {
+					if content, contentFailure := stringArgumentAllowEmpty(action.Arguments, "content"); contentFailure == nil {
+						arguments["content"] = content
+					}
+				} else {
+					if patch, patchFailure := stringArgumentAllowEmpty(action.Arguments, "patch"); patchFailure == nil {
+						arguments["patch"] = patch
+					}
+				}
 			}
 		}
 	}

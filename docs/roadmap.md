@@ -84,14 +84,20 @@ Exit criteria:
 
 Deliverables:
 
-- `write_file` and `apply_patch`;
-- workspace boundary enforcement;
-- command allow/deny policy;
-- configurable approval gates;
-- file hashes and before/after evidence;
-- Git status and diff verification;
-- protection against repeated writes and path traversal;
-- explicit Docker workspace-mount policy for write-capable runs.
+- `write_file` and `apply_patch` (implemented in #10, see
+  [`writes.md`](writes.md));
+- workspace boundary enforcement (implemented: shared resolver, traversal,
+  absolute-path and symlink-escape fail-closed);
+- command allow/deny policy (implemented for write tools: `--write-policy`);
+- configurable approval gates (implemented: `runstead decide` operator
+  approvals, default `approval_required`);
+- file hashes and before/after evidence (implemented: sha256 preconditions,
+  `WriteEvidence`);
+- Git status and diff verification (implemented for read observations; the
+  independent verifier milestone is #11);
+- protection against repeated writes and path traversal (implemented:
+  stale-state preconditions plus the repeat guard);
+- explicit Docker workspace-mount policy for write-capable runs (pending #15).
 
 Exit criteria:
 

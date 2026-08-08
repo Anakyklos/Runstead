@@ -13,6 +13,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/agent"
 	"github.com/RenyEnnos/Runstead/internal/config"
 	"github.com/RenyEnnos/Runstead/internal/governor"
+	"github.com/RenyEnnos/Runstead/internal/policy"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/recovery"
 	"github.com/RenyEnnos/Runstead/internal/state"
@@ -48,6 +49,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	logLevel := ""
 	minStartInterval := ""
 	intervalSet := false
+	writePolicy := ""
 	// Parse manually so flags may appear before or after the task id (the flag
 	// package stops at the first positional argument).
 	for index := 0; index < len(args); index++ {
@@ -85,6 +87,14 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			}
 		case strings.HasPrefix(arg, "--log-level="):
 			logLevel = strings.TrimPrefix(arg, "--log-level=")
+		case arg == "--write-policy":
+			if next, ok := value("--write-policy"); ok {
+				writePolicy = next
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--write-policy="):
+			writePolicy = strings.TrimPrefix(arg, "--write-policy=")
 		case arg == "--min-start-interval":
 			if next, ok := value("--min-start-interval"); ok {
 				minStartInterval = next
@@ -276,6 +286,11 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintf(errOut, "resume: invalid persisted configuration: %v\n", err)
 		return exitCorrupt
 	}
+	writePolicyConfig, err := resolveWritePolicy(writePolicy, writePolicy != "")
+	if err != nil {
+		fmt.Fprintf(errOut, "resume: %v\n", err)
+		return exitUsage
+	}
 	loop, err := agent.NewLoop(agent.Config{
 		Runner:   executor,
 		Registry: registry,
@@ -283,6 +298,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		Model:    plan.Task.Model,
 		Trace:    traceSink,
 		State:    store,
+		Policy:   policy.NewStatic(writePolicyConfig, storeApprovals(store)),
 		Recovery: plan.Seed,
 	})
 	if err != nil {
@@ -449,6 +465,7 @@ func printResumeHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --scripted FILE           scripted responses for a deterministic offline continuation (RUNSTEAD_SCRIPTED_RESPONSES)")
 	fmt.Fprintln(out, "  --state-dir PATH          durable state directory (RUNSTEAD_STATE_DIR)")
 	fmt.Fprintln(out, "  --log-level LEVEL         debug, info, warn or error (RUNSTEAD_LOG_LEVEL, default info)")
+	fmt.Fprintln(out, "  --write-policy SPEC       write tool modes, e.g. write_file=allow (RUNSTEAD_WRITE_POLICY, default approval_required)")
 	fmt.Fprintln(out, "  --min-start-interval DURATION  account governor pacing override (RUNSTEAD_MIN_START_INTERVAL)")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Exit codes: 0 resumed and finished, 1 task not found, 2 usage, 3 state database unavailable,")

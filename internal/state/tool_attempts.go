@@ -26,10 +26,10 @@ func (s *Store) PrepareToolAttempt(ctx context.Context, record ToolAttemptPrepar
 		recoveryClass = 1
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO tool_attempts (execution_id, task_id, action_id, tool, arguments_json, status, recovery_class, created_at, prepared_at)
-		 VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?)`,
+		`INSERT INTO tool_attempts (execution_id, task_id, action_id, tool, arguments_json, status, recovery_class, effect_after_hash, created_at, prepared_at)
+		 VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?)`,
 		executionID, record.TaskID, record.ActionID, Redact(record.Tool),
-		string(RedactJSON(record.Arguments)), recoveryClass, now, now); err != nil {
+		string(RedactJSON(record.Arguments)), recoveryClass, record.EffectAfterHash, now, now); err != nil {
 		return "", fmt.Errorf("insert tool attempt: %w", err)
 	}
 	// The first concrete attempt intent moves the logical action from
@@ -40,9 +40,10 @@ func (s *Store) PrepareToolAttempt(ctx context.Context, record ToolAttemptPrepar
 		return "", fmt.Errorf("prepare action: %w", err)
 	}
 	if err := appendEvent(ctx, tx, record.TaskID, "tool_attempt_prepared", map[string]any{
-		"execution_id": executionID,
-		"action_id":    record.ActionID,
-		"tool":         record.Tool,
+		"execution_id":      executionID,
+		"action_id":         record.ActionID,
+		"tool":              record.Tool,
+		"effect_after_hash": record.EffectAfterHash,
 	}, now); err != nil {
 		return "", err
 	}

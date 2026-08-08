@@ -283,8 +283,8 @@ Example classification:
 | `search_text` | 1 | Workspace read (`rg` or Go fallback). Same as above. |
 | `git_status` | 1 | Read-only Git subprocess. Same as above. |
 | `git_diff` | 1 | Read-only Git subprocess. Same as above. |
-| `write_file` (future, with before-hash) | 2 | Compare before-hash, after-hash and file content. Reconcile from the filesystem; write only if reconciliation proves the file is unchanged since the recorded before-hash. |
-| `apply_patch` (future) | 2 | Reconcile from the resulting diff and hashes. A patch whose effect is fully observable can be verified or reverted deterministically; ambiguous partial application escalates. |
+| `write_file` (#10, with before-hash) | 2 | Compare before-hash, after-hash and file content. Reconcile from the filesystem; write only if reconciliation proves the file is unchanged since the recorded before-hash. Implemented in `internal/tools` with `effect_after_hash` persisted at TX 1. |
+| `apply_patch` (#10) | 2 | Reconcile from the resulting diff and hashes. A patch whose effect is fully observable can be verified or reverted deterministically; ambiguous partial application escalates. Implemented with a strict in-memory unified-diff applier (no shell `patch`). |
 | Test/build recipe (future) | 2 | Reconcile from captured exit status and output; re-run is safe only when the recipe itself has no side effects. A recipe with side effects is classified 4. |
 | Git commit (future) | 2 | Local mutation with deterministic reconciliation via `git log`/`git status`/reflog. If the commit exists, never create a duplicate; if it does not, a new commit is a new attempt. |
 | Git push (future) | 4 | Remote state is not locally determinable and push has no idempotency contract. A retry may duplicate or surprise the remote. Reconcile from remote evidence or require human review. |
@@ -425,7 +425,8 @@ decided by this ADR:
 - corruption, torn-write or forensic-copy handling;
 - a fast-vs-durable write API;
 - `runstead inspect` and `runstead resume` behavior;
-- write tools, process runner, arbitrary shell and approval UX;
+- write tools and approval UX were decided by #10 (see `docs/writes.md`);
+  process runner and arbitrary shell remain deferred to #26;
 - #38 headers, retry policy and delivery-state persistence;
 - #29/#30 producer contract and live activation;
 - any claim of exactly-once execution.

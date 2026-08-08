@@ -362,6 +362,9 @@ type RecoveryToolAttempt struct {
 	RecoveryClass  int
 	EvidenceID     string
 	RecoveryReason string
+	// EffectAfterHash is the expected after-state hash persisted at TX 1 for
+	// write attempts (empty for read-only attempts).
+	EffectAfterHash string
 }
 
 // RecoveryProviderAttempt is one concrete governed provider execution.
@@ -454,7 +457,7 @@ func (s *Store) loadRecoveryActions(ctx context.Context, taskID string) ([]Recov
 
 func (s *Store) loadRecoveryToolAttempts(ctx context.Context, taskID string) ([]RecoveryToolAttempt, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT execution_id, action_id, tool, arguments_json, status, classification, recovery_class, evidence_id, recovery_reason
+		`SELECT execution_id, action_id, tool, arguments_json, status, classification, recovery_class, evidence_id, recovery_reason, effect_after_hash
 		 FROM tool_attempts WHERE task_id = ? ORDER BY created_at, execution_id`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load recovery tool attempts: %w", err)
@@ -464,7 +467,7 @@ func (s *Store) loadRecoveryToolAttempts(ctx context.Context, taskID string) ([]
 	for rows.Next() {
 		var attempt RecoveryToolAttempt
 		if err := rows.Scan(&attempt.ExecutionID, &attempt.ActionID, &attempt.Tool, &attempt.ArgumentsJSON,
-			&attempt.Status, &attempt.Classification, &attempt.RecoveryClass, &attempt.EvidenceID, &attempt.RecoveryReason); err != nil {
+			&attempt.Status, &attempt.Classification, &attempt.RecoveryClass, &attempt.EvidenceID, &attempt.RecoveryReason, &attempt.EffectAfterHash); err != nil {
 			return nil, fmt.Errorf("scan recovery tool attempt: %w", err)
 		}
 		attempts = append(attempts, attempt)
