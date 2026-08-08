@@ -221,9 +221,12 @@ but before TX 2 leaves the same `prepared` state (the ADR crash table).
 Crash-window coverage (subprocess tests with the deterministic `SetCrashPoint`
 test seam): task created, task started, provider TX 1 committed, provider TX 2
 not started, tool TX 1 committed, tool TX 2 not started, task finalize not
-started, mid-effect provider kill, and the full-lifecycle control. After each
-crash the database is reopened and the surviving state is asserted; `runstead
-inspect` renders interrupted tasks.
+started, mid-effect provider kill, an interrupted write (the process dies with
+a SQLite write transaction open but uncommitted), and the full-lifecycle
+control. After each crash the database is reopened and the surviving state is
+asserted; `runstead inspect` renders interrupted tasks. The interrupted-write
+test proves the WAL replays on reopen and rolls the incomplete transaction
+back, keeping the committed prefix consistent.
 
 ## Governor durability
 

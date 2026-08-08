@@ -337,6 +337,70 @@ func TestCrashPointSeamFiresOnlyOnExactMatch(t *testing.T) {
 	}
 }
 
+// TestCrashMidWriteTransaction is the subprocess for the interrupted-write
+// window: the process dies while a SQLite write transaction is open but not
+// committed. The interrupted transaction must be rolled back by WAL replay on
+// reopen, and the database must stay consistent with the committed prefix.
+func TestCrashMidWriteTransaction(t *testing.T) {
+	dbPath := os.Getenv("RUNSTEAD_CRASH_WRITE_DB")
+	if dbPath == "" {
+		t.Skip("mid-write subprocess")
+	}
+	store, err := Open(Options{Path: dbPath, Clock: newFixedClock()})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	ctx := context.Background()
+	if err := store.CreateTask(ctx, TaskRecord{TaskID: "task-1", Objective: "o", Workspace: "w"}); err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if err := store.StartTask(ctx, "task-1"); err != nil {
+		t.Fatalf("StartTask() error = %v", err)
+	}
+	// Begin a write transaction and die before committing. os.Exit skips all
+	// defers, so the connection is never closed cleanly: the WAL holds an
+	// incomplete transaction that SQLite must roll back on the next open.
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin write tx: %v", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO actions (action_id, task_id, action_sequence, tool, status, created_at)
+		VALUES ('action-uncommitted', 'task-1', 1, 't', 'planned', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("insert action: %v", err)
+	}
+	if err := appendEvent(ctx, tx, "task-1", "uncommitted_event", map[string]any{"v": 1}, store.now()); err != nil {
+		t.Fatalf("appendEvent: %v", err)
+	}
+	os.Exit(crashExitCode)
+}
+
+// TestCrashMidWriteTransactionParent spawns the interrupted-write subprocess
+// and proves the reopened database rolled the incomplete transaction back.
+func TestCrashMidWriteTransactionParent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "runstead.db")
+	cmd := exec.Command(os.Args[0], "-test.run=TestCrashMidWriteTransaction")
+	cmd.Env = append(os.Environ(), "RUNSTEAD_CRASH_WRITE_DB="+dbPath)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("mid-write subprocess must die")
+	}
+	store := reopenCrashedStore(t, dbPath)
+	// The uncommitted action insert must be rolled back.
+	if countRows(t, store, "actions") != 0 {
+		t.Fatal("uncommitted action must be rolled back by WAL replay")
+	}
+	// The uncommitted event must not survive the interrupted write.
+	if got := taskEventKinds(t, store, "task-1"); !equalKinds(got, []string{"task_created", "task_started"}) {
+		t.Fatalf("journal after interrupted write = %v, want only committed events", got)
+	}
+	status, err := store.TaskStatus(context.Background(), "task-1")
+	if err != nil {
+		t.Fatalf("TaskStatus() error = %v", err)
+	}
+	if status != "running" {
+		t.Fatalf("status after interrupted write = %q, want running", status)
+	}
+}
+
 func equalKinds(got, want []string) bool {
 	if len(got) != len(want) {
 		return false
