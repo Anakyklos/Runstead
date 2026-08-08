@@ -64,6 +64,12 @@ type Options struct {
 	RGPath    string
 	RunRG     RGRunner
 	RunGit    GitRunner
+	// NextEvidenceSequence is the highest evidence sequence number already
+	// allocated for this task (from persisted evidence). The next observation
+	// receives NextEvidenceSequence+1, so a resumed process continues the
+	// task-scoped evidence ID space instead of restarting at obs-000001 and
+	// colliding with persisted evidence (issue #9). Zero starts at obs-000001.
+	NextEvidenceSequence int
 }
 
 type Registry struct {
@@ -113,7 +119,11 @@ func NewRegistry(options Options) (*Registry, error) {
 			})
 		}
 	}
-	return &Registry{workspace: workspace, limits: limits, rgPath: rgPath, runRG: runRG, runGit: runGit}, nil
+	registry := &Registry{workspace: workspace, limits: limits, rgPath: rgPath, runRG: runRG, runGit: runGit}
+	if options.NextEvidenceSequence > 0 {
+		registry.nextID.Store(uint64(options.NextEvidenceSequence))
+	}
+	return registry, nil
 }
 
 func normalizeLimits(limits Limits) (Limits, error) {

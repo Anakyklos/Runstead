@@ -14,6 +14,7 @@ const (
 	roleAssistant   = "assistant"
 	roleObservation = "observation"
 	roleCorrection  = "correction"
+	roleRecovery    = "recovery"
 )
 
 type message struct {
@@ -49,6 +50,16 @@ func (t *transcript) assistant(content string) {
 
 func (t *transcript) correction(content string) {
 	t.append(roleCorrection, content)
+}
+
+// recovery appends the bounded reconstruction summary of an interrupted task
+// under the recovery role. It sits between the task prompt and the first new
+// model turn, so the model continues from durable state instead of the old
+// provider conversation.
+func (t *transcript) recovery(content string) {
+	if strings.TrimSpace(content) != "" {
+		t.append(roleRecovery, content)
+	}
 }
 
 // observation marshals the tool observation and appends it under the

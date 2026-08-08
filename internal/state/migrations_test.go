@@ -40,6 +40,22 @@ func openTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// supportedSchemaVersion returns the highest version in the real embedded
+// migration set.
+func supportedSchemaVersion() int {
+	names, err := fs.Glob(migrationFS, "migrations/*.sql")
+	if err != nil {
+		return 0
+	}
+	version := 0
+	for _, name := range names {
+		if parsed, parseErr := migrationVersion(name); parseErr == nil && parsed > version {
+			version = parsed
+		}
+	}
+	return version
+}
+
 func TestMigrationsFreshDatabase(t *testing.T) {
 	db := openTestDB(t)
 	files := testMigrations(t, map[int]string{
@@ -246,10 +262,10 @@ func TestMigrationsRejectVersionGaps(t *testing.T) {
 	}
 }
 
-// TestMigrationsUpgradeEmbeddedV1ToV2 proves the real embedded migration set
-// upgrades a database created by the previous release (schema version 1) to
-// the current version without losing data.
-func TestMigrationsUpgradeEmbeddedV1ToV2(t *testing.T) {
+// TestMigrationsUpgradeEmbeddedV1ToCurrent proves the real embedded migration
+// set upgrades a database created by the previous release (schema version 1)
+// to the current version without losing data.
+func TestMigrationsUpgradeEmbeddedV1ToCurrent(t *testing.T) {
 	db := openTestDB(t)
 	// Build a v1 database from the real embedded 0001 SQL, then upgrade it
 	// with the full embedded set.
@@ -271,14 +287,27 @@ func TestMigrationsUpgradeEmbeddedV1ToV2(t *testing.T) {
 	}
 
 	if err := migrate(db); err != nil {
-		t.Fatalf("upgrade to v2 error = %v", err)
+		t.Fatalf("upgrade to current error = %v", err)
 	}
 	version, err = schemaVersion(db)
-	if err != nil || version != 2 {
-		t.Fatalf("schema version after upgrade = %d (err %v), want 2", version, err)
+	if err != nil || version != supportedSchemaVersion() {
+		t.Fatalf("schema version after upgrade = %d (err %v), want %d", version, err, supportedSchemaVersion())
 	}
 	if _, err := db.Exec("SELECT 1 FROM governor_rate_events LIMIT 0"); err != nil {
 		t.Fatalf("governor_rate_events missing after upgrade: %v", err)
+	}
+	// The recovery schema (issue #9) must be present on an upgraded database.
+	if _, err := db.Exec("SELECT resume_count FROM tasks LIMIT 0"); err != nil {
+		t.Fatalf("tasks.resume_count missing after upgrade: %v", err)
+	}
+	if _, err := db.Exec("SELECT workspace_signature FROM actions LIMIT 0"); err != nil {
+		t.Fatalf("actions.workspace_signature missing after upgrade: %v", err)
+	}
+	if _, err := db.Exec("SELECT recovery_reason FROM tool_attempts LIMIT 0"); err != nil {
+		t.Fatalf("tool_attempts.recovery_reason missing after upgrade: %v", err)
+	}
+	if _, err := db.Exec("SELECT recovery_reason FROM provider_attempts LIMIT 0"); err != nil {
+		t.Fatalf("provider_attempts.recovery_reason missing after upgrade: %v", err)
 	}
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE task_id = 'task-v1'`).Scan(&count); err != nil || count != 1 {

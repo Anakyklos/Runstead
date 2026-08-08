@@ -16,27 +16,29 @@ import (
 var ErrTaskNotFound = errors.New("task not found")
 
 type inspectTask struct {
-	TaskID     string
-	Objective  string
-	Status     string
-	Outcome    string
-	StopReason string
-	Workspace  string
-	Model      string
-	ConfigJSON string
-	Summary    string
-	CreatedAt  string
-	StartedAt  string
-	FinishedAt string
+	TaskID      string
+	Objective   string
+	Status      string
+	Outcome     string
+	StopReason  string
+	Workspace   string
+	Model       string
+	ConfigJSON  string
+	Summary     string
+	ResumeCount int
+	CreatedAt   string
+	StartedAt   string
+	FinishedAt  string
 }
 
 type inspectAction struct {
-	ActionID      string
-	Tool          string
-	ArgumentsJSON string
-	Fingerprint   string
-	Status        string
-	CreatedAt     string
+	ActionID           string
+	Tool               string
+	ArgumentsJSON      string
+	Fingerprint        string
+	Status             string
+	WorkspaceSignature string
+	CreatedAt          string
 }
 
 type inspectToolAttempt struct {
@@ -47,6 +49,7 @@ type inspectToolAttempt struct {
 	Classification string
 	RecoveryClass  int
 	EvidenceID     string
+	RecoveryReason string
 	DurationNanos  int64
 	CreatedAt      string
 	PreparedAt     string
@@ -65,6 +68,7 @@ type inspectProviderAttempt struct {
 	AttemptDebited  int
 	SelectedBackoff int64
 	ErrorClass      string
+	RecoveryReason  string
 	ReceiptCount    int
 	CreatedAt       string
 	PreparedAt      string
@@ -121,6 +125,9 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 	fmt.Fprintf(&builder, "Task: %s\n", task.TaskID)
 	fmt.Fprintf(&builder, "Objective: %s\n", task.Objective)
 	fmt.Fprintf(&builder, "Status: %s\n", task.Status)
+	if task.ResumeCount > 0 {
+		fmt.Fprintf(&builder, "Resumes: %d\n", task.ResumeCount)
+	}
 	if task.Outcome != "" {
 		fmt.Fprintf(&builder, "Outcome: %s\n", task.Outcome)
 	}
@@ -188,6 +195,9 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 		if attempt.Status == "prepared" {
 			fmt.Fprintf(&builder, "    uncertain=prepared: the effect may have started; reconcile before re-execution\n")
 		}
+		if attempt.RecoveryReason != "" {
+			fmt.Fprintf(&builder, "    recovery=%s\n", attempt.RecoveryReason)
+		}
 		if attempt.DurationNanos > 0 {
 			fmt.Fprintf(&builder, "    duration=%dns\n", attempt.DurationNanos)
 		}
@@ -213,6 +223,9 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 		}
 		if attempt.Status == "prepared" {
 			fmt.Fprintf(&builder, "    uncertain=prepared: the upstream may have been reached; reconcile before re-execution\n")
+		}
+		if attempt.RecoveryReason != "" {
+			fmt.Fprintf(&builder, "    recovery=%s\n", attempt.RecoveryReason)
 		}
 	}
 
@@ -256,10 +269,10 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 func (s *Store) loadInspectTask(ctx context.Context, taskID string) (inspectTask, error) {
 	var task inspectTask
 	err := s.db.QueryRowContext(ctx,
-		`SELECT task_id, objective, status, outcome, stop_reason, workspace, model, config_json, summary, created_at, started_at, finished_at
+		`SELECT task_id, objective, status, outcome, stop_reason, workspace, model, config_json, summary, resume_count, created_at, started_at, finished_at
 		 FROM tasks WHERE task_id = ?`, taskID).Scan(
 		&task.TaskID, &task.Objective, &task.Status, &task.Outcome, &task.StopReason,
-		&task.Workspace, &task.Model, &task.ConfigJSON, &task.Summary, &task.CreatedAt, &task.StartedAt, &task.FinishedAt)
+		&task.Workspace, &task.Model, &task.ConfigJSON, &task.Summary, &task.ResumeCount, &task.CreatedAt, &task.StartedAt, &task.FinishedAt)
 	if err == sql.ErrNoRows {
 		return inspectTask{}, ErrTaskNotFound
 	}
@@ -271,7 +284,7 @@ func (s *Store) loadInspectTask(ctx context.Context, taskID string) (inspectTask
 
 func (s *Store) loadInspectActions(ctx context.Context, taskID string) ([]inspectAction, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT action_id, tool, arguments_json, fingerprint, status, created_at
+		`SELECT action_id, tool, arguments_json, fingerprint, status, workspace_signature, created_at
 		 FROM actions WHERE task_id = ? ORDER BY action_sequence`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load actions: %w", err)
@@ -280,7 +293,7 @@ func (s *Store) loadInspectActions(ctx context.Context, taskID string) ([]inspec
 	var actions []inspectAction
 	for rows.Next() {
 		var action inspectAction
-		if err := rows.Scan(&action.ActionID, &action.Tool, &action.ArgumentsJSON, &action.Fingerprint, &action.Status, &action.CreatedAt); err != nil {
+		if err := rows.Scan(&action.ActionID, &action.Tool, &action.ArgumentsJSON, &action.Fingerprint, &action.Status, &action.WorkspaceSignature, &action.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan action: %w", err)
 		}
 		actions = append(actions, action)
@@ -290,7 +303,7 @@ func (s *Store) loadInspectActions(ctx context.Context, taskID string) ([]inspec
 
 func (s *Store) loadInspectToolAttempts(ctx context.Context, taskID string) ([]inspectToolAttempt, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT execution_id, action_id, tool, status, classification, recovery_class, evidence_id, duration_ns, created_at, prepared_at, completed_at
+		`SELECT execution_id, action_id, tool, status, classification, recovery_class, evidence_id, recovery_reason, duration_ns, created_at, prepared_at, completed_at
 		 FROM tool_attempts WHERE task_id = ? ORDER BY created_at, execution_id`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load tool attempts: %w", err)
@@ -300,7 +313,7 @@ func (s *Store) loadInspectToolAttempts(ctx context.Context, taskID string) ([]i
 	for rows.Next() {
 		var attempt inspectToolAttempt
 		if err := rows.Scan(&attempt.ExecutionID, &attempt.ActionID, &attempt.Tool, &attempt.Status, &attempt.Classification,
-			&attempt.RecoveryClass, &attempt.EvidenceID, &attempt.DurationNanos, &attempt.CreatedAt, &attempt.PreparedAt, &attempt.CompletedAt); err != nil {
+			&attempt.RecoveryClass, &attempt.EvidenceID, &attempt.RecoveryReason, &attempt.DurationNanos, &attempt.CreatedAt, &attempt.PreparedAt, &attempt.CompletedAt); err != nil {
 			return nil, fmt.Errorf("scan tool attempt: %w", err)
 		}
 		attempts = append(attempts, attempt)
@@ -311,7 +324,7 @@ func (s *Store) loadInspectToolAttempts(ctx context.Context, taskID string) ([]i
 func (s *Store) loadInspectProviderAttempts(ctx context.Context, taskID string) ([]inspectProviderAttempt, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT p.execution_id, p.client_request_id, p.provider, p.model, p.status, p.outcome, p.upstream_reached,
-		        p.uncertain, p.attempt_debited, p.selected_backoff_ns, p.error_class,
+		        p.uncertain, p.attempt_debited, p.selected_backoff_ns, p.error_class, p.recovery_reason,
 		        (SELECT COUNT(*) FROM provider_attempt_receipts r WHERE r.execution_id = p.execution_id),
 		        p.created_at, p.prepared_at, p.completed_at
 		 FROM provider_attempts p WHERE p.task_id = ? ORDER BY p.created_at, p.execution_id`, taskID)
@@ -324,7 +337,7 @@ func (s *Store) loadInspectProviderAttempts(ctx context.Context, taskID string) 
 		var attempt inspectProviderAttempt
 		if err := rows.Scan(&attempt.ExecutionID, &attempt.ClientRequestID, &attempt.Provider, &attempt.Model, &attempt.Status,
 			&attempt.Outcome, &attempt.UpstreamReached, &attempt.Uncertain, &attempt.AttemptDebited,
-			&attempt.SelectedBackoff, &attempt.ErrorClass, &attempt.ReceiptCount, &attempt.CreatedAt,
+			&attempt.SelectedBackoff, &attempt.ErrorClass, &attempt.RecoveryReason, &attempt.ReceiptCount, &attempt.CreatedAt,
 			&attempt.PreparedAt, &attempt.CompletedAt); err != nil {
 			return nil, fmt.Errorf("scan provider attempt: %w", err)
 		}

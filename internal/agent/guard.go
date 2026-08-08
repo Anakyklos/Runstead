@@ -54,6 +54,24 @@ func (g *repeatGuard) record(action protocol.Action, signature string) {
 	g.seen[protocol.ActionFingerprint(action)] = signature
 }
 
+// seed restores the guard from persisted repeat/loop evidence (issue #9). Only
+// fingerprints of actions that were actually executed are seeded, each with
+// the workspace signature recorded when the action was accepted. An identical
+// proposal is therefore rejected only while the workspace signature is
+// unchanged; after an external workspace change the same action may run again
+// and produce fresh evidence.
+func (g *repeatGuard) seed(fingerprint, signature string) {
+	if fingerprint == "" {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.seen == nil {
+		g.seen = make(map[string]string)
+	}
+	g.seen[fingerprint] = signature
+}
+
 // workspaceSignature is a bounded, deterministic marker of workspace state used
 // only as a loop-guard input. It hashes sorted relative paths with type, size,
 // modification time and small-file content, skipping the git directory.
