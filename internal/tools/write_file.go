@@ -56,19 +56,41 @@ func (r *Registry) executeWriteFile(ctx context.Context, observation Observation
 		observation.Failure = failure
 		return observation
 	}
+	// TOCTOU boundary: after the initial before-state validation above, an
+	// external process could modify the target, create an originally-absent
+	// target, or swap a path component to a symlink. The race hook lets tests
+	// inject exactly those mutations deterministically; the revalidation below
+	// re-checks canonical containment and the before-state against the current
+	// filesystem state, and is repeated immediately before the rename.
+	hitWriteRaceHook("write_effect_revalidate")
+	if failure := r.revalidateWriteTarget(path, expectedBefore, resolved); failure != nil {
+		observation.Failure = failure
+		return observation
+	}
 	if changed {
 		mode := os.FileMode(0)
 		if resolved.exists {
 			mode = resolved.mode
 		}
-		if err := atomicWrite(ctx, resolved.canonical, contentBytes, mode); err != nil {
-			observation.Failure = writeEffectFailure(err)
+		if err := atomicWrite(ctx, resolved.canonical, contentBytes, mode, func() *Failure {
+			return r.revalidateWriteTarget(path, expectedBefore, resolved)
+		}); err != nil {
+			if failure, ok := err.(*Failure); ok {
+				observation.Failure = failure
+			} else {
+				observation.Failure = writeEffectFailure(err)
+			}
 			return observation
 		}
 	} else {
 		// No-op write: the target already contains exactly the proposed
-		// content. The file is left untouched and the outcome is a distinct
-		// noop, never a success-with-change.
+		// content. Revalidate that the precondition still holds so an external
+		// change racing the no-op is reported as stale, never as success; the
+		// file is left untouched.
+		if failure := r.revalidateWriteTarget(path, expectedBefore, resolved); failure != nil {
+			observation.Failure = failure
+			return observation
+		}
 		after = before
 	}
 	hitWriteCrashPoint("write_after_effect")
@@ -166,12 +188,30 @@ func (r *Registry) executeApplyPatch(ctx context.Context, observation Observatio
 		observation.Failure = failure
 		return observation
 	}
+	// TOCTOU boundary: revalidate canonical containment and the before-state
+	// against the current filesystem state, then again immediately before the
+	// rename (see executeWriteFile for the full rationale).
+	hitWriteRaceHook("write_effect_revalidate")
+	if failure := r.revalidateWriteTarget(path, expectedBefore, resolved); failure != nil {
+		observation.Failure = failure
+		return observation
+	}
 	if changed {
-		if err := atomicWrite(ctx, resolved.canonical, patched, resolved.mode); err != nil {
-			observation.Failure = writeEffectFailure(err)
+		if err := atomicWrite(ctx, resolved.canonical, patched, resolved.mode, func() *Failure {
+			return r.revalidateWriteTarget(path, expectedBefore, resolved)
+		}); err != nil {
+			if failure, ok := err.(*Failure); ok {
+				observation.Failure = failure
+			} else {
+				observation.Failure = writeEffectFailure(err)
+			}
 			return observation
 		}
 	} else {
+		if failure := r.revalidateWriteTarget(path, expectedBefore, resolved); failure != nil {
+			observation.Failure = failure
+			return observation
+		}
 		after = before
 	}
 	hitWriteCrashPoint("write_after_effect")

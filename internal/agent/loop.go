@@ -76,16 +76,17 @@ type Task struct {
 // protocol parser, repeat guard, tool registry and the semantic persistence
 // boundary (issue #8).
 type Loop struct {
-	runner   AttemptRunner
-	registry *tools.Registry
-	contract string
-	limits   Limits
-	clock    Clock
-	trace    TraceSink
-	model    string
-	state    state.Persistence
-	policy   policy.Policy
-	recovery *RecoverySeed
+	runner      AttemptRunner
+	registry    *tools.Registry
+	contract    string
+	limits      Limits
+	clock       Clock
+	trace       TraceSink
+	model       string
+	state       state.Persistence
+	policy      policy.Policy
+	writePolicy string
+	recovery    *RecoverySeed
 }
 
 // Config wires one loop instance at the composition root.
@@ -103,6 +104,11 @@ type Config struct {
 	// (issue #10). A nil policy fails closed: no write tool executes, and
 	// every write proposal is denied with the typed reason "no_write_policy".
 	Policy policy.Policy
+	// WritePolicy is the canonical tool=mode specification of the effective
+	// write policy (policy.Config.Spec). It is persisted with the task
+	// configuration so resume continues under the SAME policy the task
+	// started with; a divergent override is rejected by the composition root.
+	WritePolicy string
 	// Recovery is the optional reconstructed state of an interrupted task
 	// (issue #9). A nil value starts a fresh run; a non-nil value resumes the
 	// same durable task from persisted state without replaying historical
@@ -146,16 +152,17 @@ func NewLoop(config Config) (*Loop, error) {
 		traceSink = nopTrace
 	}
 	return &Loop{
-		runner:   config.Runner,
-		registry: config.Registry,
-		contract: contract,
-		limits:   limits,
-		clock:    clock,
-		trace:    traceSink,
-		model:    strings.TrimSpace(config.Model),
-		state:    config.State,
-		policy:   config.Policy,
-		recovery: config.Recovery,
+		runner:      config.Runner,
+		registry:    config.Registry,
+		contract:    contract,
+		limits:      limits,
+		clock:       clock,
+		trace:       traceSink,
+		model:       strings.TrimSpace(config.Model),
+		state:       config.State,
+		policy:      config.Policy,
+		writePolicy: strings.TrimSpace(config.WritePolicy),
+		recovery:    config.Recovery,
 	}, nil
 }
 
@@ -245,10 +252,18 @@ func (l *Loop) Run(ctx context.Context, task Task) Result {
 			extra(&result)
 		}
 		if l.state != nil {
-			// Finalize must not depend on the (possibly canceled) run
-			// context: the terminal outcome has to be persisted even when
-			// the run stopped because the context was canceled.
-			if err := l.state.FinalizeTask(context.Background(), state.TaskFinalize{
+			if outcome == OutcomeApprovalRequired {
+				// A write requires operator approval: the task is NOT
+				// finalized. It stays durably resumable (status running) with
+				// the pending action recorded, so `runstead decide` +
+				// `runstead resume` continues the same task. No correction
+				// budget is consumed and no further provider attempt is made
+				// to wait for the operator.
+				if err := l.state.MarkTaskApprovalRequired(context.Background(), task.ID, result.PendingActionID, result.StopReason); err != nil {
+					result.Outcome = OutcomePersistenceFailure
+					result.StopReason = fmt.Sprintf("durable state could not be persisted: %v", err)
+				}
+			} else if err := l.state.FinalizeTask(context.Background(), state.TaskFinalize{
 				TaskID:         task.ID,
 				Outcome:        string(result.Outcome),
 				StopReason:     result.StopReason,
@@ -261,7 +276,7 @@ func (l *Loop) Run(ctx context.Context, task Task) Result {
 				Corrections:    result.Corrections,
 				Repeated:       result.Repeated,
 				MixedProse:     result.MixedProse,
-			}); err != nil && outcome != OutcomePersistenceFailure {
+			}); err != nil {
 				result.Outcome = OutcomePersistenceFailure
 				result.StopReason = fmt.Sprintf("durable state could not be persisted: %v", err)
 			}
@@ -304,11 +319,15 @@ type runState struct {
 
 // configSnapshot renders the meaningful execution configuration as a
 // sanitized JSON snapshot for the durable task row. It contains no secrets:
-// only workspace, model and the loop limits.
+// workspace, model, the loop limits and the effective write policy
+// specification. The write policy is part of the authoritative task
+// configuration: resume continues under the persisted policy and rejects a
+// divergent override (issue #10 review).
 func (l *Loop) configSnapshot() []byte {
 	encoded, err := json.Marshal(map[string]any{
 		"workspace":            l.registry.Workspace(),
 		"model":                l.model,
+		"write_policy":         l.writePolicy,
 		"max_steps":            l.limits.MaxSteps,
 		"max_corrections":      l.limits.MaxCorrections,
 		"max_repeated_actions": l.limits.MaxRepeatedActions,
@@ -421,7 +440,7 @@ func (l *Loop) modelTurn(
 	case protocol.KindAction:
 		return l.handleAction(ctx, task, parse.Action, transcript, evidence, guard, run, emit, stop)
 	case protocol.KindFinal:
-		return l.handleFinal(parse.Final, evidence, run, emit, stop)
+		return l.handleFinal(ctx, task, parse.Final, evidence, run, emit, stop)
 	default:
 		return stop(OutcomeProviderFailure, "provider failure: unrecognized envelope kind", nil), true
 	}
@@ -577,10 +596,16 @@ func (l *Loop) handleAction(
 			emit(TraceLine{Kind: TraceAction, Status: string(outcome.Decision), Tool: action.Tool, Classification: outcome.Reason})
 			return l.writePolicyCorrection(transcript, outcome, run, emit, stop)
 		case policy.ApprovalRequired:
-			// The action stays 'planned' so a later operator approval can
-			// unlock the same proposal on a subsequent turn.
+			// Control-plane dependency: the write must not execute and the run
+			// pauses until the operator records a decision. This is NOT a
+			// protocol correction: no correction budget is consumed, no
+			// further provider attempt is made to wait for the operator, and
+			// the task is not finalized. The action stays pending and the
+			// CLI reports the task/action for `runstead decide`.
 			emit(TraceLine{Kind: TraceAction, Status: string(outcome.Decision), Tool: action.Tool, Classification: outcome.Reason})
-			return l.writePolicyCorrection(transcript, outcome, run, emit, stop)
+			return stop(OutcomeApprovalRequired, OutcomeApprovalRequired.StopReason(), func(result *Result) {
+				result.PendingActionID = actionID
+			}), true
 		case policy.Allowed:
 			// Fall through to the repeat guard and execution.
 		}
@@ -611,15 +636,17 @@ func (l *Loop) handleAction(
 	}
 
 	// TX 1: persist the concrete tool execution intent before the effect. For
-	// write tools the deterministic expected after-state hash is computed from
-	// the real arguments and persisted with the intent so recovery can
-	// reconcile an interruption from observable filesystem state.
+	// write tools the deterministic expected after-state hash and the bounded
+	// planned diff are computed from the real arguments and persisted with the
+	// intent so recovery can reconcile an interruption from observable
+	// filesystem state and reconstruct bounded diff evidence.
 	executionID := ""
 	if l.state != nil {
 		arguments, marshalErr := json.Marshal(action.Arguments)
 		if marshalErr != nil {
 			arguments = []byte("{}")
 		}
+		plan := l.registry.PlanWrite(*action)
 		var err error
 		executionID, err = l.state.PrepareToolAttempt(ctx, state.ToolAttemptPrepared{
 			TaskID:          task.ID,
@@ -627,7 +654,8 @@ func (l *Loop) handleAction(
 			Tool:            action.Tool,
 			Arguments:       arguments,
 			RecoveryClass:   recoveryClassFor(action.Tool),
-			EffectAfterHash: l.registry.PlanWriteEffect(*action),
+			EffectAfterHash: plan.AfterHash,
+			PlannedEffect:   plan.Effect,
 		})
 		if err != nil {
 			return stop(OutcomePersistenceFailure, fmt.Sprintf("%s: %v", OutcomePersistenceFailure.StopReason(), err), nil), true
@@ -690,6 +718,8 @@ func (l *Loop) handleAction(
 }
 
 func (l *Loop) handleFinal(
+	ctx context.Context,
+	task Task,
 	final *protocol.FinalResponse,
 	evidence *EvidenceSet,
 	run *runState,
@@ -701,6 +731,21 @@ func (l *Loop) handleFinal(
 		return stop(OutcomeFinalNotGrounded, fmt.Sprintf("final evidence not grounded: missing %s", strings.Join(missing, ",")), func(result *Result) {
 			result.Evidence = append([]string(nil), missing...)
 		}), true
+	}
+	// No task may finalize (as completed OR failed) while a mandatory write is
+	// still awaiting an operator approval: pause instead, keeping the task
+	// durably resumable so the operator can still decide and resume.
+	if l.state != nil {
+		pending, err := l.state.PendingApprovals(ctx, task.ID)
+		if err != nil {
+			return stop(OutcomePersistenceFailure, fmt.Sprintf("%s: %v", OutcomePersistenceFailure.StopReason(), err), nil), true
+		}
+		if len(pending) > 0 {
+			emit(TraceLine{Kind: TraceAction, Status: string(policy.ApprovalRequired), Tool: pending[0].Tool, Classification: "approval_required"})
+			return stop(OutcomeApprovalRequired, OutcomeApprovalRequired.StopReason(), func(result *Result) {
+				result.PendingActionID = pending[0].ActionID
+			}), true
+		}
 	}
 	if final.Status == protocol.StatusComplete {
 		return stop(OutcomeCompleted, OutcomeCompleted.StopReason(), func(result *Result) {

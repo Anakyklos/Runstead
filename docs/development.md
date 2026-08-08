@@ -101,17 +101,26 @@ runstead resume --help
 ```
 
 `run` executes one bounded task with the issue #7 agent loop, the policy-gated
-write tools from issue #10 and durable SQLite state (issue #8). `inspect
-<task-id>` renders the persisted task, attempts, journal, write-policy
-decisions, approvals and governor state after the run process exits (see
-[`persistence.md`](persistence.md)). `resume` reconciles interrupted attempts
-from durable state (issue #9, extended by #10 for writes). `decide <task-id>
-<action-id> approved|rejected` is the operator control plane that records
-write approvals; model output can never approve a write.
+write tools from issue #10 and durable SQLite state (issue #8). When a write
+requires operator approval the run pauses with the typed `approval_required`
+outcome (a control-plane dependency, not a protocol correction): no correction
+budget is consumed, no further provider attempt is made, and the task stays
+durably resumable. `inspect <task-id>` renders the persisted task, attempts,
+journal, write-policy decisions, pending approvals, approvals and governor
+state after the run process exits (see [`persistence.md`](persistence.md)).
+`resume` reconciles interrupted attempts from durable state (issue #9,
+extended by #10 for writes) and continues under the task's persisted write
+policy; a divergent `--write-policy` override is rejected fail-closed.
+`decide <task-id> <action-id> approved|rejected` is the operator control plane
+that records write approvals for actions actually pending approval; model
+output can never approve a write.
 
 Write-tool policy is configured with `--write-policy tool=mode,...` (or
 `RUNSTEAD_WRITE_POLICY`); the default is `approval_required` for every write
-tool. See [`writes.md`](writes.md) for the full safe-writes contract.
+tool. The effective policy is persisted with the task configuration and is
+authoritative across restart. See [`writes.md`](writes.md) for the full
+safe-writes contract, including approval pause semantics and the effect-boundary
+TOCTOU revalidation (which is not a compare-and-swap).
 
 Configuration precedence is deterministic: command-line flags, then
 environment, then conservative defaults. Workspace/logging use

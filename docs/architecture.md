@@ -174,14 +174,14 @@ governed model turn (account-scoped attempt executor)
 parse exactly one envelope (runstead.protocol.v1)
     ↓
 action → write tools: control-plane policy gate (allow/deny/approval_required)
-    ↓
+    ↓   approval_required → PAUSE with approval_required outcome (resumable)
 action → repeat guard → registry validation and execution
     ↓
 observation with evidence ID returned as UNTRUSTED data
     ↓
 next governed model turn
     ↓
-final → grounding check against evidence IDs produced this run
+final → pending-approval check → grounding check against evidence IDs
     ↓
 terminal outcome
 ```
@@ -195,7 +195,10 @@ a workspace-aware loop guard, not as permanent idempotency keys: an identical
 observational action may run again after the workspace changes. Write tools
 (`write_file`, `apply_patch`) are gated by the control-plane policy before any
 execution decision; approval comes only from persisted operator records, never
-from model output. The loop enforces bounded steps, corrections, repeated
+from model output. An unapproved write pauses the run with the typed
+`approval_required` outcome (a control-plane dependency, not a protocol
+correction): the task stays durably resumable, and `runstead decide` +
+`runstead resume` continues it under the same persisted policy. The loop enforces bounded steps, corrections, repeated
 actions, elapsed task time and provider attempts, and every terminal exit maps
 to a typed outcome with a stable exit code (see
 [`development.md`](development.md)). Durable state (issue #8) persists the

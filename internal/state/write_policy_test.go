@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -195,6 +196,9 @@ func TestCrashStoreWriteHelper(t *testing.T) {
 		TaskID: "task-1", ActionID: actionID, Tool: "write_file",
 		Arguments:     []byte(`{"path":"a.txt","content":"new\n","expected_before_hash":"absent"}`),
 		RecoveryClass: 2, EffectAfterHash: tools.HashBytes([]byte("new\n")),
+		PlannedEffect: tools.PlannedEffect{
+			Diff: "--- a.txt\n+++ a.txt\n@@ -0,0 +1,1 @@\n+new\n",
+		},
 	})
 	if err != nil {
 		t.Fatalf("PrepareToolAttempt() error = %v", err)
@@ -291,4 +295,186 @@ func containsKind(kinds []string, kind string) bool {
 		}
 	}
 	return false
+}
+
+func TestCrashAfterWriteEffectPersistsPlannedDiffForReconciledEvidence(t *testing.T) {
+	dbPath, workspace := crashWriteDBPath(t, "tool_tx2_before")
+	store := reopenCrashedStore(t, dbPath)
+	ctx := context.Background()
+
+	// The TX 1 intent persisted the planned diff (bounded, sanitized).
+	snapshot, err := store.LoadRecoverySnapshot(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("LoadRecoverySnapshot() error = %v", err)
+	}
+	if len(snapshot.ToolAttempts) != 1 {
+		t.Fatalf("tool attempts = %d, want 1", len(snapshot.ToolAttempts))
+	}
+	attempt := snapshot.ToolAttempts[0]
+	if attempt.PlannedEffectJSON == "" {
+		t.Fatal("planned_diff_json must be persisted with the TX 1 intent")
+	}
+	var planned tools.PlannedEffect
+	if err := json.Unmarshal([]byte(attempt.PlannedEffectJSON), &planned); err != nil {
+		t.Fatalf("decode planned effect: %v", err)
+	}
+	if planned.Diff == "" {
+		t.Fatal("planned diff must be persisted for crash-reconciled evidence")
+	}
+
+	// The effect completed on the filesystem but TX 2 never committed.
+	// Reconcile from observable state: the current hash matches the expected
+	// after-state, so the planned diff is promoted to reconciled evidence.
+	reconciled := tools.ReconcileWrite(ctx, workspace, tools.WriteIntent{
+		Tool:              attempt.Tool,
+		Arguments:         []byte(attempt.ArgumentsJSON),
+		ExpectedAfterHash: attempt.EffectAfterHash,
+		PlannedEffect:     planned,
+	})
+	if reconciled.Status != tools.ReconcileCompleted {
+		t.Fatalf("reconcile status = %q, want effect_completed", reconciled.Status)
+	}
+	if reconciled.Evidence.Diff != planned.Diff {
+		t.Fatalf("reconciled evidence diff = %q, want the planned diff %q", reconciled.Evidence.Diff, planned.Diff)
+	}
+	if reconciled.Evidence.BeforeHash == "" || reconciled.Evidence.AfterHash == "" {
+		t.Fatalf("reconciled evidence must carry before/after hashes: %+v", reconciled.Evidence)
+	}
+
+	// Persisting the reconciled evidence must keep the diff fields.
+	if err := store.ReconcileWriteAttempt(ctx, ReconcileWriteAttempt{
+		TaskID: "task-1", ExecutionID: attempt.ExecutionID, Status: "reconciled",
+		Reason: "write_effect_completed", EvidenceID: "obs-000001", Evidence: reconciled.Evidence,
+	}); err != nil {
+		t.Fatalf("ReconcileWriteAttempt() error = %v", err)
+	}
+	after, err := store.LoadRecoverySnapshot(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("LoadRecoverySnapshot() error = %v", err)
+	}
+	if len(after.Evidence) != 1 {
+		t.Fatalf("reconciled evidence rows = %d, want 1", len(after.Evidence))
+	}
+	var persistedEvidence tools.WriteEvidence
+	if err := json.Unmarshal([]byte(after.Evidence[0].DataJSON), &persistedEvidence); err != nil {
+		t.Fatalf("decode persisted evidence: %v", err)
+	}
+	if persistedEvidence.Diff != planned.Diff || persistedEvidence.DiffBytes != planned.DiffBytes || persistedEvidence.DiffTruncated != planned.DiffTruncated {
+		t.Fatalf("persisted reconciled evidence diff fields = %+v, want the planned effect %+v", persistedEvidence, planned)
+	}
+}
+
+func TestMarkTaskApprovalRequiredKeepsTaskResumable(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	mustTask(t, store, "task-1")
+	if _, err := store.RecordAction(ctx, ActionRecord{
+		TaskID: "task-1", Tool: "write_file", Arguments: []byte(`{}`), Fingerprint: "fp-write",
+	}); err != nil {
+		t.Fatalf("RecordAction() error = %v", err)
+	}
+	if err := store.RecordWritePolicyDecision(ctx, WritePolicyDecision{
+		TaskID: "task-1", ActionID: "action-000001", Tool: "write_file",
+		Decision: "approval_required", Reason: "approval_required",
+	}); err != nil {
+		t.Fatalf("RecordWritePolicyDecision() error = %v", err)
+	}
+	if err := store.MarkTaskApprovalRequired(ctx, "task-1", "action-000001", "write approval required"); err != nil {
+		t.Fatalf("MarkTaskApprovalRequired() error = %v", err)
+	}
+	status, err := store.TaskStatus(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("TaskStatus() error = %v", err)
+	}
+	if status != "running" {
+		t.Fatalf("status = %q, want running (durably resumable)", status)
+	}
+	pending, err := store.PendingApprovals(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("PendingApprovals() error = %v", err)
+	}
+	if len(pending) != 1 || pending[0].ActionID != "action-000001" {
+		t.Fatalf("pending approvals = %+v, want the paused write", pending)
+	}
+	if !containsKind(taskEventKinds(t, store, "task-1"), "task_approval_required") {
+		t.Fatal("task_approval_required event must be journaled")
+	}
+}
+
+func TestPendingApprovalsResolvedByOperatorDecision(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	mustTask(t, store, "task-1")
+	if _, err := store.RecordAction(ctx, ActionRecord{
+		TaskID: "task-1", Tool: "write_file", Arguments: []byte(`{}`), Fingerprint: "fp-write",
+	}); err != nil {
+		t.Fatalf("RecordAction() error = %v", err)
+	}
+	if err := store.RecordWritePolicyDecision(ctx, WritePolicyDecision{
+		TaskID: "task-1", ActionID: "action-000001", Tool: "write_file",
+		Decision: "approval_required", Reason: "approval_required",
+	}); err != nil {
+		t.Fatalf("RecordWritePolicyDecision() error = %v", err)
+	}
+	pending, err := store.PendingApprovals(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("PendingApprovals() error = %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending = %d, want 1 before the decision", len(pending))
+	}
+	// An operator approval resolves the pending set.
+	if _, err := store.RecordApproval(ctx, Approval{
+		TaskID: "task-1", ActionID: "action-000001", Decision: "approved", Reason: "ok", Actor: "operator",
+	}); err != nil {
+		t.Fatalf("RecordApproval() error = %v", err)
+	}
+	pending, err = store.PendingApprovals(ctx, "task-1")
+	if err != nil {
+		t.Fatalf("PendingApprovals() error = %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending = %d, want 0 after the operator decision", len(pending))
+	}
+}
+
+func TestFinalizeTaskRefusesCompletedWithPendingApproval(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	mustTask(t, store, "task-1")
+	if _, err := store.RecordAction(ctx, ActionRecord{
+		TaskID: "task-1", Tool: "write_file", Arguments: []byte(`{}`), Fingerprint: "fp-write",
+	}); err != nil {
+		t.Fatalf("RecordAction() error = %v", err)
+	}
+	if err := store.RecordWritePolicyDecision(ctx, WritePolicyDecision{
+		TaskID: "task-1", ActionID: "action-000001", Tool: "write_file",
+		Decision: "approval_required", Reason: "approval_required",
+	}); err != nil {
+		t.Fatalf("RecordWritePolicyDecision() error = %v", err)
+	}
+	if err := store.MarkTaskApprovalRequired(ctx, "task-1", "action-000001", "waiting"); err != nil {
+		t.Fatalf("MarkTaskApprovalRequired() error = %v", err)
+	}
+	err := store.FinalizeTask(ctx, TaskFinalize{TaskID: "task-1", Outcome: "completed", StopReason: "done"})
+	if err == nil {
+		t.Fatal("FinalizeTask must refuse completed while a write approval is pending")
+	}
+	if !errors.Is(err, ErrPendingApprovals) {
+		t.Fatalf("error = %v, want ErrPendingApprovals", err)
+	}
+	// The task stays resumable.
+	status, _ := store.TaskStatus(ctx, "task-1")
+	if status != "running" {
+		t.Fatalf("status = %q, want running", status)
+	}
+	// After the operator decides, completed is allowed.
+	if _, err := store.RecordApproval(ctx, Approval{
+		TaskID: "task-1", ActionID: "action-000001", Decision: "approved", Reason: "ok", Actor: "operator",
+	}); err != nil {
+		t.Fatalf("RecordApproval() error = %v", err)
+	}
+	if err := store.FinalizeTask(ctx, TaskFinalize{TaskID: "task-1", Outcome: "completed", StopReason: "done"}); err != nil {
+		t.Fatalf("FinalizeTask() after approval error = %v", err)
+	}
 }

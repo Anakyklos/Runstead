@@ -72,7 +72,9 @@ symlink type without following them.
 Write targets use the same canonical security model plus fail-closed rules
 for symlinks: a write never follows or replaces a symlink, even an internal
 one. Missing parent directories and non-regular targets are typed failures.
-See `docs/writes.md` for details.
+The effect boundary revalidates canonical containment and the before-state
+immediately before the rename (a revalidation, not a compare-and-swap; see
+`docs/writes.md` for the honest residual limitation).
 
 Observations return normalized slash-separated paths relative to the workspace.
 

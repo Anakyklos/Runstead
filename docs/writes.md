@@ -90,6 +90,32 @@ file); any mismatch refuses the write with the typed outcome `stale` and the
 file is left untouched. This makes a stale repeated write fail rather than
 silently overwrite newer state.
 
+### Effect-boundary revalidation (TOCTOU)
+
+The initial before-state validation happens before the effect; a concurrent
+external process could modify the target, create an originally-absent target,
+or swap a path component to a symlink in the gap before the rename. Runstead
+therefore revalidates immediately at the effect boundary and again right
+before the rename:
+
+- canonical containment is re-checked (`EvalSymlinks` of the parent and the
+  `filepath.Rel` boundary check), and the resolved canonical target must equal
+  the one validated at the start of the effect: a path or parent component
+  swapped to a symlink aborts with `symlink_escape`;
+- the before-state is re-checked against the CURRENT file content: an external
+  modification, or a concurrently-created target where `absent` was the
+  precondition, aborts with `stale_state` and the external state is preserved;
+- the final-component write never follows a symlink (Lstat rejects it), so a
+  symlink swapped in as the target is refused rather than traversed.
+
+This is a **revalidation, not a compare-and-swap**. The Go standard library
+offers no atomic rename-if-unchanged primitive (no `openat`/`dirfd`-based
+rename), so a modification landing after the last revalidation and before the
+rename is not detectable by the writer. Runstead does not claim CAS or
+per-file atomicity beyond the rename itself. The deterministic test seam
+(`tools.SetWriteRaceHook`) proves the revalidation aborts external
+modification, concurrent creation and symlink swaps.
+
 The following cases stay distinct:
 
 | Case | Outcome |
@@ -154,6 +180,53 @@ same fingerprint). Re-deciding the same fingerprint replaces the previous
 decision and keeps one durable row. `runstead inspect` renders policy
 decisions and approvals.
 
+`runstead decide` only accepts an action of the given task that is actually
+pending approval: a write action with a persisted `approval_required` decision
+and no operator decision yet. Approvals for read actions, unknown actions, or
+actions outside the current approval flow are rejected.
+
+### Approval is a control-plane pause, not a protocol correction
+
+When a write proposal requires approval, the run pauses with the typed outcome
+`approval_required`:
+
+- the write does **not** execute;
+- no correction budget is consumed;
+- no further provider attempt is made to wait for the operator;
+- the task is **not** finalized as completed or failed: it stays durably
+  resumable (status `running`) with a `task_approval_required` journal event;
+- the CLI output reports the task id and the pending action id needed for
+  `runstead decide <task-id> <action-id> approved|rejected`;
+- `runstead inspect` shows a "Pending approvals:" section listing every write
+  action still awaiting an operator decision.
+
+After the operator decides:
+
+- `approved`: a normal `runstead resume` re-proposes the write (same
+  fingerprint, new action id), the persisted approval unlocks it, and it
+  executes;
+- `rejected`: a normal `runstead resume` preserves the rejection; the
+  re-proposed write is denied and never executes.
+
+A task with a pending write approval can **never** be finalized as completed:
+the loop pauses instead, and the state layer refuses the completed transition
+(`ErrPendingApprovals`) as defense in depth.
+
+### The effective write policy is durable
+
+The effective write policy (the canonical `tool=mode` specification) is part
+of the authoritative task configuration persisted with the task
+(`config_json.write_policy`, sanitized and visible via `runstead inspect`).
+Resume always continues under the persisted policy:
+
+- with no `--write-policy` override, the persisted policy is used;
+- a `--write-policy` override that diverges from the persisted policy is
+  rejected fail-closed before any recovery or execution side effect (there is
+  no external authority that could justify silently widening the policy a
+  task started under);
+- a legacy task without a persisted policy falls back to the fail-closed
+  default (`approval_required`), never to a permissive gap.
+
 The policy seam is deliberately narrow so later milestones (#26 and beyond)
 can extend it without coupling: a `Policy` implementation returns a typed
 `Outcome` for a typed `Request`, and the caller persists the decision.
@@ -196,6 +269,15 @@ The expected after-state hash is computed at TX 1 time from the real
 persisted content and never treats an action fingerprint as proof that an
 effect happened.
 
+Alongside the after-hash, TX 1 persists a **bounded, sanitized planned diff**
+(`tool_attempts.planned_diff_json`): the full-replacement diff for
+`write_file`, the supplied patch for `apply_patch`, capped at the
+diff-evidence limit. It is evidence of intent only and never proves the
+effect happened. Only when the current filesystem state matches the recorded
+expected after-state hash is it promoted to reconciled completed evidence, so
+a crash-reconciled write carries the same before/after hashes, byte count,
+change classification and bounded diff fields as a live write.
+
 Reconciled write evidence is citable: a resumed run can ground a final on it,
 and the registry continues the task-scoped evidence id space past it. A
 verified-completed write seeds the repeat guard; a not-started write does not,
@@ -224,6 +306,10 @@ from model claims.
 - Writing through a symlink (even an internal one) is refused; there is no
   symlink-following write mode.
 - Parent directories are never created implicitly.
+- The effect-boundary revalidation is not a compare-and-swap: a mutation
+  landing between the final revalidation and the rename is not detectable by
+  the writer (stdlib offers no `openat`/`dirfd`-based rename). Runstead does
+  not claim per-file CAS or atomicity beyond the rename itself.
 - Approvals are per write proposal fingerprint, not per path pattern or per
   future milestone capability.
 - The policy seam is static configuration plus operator approvals; there is no

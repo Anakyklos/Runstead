@@ -17,6 +17,7 @@ package policy
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/RenyEnnos/Runstead/internal/tools"
@@ -103,6 +104,44 @@ func WriteTools() []string {
 	return []string{tools.ToolWriteFile, tools.ToolApplyPatch}
 }
 
+// Spec renders the canonical, sorted tool=mode specification of the config,
+// for example "apply_patch=approval_required,write_file=allow". It is the
+// durable serialization persisted with the task configuration and accepted by
+// ParseConfig, so the effective write policy of a task round-trips across
+// restart.
+func (c Config) Spec() string {
+	names := WriteTools()
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, tool := range names {
+		mode, ok := c.Modes[tool]
+		if !ok {
+			continue
+		}
+		parts = append(parts, tool+"="+string(mode))
+	}
+	return strings.Join(parts, ",")
+}
+
+// Equal reports whether two configs assign the same mode to every registered
+// write tool. A config that omits a tool is treated as the fail-closed
+// default (approval_required), never as a permissive gap.
+func Equal(a, b Config) bool {
+	for _, tool := range WriteTools() {
+		if modeOf(a, tool) != modeOf(b, tool) {
+			return false
+		}
+	}
+	return true
+}
+
+func modeOf(config Config, tool string) Mode {
+	if mode, ok := config.Modes[tool]; ok {
+		return mode
+	}
+	return ModeApprovalRequired
+}
+
 // DefaultConfig is the fail-closed default: every write tool requires
 // operator approval before it can execute. Operators opt into allow or deny
 // per tool through the CLI/configuration.
@@ -184,10 +223,12 @@ func (p *Static) evaluateApproval(ctx context.Context, request Request) Outcome 
 //	write_file=allow,apply_patch=approval_required
 //
 // Modes are allow, deny or approval_required; only registered write tools are
-// accepted. Unknown tools or modes are errors so a typo can never silently
-// widen the policy.
+// accepted. Tools not mentioned keep the fail-closed default
+// (approval_required), so a partial specification can never silently widen
+// the policy. Unknown tools or modes are errors so a typo can never silently
+// change the policy.
 func ParseConfig(value string) (Config, error) {
-	config := Config{Modes: make(map[string]Mode)}
+	config := DefaultConfig()
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return Config{}, fmt.Errorf("write policy must not be empty")
@@ -212,9 +253,6 @@ func ParseConfig(value string) (Config, error) {
 		default:
 			return Config{}, fmt.Errorf("invalid write policy mode %q: must be allow, deny or approval_required", mode)
 		}
-	}
-	if len(config.Modes) == 0 {
-		return Config{}, fmt.Errorf("write policy must configure at least one tool")
 	}
 	return config, nil
 }

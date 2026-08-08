@@ -14,7 +14,6 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/agent"
 	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/policy"
-	"github.com/RenyEnnos/Runstead/internal/protocol"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
@@ -24,6 +23,7 @@ import (
 // CLI composition for issue #10.
 type writeHarness struct {
 	clock    *fakeClock
+	governor *governor.Governor
 	provider *scriptedProvider
 	executor *agent.Executor
 	registry *tools.Registry
@@ -60,6 +60,7 @@ func newWriteHarness(t *testing.T, workspace string, writeConfig policy.Config, 
 	}
 	return &writeHarness{
 		clock:    clock,
+		governor: accountGovernor,
 		provider: client,
 		executor: executor,
 		registry: registry,
@@ -71,6 +72,13 @@ func newWriteHarness(t *testing.T, workspace string, writeConfig policy.Config, 
 
 func (h *writeHarness) loop(t *testing.T, limits agent.Limits) *agent.Loop {
 	t.Helper()
+	return h.loopWith(t, limits, nil)
+}
+
+// loopWith builds a loop with an optional recovery seed, mirroring a resumed
+// run that continues the same durable task without replaying completed effects.
+func (h *writeHarness) loopWith(t *testing.T, limits agent.Limits, recovery *agent.RecoverySeed) *agent.Loop {
+	t.Helper()
 	loop, err := agent.NewLoop(agent.Config{
 		Runner:   h.executor,
 		Registry: h.registry,
@@ -79,6 +87,7 @@ func (h *writeHarness) loop(t *testing.T, limits agent.Limits) *agent.Loop {
 		Trace:    h.traces.emit,
 		State:    h.store,
 		Policy:   h.policy,
+		Recovery: recovery,
 	})
 	if err != nil {
 		t.Fatalf("agent.NewLoop() error = %v", err)
@@ -173,7 +182,9 @@ func TestWriteLoopDeniedWriteDoesNotExecute(t *testing.T) {
 	if result.Outcome != agent.OutcomeCompleted {
 		t.Fatalf("outcome = %s, reason = %s", result.Outcome, result.StopReason)
 	}
-	if _, err := os.Stat(filepath.Join(workspace, "a.txt")); !os.IsNotExist(err) {
+	// The proposal targets out.txt (the read used readme.txt); the denied
+	// write must not create the target it actually proposed.
+	if _, err := os.Stat(filepath.Join(workspace, "out.txt")); !os.IsNotExist(err) {
 		t.Fatalf("denied write must not create the file: %v", err)
 	}
 	// The denied action is durably rejected with its typed reason.
@@ -186,7 +197,148 @@ func TestWriteLoopDeniedWriteDoesNotExecute(t *testing.T) {
 	}
 }
 
-func TestWriteLoopApprovalRequiredDoesNotExecuteWithoutApproval(t *testing.T) {
+func TestWriteLoopApprovalRequiredPausesWithoutExecuting(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "readme.txt"), []byte("info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newWriteHarness(t, workspace, policy.DefaultConfig(), nil,
+		actionResponse("read_file", `{"path":"readme.txt"}`),
+		actionResponse("write_file", `{"path":"out.txt","content":"x\n","expected_before_hash":"absent"}`),
+	)
+	loop := h.loop(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3})
+	result := loop.Run(context.Background(), testTask("task-write-gated"))
+
+	// The run pauses with the typed approval_required outcome: the write must
+	// not execute, no correction budget is consumed, no further provider
+	// attempt is made to wait for the operator, and the task is not finalized.
+	if result.Outcome != agent.OutcomeApprovalRequired {
+		t.Fatalf("outcome = %s, want approval_required", result.Outcome)
+	}
+	if result.PendingActionID == "" {
+		t.Fatal("the pending action id must be reported for `runstead decide`")
+	}
+	if result.Corrections != 0 {
+		t.Fatalf("corrections = %d, want 0 (approval is not a protocol correction)", result.Corrections)
+	}
+	// Two legitimate turns happened (the read and the write proposal); the
+	// pause must not trigger any further provider call to wait for the
+	// operator.
+	if h.provider.Attempts() != 2 {
+		t.Fatalf("provider attempts = %d, want 2 (no retry after the pause)", h.provider.Attempts())
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "out.txt")); !os.IsNotExist(err) {
+		t.Fatalf("approval-required write must not create the file: %v", err)
+	}
+	// The task stays durably resumable (status running) and the pending action
+	// is visible.
+	status, err := h.store.TaskStatus(context.Background(), "task-write-gated")
+	if err != nil {
+		t.Fatalf("TaskStatus() error = %v", err)
+	}
+	if status != "running" {
+		t.Fatalf("task status = %q, want running (resumable, not finalized)", status)
+	}
+	if !mustHavePolicyDecision(t, h.store, "task-write-gated", result.PendingActionID, "approval_required") {
+		t.Fatal("approval_required policy decision must be persisted")
+	}
+	pending, err := h.store.PendingApprovals(context.Background(), "task-write-gated")
+	if err != nil {
+		t.Fatalf("PendingApprovals() error = %v", err)
+	}
+	if len(pending) != 1 || pending[0].ActionID != result.PendingActionID {
+		t.Fatalf("pending approvals = %+v, want the paused write action", pending)
+	}
+}
+
+// TestWriteLoopApprovalNormalFlow proves the issue #10 review approval UX
+// without any artificial crash: run pauses with approval_required, the
+// operator records an approval for the pending action, and a normal resumed
+// run (Recovery seed) executes the approved write and completes.
+func TestWriteLoopApprovalNormalFlow(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "readme.txt"), []byte("info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newWriteHarness(t, workspace, policy.DefaultConfig(), nil,
+		actionResponse("read_file", `{"path":"readme.txt"}`),
+		actionResponse("write_file", `{"path":"out.txt","content":"created\n","expected_before_hash":"absent"}`),
+		finalResponse("complete", "done", "obs-000001", "obs-000002"),
+	)
+	taskID := "task-write-approved"
+	ctx := context.Background()
+
+	// Run 1: the write proposal pauses for approval; nothing executes.
+	first := h.loop(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3})
+	result := first.Run(ctx, testTask(taskID))
+	if result.Outcome != agent.OutcomeApprovalRequired {
+		t.Fatalf("run 1 outcome = %s, want approval_required", result.Outcome)
+	}
+	if result.PendingActionID == "" {
+		t.Fatal("run 1 must report the pending action id")
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "out.txt")); !os.IsNotExist(err) {
+		t.Fatalf("write must not execute before approval: %v", err)
+	}
+
+	// The operator approves the pending write action through the control plane.
+	pending, err := h.store.PendingApprovals(ctx, taskID)
+	if err != nil {
+		t.Fatalf("PendingApprovals() error = %v", err)
+	}
+	if len(pending) != 1 || pending[0].ActionID != result.PendingActionID {
+		t.Fatalf("pending approvals = %+v", pending)
+	}
+	if _, err := h.store.RecordApproval(ctx, state.Approval{
+		TaskID: taskID, ActionID: pending[0].ActionID, Decision: "approved", Reason: "operator reviewed", Actor: "operator",
+	}); err != nil {
+		t.Fatalf("RecordApproval() error = %v", err)
+	}
+
+	// Run 2: a normal resumed run continues the turn/attempt counters (2
+	// turns were consumed in run 1), re-proposes the write (same fingerprint,
+	// new action id), the persisted approval unlocks it, and the run completes.
+	secondProvider := &scriptedProvider{clock: h.clock, pace: time.Millisecond, responses: []provider.Response{
+		actionResponse("write_file", `{"path":"out.txt","content":"created\n","expected_before_hash":"absent"}`),
+		finalResponse("complete", "done", "obs-000002"),
+	}}
+	executor2, err := agent.NewExecutor(h.governor, secondProvider, nil)
+	if err != nil {
+		t.Fatalf("agent.NewExecutor() error = %v", err)
+	}
+	second, err := agent.NewLoop(agent.Config{
+		Runner:   executor2,
+		Registry: h.registry,
+		Limits:   agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3},
+		Clock:    h.clock,
+		Trace:    h.traces.emit,
+		State:    h.store,
+		Policy:   h.policy,
+		Recovery: &agent.RecoverySeed{Turns: 2, Attempts: 2},
+	})
+	if err != nil {
+		t.Fatalf("agent.NewLoop() error = %v", err)
+	}
+	result = second.Run(ctx, testTask(taskID))
+	if result.Outcome != agent.OutcomeCompleted {
+		t.Fatalf("run 2 outcome = %s, reason = %s", result.Outcome, result.StopReason)
+	}
+	if got := mustReadFile(t, workspace, "out.txt"); got != "created\n" {
+		t.Fatalf("approved write must execute on resume; content = %q", got)
+	}
+	status, err := h.store.TaskStatus(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskStatus() error = %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("task status = %q, want completed", status)
+	}
+}
+
+// TestWriteLoopApprovalRejectedNeverExecutes proves that after the operator
+// rejects a pending write, a resumed run preserves the rejection and the
+// write never executes.
+func TestWriteLoopApprovalRejectedNeverExecutes(t *testing.T) {
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, "readme.txt"), []byte("info\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -196,88 +348,115 @@ func TestWriteLoopApprovalRequiredDoesNotExecuteWithoutApproval(t *testing.T) {
 		actionResponse("write_file", `{"path":"out.txt","content":"x\n","expected_before_hash":"absent"}`),
 		finalResponse("complete", "done", "obs-000001"),
 	)
-	loop := h.loop(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3})
-	result := loop.Run(context.Background(), testTask("task-write-gated"))
-
-	if result.Outcome != agent.OutcomeCompleted {
-		t.Fatalf("outcome = %s, reason = %s", result.Outcome, result.StopReason)
-	}
-	if _, err := os.Stat(filepath.Join(workspace, "a.txt")); !os.IsNotExist(err) {
-		t.Fatalf("approval-required write must not create the file: %v", err)
-	}
-	if !mustHavePolicyDecision(t, h.store, "task-write-gated", "action-000003", "approval_required") {
-		t.Fatal("approval_required policy decision must be persisted")
-	}
-	// The action stays planned (it can still be approved and re-proposed).
-	if got := mustActionStatus(t, h.store, "task-write-gated", "action-000003"); got != "planned" {
-		t.Fatalf("gated action status = %q, want planned", got)
-	}
-}
-
-func TestWriteLoopApprovalRequiredExecutesWithControlPlaneApproval(t *testing.T) {
-	workspace := t.TempDir()
-	h := newWriteHarness(t, workspace, policy.DefaultConfig(), nil,
-		actionResponse("write_file", `{"path":"a.txt","content":"x\n","expected_before_hash":"absent"}`),
-		finalResponse("complete", "done", "obs-000001"),
-	)
-	// The operator control plane creates the durable task and approves the
-	// write proposal BEFORE the resumed loop runs. A resumed run (Recovery
-	// seed) skips task creation; the persisted approval is the only thing
-	// that can unlock the write. Approvals are keyed by the proposal
-	// fingerprint: the pre-created action carries the same fingerprint as the
-	// write the resumed loop will propose (a distinct action id), so the
-	// policy match works.
+	taskID := "task-write-rejected"
 	ctx := context.Background()
-	if err := h.store.CreateTask(ctx, state.TaskRecord{TaskID: "task-write-approved", Objective: "write a file", Workspace: workspace, Model: "scripted", ConfigJSON: []byte(`{}`)}); err != nil {
-		t.Fatalf("CreateTask() error = %v", err)
-	}
-	if err := h.store.StartTask(ctx, "task-write-approved"); err != nil {
-		t.Fatalf("StartTask() error = %v", err)
-	}
-	proposal := protocol.Action{
-		Tool: tools.ToolWriteFile,
-		Arguments: protocol.Arguments{
-			"path":                 json.RawMessage(`"a.txt"`),
-			"content":              json.RawMessage(`"x\n"`),
-			"expected_before_hash": json.RawMessage(`"absent"`),
-		},
-	}
-	fingerprint := protocol.ActionFingerprint(proposal)
-	if _, err := h.store.RecordAction(ctx, state.ActionRecord{
-		TaskID: "task-write-approved", Tool: tools.ToolWriteFile,
-		Arguments:   []byte(`{"path":"a.txt","content":"x\n","expected_before_hash":"absent"}`),
-		Fingerprint: fingerprint,
-	}); err != nil {
-		t.Fatalf("RecordAction() error = %v", err)
+
+	first := h.loop(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3})
+	result := first.Run(ctx, testTask(taskID))
+	if result.Outcome != agent.OutcomeApprovalRequired {
+		t.Fatalf("run 1 outcome = %s, want approval_required", result.Outcome)
 	}
 	if _, err := h.store.RecordApproval(ctx, state.Approval{
-		TaskID: "task-write-approved", ActionID: "action-000001", Decision: "approved", Reason: "operator approved", Actor: "operator",
+		TaskID: taskID, ActionID: result.PendingActionID, Decision: "rejected", Reason: "operator rejected", Actor: "operator",
 	}); err != nil {
 		t.Fatalf("RecordApproval() error = %v", err)
 	}
-	loop, err := agent.NewLoop(agent.Config{
-		Runner:   h.executor,
+
+	// The resumed run re-reads, re-proposes the write (the persisted rejection
+	// denies it), then finals on the fresh read observation. The write never
+	// executes.
+	secondProvider := &scriptedProvider{clock: h.clock, pace: time.Millisecond, responses: []provider.Response{
+		actionResponse("read_file", `{"path":"readme.txt"}`),
+		actionResponse("write_file", `{"path":"out.txt","content":"x\n","expected_before_hash":"absent"}`),
+		finalResponse("complete", "done", "obs-000002"),
+	}}
+	executor2, err := agent.NewExecutor(h.governor, secondProvider, nil)
+	if err != nil {
+		t.Fatalf("agent.NewExecutor() error = %v", err)
+	}
+	second, err := agent.NewLoop(agent.Config{
+		Runner:   executor2,
 		Registry: h.registry,
 		Limits:   agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3},
 		Clock:    h.clock,
 		Trace:    h.traces.emit,
 		State:    h.store,
 		Policy:   h.policy,
-		Recovery: &agent.RecoverySeed{},
+		Recovery: &agent.RecoverySeed{Turns: 2, Attempts: 2},
 	})
 	if err != nil {
 		t.Fatalf("agent.NewLoop() error = %v", err)
 	}
-	result := loop.Run(ctx, testTask("task-write-approved"))
-
+	result = second.Run(ctx, testTask(taskID))
 	if result.Outcome != agent.OutcomeCompleted {
-		t.Fatalf("outcome = %s, reason = %s", result.Outcome, result.StopReason)
+		t.Fatalf("run 2 outcome = %s, reason = %s", result.Outcome, result.StopReason)
 	}
-	if got := mustReadFile(t, workspace, "a.txt"); got != "x\n" {
-		t.Fatalf("approved write must execute; content = %q", got)
+	if _, err := os.Stat(filepath.Join(workspace, "out.txt")); !os.IsNotExist(err) {
+		t.Fatalf("rejected write must never execute: %v", err)
 	}
-	if !mustHavePolicyDecision(t, h.store, "task-write-approved", "action-000001", "allowed") {
-		t.Fatal("allowed policy decision must be persisted")
+}
+
+// TestWriteLoopPendingApprovalBlocksCompleted proves the invariant that no
+// task can enter completed while a mandatory write is still awaiting an
+// operator approval: a resumed run that goes straight to a grounded final
+// pauses again instead of completing.
+func TestWriteLoopPendingApprovalBlocksCompleted(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "readme.txt"), []byte("info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newWriteHarness(t, workspace, policy.DefaultConfig(), nil,
+		actionResponse("read_file", `{"path":"readme.txt"}`),
+		actionResponse("write_file", `{"path":"out.txt","content":"x\n","expected_before_hash":"absent"}`),
+	)
+	taskID := "task-write-blocked"
+	ctx := context.Background()
+
+	first := h.loop(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3})
+	result := first.Run(ctx, testTask(taskID))
+	if result.Outcome != agent.OutcomeApprovalRequired {
+		t.Fatalf("run 1 outcome = %s, want approval_required", result.Outcome)
+	}
+	// No operator decision: the write stays pending.
+
+	// Run 2 skips re-proposing the write and goes straight to a grounded
+	// final. The pending approval must block completion. The resumed loop's
+	// provider must serve the read response again so the final can cite a
+	// fresh evidence id.
+	secondProvider := &scriptedProvider{clock: h.clock, pace: time.Millisecond, responses: []provider.Response{
+		actionResponse("read_file", `{"path":"readme.txt"}`),
+		finalResponse("complete", "done", "obs-000002"),
+	}}
+	executor, err := agent.NewExecutor(h.governor, secondProvider, nil)
+	if err != nil {
+		t.Fatalf("agent.NewExecutor() error = %v", err)
+	}
+	blockedLoop, err := agent.NewLoop(agent.Config{
+		Runner:   executor,
+		Registry: h.registry,
+		Limits:   agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3},
+		Clock:    h.clock,
+		Trace:    h.traces.emit,
+		State:    h.store,
+		Policy:   h.policy,
+		Recovery: &agent.RecoverySeed{Turns: 2, Attempts: 2},
+	})
+	if err != nil {
+		t.Fatalf("agent.NewLoop() error = %v", err)
+	}
+	result = blockedLoop.Run(ctx, testTask(taskID))
+	if result.Outcome != agent.OutcomeApprovalRequired {
+		t.Fatalf("run 2 outcome = %s, want approval_required (pending approval blocks completion)", result.Outcome)
+	}
+	status, err := h.store.TaskStatus(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskStatus() error = %v", err)
+	}
+	if status == "completed" {
+		t.Fatal("a task with a pending write approval must never enter completed")
+	}
+	if status != "running" {
+		t.Fatalf("task status = %q, want running (still resumable)", status)
 	}
 }
 
@@ -300,13 +479,14 @@ func TestWriteLoopModelProseCannotApprove(t *testing.T) {
 	loop := h.loop(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3})
 	result := loop.Run(context.Background(), testTask("task-write-prose"))
 
-	if result.Outcome != agent.OutcomeCompleted {
-		t.Fatalf("outcome = %s, reason = %s", result.Outcome, result.StopReason)
+	// The write pauses for approval: model prose can never grant it.
+	if result.Outcome != agent.OutcomeApprovalRequired {
+		t.Fatalf("outcome = %s, want approval_required (model prose cannot approve)", result.Outcome)
 	}
 	if _, err := os.Stat(filepath.Join(workspace, "out.txt")); !os.IsNotExist(err) {
 		t.Fatalf("model prose must never approve a write: %v", err)
 	}
-	if !mustHavePolicyDecision(t, h.store, "task-write-prose", "action-000001", "approval_required") {
+	if !mustHavePolicyDecision(t, h.store, "task-write-prose", result.PendingActionID, "approval_required") {
 		t.Fatal("the write must remain approval_required despite model prose")
 	}
 }

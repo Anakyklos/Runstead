@@ -339,7 +339,10 @@ implemented:
   automatically re-executes, reinterprets or reconciles them;
 - delivery-state transport tracking (#38), the process runner (#26), the
   verifier (#11) and first-party ChatGPT Web work remain separate milestones;
-  write tools (#10) are implemented (see [writes.md](writes.md)).
+  write tools (#10) are implemented (see [writes.md](writes.md)), including
+  the approval pause (task stays resumable with pending approvals derived from
+  `write_policy_decisions` + `approvals`) and the TX 1 planned-diff evidence
+  (`tool_attempts.planned_diff_json`, migration 0005).
 
 The schema keeps a compatible seam for those milestones (for example
 `provider_attempt_receipts` is one-to-many and `recovery_class` is stored on
@@ -388,8 +391,11 @@ restored unchanged.
    hash (`tool_attempts.effect_after_hash`, migration 0004): still matching
    the precondition means `write_effect_not_started` (no evidence), matching
    the expected after-state means `write_effect_completed` (observed evidence
-   persisted as citable via `state.ReconcileWriteAttempt`, action completed),
-   and matching neither means `write_effect_unreconcilable` which stops
+   persisted as citable via `state.ReconcileWriteAttempt`, action completed;
+   the evidence carries the bounded planned diff persisted at TX 1 —
+   `tool_attempts.planned_diff_json`, migration 0005 — alongside the
+   before/after hashes), and matching neither means
+   `write_effect_unreconcilable` which stops
    automatic continuation with `human_review_required`. A provider request that may have
    reached upstream is reconciled as `upstream_may_have_been_reached` with
    `uncertain = 1` and `attempt_debited = 1`. A plain attempt was already

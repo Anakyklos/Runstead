@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -182,6 +183,45 @@ func TestRuntimeCrashAfterWriteEffectReconcilesFromFilesystem(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "evidence=obs-000002") {
 		t.Fatalf("reconciled write evidence must be citable:\n%s", rendered)
+	}
+
+	// The crash-reconciled evidence must carry the planned diff (bounded,
+	// sanitized) alongside the before/after hashes: the TX 1 intent persisted
+	// it, and only the current filesystem state matching the expected
+	// after-state hash promoted it to reconciled completed evidence.
+	store, err := state.Open(state.Options{Path: filepath.Join(stateDir, state.DefaultDBFile)})
+	if err != nil {
+		t.Fatalf("state.Open() error = %v", err)
+	}
+	defer store.Close()
+	snapshot, err := store.LoadRecoverySnapshot(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("LoadRecoverySnapshot() error = %v", err)
+	}
+	var reconciledEvidence tools.WriteEvidence
+	found := false
+	for _, item := range snapshot.Evidence {
+		if item.EvidenceID == "obs-000002" {
+			if err := json.Unmarshal([]byte(item.DataJSON), &reconciledEvidence); err != nil {
+				t.Fatalf("decode reconciled evidence: %v", err)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("reconciled evidence obs-000002 not persisted")
+	}
+	if reconciledEvidence.BeforeHash != before {
+		t.Fatalf("reconciled before hash = %q, want %q", reconciledEvidence.BeforeHash, before)
+	}
+	if reconciledEvidence.AfterHash != tools.HashBytes([]byte("new\n")) {
+		t.Fatalf("reconciled after hash = %q", reconciledEvidence.AfterHash)
+	}
+	if reconciledEvidence.Diff == "" {
+		t.Fatal("reconciled write evidence must carry the bounded planned diff")
+	}
+	if !strings.Contains(reconciledEvidence.Diff, "+new") {
+		t.Fatalf("reconciled diff must describe the planned change:\n%s", reconciledEvidence.Diff)
 	}
 }
 

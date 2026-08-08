@@ -265,13 +265,14 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return exitUsage
 	}
 	loop, err := agent.NewLoop(agent.Config{
-		Runner:   executor,
-		Registry: registry,
-		Limits:   limits,
-		Model:    model,
-		Trace:    cliTraceSink(errOut),
-		State:    store,
-		Policy:   policy.NewStatic(writePolicyConfig, storeApprovals(store)),
+		Runner:      executor,
+		Registry:    registry,
+		Limits:      limits,
+		Model:       model,
+		Trace:       cliTraceSink(errOut),
+		State:       store,
+		Policy:      policy.NewStatic(writePolicyConfig, storeApprovals(store)),
+		WritePolicy: writePolicyConfig.Spec(),
 	})
 	if err != nil {
 		fmt.Fprintf(errOut, "run: loop unavailable: %v\n", err)
@@ -282,7 +283,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	logger.InfoContext(ctx, "run started", "task_id", taskID, "provider", "scripted", "workspace", cfg.Workspace)
 	fmt.Fprintf(errOut, "task: %s\n", taskID)
 	result := loop.Run(ctx, agent.Task{ID: taskID, Prompt: taskPrompt})
-	printResult(out, errOut, result)
+	printResult(out, errOut, taskID, result)
 	return result.Outcome.ExitCode()
 }
 
@@ -461,7 +462,7 @@ func resolveGovernorConfig(scripted bool, cfg config.Config, minStartInterval st
 	return accountConfig, nil
 }
 
-func printResult(out, errOut io.Writer, result agent.Result) {
+func printResult(out, errOut io.Writer, taskID string, result agent.Result) {
 	fmt.Fprintf(out, "outcome: %s\n", result.Outcome)
 	fmt.Fprintf(out, "reason: %s\n", result.StopReason)
 	if result.Outcome == agent.OutcomeCompleted {
@@ -471,6 +472,10 @@ func printResult(out, errOut io.Writer, result agent.Result) {
 		for _, id := range result.Evidence {
 			fmt.Fprintf(out, "evidence: %s\n", id)
 		}
+	}
+	if result.Outcome == agent.OutcomeApprovalRequired && result.PendingActionID != "" {
+		fmt.Fprintf(out, "pending approval: action %s\n", result.PendingActionID)
+		fmt.Fprintf(out, "runstead decide %s %s approved|rejected\n", taskID, result.PendingActionID)
 	}
 	fmt.Fprintf(errOut, "run: turns=%d attempts=%d observations=%d corrections=%d repeated=%d mixed_prose=%d\n",
 		result.Turns, result.Attempts, result.Observations, result.Corrections, result.Repeated, result.MixedProse)
@@ -671,6 +676,27 @@ func decideCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintf(errOut, "decide: %v\n", err)
 		return exitUnavailable
 	}
+	// The operator may only decide an action of this task that is actually
+	// pending approval: a write action with a persisted approval_required
+	// policy decision and no operator decision yet. Approvals for read
+	// actions, unknown actions, or actions incompatible with the current
+	// approval flow are meaningless and are rejected.
+	pending, err := store.PendingApprovals(ctx, taskID)
+	if err != nil {
+		fmt.Fprintf(errOut, "decide: %v\n", err)
+		return exitUnavailable
+	}
+	found := false
+	for _, item := range pending {
+		if item.ActionID == actionID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		fmt.Fprintf(errOut, "decide: action %q of task %q is not pending approval; only write actions awaiting an operator decision can be decided\n", actionID, taskID)
+		return exitUsage
+	}
 	approvalID, err := store.RecordApproval(ctx, state.Approval{
 		TaskID: taskID, ActionID: actionID, Decision: decision, Reason: reason, Actor: "operator",
 	})
@@ -775,10 +801,13 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "and a final answer is accepted only when grounded in real evidence")
 	fmt.Fprintln(out, "IDs produced in this run. Writes are stale-state protected, stay inside")
 	fmt.Fprintln(out, "the workspace, and never execute without control-plane approval when the")
-	fmt.Fprintln(out, "policy requires it. The task never shells out; durable task, action,")
-	fmt.Fprintln(out, "attempt, evidence, journal, write-policy and account-protection state is")
-	fmt.Fprintln(out, "persisted to SQLite (issues #8/#10) and can be inspected with")
-	fmt.Fprintln(out, "'runstead inspect <task-id>'.")
+	fmt.Fprintln(out, "policy requires it. When a write needs approval the run PAUSES with the")
+	fmt.Fprintln(out, "typed approval_required outcome, reports the task and pending action for")
+	fmt.Fprintln(out, "'runstead decide <task-id> <action-id> approved|rejected', and stays")
+	fmt.Fprintln(out, "durably resumable; no correction budget is consumed. The task never")
+	fmt.Fprintln(out, "shells out; durable task, action, attempt, evidence, journal, write-policy")
+	fmt.Fprintln(out, "and account-protection state is persisted to SQLite (issues #8/#10) and")
+	fmt.Fprintln(out, "can be inspected with 'runstead inspect <task-id>'.")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "The deterministic offline mode replays scripted model responses (JSONL with")
 	fmt.Fprintln(out, "one {\"text\":\"...\"} object per line) through the real governor and tools.")

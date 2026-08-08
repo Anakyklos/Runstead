@@ -217,6 +217,17 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintf(errOut, "resume: invalid persisted configuration: %v\n", err)
 		return exitCorrupt
 	}
+	// The effective write policy is part of the authoritative task
+	// configuration: resume uses the persisted policy by default, and a
+	// --write-policy override that diverges from it is rejected fail-closed
+	// (no external authority could justify silently widening the policy).
+	// This check runs in the pre-flight section, before any recovery or
+	// execution side effect.
+	resumePolicy, err := resolveResumeWritePolicy(preload.Task.ConfigJSON, writePolicy, writePolicy != "")
+	if err != nil {
+		fmt.Fprintf(errOut, "resume: %v\n", err)
+		return exitUsage
+	}
 	// The provider input is supplied again at resume time: the original remote
 	// conversation is disposable metadata, never an authority over task state.
 	scriptedPath, scriptedSet := resolveScriptedFlag(scripted)
@@ -286,20 +297,16 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintf(errOut, "resume: invalid persisted configuration: %v\n", err)
 		return exitCorrupt
 	}
-	writePolicyConfig, err := resolveWritePolicy(writePolicy, writePolicy != "")
-	if err != nil {
-		fmt.Fprintf(errOut, "resume: %v\n", err)
-		return exitUsage
-	}
 	loop, err := agent.NewLoop(agent.Config{
-		Runner:   executor,
-		Registry: registry,
-		Limits:   limits,
-		Model:    plan.Task.Model,
-		Trace:    traceSink,
-		State:    store,
-		Policy:   policy.NewStatic(writePolicyConfig, storeApprovals(store)),
-		Recovery: plan.Seed,
+		Runner:      executor,
+		Registry:    registry,
+		Limits:      limits,
+		Model:       plan.Task.Model,
+		Trace:       traceSink,
+		State:       store,
+		Policy:      policy.NewStatic(resumePolicy, storeApprovals(store)),
+		WritePolicy: resumePolicy.Spec(),
+		Recovery:    plan.Seed,
 	})
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: loop unavailable: %v\n", err)
@@ -309,7 +316,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	logger.InfoContext(ctx, "resume continued", "task_id", taskID, "provider", "scripted", "workspace", workspacePath)
 	fmt.Fprintf(errOut, "resume: task %s continuing\n", taskID)
 	result := loop.Run(ctx, agent.Task{ID: taskID, Prompt: ""})
-	printResult(out, errOut, result)
+	printResult(out, errOut, taskID, result)
 	return result.Outcome.ExitCode()
 }
 
@@ -391,6 +398,56 @@ func resolveScriptedFlag(scripted string) (string, bool) {
 		return value, value != ""
 	}
 	return "", false
+}
+
+// writePolicyFromConfig reconstructs the effective write policy persisted with
+// the task configuration snapshot. A legacy task without a persisted
+// write_policy falls back to the fail-closed default (approval_required for
+// every write tool), never to a permissive gap.
+func writePolicyFromConfig(configJSON string) (policy.Config, error) {
+	if strings.TrimSpace(configJSON) == "" || strings.TrimSpace(configJSON) == "{}" {
+		return policy.DefaultConfig(), nil
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal([]byte(configJSON), &snapshot); err != nil {
+		return policy.Config{}, fmt.Errorf("decode persisted configuration snapshot: %w", err)
+	}
+	raw, ok := snapshot["write_policy"]
+	if !ok {
+		return policy.DefaultConfig(), nil
+	}
+	spec, ok := raw.(string)
+	if !ok || strings.TrimSpace(spec) == "" {
+		return policy.Config{}, fmt.Errorf("invalid persisted write policy")
+	}
+	config, err := policy.ParseConfig(spec)
+	if err != nil {
+		return policy.Config{}, fmt.Errorf("invalid persisted write policy: %w", err)
+	}
+	return config, nil
+}
+
+// resolveResumeWritePolicy reconstructs the effective write policy of a
+// resumed task. The policy persisted with the task configuration is
+// authoritative: resume uses it by default, and a --write-policy override
+// that diverges from the persisted policy is rejected fail-closed (there is
+// no external authority that could justify silently widening the policy a
+// task started under).
+func resolveResumeWritePolicy(configJSON, flagValue string, flagSet bool) (policy.Config, error) {
+	persisted, err := writePolicyFromConfig(configJSON)
+	if err != nil {
+		return policy.Config{}, err
+	}
+	if flagSet {
+		requested, err := policy.ParseConfig(strings.TrimSpace(flagValue))
+		if err != nil {
+			return policy.Config{}, err
+		}
+		if !policy.Equal(requested, persisted) {
+			return policy.Config{}, fmt.Errorf("--write-policy diverges from the task's persisted policy %q; resume always continues under the policy the task started with", persisted.Spec())
+		}
+	}
+	return persisted, nil
 }
 
 // limitsFromConfig reconstructs the loop limits from the persisted sanitized

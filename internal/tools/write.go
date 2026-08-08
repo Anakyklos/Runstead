@@ -199,12 +199,59 @@ func fileSize(path string) int64 {
 	return info.Size()
 }
 
+// revalidateWriteTarget re-checks canonical containment and the stale-state
+// precondition against the CURRENT filesystem state immediately before the
+// filesystem effect. It returns a typed failure when:
+//
+//   - the target no longer resolves to the same canonical location (a path or
+//     parent component was swapped, for example to a symlink);
+//   - the target escapes the workspace;
+//   - the current file state no longer matches the expected before-state
+//     (external modification, or an originally-absent target was created).
+//
+// This is a revalidation, not a compare-and-swap: stdlib provides no atomic
+// rename-if-unchanged, so a change landing after the last revalidation and
+// before the rename is not detectable by the writer. The residual window is
+// documented in docs/writes.md.
+func (r *Registry) revalidateWriteTarget(path, expectedBefore string, original writePath) *Failure {
+	revalidated, failure := r.workspace.resolveWrite(path)
+	if failure != nil {
+		return failure
+	}
+	if revalidated.canonical != original.canonical {
+		// The path resolves to a different location than the one validated at
+		// the start of the effect: fail closed, never write through it.
+		return newFailure(FailureSymlinkEscape)
+	}
+	current := AbsentBeforeHash
+	if revalidated.exists {
+		hash, exists, hashErr := hashFile(revalidated.canonical)
+		if hashErr != nil || !exists {
+			return newFailure(FailureReadFailure)
+		}
+		current = hash
+	}
+	if current != expectedBefore {
+		return newFailure(FailureStaleState)
+	}
+	return nil
+}
+
 // atomicWrite writes content to path through a temp file plus rename in the
 // same directory. The effect is all-or-nothing at the filesystem level: a
 // crash mid-write leaves either the old file or the new file. Existing file
 // permissions are preserved; new files get 0644. The context is checked
 // before the rename so a canceled run never performs the effect.
-func atomicWrite(ctx context.Context, path string, content []byte, existingMode os.FileMode) error {
+//
+// revalidate, when non-nil, runs immediately before os.Rename: it re-checks
+// canonical containment and the stale-state precondition against the CURRENT
+// filesystem state, closing the TOCTOU window between the caller's initial
+// validation and the rename as tightly as stdlib allows. A non-nil *Failure
+// return aborts the effect before the rename. This is a revalidation, not a
+// compare-and-swap: the OS offers no atomic rename-if-unchanged primitive in
+// the standard library, so a modification landing after revalidate and before
+// rename is not detectable by the writer.
+func atomicWrite(ctx context.Context, path string, content []byte, existingMode os.FileMode, revalidate func() *Failure) error {
 	dir := filepath.Dir(path)
 	mode := os.FileMode(0o644)
 	if existingMode != 0 {
@@ -241,6 +288,11 @@ func atomicWrite(ctx context.Context, path string, content []byte, existingMode 
 	if failure := contextFailure(ctx); failure != nil {
 		return errors.New(string(failure.Code))
 	}
+	if revalidate != nil {
+		if failure := revalidate(); failure != nil {
+			return failure
+		}
+	}
 	if err := os.Rename(tmpName, path); err != nil {
 		return err
 	}
@@ -257,10 +309,35 @@ type writeIntentArguments struct {
 	ExpectedBeforeHash string
 }
 
+// PlannedEffect is the bounded, sanitized representation of an intended write
+// effect persisted with the TX 1 intent. It is evidence of INTENT only: it
+// never proves the effect happened. Recovery promotes it to reconciled
+// completed evidence only when the current filesystem state matches the
+// expected-after hash. It is bounded to the diff-evidence limit at plan time
+// so full file contents are never persisted just for evidence.
+type PlannedEffect struct {
+	// Diff is a bounded structured change description (full-replacement
+	// unified diff for write_file, the supplied patch for apply_patch).
+	Diff string `json:"diff,omitempty"`
+	// DiffBytes is the number of diff bytes available before bounding.
+	DiffBytes int64 `json:"diff_bytes,omitempty"`
+	// DiffTruncated reports that Diff was truncated to the evidence bound.
+	DiffTruncated bool `json:"diff_truncated,omitempty"`
+}
+
+// PlannedWrite is the deterministic effect plan computed at TX 1 time from the
+// real (unredacted) arguments. AfterHash is the expected after-state hash;
+// Effect is the bounded planned diff evidence.
+type PlannedWrite struct {
+	AfterHash string
+	Effect    PlannedEffect
+}
+
 // WriteIntent is the persisted intent of one interrupted write attempt used
 // by the recovery pipeline. Arguments is the persisted sanitized arguments
 // JSON document; ExpectedAfterHash is the deterministic effect expectation
-// persisted at TX 1 (never derived from redacted persisted content).
+// persisted at TX 1 (never derived from redacted persisted content);
+// PlannedEffect is the bounded planned diff evidence persisted at TX 1.
 type WriteIntent struct {
 	Tool string
 	// Arguments is the persisted arguments JSON document of the attempt.
@@ -268,6 +345,8 @@ type WriteIntent struct {
 	// ExpectedAfterHash is the deterministic after-state hash computed at
 	// intent time from the real (unredacted) arguments.
 	ExpectedAfterHash string
+	// PlannedEffect is the bounded planned diff persisted at TX 1.
+	PlannedEffect PlannedEffect
 }
 
 // ReconcileStatus is the typed result of reconciling one interrupted write
@@ -336,12 +415,15 @@ func ReconcileWrite(ctx context.Context, workspaceRoot string, intent WriteInten
 		return ReconcileResult{
 			Status: ReconcileCompleted,
 			Evidence: WriteEvidence{
-				Path:       resolved.relative,
-				BeforeHash: decoded.ExpectedBeforeHash,
-				AfterHash:  before,
-				ByteCount:  size,
-				ChangeKind: kind,
-				Outcome:    WriteSuccess,
+				Path:          resolved.relative,
+				BeforeHash:    decoded.ExpectedBeforeHash,
+				AfterHash:     before,
+				ByteCount:     size,
+				ChangeKind:    kind,
+				Outcome:       WriteSuccess,
+				Diff:          intent.PlannedEffect.Diff,
+				DiffBytes:     intent.PlannedEffect.DiffBytes,
+				DiffTruncated: intent.PlannedEffect.DiffTruncated,
 			},
 		}
 	}
@@ -420,42 +502,68 @@ func stringArgumentAllowEmpty(arguments protocol.Arguments, name string) (string
 	return value, nil
 }
 
-// PlanWriteEffect computes the deterministic expected after-state hash of a
-// proposed write WITHOUT performing any filesystem mutation. It returns ""
-// when the effect cannot be planned (the authoritative typed failure comes
-// from Execute), and "" for read-only tools.
-func (r *Registry) PlanWriteEffect(action protocol.Action) string {
+// PlanWrite computes the deterministic expected after-state hash and the
+// bounded planned diff of a proposed write WITHOUT performing any filesystem
+// mutation. The hash is the authoritative expected after-state; the diff is
+// intent evidence only and is bounded to the diff-evidence limit. The plan is
+// empty (zero value) when the effect cannot be planned (the authoritative
+// typed failure comes from Execute) and for read-only tools.
+func (r *Registry) PlanWrite(action protocol.Action) PlannedWrite {
 	switch action.Tool {
 	case ToolWriteFile:
-		content, failure := stringArgumentAllowEmpty(action.Arguments, "content")
+		path, failure := stringArgument(action.Arguments, "path")
 		if failure != nil {
-			return ""
+			return PlannedWrite{}
 		}
-		return HashBytes([]byte(content))
+		content, contentFailure := stringArgumentAllowEmpty(action.Arguments, "content")
+		if contentFailure != nil || len(content) > r.limits.MaxWriteBytes {
+			return PlannedWrite{}
+		}
+		after := HashBytes([]byte(content))
+		// The planned diff is built from the current file state read at plan
+		// time (bounded), so it stays bounded even for huge targets. It is
+		// evidence of intent only: the effect may later abort stale or the
+		// file may change before the effect boundary.
+		effect := PlannedEffect{}
+		resolved, writeFailure := r.workspace.resolveWrite(path)
+		if writeFailure == nil {
+			beforeContent := ""
+			if resolved.exists {
+				beforeContent = string(readBoundedPrefix(resolved.canonical, r.limits.MaxDiffBytes*2))
+			}
+			if beforeContent != content {
+				diff, bytes, truncated := boundedDiff(replacementDiffText(resolved.relative, beforeContent, content), r.limits.MaxDiffBytes)
+				effect = PlannedEffect{Diff: diff, DiffBytes: bytes, DiffTruncated: truncated}
+			}
+		}
+		return PlannedWrite{AfterHash: after, Effect: effect}
 	case ToolApplyPatch:
 		path, failure := stringArgument(action.Arguments, "path")
 		if failure != nil {
-			return ""
+			return PlannedWrite{}
 		}
 		patch, patchFailure := stringArgumentAllowEmpty(action.Arguments, "patch")
 		if patchFailure != nil || strings.TrimSpace(patch) == "" {
-			return ""
+			return PlannedWrite{}
 		}
+		effect := PlannedEffect{}
+		diff, bytes, truncated := boundedDiff(patch, r.limits.MaxDiffBytes)
+		effect = PlannedEffect{Diff: diff, DiffBytes: bytes, DiffTruncated: truncated}
 		resolved, writeFailure := r.workspace.resolveWrite(path)
 		if writeFailure != nil || !resolved.exists {
-			return ""
+			return PlannedWrite{Effect: effect}
 		}
 		current, readErr := os.ReadFile(resolved.canonical)
 		if readErr != nil {
-			return ""
+			return PlannedWrite{Effect: effect}
 		}
 		patched, applyErr := applyPatch(current, patch, resolved.relative, r.limits.MaxPatchTargetBytes)
 		if applyErr != nil {
-			return ""
+			return PlannedWrite{Effect: effect}
 		}
-		return HashBytes(patched)
+		return PlannedWrite{AfterHash: HashBytes(patched), Effect: effect}
 	}
-	return ""
+	return PlannedWrite{}
 }
 
 // AnnotateWriteEvidence fills the execution identities of a successful write
@@ -492,5 +600,21 @@ func SetWriteCrashPoint(fn func(string)) { writeCrashPoint = fn }
 func hitWriteCrashPoint(name string) {
 	if writeCrashPoint != nil {
 		writeCrashPoint(name)
+	}
+}
+
+// writeRaceHook is the deterministic test seam at the TOCTOU revalidation
+// boundary. Production code leaves it nil; tests install it to inject an
+// external mutation (file content change, concurrent creation, symlink swap)
+// between the initial before-state check and the effect-boundary revalidation,
+// proving the write aborts stale instead of overwriting the external state.
+var writeRaceHook func(string)
+
+// SetWriteRaceHook installs the write race test seam. Only tests call it.
+func SetWriteRaceHook(fn func(string)) { writeRaceHook = fn }
+
+func hitWriteRaceHook(name string) {
+	if writeRaceHook != nil {
+		writeRaceHook(name)
 	}
 }

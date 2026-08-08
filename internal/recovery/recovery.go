@@ -462,6 +462,7 @@ func reconcileWriteAttempt(ctx context.Context, store *state.Store, taskID, work
 		Tool:              attempt.Tool,
 		Arguments:         []byte(attempt.ArgumentsJSON),
 		ExpectedAfterHash: attempt.EffectAfterHash,
+		PlannedEffect:     decodePlannedEffect(attempt.PlannedEffectJSON),
 	})
 	switch result.Status {
 	case tools.ReconcileNotStarted:
@@ -621,6 +622,16 @@ func decodeAny(raw string, value any) {
 		return
 	}
 	_ = jsonUnmarshal(raw, value)
+}
+
+// decodePlannedEffect unmarshals the bounded planned diff persisted at TX 1.
+// An undecodable or empty document yields the zero effect (no diff evidence);
+// the authoritative expected after-state hash is carried separately and still
+// gates reconciliation.
+func decodePlannedEffect(raw string) tools.PlannedEffect {
+	var effect tools.PlannedEffect
+	decodeAny(raw, &effect)
+	return effect
 }
 
 // jsonUnmarshal is a tiny indirection so decodeAny stays testable.

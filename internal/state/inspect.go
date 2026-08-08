@@ -125,6 +125,10 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 	if err != nil {
 		return err
 	}
+	pending, err := s.PendingApprovals(ctx, taskID)
+	if err != nil {
+		return err
+	}
 	governor, err := s.loadInspectGovernor(ctx, taskID)
 	if err != nil {
 		return err
@@ -264,6 +268,16 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 	}
 	for _, approval := range approvals {
 		fmt.Fprintf(&builder, "  %s action=%s decision=%s actor=%s reason=%s\n", approval.CreatedAt, approval.ActionID, approval.Decision, approval.Actor, approval.Reason)
+	}
+
+	builder.WriteString("\nPending approvals:\n")
+	if len(pending) == 0 {
+		builder.WriteString("  (none)\n")
+	} else {
+		for _, item := range pending {
+			fmt.Fprintf(&builder, "  action=%s tool=%s awaiting operator decision\n", item.ActionID, item.Tool)
+		}
+		builder.WriteString("  decide with: runstead decide <task-id> <action-id> approved|rejected\n")
 	}
 
 	builder.WriteString("\nGovernor state:\n")
