@@ -788,43 +788,90 @@ func TestResumeGovernorCircuitBlockedSurvivesRestart(t *testing.T) {
 	}
 }
 
-// TestResumeWorkspaceOverrideFlag proves --workspace overrides the persisted
-// task workspace, mirroring the run command's flag precedence.
-func TestResumeWorkspaceOverrideFlag(t *testing.T) {
-	realWorkspace := crashWorkspace(t) // contains a.txt = alpha
+// TestResumeRejectsWorkspaceOverride proves the task workspace is part of its
+// durable identity: --workspace is not a resume flag, because continuing the
+// same task in a different directory would break evidence/guard identity.
+func TestResumeRejectsWorkspaceOverride(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{"resume", "task-1", "--workspace", "/tmp/whatever", "--state-dir", t.TempDir()}, &out, &errOut)
+	if code != exitUsage {
+		t.Fatalf("resume exit code = %d, want %d\nstderr:\n%s", code, exitUsage, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "unknown flag") || !strings.Contains(errOut.String(), "--workspace") {
+		t.Fatalf("resume diagnostic = %q, want unknown flag --workspace", errOut.String())
+	}
+}
+
+// TestResumeReceiptAwareConservativeDebitBlocksCLI proves the reviewer blocker
+// end to end through the CLI: a receipt-aware attempt interrupted before TX 2
+// is reconciled, the conservative #29 debit is applied to the persisted
+// governor projection (unsafe telemetry), and resume exits with the typed
+// governor-blocked code without any provider call.
+func TestResumeReceiptAwareConservativeDebitBlocksCLI(t *testing.T) {
 	stateDir := t.TempDir()
+	workspace := crashWorkspace(t)
 	store, err := state.Open(state.Options{Path: filepath.Join(stateDir, "runstead.db")})
 	if err != nil {
 		t.Fatalf("state.Open() error = %v", err)
 	}
 	ctx := context.Background()
-	// The persisted workspace does not exist; only the --workspace override can
-	// make the resumed registry usable.
 	if err := store.CreateTask(ctx, state.TaskRecord{
-		TaskID: "task-ws", Objective: "inspect", Workspace: "/nonexistent", Model: "scripted",
+		TaskID: "task-receipt", Objective: "inspect", Workspace: workspace, Model: "scripted",
 		ConfigJSON: []byte(`{"max_steps":24,"provider_budget":80}`),
 	}); err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if err := store.StartTask(ctx, "task-ws"); err != nil {
+	if err := store.StartTask(ctx, "task-receipt"); err != nil {
 		t.Fatalf("StartTask() error = %v", err)
+	}
+	now := time.Now().UTC()
+	// Receipt-aware TX1 with ZERO debit: StartReceiptAware defers all debits to
+	// the receipt finish path, so a crash between TX1 and TX2 leaves the
+	// governor protection projection not debited.
+	persisted := governor.PersistedState{
+		AccountPolicyID: "runstead-cli", ProviderID: "scripted", ModelPool: "instant", Model: "scripted",
+		AllowanceProfile: governor.ProfileInstant, NextAttempt: 2,
+		Circuit:  governor.CircuitSnapshot{State: governor.CircuitClosed},
+		Ceilings: governor.BudgetCeilings{Rolling3h: 140, Rolling1h: 80, Rolling10m: 25, TaskBudget: 80, RetryBudget: 2},
+	}
+	if err := store.RecordProviderPrepared(ctx, governor.ProviderPrepared{
+		TaskID: "task-receipt", ClientRequestID: "task-receipt-0001", ProviderID: "scripted",
+		ModelPool: "instant", Model: "scripted", AllowanceProfile: governor.ProfileInstant,
+		AttemptSequence: 1, StartedAt: now, ReceiptAware: true, State: persisted,
+	}); err != nil {
+		t.Fatalf("RecordProviderPrepared() error = %v", err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	script := crashScript(t,
-		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"overridden","evidence":["obs-000001"]}</runstead_final>`,
-	)
-	resumeCode, resumeOut, resumeErr := runResume(context.Background(),
-		"task-ws", "--state-dir", stateDir, "--scripted", script,
-		"--workspace", realWorkspace, "--min-start-interval", "1ms", "--log-level", "error")
-	if resumeCode != exitSuccess {
-		t.Fatalf("resume exit = %d, want 0\nstderr:\n%s", resumeCode, resumeErr)
+	script := crashScript(t, `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"must not run","evidence":[]}</runstead_final>`)
+	resumeCode, _, resumeErr := runResume(context.Background(),
+		"task-receipt", "--state-dir", stateDir, "--scripted", script, "--log-level", "error")
+	if resumeCode != exitGovernorBlocked {
+		t.Fatalf("resume exit = %d, want %d (governor blocked)\nstderr:\n%s", resumeCode, exitGovernorBlocked, resumeErr)
 	}
-	if !strings.Contains(resumeOut, "outcome: completed") {
-		t.Fatalf("resume stdout missing completed:\n%s", resumeOut)
+	if !strings.Contains(resumeErr, "unsafe") {
+		t.Fatalf("resume diagnostic must explain the unsafe conservative accounting:\n%s", resumeErr)
+	}
+	// No provider call happened after reconciliation.
+	if got := countRowsFor(t, stateDir, "task-receipt", "provider_attempts"); got != 1 {
+		t.Fatalf("provider_attempts = %d, want 1 (no new provider call)", got)
+	}
+	// The attempt is reconciled, the conservative debit is journaled, the task
+	// stays pending, and the persisted telemetry is unsafe.
+	rendered := inspectRendered(t, stateDir, "task-receipt")
+	if !strings.Contains(rendered, "recovery=upstream_may_have_been_reached") {
+		t.Errorf("inspect must show the conservative reconciliation:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "telemetry: unsafe") {
+		t.Errorf("inspect must show the persisted unsafe telemetry:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Status: running") {
+		t.Errorf("blocked task must remain pending:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "recovery_continued") {
+		t.Errorf("blocked resume must not journal recovery_continued:\n%s", rendered)
 	}
 }
 

@@ -45,7 +45,6 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	taskID := ""
 	stateDir := ""
 	scripted := ""
-	workspace := ""
 	logLevel := ""
 	minStartInterval := ""
 	intervalSet := false
@@ -78,14 +77,6 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			}
 		case strings.HasPrefix(arg, "--scripted="):
 			scripted = strings.TrimPrefix(arg, "--scripted=")
-		case arg == "--workspace":
-			if next, ok := value("--workspace"); ok {
-				workspace = next
-			} else {
-				return exitUsage
-			}
-		case strings.HasPrefix(arg, "--workspace="):
-			workspace = strings.TrimPrefix(arg, "--workspace=")
 		case arg == "--log-level":
 			if next, ok := value("--log-level"); ok {
 				logLevel = next
@@ -202,10 +193,12 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		return exitNotResumable
 	}
 
+	// The task workspace is part of the durable task identity: resume always
+	// operates on the persisted workspace. There is deliberately no
+	// --workspace override, because continuing the same task in a different
+	// directory would let a final ground claims on evidence produced in the
+	// original workspace while executing tools elsewhere.
 	workspacePath := preload.Task.Workspace
-	if workspace != "" {
-		workspacePath = workspace
-	}
 	if _, err := tools.NewRegistry(tools.Options{Workspace: workspacePath}); err != nil {
 		fmt.Fprintf(errOut, "resume: workspace unavailable: %v\n", err)
 		return exitUnavailable
@@ -230,11 +223,22 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	// The recovery pipeline: load persisted history, classify and reconcile
 	// interrupted attempts, decide whether automatic continuation is safe, and
 	// reconstruct the bounded model context. All transitions are journaled.
+	// The block check reads the governor protection projection FRESH from the
+	// store: reconciliation may have applied a conservative debit (receipt-aware
+	// attempts) that the pre-pipeline restored governor cannot see.
 	plan, err := recovery.Resume(ctx, store, recovery.Options{
 		TaskID: taskID,
 		Trace:  traceSink,
 		Blocked: func() (bool, string) {
-			return recovery.GovernorBlocks(accountGovernor, taskID)
+			snapshot, ok, loadErr := store.GovernorState(ctx)
+			if loadErr != nil || !ok {
+				return false, ""
+			}
+			fresh, newErr := governor.New(accountConfig, governor.Options{Restore: &snapshot})
+			if newErr != nil {
+				return false, ""
+			}
+			return recovery.GovernorBlocks(fresh, taskID)
 		},
 	})
 	if err != nil {
@@ -439,10 +443,10 @@ func printResumeHelp(out io.Writer) {
 	fmt.Fprintln(out, "actions are never executed again merely because the task resumes. If automatic")
 	fmt.Fprintln(out, "continuation cannot be decided safely, the task stops with a typed")
 	fmt.Fprintln(out, "human_review_required outcome and structured persisted evidence.")
+	fmt.Fprintln(out, "The task workspace is part of its durable identity and is never overridden.")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Flags:")
 	fmt.Fprintln(out, "  --scripted FILE           scripted responses for a deterministic offline continuation (RUNSTEAD_SCRIPTED_RESPONSES)")
-	fmt.Fprintln(out, "  --workspace PATH          workspace override (default: the persisted task workspace)")
 	fmt.Fprintln(out, "  --state-dir PATH          durable state directory (RUNSTEAD_STATE_DIR)")
 	fmt.Fprintln(out, "  --log-level LEVEL         debug, info, warn or error (RUNSTEAD_LOG_LEVEL, default info)")
 	fmt.Fprintln(out, "  --min-start-interval DURATION  account governor pacing override (RUNSTEAD_MIN_START_INTERVAL)")

@@ -383,10 +383,16 @@ restored unchanged.
    `state.ReconcileProviderAttempt`. A class-1 prepared observation is
    reconciled as `replay_safe_observation`; a provider request that may have
    reached upstream is reconciled as `upstream_may_have_been_reached` with
-   `uncertain = 1` and `attempt_debited = 1` (the conservative debit was
-   already persisted in the governor ledger at TX 1). Reconciling an already
-   terminal attempt fails with `ErrNotReconcilable`, so a second resume never
-   rewrites history;
+   `uncertain = 1` and `attempt_debited = 1`. A plain attempt was already
+   debited in the governor ledger at TX 1 (`Start`); a receipt-aware attempt
+   interrupted before TX 2 was **not** (StartReceiptAware defers all debits to
+   the receipt finish path), so recovery applies the #29 conservative debit to
+   the persisted governor protection projection in the same transaction — task
+   attempt count +1, one rolling ledger event, telemetry unsafe — mirroring
+   `finishReceiptFailureLocked`. A receipt-aware attempt persisted as
+   `uncertain` was already debited at TX 2 and is never re-debited.
+   Reconciling an already terminal attempt fails with `ErrNotReconcilable`, so
+   a second resume never rewrites history;
 4. **decide whether automatic continuation is safe** — an unreconcilable
    effect stops with the typed `human_review_required` outcome
    (`state.MarkHumanReviewRequired` persists the task status, stop reason and
@@ -442,7 +448,7 @@ reasons stored in `tool_attempts.recovery_reason` /
 | tool attempt `failed` | deterministic failure | retained in context as an unresolved failure; guard-seeded like a fresh run |
 | tool attempt `prepared` (class 1) | interrupted replay-safe observation | reconciled `replay_safe_observation`; a re-proposal executes as a NEW attempt with fresh evidence; no guard seed, no evidence |
 | tool attempt non-terminal (class 2-4) | unreconcilable effect | `human_review_required`; no automatic continuation |
-| provider attempt `prepared`/`running`/`uncertain` | may have reached upstream | reconciled `upstream_may_have_been_reached`; `uncertain = 1`, `attempt_debited = 1`; the request is never re-issued |
+| provider attempt `prepared`/`running`/`uncertain` | may have reached upstream | reconciled `upstream_may_have_been_reached`; `uncertain = 1`, `attempt_debited = 1`; the request is never re-issued; a receipt-aware attempt interrupted before TX 2 also applies the conservative debit to the persisted governor projection (unsafe telemetry), so the restored governor blocks continuation fail-closed |
 | provider attempt `completed`/`failed` | terminal classified outcome | no action; counted in the resumed turn budget |
 | provider attempt `human_review_required` | already-required review | task stops with the unresolved human-review outcome |
 
@@ -492,22 +498,26 @@ admission path for anything the pre-check does not cover.
 ```text
 runstead resume <task-id> [flags]
   --scripted FILE            provider input for the new conversation (required)
-  --workspace PATH           workspace override (default: persisted task workspace)
   --state-dir PATH           state directory (RUNSTEAD_STATE_DIR)
   --log-level LEVEL          log level (RUNSTEAD_LOG_LEVEL, default info)
   --min-start-interval DURATION  governor pacing override
 ```
 
-Loop budgets come from the persisted configuration snapshot (`config_json`),
-so a resumed run keeps the same `max_steps`, `provider_budget`, time budget
-and correction/repeat limits as the interrupted run; the provider input and
-the workspace are supplied again at resume time (the old remote conversation
-is disposable metadata, never an authority over task state). Exit codes:
+The task workspace is part of its durable identity: resume always operates on
+the persisted workspace and there is deliberately no `--workspace` override,
+because continuing the same task in a different directory would let a final
+ground claims on evidence produced in the original workspace while executing
+tools elsewhere. Loop budgets come from the persisted configuration snapshot
+(`config_json`), so a resumed run keeps the same `max_steps`, `provider_budget`,
+time budget and correction/repeat limits as the interrupted run; the provider
+input is supplied again at resume time (the old remote conversation is
+disposable metadata, never an authority over task state). Exit codes:
 0 resumed and finished, 1 task not found, 2 usage, 3 state database
 unavailable, 4 task not resumable (already terminal), 5 human review required
 (unresolved or newly required), 6 corrupted/incompatible state, 7 continuation
-blocked by restored account protection; the agent outcome codes (20+ and 130)
-apply when the resumed loop stops with a typed loop outcome.
+blocked by restored account protection (including a conservative-debit unsafe
+state); the agent outcome codes (20+ and 130) apply when the resumed loop stops
+with a typed loop outcome.
 
 ### Scope of #9
 

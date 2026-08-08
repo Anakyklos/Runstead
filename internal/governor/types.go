@@ -314,6 +314,10 @@ type TelemetrySummary struct {
 	RateLimited       bool
 	CapacityExhausted bool
 	UpstreamCircuit   UpstreamCircuitState
+	// Unsafe reports that conservative accounting is active (#29): the
+	// governor refuses further admission until the state is resolved. It is
+	// restored from the persisted projection across restart.
+	Unsafe bool
 }
 
 type BudgetSnapshot struct {

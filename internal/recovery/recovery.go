@@ -206,14 +206,21 @@ func Resume(ctx context.Context, store *state.Store, options Options) (*Plan, er
 			trace.emit(agent.TraceRecoveryUncertain,
 				fmt.Sprintf("provider attempt %s already requires human review", attempt.ExecutionID))
 		case providerConservative:
+			// A receipt-aware attempt interrupted before TX 2 was never debited
+			// (StartReceiptAware defers all debits to the receipt finish path),
+			// so recovery must apply the #29 conservative debit to the persisted
+			// governor projection atomically. A persisted 'uncertain' status
+			// means TX 2 already debited; a plain attempt was debited at TX 1.
+			applyDebit := attempt.ReceiptAware && attempt.Status != "uncertain"
 			if err := store.ReconcileProviderAttempt(ctx, state.ReconcileProviderAttempt{
-				TaskID:          options.TaskID,
-				ExecutionID:     attempt.ExecutionID,
-				ClientRequestID: attempt.ClientRequestID,
-				Status:          "reconciled",
-				Reason:          "upstream_may_have_been_reached",
-				Uncertain:       true,
-				AttemptDebited:  1,
+				TaskID:                 options.TaskID,
+				ExecutionID:            attempt.ExecutionID,
+				ClientRequestID:        attempt.ClientRequestID,
+				Status:                 "reconciled",
+				Reason:                 "upstream_may_have_been_reached",
+				Uncertain:              true,
+				AttemptDebited:         1,
+				ApplyConservativeDebit: applyDebit,
 			}); err != nil {
 				return nil, fmt.Errorf("reconcile provider attempt %s: %w", attempt.ExecutionID, err)
 			}
@@ -353,6 +360,9 @@ func GovernorBlocks(g *governor.Governor, taskID string) (bool, string) {
 	}
 	if snapshot.Telemetry.RateLimited || snapshot.Telemetry.CapacityExhausted || snapshot.Telemetry.UpstreamCircuit == governor.UpstreamCircuitOpen {
 		return true, "upstream rate or capacity state blocks admission"
+	}
+	if snapshot.Telemetry.Unsafe {
+		return true, "conservative accounting is unsafe; human review required before continuation"
 	}
 	budgets := snapshot.Budgets
 	if budgets.Rolling3hCeiling > 0 && budgets.Rolling3hUsed >= budgets.Rolling3hCeiling {

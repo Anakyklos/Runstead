@@ -112,8 +112,20 @@ func (s *Store) saveGovernorStateInTx(ctx context.Context, tx *sql.Tx, state gov
 	return nil
 }
 
+// queryer abstracts *sql.DB and *sql.Tx so governor projections can be loaded
+// either directly (restart restore) or inside a transaction (recovery
+// reconciliation keeps the projection and journal atomic).
+type queryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 // GovernorState loads the persisted account protection projection, if any.
 func (s *Store) GovernorState(ctx context.Context) (governor.PersistedState, bool, error) {
+	return loadGovernorState(ctx, s.db)
+}
+
+func loadGovernorState(ctx context.Context, q queryer) (governor.PersistedState, bool, error) {
 	var (
 		state              governor.PersistedState
 		circuitState       string
@@ -128,7 +140,7 @@ func (s *Store) GovernorState(ctx context.Context) (governor.PersistedState, boo
 		telemetryResetAt   string
 		telemetryCooldown  string
 	)
-	err := s.db.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT account_policy_id, provider_id, model_pool, model, allowance_profile, next_attempt,
 		        last_start, cooldown_until, circuit_state, circuit_reason, circuit_open_until,
 		        circuit_refresh_required, circuit_last_rate_reset, telemetry_available,
@@ -164,7 +176,7 @@ func (s *Store) GovernorState(ctx context.Context) (governor.PersistedState, boo
 		state.Telemetry.Available = &value
 	}
 
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := q.QueryContext(ctx,
 		`SELECT at, task_id FROM governor_ledger ORDER BY id`)
 	if err != nil {
 		return governor.PersistedState{}, false, fmt.Errorf("load governor ledger: %w", err)
@@ -183,7 +195,7 @@ func (s *Store) GovernorState(ctx context.Context) (governor.PersistedState, boo
 		return governor.PersistedState{}, false, err
 	}
 
-	rows, err = s.db.QueryContext(ctx,
+	rows, err = q.QueryContext(ctx,
 		`SELECT task_id, attempts, retries, last_touched FROM governor_task_states ORDER BY task_id`)
 	if err != nil {
 		return governor.PersistedState{}, false, fmt.Errorf("load governor task states: %w", err)
@@ -202,7 +214,7 @@ func (s *Store) GovernorState(ctx context.Context) (governor.PersistedState, boo
 		return governor.PersistedState{}, false, err
 	}
 
-	rows, err = s.db.QueryContext(ctx,
+	rows, err = q.QueryContext(ctx,
 		`SELECT request_id, state, completed_at FROM governor_request_records ORDER BY request_id`)
 	if err != nil {
 		return governor.PersistedState{}, false, fmt.Errorf("load governor request records: %w", err)
@@ -221,7 +233,7 @@ func (s *Store) GovernorState(ctx context.Context) (governor.PersistedState, boo
 		return governor.PersistedState{}, false, err
 	}
 
-	rows, err = s.db.QueryContext(ctx,
+	rows, err = q.QueryContext(ctx,
 		`SELECT attempt_id, seen_at FROM governor_attempt_ids ORDER BY attempt_id`)
 	if err != nil {
 		return governor.PersistedState{}, false, fmt.Errorf("load governor attempt ids: %w", err)
@@ -240,7 +252,7 @@ func (s *Store) GovernorState(ctx context.Context) (governor.PersistedState, boo
 		return governor.PersistedState{}, false, err
 	}
 
-	rows, err = s.db.QueryContext(ctx,
+	rows, err = q.QueryContext(ctx,
 		`SELECT at FROM governor_rate_events ORDER BY id`)
 	if err != nil {
 		return governor.PersistedState{}, false, fmt.Errorf("load governor rate events: %w", err)

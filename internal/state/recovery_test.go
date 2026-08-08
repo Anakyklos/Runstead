@@ -53,6 +53,29 @@ func mustProviderAttemptPreparedOnly(t *testing.T, store *Store, taskID, request
 	}
 }
 
+// mustProviderAttemptReceiptAwarePreparedOnly records a receipt-aware provider
+// attempt intent whose TX 1 governor projection has NO debit, mirroring
+// StartReceiptAware: all debits are deferred to the receipt finish path, so a
+// crash between TX 1 and TX 2 leaves the account protection not debited.
+func mustProviderAttemptReceiptAwarePreparedOnly(t *testing.T, store *Store, taskID, requestID string, sequence int) {
+	t.Helper()
+	now := newFixedClock().Now()
+	persisted := governor.PersistedState{
+		AccountPolicyID: "runstead-cli", ProviderID: "scripted", ModelPool: "instant", Model: "scripted",
+		AllowanceProfile: governor.ProfileInstant, NextAttempt: sequence + 1,
+		Circuit:  governor.CircuitSnapshot{State: governor.CircuitClosed},
+		Ceilings: governor.BudgetCeilings{Rolling3h: 140, Rolling1h: 80, Rolling10m: 25, TaskBudget: 80, RetryBudget: 2},
+		// No RollingEvents and no TaskStates: StartReceiptAware defers debits.
+	}
+	if err := store.RecordProviderPrepared(context.Background(), governor.ProviderPrepared{
+		TaskID: taskID, ClientRequestID: requestID, ProviderID: "scripted", ModelPool: "instant",
+		Model: "scripted", AllowanceProfile: governor.ProfileInstant, AttemptSequence: sequence,
+		StartedAt: now, ReceiptAware: true, State: persisted,
+	}); err != nil {
+		t.Fatalf("RecordProviderPrepared() error = %v", err)
+	}
+}
+
 // mustToolAttemptPreparedOnly records a tool attempt intent (TX 1) without
 // completing it: the interrupted window that recovery reconciles.
 func mustToolAttemptPreparedOnly(t *testing.T, store *Store, taskID, actionID, tool string) string {
@@ -214,6 +237,87 @@ func TestReconcileProviderAttemptPreservesDebit(t *testing.T) {
 	}
 	if status != "reconciled" || reason != "upstream_may_have_been_reached" || uncertain != 1 || debited != 1 {
 		t.Errorf("reconciled provider attempt = %s/%s uncertain=%d debited=%d", status, reason, uncertain, debited)
+	}
+}
+
+// TestReconcileReceiptAwareAttemptAppliesConservativeDebit covers the reviewer
+// blocker: a receipt-aware attempt interrupted before TX 2 was never debited by
+// StartReceiptAware, so recovery must apply the #29 conservative debit to the
+// persisted governor projection atomically with the attempt reconciliation.
+func TestReconcileReceiptAwareAttemptAppliesConservativeDebit(t *testing.T) {
+	store := openTestStore(t)
+	mustTask(t, store, "task-1")
+	mustProviderAttemptReceiptAwarePreparedOnly(t, store, "task-1", "task-1-0001", 1)
+
+	// Before reconciliation the persisted governor projection has NO debit for
+	// the task and telemetry is safe.
+	before, ok, err := store.GovernorState(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("GovernorState() = %v, %v", ok, err)
+	}
+	if len(before.RollingEvents) != 0 {
+		t.Fatalf("receipt-aware TX1 must not have debited the ledger: %v", before.RollingEvents)
+	}
+	if len(before.TaskStates) != 0 {
+		t.Fatalf("receipt-aware TX1 must not have debited task attempts: %v", before.TaskStates)
+	}
+	if before.Telemetry.Unsafe {
+		t.Fatal("receipt-aware TX1 must not mark telemetry unsafe")
+	}
+
+	snapshot, err := store.LoadRecoverySnapshot(context.Background(), "task-1")
+	if err != nil {
+		t.Fatalf("LoadRecoverySnapshot() error = %v", err)
+	}
+	if len(snapshot.ProviderAttempts) != 1 || !snapshot.ProviderAttempts[0].ReceiptAware {
+		t.Fatalf("fixture must be a receipt-aware attempt: %+v", snapshot.ProviderAttempts)
+	}
+	attempt := snapshot.ProviderAttempts[0]
+
+	if err := store.ReconcileProviderAttempt(context.Background(), ReconcileProviderAttempt{
+		TaskID: "task-1", ExecutionID: attempt.ExecutionID, ClientRequestID: attempt.ClientRequestID,
+		Status: "reconciled", Reason: "upstream_may_have_been_reached", Uncertain: true,
+		AttemptDebited: 1, ApplyConservativeDebit: true,
+	}); err != nil {
+		t.Fatalf("ReconcileProviderAttempt() error = %v", err)
+	}
+
+	// The persisted governor projection now carries the conservative debit:
+	// one task attempt, one rolling ledger event and telemetry unsafe.
+	after, ok, err := store.GovernorState(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("GovernorState() = %v, %v", ok, err)
+	}
+	if len(after.RollingEvents) != 1 || after.RollingEvents[0].TaskID != "task-1" {
+		t.Errorf("ledger after reconciliation = %v, want one task-1 event", after.RollingEvents)
+	}
+	if len(after.TaskStates) != 1 || after.TaskStates[0].TaskID != "task-1" || after.TaskStates[0].Attempts != 1 {
+		t.Errorf("task states after reconciliation = %v, want task-1 attempts=1", after.TaskStates)
+	}
+	if !after.Telemetry.Unsafe {
+		t.Error("telemetry must be unsafe after the conservative debit")
+	}
+
+	// Re-reconciling the already-terminal attempt fails: the debit is never
+	// applied twice.
+	err = store.ReconcileProviderAttempt(context.Background(), ReconcileProviderAttempt{
+		TaskID: "task-1", ExecutionID: attempt.ExecutionID, ClientRequestID: attempt.ClientRequestID,
+		Status: "reconciled", Reason: "upstream_may_have_been_reached", Uncertain: true,
+		AttemptDebited: 1, ApplyConservativeDebit: true,
+	})
+	if !errors.Is(err, ErrNotReconcilable) {
+		t.Fatalf("second reconcile error = %v, want ErrNotReconcilable", err)
+	}
+	// The attempt and journal are consistent: exactly one reconciliation event.
+	kinds := taskEventKinds(t, store, "task-1")
+	count := 0
+	for _, kind := range kinds {
+		if kind == "provider_attempt_reconciled" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("provider_attempt_reconciled events = %d, want 1", count)
 	}
 }
 
