@@ -508,13 +508,17 @@ func (l *Loop) handleAction(
 
 	if guard.repeat(*action, signatureFor()) {
 		run.repeated++
-		if run.repeated > l.limits.MaxRepeatedActions {
-			return stop(OutcomeRepeatedAction, OutcomeRepeatedAction.StopReason(), nil), true
-		}
+		// The proposal was rejected by the repeat guard, so its durable
+		// projection must be 'rejected' in every branch, including the
+		// terminal one: the loop may stop right after this on the repeated
+		// action limit, and the action must never remain 'planned'.
 		if l.state != nil {
 			if err := l.state.RejectAction(ctx, task.ID, actionID, "repeated_action"); err != nil {
 				return stop(OutcomePersistenceFailure, fmt.Sprintf("%s: %v", OutcomePersistenceFailure.StopReason(), err), nil), true
 			}
+		}
+		if run.repeated > l.limits.MaxRepeatedActions {
+			return stop(OutcomeRepeatedAction, OutcomeRepeatedAction.StopReason(), nil), true
 		}
 		retriesRemaining := l.limits.MaxRepeatedActions - run.repeated
 		message, err := protocol.GenerateCorrectionMessage(protocol.FailureRepeatedAction, retriesRemaining)

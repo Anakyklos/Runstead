@@ -134,6 +134,19 @@ func TestInspectTaskIDMayPrecedeStateDirFlag(t *testing.T) {
 	if !strings.Contains(inspectOut.String(), "Outcome: repeated_action") {
 		t.Fatalf("inspect must show the typed outcome:\n%s", inspectOut.String())
 	}
+	// The repeated proposal that ended the run was rejected by the guard, so
+	// its durable projection must be 'rejected', never left 'planned'.
+	if !strings.Contains(inspectOut.String(), "status=rejected") {
+		t.Fatalf("terminal repeated action must be persisted as rejected:\n%s", inspectOut.String())
+	}
+	// Only the first action executed; the rejected repeat created no tool
+	// attempt (the tool-attempt section holds exactly one attempt row).
+	rendered := inspectOut.String()
+	toolSection := rendered[strings.Index(rendered, "Tool attempts:"):]
+	toolSection = toolSection[:strings.Index(toolSection, "\nProvider attempts:")]
+	if strings.Count(toolSection, "\n  exec-") != 1 {
+		t.Fatalf("rejected repeat must not create a tool attempt:\n%s", rendered)
+	}
 }
 
 func TestInspectUnavailableDatabaseFailsClearly(t *testing.T) {
