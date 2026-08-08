@@ -17,14 +17,14 @@ func TestRunScriptedZeroCorrectionsExitsImmediately(t *testing.T) {
 	script := writeScript(t, `I refuse to use the protocol.`)
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{
+	code := run(context.Background(), withStateDir(t, []string{
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
 		"--min-start-interval", "1ms",
 		"--max-corrections", "0",
 		"--log-level", "error",
-	}, &out, &errOut)
+	}), &out, &errOut)
 
 	if code != agent.OutcomeCorrectionsExhausted.ExitCode() {
 		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, agent.OutcomeCorrectionsExhausted.ExitCode(), errOut.String())
@@ -45,14 +45,14 @@ func TestRunScriptedZeroRepeatedActionsExitsImmediately(t *testing.T) {
 	)
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{
+	code := run(context.Background(), withStateDir(t, []string{
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
 		"--min-start-interval", "1ms",
 		"--max-repeated-actions", "0",
 		"--log-level", "error",
-	}, &out, &errOut)
+	}), &out, &errOut)
 
 	if code != agent.OutcomeRepeatedAction.ExitCode() {
 		t.Fatalf("run exit code = %d, want %d\nstderr:\n%s", code, agent.OutcomeRepeatedAction.ExitCode(), errOut.String())
@@ -74,13 +74,13 @@ func TestRunLimitsFromEnvironment(t *testing.T) {
 	t.Setenv(config.EnvMaxSteps, "1")
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{
+	code := run(context.Background(), withStateDir(t, []string{
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
 		"--min-start-interval", "1ms",
 		"--log-level", "error",
-	}, &out, &errOut)
+	}), &out, &errOut)
 
 	if code != agent.OutcomeStepsExhausted.ExitCode() {
 		t.Fatalf("run exit code = %d, want %d (RUNSTEAD_MAX_STEPS=1)\nstderr:\n%s", code, agent.OutcomeStepsExhausted.ExitCode(), errOut.String())
@@ -93,13 +93,13 @@ func TestRunEnvironmentZeroCorrections(t *testing.T) {
 	t.Setenv(config.EnvMaxCorrections, "0")
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{
+	code := run(context.Background(), withStateDir(t, []string{
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
 		"--min-start-interval", "1ms",
 		"--log-level", "error",
-	}, &out, &errOut)
+	}), &out, &errOut)
 
 	if code != agent.OutcomeCorrectionsExhausted.ExitCode() {
 		t.Fatalf("run exit code = %d, want %d (RUNSTEAD_MAX_CORRECTIONS=0)\nstderr:\n%s", code, agent.OutcomeCorrectionsExhausted.ExitCode(), errOut.String())
@@ -124,14 +124,14 @@ func TestRunFlagOverridesEnvironmentLimit(t *testing.T) {
 	t.Setenv(config.EnvMaxSteps, "1")
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{
+	code := run(context.Background(), withStateDir(t, []string{
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
 		"--min-start-interval", "1ms",
 		"--max-steps", "24",
 		"--log-level", "error",
-	}, &out, &errOut)
+	}), &out, &errOut)
 
 	if code != agent.OutcomeCompleted.ExitCode() {
 		t.Fatalf("run exit code = %d, want %d (flag must override env)\nstderr:\n%s", code, agent.OutcomeCompleted.ExitCode(), errOut.String())
@@ -144,13 +144,13 @@ func TestRunEnvironmentTimeBudget(t *testing.T) {
 	t.Setenv(config.EnvTimeBudget, "1ns")
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{
+	code := run(context.Background(), withStateDir(t, []string{
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
 		"--min-start-interval", "1ms",
 		"--log-level", "error",
-	}, &out, &errOut)
+	}), &out, &errOut)
 
 	if code != agent.OutcomeTimeBudgetExhausted.ExitCode() {
 		t.Fatalf("run exit code = %d, want %d (RUNSTEAD_TIME_BUDGET=1ns)\nstderr:\n%s", code, agent.OutcomeTimeBudgetExhausted.ExitCode(), errOut.String())
@@ -163,13 +163,13 @@ func TestRunEnvironmentLimitValidation(t *testing.T) {
 	t.Setenv(config.EnvMaxSteps, "not-a-number")
 	var out, errOut bytes.Buffer
 
-	code := run(context.Background(), []string{
+	code := run(context.Background(), withStateDir(t, []string{
 		"run", "--task", "Inspect.",
 		"--workspace", workspace,
 		"--scripted", script,
 		"--min-start-interval", "1ms",
 		"--log-level", "error",
-	}, &out, &errOut)
+	}), &out, &errOut)
 
 	if code != exitUsage {
 		t.Fatalf("run exit code = %d, want %d for an invalid environment value\nstderr:\n%s", code, exitUsage, errOut.String())

@@ -69,6 +69,24 @@ func (p *Permit) Start() error {
 	return p.start(false)
 }
 
+// AttemptSequence returns the governor attempt sequence assigned at start.
+// It is only meaningful after Start succeeded.
+func (p *Permit) AttemptSequence() int {
+	if p == nil {
+		return 0
+	}
+	return p.attemptSequence
+}
+
+// StartedAt returns the permit start time. It is only meaningful after Start
+// succeeded.
+func (p *Permit) StartedAt() time.Time {
+	if p == nil {
+		return time.Time{}
+	}
+	return p.startedAt
+}
+
 func (p *Permit) StartReceiptAware() error {
 	return p.start(true)
 }
@@ -160,6 +178,48 @@ func (p *Permit) CancelBeforeStart() error {
 	g.emitAdmissionLocked(p.request, AdmissionResult{Code: AdmissionContextCancelled, Reason: AdmissionContextCancelled, TelemetryHealthy: p.telemetryHealthy}, p.telemetryHealthy)
 	g.signalAllLocked()
 	return nil
+}
+
+// CancelAfterStart aborts a started permit before any upstream effect was
+// attempted. It records no additional debit and fully releases the account
+// lane, and it is valid for both plain and receipt-aware permits. It is used
+// when the durable intent (TX 1) cannot be committed: the provider call must
+// not proceed, and the lane must not remain stuck merely because the permit
+// was started in receipt-aware mode (whose Finish path requires receipts).
+func (p *Permit) CancelAfterStart() FinishResult {
+	if p == nil || p.governor == nil {
+		return FinishResult{Err: ErrPermitCompleted}
+	}
+	g := p.governor
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if p.completed {
+		return FinishResult{Err: ErrPermitCompleted}
+	}
+	if !p.started {
+		return FinishResult{Err: ErrPermitNotStarted}
+	}
+	p.completed = true
+	now := g.clock.Now()
+	g.completeRequestLocked(p.request.ClientRequestID, now)
+	g.inFlight = false
+	g.activeTaskID = ""
+	g.signalAllLocked()
+	g.queueEventLocked(Event{
+		Kind:             EventAttemptFinished,
+		AccountPolicyID:  g.config.AccountPolicyID,
+		ProviderID:       g.config.ProviderID,
+		ModelPool:        g.config.ModelPool,
+		Model:            g.config.Model,
+		AllowanceProfile: g.config.AllowanceProfile,
+		TaskID:           p.request.TaskID,
+		ClientRequestID:  p.request.ClientRequestID,
+		AttemptSequence:  p.attemptSequence,
+		Outcome:          OutcomeCancelledBeforeUpstream,
+		CircuitTo:        g.circuit.state,
+		TelemetryHealthy: p.telemetryHealthy,
+	})
+	return FinishResult{Outcome: OutcomeCancelledBeforeUpstream, Circuit: g.circuitSnapshotLocked()}
 }
 
 func (p *Permit) Finish(outcome Outcome) FinishResult {

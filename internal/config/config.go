@@ -18,6 +18,7 @@ const (
 
 	EnvScriptedResponses = "RUNSTEAD_SCRIPTED_RESPONSES"
 	EnvMinStartInterval  = "RUNSTEAD_MIN_START_INTERVAL"
+	EnvStateDir          = "RUNSTEAD_STATE_DIR"
 
 	EnvMaxSteps           = "RUNSTEAD_MAX_STEPS"
 	EnvMaxCorrections     = "RUNSTEAD_MAX_CORRECTIONS"

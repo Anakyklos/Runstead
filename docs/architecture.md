@@ -192,8 +192,10 @@ a workspace-aware loop guard, not as permanent idempotency keys: an identical
 observational action may run again after the workspace changes. The loop enforces
 bounded steps, corrections, repeated actions, elapsed task time and provider
 attempts, and every terminal exit maps to a typed outcome with a stable exit
-code (see [`development.md`](development.md)). There is no write tool, shell,
-persistence, background execution or resume in this milestone.
+code (see [`development.md`](development.md)). Durable state (issue #8)
+persists the loop's task, action, attempt and evidence lifecycle through the
+semantic persistence boundary; there is still no write tool, shell,
+background execution or resume in this milestone.
 
 The model never executes a tool directly. It proposes an action. Runstead remains responsible for whether that action is valid, permitted, executed and proven.
 
@@ -271,9 +273,13 @@ SQLite is the authoritative task store. The durable-execution contract for M2
 (identities, attempt state machines, transaction ordering around external
 effects, recovery classes, schema invariants, and the distinction between
 state reconstruction and re-execution) is defined canonically in
-[`adr/0001-durable-execution.md`](adr/0001-durable-execution.md). M1 keeps all
-task state process-local; #8 implements the schema and #9 implements recovery
-from that contract.
+[`adr/0001-durable-execution.md`](adr/0001-durable-execution.md). Issue #8
+implements the schema, the transactional journal + operational projection
+model, attempt records, persisted governor protection state and
+`runstead inspect`; #9 implements recovery/resume from that contract. The
+implemented persistence reality (driver decision and evidence, pragmas,
+migrations, database location, security/redaction, backup/cleanup) is
+documented in [`persistence.md`](persistence.md).
 
 The event history is append-oriented. Each operational projection change and
 its corresponding event are committed in the same SQLite transaction. Derived

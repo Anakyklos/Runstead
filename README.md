@@ -75,6 +75,27 @@ The initial project will not use agent frameworks, an ORM, Redis, message broker
 The current read-only registry contract is documented in
 [`docs/tools.md`](docs/tools.md).
 
+## Durable state
+
+Runstead persists task state, execution attempts, the event journal and
+account-protection state to a local SQLite database (issue #8): every accepted
+action, every concrete tool/provider attempt, every observation evidence id
+and every meaningful transition is durably recorded, and a task can be
+inspected after the original process exits with:
+
+```text
+runstead run --task "inspect the repo" --workspace /path --scripted responses.jsonl
+task: cli-...
+runstead inspect cli-... --state-dir ~/.local/share/runstead
+```
+
+The persistence architecture, SQLite driver decision, pragmas, database
+location, migrations, `runstead inspect`, governor durability,
+security/redaction and the boundary with the future recovery/resume milestone
+are documented in [`docs/persistence.md`](docs/persistence.md). The
+durable-execution contract is canonical in
+[`docs/adr/0001-durable-execution.md`](docs/adr/0001-durable-execution.md).
+
 ## Development environment
 
 A Docker-based development environment is recommended to keep Go, `jq`, test utilities, caches and later transport-specific native dependencies out of the host system.
