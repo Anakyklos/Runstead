@@ -622,6 +622,163 @@ func TestResumeGovernorBlocksHelper(t *testing.T) {
 	}
 }
 
+// TestResumeUnavailableDatabaseFailsClearly covers the required CLI error
+// matrix: a state directory that cannot be created reports the stable
+// unavailable code with a clear diagnostic.
+func TestResumeUnavailableDatabaseFailsClearly(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{"resume", "task-1", "--state-dir", filepath.Join(blocker, "state")}, &out, &errOut)
+	if code != exitUnavailable {
+		t.Fatalf("resume exit code = %d, want %d\nstderr:\n%s", code, exitUnavailable, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "state database unavailable") {
+		t.Fatalf("resume diagnostic = %q", errOut.String())
+	}
+}
+
+// TestResumeCorruptStateFailsClearly covers the corrupted/incompatible
+// persisted state error: an undecodable persisted configuration snapshot stops
+// with the stable corrupt-state code (6) and never reaches the provider.
+func TestResumeCorruptStateFailsClearly(t *testing.T) {
+	workspace := crashWorkspace(t)
+	stateDir := t.TempDir()
+	store, err := state.Open(state.Options{Path: filepath.Join(stateDir, "runstead.db")})
+	if err != nil {
+		t.Fatalf("state.Open() error = %v", err)
+	}
+	ctx := context.Background()
+	if err := store.CreateTask(ctx, state.TaskRecord{
+		TaskID: "task-corrupt", Objective: "inspect", Workspace: workspace, Model: "scripted",
+		ConfigJSON: []byte("not json"),
+	}); err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if err := store.StartTask(ctx, "task-corrupt"); err != nil {
+		t.Fatalf("StartTask() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	script := crashScript(t, `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"must not run","evidence":[]}</runstead_final>`)
+	resumeCode, _, resumeErr := runResume(context.Background(),
+		"task-corrupt", "--state-dir", stateDir, "--scripted", script, "--log-level", "error")
+	if resumeCode != exitCorrupt {
+		t.Fatalf("resume exit = %d, want %d (corrupt state)\nstderr:\n%s", resumeCode, exitCorrupt, resumeErr)
+	}
+	if !strings.Contains(resumeErr, "persisted configuration") {
+		t.Fatalf("resume diagnostic must explain the corrupt state:\n%s", resumeErr)
+	}
+	if got := countRowsFor(t, stateDir, "task-corrupt", "provider_attempts"); got != 0 {
+		t.Fatalf("provider_attempts = %d, want 0 (corrupt state must fail before any provider call)", got)
+	}
+}
+
+// TestResumeGovernorCircuitBlockedSurvivesRestart proves the restored account
+// circuit blocks continuation after restart, complementing the cooldown test:
+// the typed governor-blocked code is returned, no provider call happens and
+// the task stays pending.
+func TestResumeGovernorCircuitBlockedSurvivesRestart(t *testing.T) {
+	stateDir := t.TempDir()
+	workspace := crashWorkspace(t)
+	store, err := state.Open(state.Options{Path: filepath.Join(stateDir, "runstead.db")})
+	if err != nil {
+		t.Fatalf("state.Open() error = %v", err)
+	}
+	ctx := context.Background()
+	if err := store.CreateTask(ctx, state.TaskRecord{
+		TaskID: "task-circuit", Objective: "inspect", Workspace: workspace, Model: "scripted",
+		ConfigJSON: []byte(`{"max_steps":24,"provider_budget":80}`),
+	}); err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if err := store.StartTask(ctx, "task-circuit"); err != nil {
+		t.Fatalf("StartTask() error = %v", err)
+	}
+	future := time.Now().Add(time.Hour)
+	persisted := governor.PersistedState{
+		AccountPolicyID: "runstead-cli", ProviderID: "scripted", ModelPool: "instant", Model: "scripted",
+		AllowanceProfile: governor.ProfileInstant, NextAttempt: 2,
+		Circuit:    governor.CircuitSnapshot{State: governor.CircuitOpenUntil, OpenUntil: future, Reason: governor.OutcomeRateCapacity},
+		Ceilings:   governor.BudgetCeilings{Rolling3h: 140, Rolling1h: 80, Rolling10m: 25, TaskBudget: 80, RetryBudget: 2},
+		TaskStates: []governor.TaskStateRecord{{TaskID: "task-circuit", Attempts: 1, Retries: 0, LastTouched: future}},
+	}
+	if err := store.RecordProviderPrepared(ctx, governor.ProviderPrepared{
+		TaskID: "task-circuit", ClientRequestID: "task-circuit-0001", ProviderID: "scripted",
+		ModelPool: "instant", Model: "scripted", AllowanceProfile: governor.ProfileInstant,
+		AttemptSequence: 1, StartedAt: future, State: persisted,
+	}); err != nil {
+		t.Fatalf("RecordProviderPrepared() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	script := crashScript(t, `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"must not run","evidence":[]}</runstead_final>`)
+	resumeCode, _, resumeErr := runResume(context.Background(),
+		"task-circuit", "--state-dir", stateDir, "--scripted", script, "--log-level", "error")
+	if resumeCode != exitGovernorBlocked {
+		t.Fatalf("resume exit = %d, want %d (governor blocked)\nstderr:\n%s", resumeCode, exitGovernorBlocked, resumeErr)
+	}
+	if !strings.Contains(resumeErr, "circuit") {
+		t.Fatalf("resume diagnostic must explain the circuit block:\n%s", resumeErr)
+	}
+	if got := countRowsFor(t, stateDir, "task-circuit", "provider_attempts"); got != 1 {
+		t.Fatalf("provider_attempts = %d, want 1 (no new provider call)", got)
+	}
+	rendered := inspectRendered(t, stateDir, "task-circuit")
+	if !strings.Contains(rendered, "recovery_blocked") {
+		t.Errorf("inspect must show recovery_blocked:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Status: running") {
+		t.Errorf("blocked task must remain pending:\n%s", rendered)
+	}
+}
+
+// TestResumeWorkspaceOverrideFlag proves --workspace overrides the persisted
+// task workspace, mirroring the run command's flag precedence.
+func TestResumeWorkspaceOverrideFlag(t *testing.T) {
+	realWorkspace := crashWorkspace(t) // contains a.txt = alpha
+	stateDir := t.TempDir()
+	store, err := state.Open(state.Options{Path: filepath.Join(stateDir, "runstead.db")})
+	if err != nil {
+		t.Fatalf("state.Open() error = %v", err)
+	}
+	ctx := context.Background()
+	// The persisted workspace does not exist; only the --workspace override can
+	// make the resumed registry usable.
+	if err := store.CreateTask(ctx, state.TaskRecord{
+		TaskID: "task-ws", Objective: "inspect", Workspace: "/nonexistent", Model: "scripted",
+		ConfigJSON: []byte(`{"max_steps":24,"provider_budget":80}`),
+	}); err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if err := store.StartTask(ctx, "task-ws"); err != nil {
+		t.Fatalf("StartTask() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	script := crashScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"overridden","evidence":["obs-000001"]}</runstead_final>`,
+	)
+	resumeCode, resumeOut, resumeErr := runResume(context.Background(),
+		"task-ws", "--state-dir", stateDir, "--scripted", script,
+		"--workspace", realWorkspace, "--min-start-interval", "1ms", "--log-level", "error")
+	if resumeCode != exitSuccess {
+		t.Fatalf("resume exit = %d, want 0\nstderr:\n%s", resumeCode, resumeErr)
+	}
+	if !strings.Contains(resumeOut, "outcome: completed") {
+		t.Fatalf("resume stdout missing completed:\n%s", resumeOut)
+	}
+}
+
 // TestResumeCrashDuringRecoveryLeavesConsistentState kills the resume process
 // after the provider reconciliation commit: the journaled prefix must survive,
 // and a second resume must complete the task without re-reconciling.
