@@ -49,6 +49,14 @@ const (
 	// OutcomeFinalIncomplete means the model emitted a grounded final with
 	// status incomplete: the run ends honestly without claiming completion.
 	OutcomeFinalIncomplete Outcome = "final_incomplete"
+	// OutcomeApprovalRequired means the run paused because a write proposal
+	// requires an operator approval that has not been recorded. The task is
+	// NOT finalized: it stays durably resumable in status running, and the
+	// operator decides the pending action with `runstead decide` before a
+	// normal `runstead resume` continues. This is a control-plane dependency,
+	// not a protocol correction: no correction budget is consumed and no
+	// further provider attempt is made to wait for the operator.
+	OutcomeApprovalRequired Outcome = "approval_required"
 )
 
 // exitSuccess, exitCanceled and the usage/unavailable codes are shared with the
@@ -91,6 +99,8 @@ func (o Outcome) ExitCode() int {
 		return exitOutcomeBase + 11
 	case OutcomeFinalIncomplete:
 		return exitOutcomeBase + 9
+	case OutcomeApprovalRequired:
+		return exitOutcomeBase + 12
 	default:
 		return exitUnknown
 	}
@@ -125,6 +135,8 @@ func (o Outcome) StopReason() string {
 		return "durable state could not be persisted"
 	case OutcomeFinalIncomplete:
 		return "grounded final reported incomplete"
+	case OutcomeApprovalRequired:
+		return "write approval required"
 	default:
 		return "unknown terminal outcome"
 	}
@@ -144,6 +156,10 @@ type Result struct {
 	Evidence       []string
 	Classification string
 	Err            error
+	// PendingActionID is set when Outcome is OutcomeApprovalRequired: the
+	// write action the operator must decide with `runstead decide <task-id>
+	// <action-id> approved|rejected`.
+	PendingActionID string
 }
 
 func (r Result) terminal() bool {

@@ -1,9 +1,11 @@
-# Read-only tool registry
+# Tool registry
 
-Issue #6 adds a small static registry in `internal/tools`. It is the concrete
-implementation of the existing `protocol.ToolCatalog` seam. The registry is
-strictly observational: it has no write tools, shell, network access, plugin
-loading or model-controlled command arguments.
+The registry in `internal/tools` is the concrete implementation of the
+existing `protocol.ToolCatalog` seam. It started as strictly observational
+(issue #6); issue #10 adds two policy-gated write tools (`write_file`,
+`apply_patch`). There is still no shell, network access, plugin loading or
+model-controlled command arguments. See `docs/writes.md` for the full write
+safety model; this page covers the registry surface.
 
 ## Tools and arguments
 
@@ -33,14 +35,29 @@ for `search_text`.
 
 for `git_status` and `git_diff`.
 
+```json
+{"path":"relative/file.txt","content":"new content","expected_before_hash":"<sha256 or \"absent\">"}
+```
+
+for `write_file`.
+
+```json
+{"path":"relative/file.txt","patch":"--- ...\n+++ ...\n@@ -S,C +S,C @@\n...","expected_before_hash":"<sha256>"}
+```
+
+for `apply_patch`.
+
 Unknown tools, unknown fields, missing fields, wrong JSON types, empty paths
 and empty queries are rejected before execution. Validation performs no tool
 execution. `Execute` validates again so a direct caller cannot bypass the
 registry boundary.
 
-`list_files` returns one directory level, sorted by normalized relative path.
-Entries are labeled as regular files, directories, symlinks or other targets;
-symlinks are listed but never followed by the listing operation.
+`read_file` returns the file content (bounded) plus a `sha256` of the
+COMPLETE file content, which is the stale-state precondition source for the
+write tools. `list_files` returns one directory level, sorted by normalized
+relative path. Entries are labeled as regular files, directories, symlinks or
+other targets; symlinks are listed but never followed by the listing
+operation.
 
 ## Workspace boundary
 
@@ -51,6 +68,13 @@ boundary check; textual prefix checks are not used. A symlink that resolves
 outside the workspace fails with `symlink_escape`. Internal symlinks are
 allowed for file reads and searches, while directory listings preserve their
 symlink type without following them.
+
+Write targets use the same canonical security model plus fail-closed rules
+for symlinks: a write never follows or replaces a symlink, even an internal
+one. Missing parent directories and non-regular targets are typed failures.
+The effect boundary revalidates canonical containment and the before-state
+immediately before the rename (a revalidation, not a compare-and-swap; see
+`docs/writes.md` for the honest residual limitation).
 
 Observations return normalized slash-separated paths relative to the workspace.
 
@@ -66,6 +90,10 @@ Limits are configured through `tools.Limits` and default to:
 | Search output bytes | 128 KiB |
 | Git stdout bytes | 64 KiB |
 | Git stderr bytes | 16 KiB |
+| Write content bytes | 256 KiB |
+| Patch argument bytes | 128 KiB |
+| Patch target file bytes | 4 MiB |
+| Diff evidence bytes | 8 KiB |
 | Search timeout | 2 seconds |
 | Git timeout | 2 seconds |
 
@@ -104,3 +132,16 @@ failures. Git stdout and stderr are separately bounded.
 All file contents, search matches and Git output are environment observations,
 not trusted control data. The registry does not log their contents or copy
 them into failure messages.
+
+## Write tools
+
+`write_file` and `apply_patch` are policy-gated write tools: the agent loop
+consults the control-plane policy before any execution decision, and approval
+comes only from persisted operator records (`runstead decide`), never from
+model output. Both tools require `expected_before_hash` (the sha256 reported
+by `read_file`, or `absent` for a new file) and refuse to execute when the
+current state no longer matches. Effects are temp-file-plus-rename, executed
+outside any SQLite transaction, and every successful write returns structured
+`WriteEvidence` (before/after hashes, byte count, change kind, bounded diff).
+See `docs/writes.md` for the complete safety, approval, evidence and
+reconciliation contract.

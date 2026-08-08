@@ -450,7 +450,7 @@ func TestOutcomeExitCodesAreStableAndDistinct(t *testing.T) {
 	}
 }
 
-func TestSystemContractIsDeterministicAndDescribesOnlyReadOnlyTools(t *testing.T) {
+func TestSystemContractIsDeterministicAndDescribesRegisteredTools(t *testing.T) {
 	workspace := t.TempDir()
 	registry, err := tools.NewRegistry(tools.Options{Workspace: workspace})
 	if err != nil {
@@ -467,13 +467,16 @@ func TestSystemContractIsDeterministicAndDescribesOnlyReadOnlyTools(t *testing.T
 	if first != second {
 		t.Fatal("system contract is not deterministic")
 	}
-	for _, tool := range []string{"read_file", "list_files", "search_text", "git_status", "git_diff"} {
+	for _, tool := range []string{"read_file", "list_files", "search_text", "git_status", "git_diff", "write_file", "apply_patch"} {
 		if !strings.Contains(first, tool) {
 			t.Errorf("system contract missing tool %q", tool)
 		}
 	}
-	if strings.Contains(first, "write_file") || strings.Contains(first, "apply_patch") {
-		t.Fatal("system contract advertises write tools that do not exist")
+	if !strings.Contains(first, "[read-only]") || !strings.Contains(first, "[policy-gated write]") {
+		t.Fatal("system contract must distinguish read-only and policy-gated write tools")
+	}
+	if !strings.Contains(first, "expected_before_hash") {
+		t.Fatal("system contract missing the stale-state precondition rule")
 	}
 	if !strings.Contains(first, "runstead.protocol.v1") {
 		t.Fatal("system contract missing protocol version")

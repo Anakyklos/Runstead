@@ -177,7 +177,16 @@ func verifiedProgress(snapshot *state.RecoverySnapshot) []progressItem {
 	}
 	completed := make(map[string]bool, len(snapshot.ToolAttempts))
 	for _, attempt := range snapshot.ToolAttempts {
-		if attempt.Status == "completed" && attempt.EvidenceID != "" {
+		// Completed attempts and write attempts reconciled as verified
+		// completed carry citable evidence.
+		if attempt.EvidenceID == "" {
+			continue
+		}
+		if attempt.Status == "completed" {
+			completed[attempt.EvidenceID] = true
+			continue
+		}
+		if attempt.Status == "reconciled" && attempt.RecoveryReason == "write_effect_completed" {
 			completed[attempt.EvidenceID] = true
 		}
 	}
@@ -216,30 +225,55 @@ func unresolvedFailures(snapshot *state.RecoverySnapshot) []failureItem {
 }
 
 // uncertainAttempts returns deterministic human-readable lines for provider
-// requests that may have reached upstream and interrupted tool attempts.
+// requests that may have reached upstream and interrupted tool attempts,
+// including reconciled attempts whose meaning the model must understand
+// (replay-safe reads, writes that never started, conservative provider
+// debits).
 func uncertainAttempts(snapshot *state.RecoverySnapshot) []string {
 	var lines []string
-	replaySafePrepared := 0
+	replaySafe := 0
+	writeNotStarted := 0
 	for _, attempt := range snapshot.ToolAttempts {
 		switch attempt.Status {
 		case "prepared", "running", "observed", "verified", "uncertain", "verification_failed", "planned":
 			if attempt.RecoveryClass == 1 {
-				replaySafePrepared++
+				replaySafe++
 			} else {
+				lines = append(lines, fmt.Sprintf("tool %s (%s) was interrupted and cannot be reconciled safely; human review required",
+					attempt.ExecutionID, attempt.Tool))
+			}
+		case "reconciled":
+			switch attempt.RecoveryReason {
+			case "replay_safe_observation":
+				replaySafe++
+			case "write_effect_not_started":
+				writeNotStarted++
+			case "write_effect_completed":
+				// Verified progress; rendered in the verified-progress section.
+			case "write_effect_unreconcilable":
 				lines = append(lines, fmt.Sprintf("tool %s (%s) was interrupted and cannot be reconciled safely; human review required",
 					attempt.ExecutionID, attempt.Tool))
 			}
 		}
 	}
-	if replaySafePrepared > 0 {
+	if replaySafe > 0 {
 		lines = append(lines, fmt.Sprintf("%d prepared observation(s) were reconciled as replay-safe; a re-proposal executes as a new attempt with fresh evidence",
-			replaySafePrepared))
+			replaySafe))
+	}
+	if writeNotStarted > 0 {
+		lines = append(lines, fmt.Sprintf("%d write attempt(s) provably never started and were reconciled; a re-proposal executes as a new attempt with a fresh before-hash",
+			writeNotStarted))
 	}
 	for _, attempt := range snapshot.ProviderAttempts {
 		switch attempt.Status {
 		case "prepared", "running", "uncertain", "planned":
 			lines = append(lines, fmt.Sprintf("provider request %s (execution %s) may have reached upstream; outcome unknown; conservative debit preserved; not retried",
 				attempt.ClientRequestID, attempt.ExecutionID))
+		case "reconciled":
+			if attempt.Uncertain {
+				lines = append(lines, fmt.Sprintf("provider request %s (execution %s) may have reached upstream; outcome unknown; conservative debit preserved; not retried",
+					attempt.ClientRequestID, attempt.ExecutionID))
+			}
 		}
 	}
 	return lines

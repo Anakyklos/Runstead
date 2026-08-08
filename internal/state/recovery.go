@@ -75,9 +75,10 @@ type ReconcileProviderAttempt struct {
 	ApplyConservativeDebit bool
 }
 
-// MarkRecoveryStarted moves the task to 'running' (if it was still planned),
-// increments the persisted resume count and appends the recovery_started
-// journal event in one transaction.
+// MarkRecoveryStarted moves the task to 'running' (if it was still planned or
+// paused for approval), increments the persisted resume count, clears a
+// previous approval-pause projection (outcome/stop_reason) and appends the
+// recovery_started journal event in one transaction.
 func (s *Store) MarkRecoveryStarted(ctx context.Context, taskID, reason string) error {
 	now := s.now()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -86,7 +87,8 @@ func (s *Store) MarkRecoveryStarted(ctx context.Context, taskID, reason string) 
 	}
 	defer tx.Rollback()
 	result, err := tx.ExecContext(ctx,
-		`UPDATE tasks SET status = 'running', resume_count = resume_count + 1 WHERE task_id = ? AND status IN ('planned', 'running')`,
+		`UPDATE tasks SET status = 'running', outcome = '', stop_reason = '', resume_count = resume_count + 1
+		 WHERE task_id = ? AND status IN ('planned', 'running')`,
 		taskID)
 	if err != nil {
 		return fmt.Errorf("mark recovery start: %w", err)
@@ -362,6 +364,14 @@ type RecoveryToolAttempt struct {
 	RecoveryClass  int
 	EvidenceID     string
 	RecoveryReason string
+	// EffectAfterHash is the expected after-state hash persisted at TX 1 for
+	// write attempts (empty for read-only attempts).
+	EffectAfterHash string
+	// PlannedEffectJSON is the bounded planned diff persisted at TX 1 for
+	// write attempts (empty for read-only attempts). It is intent evidence
+	// only; recovery promotes it to reconciled completed evidence only when
+	// the current filesystem state matches EffectAfterHash.
+	PlannedEffectJSON string
 }
 
 // RecoveryProviderAttempt is one concrete governed provider execution.
@@ -454,7 +464,7 @@ func (s *Store) loadRecoveryActions(ctx context.Context, taskID string) ([]Recov
 
 func (s *Store) loadRecoveryToolAttempts(ctx context.Context, taskID string) ([]RecoveryToolAttempt, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT execution_id, action_id, tool, arguments_json, status, classification, recovery_class, evidence_id, recovery_reason
+		`SELECT execution_id, action_id, tool, arguments_json, status, classification, recovery_class, evidence_id, recovery_reason, effect_after_hash, planned_diff_json
 		 FROM tool_attempts WHERE task_id = ? ORDER BY created_at, execution_id`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load recovery tool attempts: %w", err)
@@ -464,7 +474,8 @@ func (s *Store) loadRecoveryToolAttempts(ctx context.Context, taskID string) ([]
 	for rows.Next() {
 		var attempt RecoveryToolAttempt
 		if err := rows.Scan(&attempt.ExecutionID, &attempt.ActionID, &attempt.Tool, &attempt.ArgumentsJSON,
-			&attempt.Status, &attempt.Classification, &attempt.RecoveryClass, &attempt.EvidenceID, &attempt.RecoveryReason); err != nil {
+			&attempt.Status, &attempt.Classification, &attempt.RecoveryClass, &attempt.EvidenceID, &attempt.RecoveryReason,
+			&attempt.EffectAfterHash, &attempt.PlannedEffectJSON); err != nil {
 			return nil, fmt.Errorf("scan recovery tool attempt: %w", err)
 		}
 		attempts = append(attempts, attempt)

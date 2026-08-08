@@ -79,6 +79,9 @@ func (s *Store) StartTask(ctx context.Context, taskID string) error {
 
 // FinalizeTask persists the terminal outcome, summary and evidence, updates
 // the task status projection and appends task_finalized in one transaction.
+// A task with a pending write approval can never be finalized as completed:
+// the state machine refuses the transition (ErrPendingApprovals) so a
+// mandatory write is never silently skipped around a completed task.
 func (s *Store) FinalizeTask(ctx context.Context, record TaskFinalize) error {
 	now := s.now()
 	status := terminalStatus(record.Outcome)
@@ -87,6 +90,23 @@ func (s *Store) FinalizeTask(ctx context.Context, record TaskFinalize) error {
 		return fmt.Errorf("begin task finalize: %w", err)
 	}
 	defer tx.Rollback()
+	if status == "completed" {
+		var pending int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*)
+			 FROM write_policy_decisions d
+			 JOIN actions a ON a.task_id = d.task_id AND a.action_id = d.action_id
+			 WHERE d.task_id = ? AND d.decision = 'approval_required'
+			   AND NOT EXISTS (
+			       SELECT 1 FROM approvals ap
+			       WHERE ap.task_id = d.task_id AND ap.fingerprint = a.fingerprint
+			   )`, record.TaskID).Scan(&pending); err != nil {
+			return fmt.Errorf("check pending approvals before finalize: %w", err)
+		}
+		if pending > 0 {
+			return fmt.Errorf("finalize task %q as completed: %w (%d)", record.TaskID, ErrPendingApprovals, pending)
+		}
+	}
 	result, err := tx.ExecContext(ctx,
 		`UPDATE tasks
 		 SET status = ?, outcome = ?, stop_reason = ?, summary = ?, finished_at = ?

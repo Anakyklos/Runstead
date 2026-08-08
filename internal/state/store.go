@@ -269,6 +269,16 @@ type Persistence interface {
 	// CompleteToolAttempt persists the tool result and observation evidence
 	// (TX 2) after the tool effect returned.
 	CompleteToolAttempt(ctx context.Context, record ToolAttemptCompleted) error
+	// RecordWritePolicyDecision persists one typed control-plane decision for
+	// a write proposal (issue #10) with its journal event.
+	RecordWritePolicyDecision(ctx context.Context, record WritePolicyDecision) error
+	// MarkTaskApprovalRequired records a control-plane pause: the task stays
+	// resumable (status running) with the pending action and a
+	// task_approval_required event; no terminal finalize happens.
+	MarkTaskApprovalRequired(ctx context.Context, taskID, actionID, reason string) error
+	// PendingApprovals returns the write actions of one task still awaiting an
+	// operator decision (approval_required policy decision, no approval row).
+	PendingApprovals(ctx context.Context, taskID string) ([]PendingApproval, error)
 	// FinalizeTask persists the terminal task outcome, summary and evidence.
 	FinalizeTask(ctx context.Context, record TaskFinalize) error
 }
@@ -323,6 +333,16 @@ type ToolAttemptPrepared struct {
 	Tool          string
 	Arguments     []byte
 	RecoveryClass int
+	// EffectAfterHash is the deterministic expected after-state hash of a
+	// write effect, computed from the real arguments before TX 1 commits
+	// (issue #10). It is empty for read-only attempts and is used by recovery
+	// to reconcile an interrupted write against the current filesystem state.
+	EffectAfterHash string
+	// PlannedEffect is the bounded, sanitized planned diff of a write effect
+	// (issue #10 review). It is evidence of intent only: recovery promotes it
+	// to reconciled completed evidence only when the current filesystem state
+	// matches EffectAfterHash. Empty for read-only attempts.
+	PlannedEffect tools.PlannedEffect
 }
 
 // ToolAttemptCompleted is the TX 2 result of one concrete tool execution.

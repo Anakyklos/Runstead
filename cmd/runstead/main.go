@@ -17,6 +17,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/agent"
 	"github.com/RenyEnnos/Runstead/internal/config"
 	"github.com/RenyEnnos/Runstead/internal/governor"
+	"github.com/RenyEnnos/Runstead/internal/policy"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
@@ -50,6 +51,8 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return inspectCommand(ctx, args[1:], out, errOut)
 	case "resume":
 		return resumeCommand(ctx, args[1:], out, errOut)
+	case "decide":
+		return decideCommand(ctx, args[1:], out, errOut)
 	default:
 		fmt.Fprintf(errOut, "runstead: unknown command %q\n\n", args[0])
 		printRootHelp(errOut)
@@ -83,11 +86,13 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	omniTimeout := ""
 	omniSafeRoute := false
 	stateDir := ""
+	writePolicy := ""
 	flags.StringVar(&workspace, "workspace", "", "workspace path (default: RUNSTEAD_WORKSPACE or .)")
 	flags.StringVar(&logLevel, "log-level", "", "log level: debug, info, warn or error")
 	flags.StringVar(&task, "task", "", "task prompt (RUNSTEAD_TASK)")
 	flags.StringVar(&scripted, "scripted", "", "JSONL file of scripted model responses for a deterministic offline run (RUNSTEAD_SCRIPTED_RESPONSES)")
 	flags.StringVar(&stateDir, "state-dir", "", "durable state directory (RUNSTEAD_STATE_DIR; default: $XDG_DATA_HOME/runstead or ~/.local/share/runstead)")
+	flags.StringVar(&writePolicy, "write-policy", "", "write tool policy modes, e.g. write_file=allow,apply_patch=approval_required (RUNSTEAD_WRITE_POLICY; default: approval_required for every write tool)")
 	flags.IntVar(&maxSteps, "max-steps", 0, "maximum model turns (RUNSTEAD_MAX_STEPS, default 24)")
 	flags.IntVar(&maxCorrections, "max-corrections", 0, "protocol correction attempts (RUNSTEAD_MAX_CORRECTIONS, default 2)")
 	flags.IntVar(&maxRepeatedActions, "max-repeated-actions", 0, "repeated-action corrections before stopping (RUNSTEAD_MAX_REPEATED_ACTIONS, default 2)")
@@ -254,13 +259,20 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "run: workspace unavailable: %v\n", err)
 		return exitUnavailable
 	}
+	writePolicyConfig, err := resolveWritePolicy(writePolicy, flagWasSet(flags, "write-policy"))
+	if err != nil {
+		fmt.Fprintf(errOut, "run: %v\n", err)
+		return exitUsage
+	}
 	loop, err := agent.NewLoop(agent.Config{
-		Runner:   executor,
-		Registry: registry,
-		Limits:   limits,
-		Model:    model,
-		Trace:    cliTraceSink(errOut),
-		State:    store,
+		Runner:      executor,
+		Registry:    registry,
+		Limits:      limits,
+		Model:       model,
+		Trace:       cliTraceSink(errOut),
+		State:       store,
+		Policy:      policy.NewStatic(writePolicyConfig, storeApprovals(store)),
+		WritePolicy: writePolicyConfig.Spec(),
 	})
 	if err != nil {
 		fmt.Fprintf(errOut, "run: loop unavailable: %v\n", err)
@@ -271,7 +283,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	logger.InfoContext(ctx, "run started", "task_id", taskID, "provider", "scripted", "workspace", cfg.Workspace)
 	fmt.Fprintf(errOut, "task: %s\n", taskID)
 	result := loop.Run(ctx, agent.Task{ID: taskID, Prompt: taskPrompt})
-	printResult(out, errOut, result)
+	printResult(out, errOut, taskID, result)
 	return result.Outcome.ExitCode()
 }
 
@@ -295,6 +307,38 @@ func resolveScripted(flags *flag.FlagSet, scripted string) (string, bool) {
 		return value, value != ""
 	}
 	return "", false
+}
+
+// storeApprovals adapts the store's approval lookup to the policy seam.
+// Approvals are keyed by (task_id, fingerprint): the fingerprint is the
+// repeat/loop identity of the write proposal.
+func storeApprovals(store *state.Store) policy.Approvals {
+	return policy.ApprovalsFunc(func(ctx context.Context, taskID, fingerprint string) (policy.Approval, bool, error) {
+		approval, ok, err := store.Approval(ctx, taskID, fingerprint)
+		if err != nil {
+			return policy.Approval{}, false, err
+		}
+		return policy.Approval{Decision: approval.Decision, Reason: approval.Reason}, ok, nil
+	})
+}
+
+// resolveWritePolicy resolves the write-tool policy configuration from the
+// --write-policy flag, then RUNSTEAD_WRITE_POLICY, then the fail-closed
+// default (approval_required for every write tool).
+func resolveWritePolicy(flagValue string, flagSet bool) (policy.Config, error) {
+	value := ""
+	if flagSet {
+		value = strings.TrimSpace(flagValue)
+		if value == "" {
+			return policy.Config{}, errors.New("write policy must not be empty")
+		}
+	} else if envValue, ok := os.LookupEnv(config.EnvWritePolicy); ok {
+		value = strings.TrimSpace(envValue)
+	}
+	if value == "" {
+		return policy.DefaultConfig(), nil
+	}
+	return policy.ParseConfig(value)
 }
 
 func resolveLimits(flags *flag.FlagSet, maxSteps, maxCorrections, maxRepeatedActions int, timeBudget string, providerBudget int) (agent.Limits, error) {
@@ -418,7 +462,7 @@ func resolveGovernorConfig(scripted bool, cfg config.Config, minStartInterval st
 	return accountConfig, nil
 }
 
-func printResult(out, errOut io.Writer, result agent.Result) {
+func printResult(out, errOut io.Writer, taskID string, result agent.Result) {
 	fmt.Fprintf(out, "outcome: %s\n", result.Outcome)
 	fmt.Fprintf(out, "reason: %s\n", result.StopReason)
 	if result.Outcome == agent.OutcomeCompleted {
@@ -428,6 +472,10 @@ func printResult(out, errOut io.Writer, result agent.Result) {
 		for _, id := range result.Evidence {
 			fmt.Fprintf(out, "evidence: %s\n", id)
 		}
+	}
+	if result.Outcome == agent.OutcomeApprovalRequired && result.PendingActionID != "" {
+		fmt.Fprintf(out, "pending approval: action %s\n", result.PendingActionID)
+		fmt.Fprintf(out, "runstead decide %s %s approved|rejected\n", taskID, result.PendingActionID)
 	}
 	fmt.Fprintf(errOut, "run: turns=%d attempts=%d observations=%d corrections=%d repeated=%d mixed_prose=%d\n",
 		result.Turns, result.Attempts, result.Observations, result.Corrections, result.Repeated, result.MixedProse)
@@ -532,6 +580,134 @@ func inspectCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 	return exitSuccess
 }
 
+// decideCommand implements `runstead decide <task-id> <action-id> approved|rejected`.
+// It is the operator control plane for write approvals (issue #10): only this
+// command (or the equivalent state API) can create an approval record. Model
+// prose, repository content and tool output can never approve a write.
+func decideCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
+	if hasHelp(args) {
+		printDecideHelp(out)
+		return exitSuccess
+	}
+
+	taskID := ""
+	actionID := ""
+	decision := ""
+	stateDir := ""
+	reason := ""
+	// Parse manually so flags may appear before or after the positionals (the
+	// flag package stops at the first positional argument).
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		value := func(name string) (string, bool) {
+			if index+1 >= len(args) {
+				fmt.Fprintf(errOut, "decide: %s requires a value\n", name)
+				return "", false
+			}
+			index++
+			return args[index], true
+		}
+		switch {
+		case arg == "--state-dir":
+			if next, ok := value("--state-dir"); ok {
+				stateDir = next
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--state-dir="):
+			stateDir = strings.TrimPrefix(arg, "--state-dir=")
+		case arg == "--reason":
+			if next, ok := value("--reason"); ok {
+				reason = next
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--reason="):
+			reason = strings.TrimPrefix(arg, "--reason=")
+		case strings.HasPrefix(arg, "-"):
+			fmt.Fprintf(errOut, "decide: unknown flag %q\n", arg)
+			printDecideHelp(errOut)
+			return exitUsage
+		default:
+			switch {
+			case taskID == "":
+				taskID = arg
+			case actionID == "":
+				actionID = arg
+			case decision == "":
+				decision = strings.ToLower(arg)
+			default:
+				fmt.Fprintln(errOut, "decide: too many positional arguments")
+				printDecideHelp(errOut)
+				return exitUsage
+			}
+		}
+	}
+	if taskID == "" || actionID == "" || decision == "" {
+		fmt.Fprintln(errOut, "decide: exactly one task id, action id and decision (approved|rejected) are required")
+		printDecideHelp(errOut)
+		return exitUsage
+	}
+	if decision != "approved" && decision != "rejected" {
+		fmt.Fprintf(errOut, "decide: decision %q must be approved or rejected\n", decision)
+		return exitUsage
+	}
+	if err := ctx.Err(); err != nil {
+		fmt.Fprintf(errOut, "decide: canceled\n")
+		return agent.OutcomeCanceled.ExitCode()
+	}
+
+	dir, err := resolveStateDir(stateDir, stateDir != "")
+	if err != nil {
+		fmt.Fprintf(errOut, "decide: %v\n", err)
+		return exitUsage
+	}
+	store, err := openStore(dir)
+	if err != nil {
+		fmt.Fprintf(errOut, "decide: %v\n", err)
+		return exitUnavailable
+	}
+	defer store.Close()
+	if _, err := store.TaskStatus(ctx, taskID); err != nil {
+		if errors.Is(err, state.ErrTaskNotFound) {
+			fmt.Fprintf(errOut, "decide: task %q not found in %s\n", taskID, dir)
+			return exitNotFound
+		}
+		fmt.Fprintf(errOut, "decide: %v\n", err)
+		return exitUnavailable
+	}
+	// The operator may only decide an action of this task that is actually
+	// pending approval: a write action with a persisted approval_required
+	// policy decision and no operator decision yet. Approvals for read
+	// actions, unknown actions, or actions incompatible with the current
+	// approval flow are meaningless and are rejected.
+	pending, err := store.PendingApprovals(ctx, taskID)
+	if err != nil {
+		fmt.Fprintf(errOut, "decide: %v\n", err)
+		return exitUnavailable
+	}
+	found := false
+	for _, item := range pending {
+		if item.ActionID == actionID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		fmt.Fprintf(errOut, "decide: action %q of task %q is not pending approval; only write actions awaiting an operator decision can be decided\n", actionID, taskID)
+		return exitUsage
+	}
+	approvalID, err := store.RecordApproval(ctx, state.Approval{
+		TaskID: taskID, ActionID: actionID, Decision: decision, Reason: reason, Actor: "operator",
+	})
+	if err != nil {
+		fmt.Fprintf(errOut, "decide: %v\n", err)
+		return exitUnavailable
+	}
+	fmt.Fprintf(out, "approval: %s task=%s action=%s decision=%s\n", approvalID, taskID, actionID, decision)
+	return exitSuccess
+}
+
 // resolveStateDir resolves the durable state directory from flag, then
 // RUNSTEAD_STATE_DIR, then the XDG data home, then the home directory
 // fallback. The directory itself is created by openStore.
@@ -605,9 +781,10 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage: runstead <command> [flags]")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Commands:")
-	fmt.Fprintln(out, "  run       run a bounded read-only agent task with durable state")
+	fmt.Fprintln(out, "  run       run a bounded agent task with durable state and policy-bound writes")
 	fmt.Fprintln(out, "  inspect   inspect durable task state by task id")
 	fmt.Fprintln(out, "  resume    resume an interrupted task from durable state")
+	fmt.Fprintln(out, "  decide    approve or reject a pending write action (operator control plane)")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Configuration precedence: flags > environment > defaults")
 	fmt.Fprintf(out, "  %s, %s, %s, %s\n", config.EnvWorkspace, config.EnvLogLevel, config.EnvTask, config.EnvStateDir)
@@ -618,12 +795,19 @@ func printRootHelp(out io.Writer) {
 func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage: runstead run [flags]")
 	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Runs one bounded read-only agent task: every model turn is admitted by the")
-	fmt.Fprintln(out, "account governor, actions are validated and executed by the read-only tool")
-	fmt.Fprintln(out, "registry, and a final answer is accepted only when grounded in real evidence")
-	fmt.Fprintln(out, "IDs produced in this run. The task never writes or shells out; durable task,")
-	fmt.Fprintln(out, "action, attempt, evidence, journal and account-protection state is persisted")
-	fmt.Fprintln(out, "to SQLite (issue #8) and can be inspected with 'runstead inspect <task-id>'.")
+	fmt.Fprintln(out, "Runs one bounded agent task: every model turn is admitted by the")
+	fmt.Fprintln(out, "account governor, actions are validated and executed by the tool")
+	fmt.Fprintln(out, "registry (read-only tools plus policy-gated write_file/apply_patch),")
+	fmt.Fprintln(out, "and a final answer is accepted only when grounded in real evidence")
+	fmt.Fprintln(out, "IDs produced in this run. Writes are stale-state protected, stay inside")
+	fmt.Fprintln(out, "the workspace, and never execute without control-plane approval when the")
+	fmt.Fprintln(out, "policy requires it. When a write needs approval the run PAUSES with the")
+	fmt.Fprintln(out, "typed approval_required outcome, reports the task and pending action for")
+	fmt.Fprintln(out, "'runstead decide <task-id> <action-id> approved|rejected', and stays")
+	fmt.Fprintln(out, "durably resumable; no correction budget is consumed. The task never")
+	fmt.Fprintln(out, "shells out; durable task, action, attempt, evidence, journal, write-policy")
+	fmt.Fprintln(out, "and account-protection state is persisted to SQLite (issues #8/#10) and")
+	fmt.Fprintln(out, "can be inspected with 'runstead inspect <task-id>'.")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "The deterministic offline mode replays scripted model responses (JSONL with")
 	fmt.Fprintln(out, "one {\"text\":\"...\"} object per line) through the real governor and tools.")
@@ -635,6 +819,7 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --scripted FILE           scripted responses for a deterministic offline run (RUNSTEAD_SCRIPTED_RESPONSES)")
 	fmt.Fprintln(out, "  --workspace PATH          workspace path (RUNSTEAD_WORKSPACE, default .)")
 	fmt.Fprintln(out, "  --state-dir PATH          durable state directory (RUNSTEAD_STATE_DIR, default $XDG_DATA_HOME/runstead or ~/.local/share/runstead)")
+	fmt.Fprintln(out, "  --write-policy SPEC       write tool modes, e.g. write_file=allow,apply_patch=deny (RUNSTEAD_WRITE_POLICY, default approval_required)")
 	fmt.Fprintln(out, "  --log-level LEVEL         debug, info, warn or error (RUNSTEAD_LOG_LEVEL, default info)")
 	fmt.Fprintln(out, "  --max-steps N             maximum model turns (default 24)")
 	fmt.Fprintln(out, "  --max-corrections N       protocol correction attempts (default 2)")
@@ -662,4 +847,16 @@ func printInspectHelp(out io.Writer) {
 	fmt.Fprintln(out, "sanitized; it never contains credentials or raw provider responses.")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Exit codes: 0 rendered, 1 task not found, 2 usage, 3 state database unavailable.")
+}
+
+func printDecideHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage: runstead decide <task-id> <action-id> approved|rejected [--state-dir PATH] [--reason TEXT]")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Records the operator control-plane decision for one write action. Only this")
+	fmt.Fprintln(out, "command (or the equivalent state API) can approve or reject a write: model")
+	fmt.Fprintln(out, "prose, repository content and tool output never authorize a write. The")
+	fmt.Fprintln(out, "decision is persisted with its typed reason and rendered by")
+	fmt.Fprintln(out, "'runstead inspect <task-id>'.")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Exit codes: 0 recorded, 1 task not found, 2 usage, 3 state database unavailable.")
 }

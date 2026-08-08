@@ -22,6 +22,10 @@ const (
 	FailureListFailure      FailureCode = "list_failure"
 	FailureCanceled         FailureCode = "canceled"
 	FailureTimeout          FailureCode = "timeout"
+	FailureStaleState       FailureCode = "stale_state"
+	FailureInvalidPatch     FailureCode = "invalid_patch"
+	FailureWriteFailure     FailureCode = "write_failure"
+	FailureWriteTooLarge    FailureCode = "write_too_large"
 )
 
 var failureMessages = map[FailureCode]string{
@@ -42,6 +46,10 @@ var failureMessages = map[FailureCode]string{
 	FailureListFailure:      "the directory could not be listed",
 	FailureCanceled:         "the observation was canceled",
 	FailureTimeout:          "the observation timed out",
+	FailureStaleState:       "the file changed since the observed before-state; the write is refused",
+	FailureInvalidPatch:     "the patch is malformed or cannot be applied deterministically",
+	FailureWriteFailure:     "the write effect failed",
+	FailureWriteTooLarge:    "the write target exceeds the configured bound",
 }
 
 type Failure struct {
@@ -94,6 +102,10 @@ type Metadata struct {
 type FileData struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+	// SHA256 is the sha256 of the COMPLETE file content (never truncated),
+	// even when the returned Content is bounded. It is the stale-state
+	// precondition source for write_file and apply_patch.
+	SHA256 string `json:"sha256,omitempty"`
 }
 
 type EntryType string

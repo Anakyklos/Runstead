@@ -3,6 +3,8 @@ package tools
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -19,7 +21,7 @@ func (r *Registry) executeReadFile(ctx context.Context, observation Observation,
 		observation.Failure = newFailure(FailureWrongType)
 		return observation
 	}
-	content, original, truncated, binary, invalid, err := readBoundedFile(ctx, resolved.canonical, r.limits.MaxReadBytes)
+	content, original, truncated, binary, invalid, hash, err := readBoundedFile(ctx, resolved.canonical, r.limits.MaxReadBytes)
 	if err != nil {
 		if failure := contextFailure(ctx); failure != nil {
 			observation.Failure = failure
@@ -39,7 +41,7 @@ func (r *Registry) executeReadFile(ctx context.Context, observation Observation,
 	content = validUTF8Prefix(content)
 	observation.Success = true
 	observation.Truncated = truncated
-	observation.Data = FileData{Path: resolved.relative, Content: string(content)}
+	observation.Data = FileData{Path: resolved.relative, Content: string(content), SHA256: hash}
 	observation.Metadata = Metadata{
 		Source:        ToolReadFile,
 		Untrusted:     true,
@@ -52,10 +54,10 @@ func (r *Registry) executeReadFile(ctx context.Context, observation Observation,
 	return observation
 }
 
-func readBoundedFile(ctx context.Context, path string, limit int) ([]byte, int64, bool, bool, bool, error) {
+func readBoundedFile(ctx context.Context, path string, limit int) ([]byte, int64, bool, bool, bool, string, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, 0, false, false, false, err
+		return nil, 0, false, false, false, "", err
 	}
 	defer file.Close()
 
@@ -65,14 +67,16 @@ func readBoundedFile(ctx context.Context, path string, limit int) ([]byte, int64
 	pending := []byte(nil)
 	binary := false
 	invalid := false
+	hasher := sha256.New()
 	for {
 		if failure := contextFailure(ctx); failure != nil {
-			return nil, original, false, false, false, errors.New(string(failure.Code))
+			return nil, original, false, false, false, "", errors.New(string(failure.Code))
 		}
 		count, readErr := file.Read(buffer)
 		if count > 0 {
 			chunk := buffer[:count]
 			original += int64(count)
+			hasher.Write(chunk)
 			if len(content) < limit {
 				take := limit - len(content)
 				if take > len(chunk) {
@@ -93,13 +97,13 @@ func readBoundedFile(ctx context.Context, path string, limit int) ([]byte, int64
 			break
 		}
 		if readErr != nil {
-			return nil, original, false, false, false, readErr
+			return nil, original, false, false, false, "", readErr
 		}
 	}
 	if len(pending) != 0 {
 		invalid = true
 	}
-	return content, original, original > int64(limit), binary, invalid, nil
+	return content, original, original > int64(limit), binary, invalid, hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func scanUTF8(pending, chunk []byte) ([]byte, bool) {

@@ -18,29 +18,39 @@ const (
 	ToolSearchText = "search_text"
 	ToolGitStatus  = "git_status"
 	ToolGitDiff    = "git_diff"
+	ToolWriteFile  = "write_file"
+	ToolApplyPatch = "apply_patch"
 )
 
 type Limits struct {
-	MaxReadBytes      int
-	MaxListEntries    int
-	MaxSearchMatches  int
-	MaxSearchBytes    int
-	MaxGitStdoutBytes int
-	MaxGitStderrBytes int
-	SearchTimeout     time.Duration
-	GitTimeout        time.Duration
+	MaxReadBytes        int
+	MaxListEntries      int
+	MaxSearchMatches    int
+	MaxSearchBytes      int
+	MaxGitStdoutBytes   int
+	MaxGitStderrBytes   int
+	MaxWriteBytes       int
+	MaxPatchBytes       int
+	MaxPatchTargetBytes int
+	MaxDiffBytes        int
+	SearchTimeout       time.Duration
+	GitTimeout          time.Duration
 }
 
 func DefaultLimits() Limits {
 	return Limits{
-		MaxReadBytes:      64 << 10,
-		MaxListEntries:    256,
-		MaxSearchMatches:  256,
-		MaxSearchBytes:    128 << 10,
-		MaxGitStdoutBytes: 64 << 10,
-		MaxGitStderrBytes: 16 << 10,
-		SearchTimeout:     2 * time.Second,
-		GitTimeout:        2 * time.Second,
+		MaxReadBytes:        64 << 10,
+		MaxListEntries:      256,
+		MaxSearchMatches:    256,
+		MaxSearchBytes:      128 << 10,
+		MaxGitStdoutBytes:   64 << 10,
+		MaxGitStderrBytes:   16 << 10,
+		MaxWriteBytes:       256 << 10,
+		MaxPatchBytes:       128 << 10,
+		MaxPatchTargetBytes: 4 << 20,
+		MaxDiffBytes:        8 << 10,
+		SearchTimeout:       2 * time.Second,
+		GitTimeout:          2 * time.Second,
 	}
 }
 
@@ -152,7 +162,20 @@ func normalizeLimits(limits Limits) (Limits, error) {
 	if limits.GitTimeout == 0 {
 		limits.GitTimeout = defaults.GitTimeout
 	}
-	if limits.MaxReadBytes < 0 || limits.MaxListEntries < 0 || limits.MaxSearchMatches < 0 || limits.MaxSearchBytes < 0 || limits.MaxGitStdoutBytes < 0 || limits.MaxGitStderrBytes < 0 || limits.SearchTimeout < 0 || limits.GitTimeout < 0 {
+	if limits.MaxWriteBytes == 0 {
+		limits.MaxWriteBytes = defaults.MaxWriteBytes
+	}
+	if limits.MaxPatchBytes == 0 {
+		limits.MaxPatchBytes = defaults.MaxPatchBytes
+	}
+	if limits.MaxPatchTargetBytes == 0 {
+		limits.MaxPatchTargetBytes = defaults.MaxPatchTargetBytes
+	}
+	if limits.MaxDiffBytes == 0 {
+		limits.MaxDiffBytes = defaults.MaxDiffBytes
+	}
+	if limits.MaxReadBytes < 0 || limits.MaxListEntries < 0 || limits.MaxSearchMatches < 0 || limits.MaxSearchBytes < 0 || limits.MaxGitStdoutBytes < 0 || limits.MaxGitStderrBytes < 0 || limits.SearchTimeout < 0 || limits.GitTimeout < 0 ||
+		limits.MaxWriteBytes < 0 || limits.MaxPatchBytes < 0 || limits.MaxPatchTargetBytes < 0 || limits.MaxDiffBytes < 0 {
 		return Limits{}, errors.New("tool limits must not be negative")
 	}
 	return limits, nil
@@ -194,6 +217,33 @@ func (r *Registry) ValidateArguments(tool string, arguments protocol.Arguments) 
 	case ToolGitStatus, ToolGitDiff:
 		if len(arguments) != 0 {
 			return true, newFailure(FailureInvalidArguments)
+		}
+	case ToolWriteFile, ToolApplyPatch:
+		if len(arguments) != 3 {
+			return true, newFailure(FailureInvalidArguments)
+		}
+		path, err := stringArgument(arguments, "path")
+		if err != nil {
+			return true, err
+		}
+		if _, failure := normalizeRelativePath(path); failure != nil {
+			return true, failure
+		}
+		expected, err := stringArgument(arguments, "expected_before_hash")
+		if err != nil || !validBeforeHash(expected) {
+			return true, newFailure(FailureInvalidArguments)
+		}
+		switch tool {
+		case ToolWriteFile:
+			content, contentFailure := stringArgumentAllowEmpty(arguments, "content")
+			if contentFailure != nil || len(content) > r.limits.MaxWriteBytes {
+				return true, newFailure(FailureInvalidArguments)
+			}
+		case ToolApplyPatch:
+			patch, patchFailure := stringArgumentAllowEmpty(arguments, "patch")
+			if patchFailure != nil || strings.TrimSpace(patch) == "" || len(patch) > r.limits.MaxPatchBytes {
+				return true, newFailure(FailureInvalidArguments)
+			}
 		}
 	default:
 		return false, nil

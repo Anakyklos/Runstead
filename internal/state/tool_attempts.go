@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/RenyEnnos/Runstead/internal/tools"
 )
 
 // PrepareToolAttempt persists one concrete tool execution intent (TX 1) in
@@ -25,11 +27,13 @@ func (s *Store) PrepareToolAttempt(ctx context.Context, record ToolAttemptPrepar
 	if recoveryClass < 1 || recoveryClass > 4 {
 		recoveryClass = 1
 	}
+	plannedEffectJSON := marshalPlannedEffect(record.PlannedEffect)
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO tool_attempts (execution_id, task_id, action_id, tool, arguments_json, status, recovery_class, created_at, prepared_at)
-		 VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?)`,
+		`INSERT INTO tool_attempts (execution_id, task_id, action_id, tool, arguments_json, status, recovery_class, effect_after_hash, planned_diff_json, created_at, prepared_at)
+		 VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?)`,
 		executionID, record.TaskID, record.ActionID, Redact(record.Tool),
-		string(RedactJSON(record.Arguments)), recoveryClass, now, now); err != nil {
+		string(RedactJSON(record.Arguments)), recoveryClass, record.EffectAfterHash,
+		string(RedactJSON(plannedEffectJSON)), now, now); err != nil {
 		return "", fmt.Errorf("insert tool attempt: %w", err)
 	}
 	// The first concrete attempt intent moves the logical action from
@@ -40,9 +44,10 @@ func (s *Store) PrepareToolAttempt(ctx context.Context, record ToolAttemptPrepar
 		return "", fmt.Errorf("prepare action: %w", err)
 	}
 	if err := appendEvent(ctx, tx, record.TaskID, "tool_attempt_prepared", map[string]any{
-		"execution_id": executionID,
-		"action_id":    record.ActionID,
-		"tool":         record.Tool,
+		"execution_id":      executionID,
+		"action_id":         record.ActionID,
+		"tool":              record.Tool,
+		"effect_after_hash": record.EffectAfterHash,
 	}, now); err != nil {
 		return "", err
 	}
@@ -137,4 +142,17 @@ func boolInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+// marshalPlannedEffect encodes the bounded planned diff of a write attempt.
+// An empty effect encodes as the empty string (no column payload).
+func marshalPlannedEffect(effect tools.PlannedEffect) []byte {
+	if effect.Diff == "" && effect.DiffBytes == 0 && !effect.DiffTruncated {
+		return nil
+	}
+	encoded, err := json.Marshal(effect)
+	if err != nil {
+		return nil
+	}
+	return encoded
 }

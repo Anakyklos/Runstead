@@ -337,9 +337,12 @@ implemented:
 - there is no automatic reconciliation engine;
 - prepared/uncertain attempts are persisted and flagged, but nothing
   automatically re-executes, reinterprets or reconciles them;
-- delivery-state transport tracking (#38), write tools (#10), the process
-  runner (#26), the verifier (#11) and first-party ChatGPT Web work remain
-  separate milestones.
+- delivery-state transport tracking (#38), the process runner (#26), the
+  verifier (#11) and first-party ChatGPT Web work remain separate milestones;
+  write tools (#10) are implemented (see [writes.md](writes.md)), including
+  the approval pause (task stays resumable with pending approvals derived from
+  `write_policy_decisions` + `approvals`) and the TX 1 planned-diff evidence
+  (`tool_attempts.planned_diff_json`, migration 0005).
 
 The schema keeps a compatible seam for those milestones (for example
 `provider_attempt_receipts` is one-to-many and `recovery_class` is stored on
@@ -347,9 +350,9 @@ tool attempts), but no future functionality is presented as implemented.
 
 ## Resume and recovery (issue #9)
 
-`runstead resume <task-id>` reconstructs an interrupted read-only task from
-durable state and continues it through the normal governed agent loop. Recovery
-is defined as:
+`runstead resume <task-id>` reconstructs an interrupted task from durable
+state and continues it through the normal governed agent loop. Recovery is
+defined as:
 
 ```text
 persisted state
@@ -374,14 +377,26 @@ restored unchanged.
    attempts, provider attempts and citable evidence from SQLite;
 2. **classify existing attempts** — completed/failed attempts are terminal
    progress; class-1 prepared attempts are interrupted replay-safe
-   observations; any other non-terminal tool attempt (recovery class 2-4) is
-   unreconcilable by the read-only runtime; provider attempts that may have
-   reached upstream are treated conservatively;
+   observations; class-2 write attempts (`write_file`/`apply_patch`) are
+   reconciled from observable filesystem state; any other non-terminal tool
+   attempt (recovery class 3-4) is unreconcilable; provider attempts that may
+   have reached upstream are treated conservatively;
 3. **reconcile interrupted attempts** — each transition commits atomically
    with its journal event (`tool_attempt_reconciled`,
    `provider_attempt_reconciled`) through `state.ReconcileToolAttempt` /
-   `state.ReconcileProviderAttempt`. A class-1 prepared observation is
-   reconciled as `replay_safe_observation`; a provider request that may have
+   `state.ReconcileWriteAttempt` / `state.ReconcileProviderAttempt`. A class-1
+   prepared observation is reconciled as `replay_safe_observation`; a class-2
+   write attempt is classified by `tools.ReconcileWrite` against the current
+   filesystem state using the persisted precondition and expected after-state
+   hash (`tool_attempts.effect_after_hash`, migration 0004): still matching
+   the precondition means `write_effect_not_started` (no evidence), matching
+   the expected after-state means `write_effect_completed` (observed evidence
+   persisted as citable via `state.ReconcileWriteAttempt`, action completed;
+   the evidence carries the bounded planned diff persisted at TX 1 —
+   `tool_attempts.planned_diff_json`, migration 0005 — alongside the
+   before/after hashes), and matching neither means
+   `write_effect_unreconcilable` which stops
+   automatic continuation with `human_review_required`. A provider request that may have
    reached upstream is reconciled as `upstream_may_have_been_reached` with
    `uncertain = 1` and `attempt_debited = 1`. A plain attempt was already
    debited in the governor ledger at TX 1 (`Start`); a receipt-aware attempt
@@ -442,8 +457,8 @@ The resume path never collapses the ADR identities:
 ### Recovery classes and reconciliation rules
 
 The ADR recovery classes are represented by `tool_attempts.recovery_class`
-(class 1 for all five registered read-only tools) and the typed reconciliation
-reasons stored in `tool_attempts.recovery_reason` /
+(class 1 for the read-only tools, class 2 for `write_file`/`apply_patch`) and
+the typed reconciliation reasons stored in `tool_attempts.recovery_reason` /
 `provider_attempts.recovery_reason` (migration 0003) and rendered by
 `runstead inspect`.
 
@@ -452,7 +467,8 @@ reasons stored in `tool_attempts.recovery_reason` /
 | tool attempt `completed` | verified progress | eligible for context reconstruction, evidence seeding and guard seeding; never re-executed |
 | tool attempt `failed` | deterministic failure | retained in context as an unresolved failure; guard-seeded like a fresh run |
 | tool attempt `prepared` (class 1) | interrupted replay-safe observation | reconciled `replay_safe_observation`; a re-proposal executes as a NEW attempt with fresh evidence; no guard seed, no evidence |
-| tool attempt non-terminal (class 2-4) | unreconcilable effect | `human_review_required`; no automatic continuation |
+| tool attempt `prepared`/non-terminal (class 2 write) | interrupted write | reconciled from filesystem state: `write_effect_not_started`, `write_effect_completed` (citable evidence) or `write_effect_unreconcilable` → `human_review_required`; never blindly repeated |
+| tool attempt non-terminal (class 3-4) | unreconcilable effect | `human_review_required`; no automatic continuation |
 | provider attempt `prepared`/`running`/`uncertain` | may have reached upstream | reconciled `upstream_may_have_been_reached`; `uncertain = 1`, `attempt_debited = 1`; the request is never re-issued; a receipt-aware attempt interrupted before TX 2 also applies the conservative debit to the persisted governor projection (unsafe telemetry), so the restored governor blocks continuation fail-closed |
 | provider attempt `completed`/`failed` | terminal classified outcome | no action; counted in the resumed turn budget |
 | provider attempt `human_review_required` | already-required review | task stops with the unresolved human-review outcome |
