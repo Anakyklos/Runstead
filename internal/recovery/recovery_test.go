@@ -517,6 +517,88 @@ func TestResumeGovernorBlocksContinuation(t *testing.T) {
 	}
 }
 
+// TestResumeGovernorBudgetBlockedSurvivesRestart covers the remaining
+// account-protection block branches in the resume pre-check: a persisted task
+// budget or rolling budget at its ceiling must block continuation after
+// restart, complementing the cooldown and circuit tests.
+func TestResumeGovernorBudgetBlockedSurvivesRestart(t *testing.T) {
+	now := time.Now().UTC()
+	cases := []struct {
+		name      string
+		state     governor.PersistedState
+		wantBlock string
+	}{
+		{
+			name: "task budget exhausted",
+			state: governor.PersistedState{
+				AccountPolicyID: "runstead-cli", ProviderID: "scripted", ModelPool: "instant", Model: "scripted",
+				AllowanceProfile: governor.ProfileInstant, NextAttempt: 81,
+				Circuit:    governor.CircuitSnapshot{State: governor.CircuitClosed},
+				Ceilings:   governor.BudgetCeilings{Rolling3h: 140, Rolling1h: 80, Rolling10m: 25, TaskBudget: 80, RetryBudget: 2},
+				TaskStates: []governor.TaskStateRecord{{TaskID: fixtureTask, Attempts: 80, Retries: 0, LastTouched: now}},
+			},
+			wantBlock: "task provider budget exhausted",
+		},
+		{
+			name: "rolling 3h budget exhausted",
+			state: governor.PersistedState{
+				AccountPolicyID: "runstead-cli", ProviderID: "scripted", ModelPool: "instant", Model: "scripted",
+				AllowanceProfile: governor.ProfileInstant, NextAttempt: 141,
+				Circuit:  governor.CircuitSnapshot{State: governor.CircuitClosed},
+				Ceilings: governor.BudgetCeilings{Rolling3h: 140, Rolling1h: 80, Rolling10m: 25, TaskBudget: 80, RetryBudget: 2},
+			},
+			wantBlock: "rolling 3h provider budget exhausted",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			// The rolling case needs 140 ledger events inside the 3h window.
+			if strings.Contains(testCase.name, "rolling") {
+				for index := 0; index < 140; index++ {
+					testCase.state.RollingEvents = append(testCase.state.RollingEvents,
+						governor.LedgerEvent{At: now.Add(-time.Duration(index) * time.Second), TaskID: fixtureTask})
+				}
+			}
+			store := openStore(t)
+			mustCreate(t, store, fixtureTask)
+			accountConfig := governor.DefaultInstantConfig("runstead-cli", "scripted", "instant", provider.SafeRouteSafety())
+			accountGovernor, err := governor.New(accountConfig, governor.Options{Restore: &testCase.state})
+			if err != nil {
+				t.Fatalf("governor.New() error = %v", err)
+			}
+			blocked, reason := recovery.GovernorBlocks(accountGovernor, fixtureTask)
+			if !blocked {
+				t.Fatal("GovernorBlocks must report the restored budget block")
+			}
+			if !strings.Contains(reason, testCase.wantBlock) {
+				t.Fatalf("block reason = %q, want %q", reason, testCase.wantBlock)
+			}
+			plan, err := recovery.Resume(context.Background(), store, recovery.Options{
+				TaskID: fixtureTask,
+				Blocked: func() (bool, string) {
+					return recovery.GovernorBlocks(accountGovernor, fixtureTask)
+				},
+			})
+			if err != nil {
+				t.Fatalf("Resume() error = %v", err)
+			}
+			if plan.Decision != recovery.DecisionBlocked {
+				t.Fatalf("decision = %q, want governor_blocked", plan.Decision)
+			}
+			if plan.Seed != nil {
+				t.Fatal("blocked plan must not carry a continuation seed")
+			}
+			rendered := mustRender(t, store, fixtureTask)
+			if !strings.Contains(rendered, "recovery_blocked") {
+				t.Errorf("journal must contain recovery_blocked:\n%s", rendered)
+			}
+			if strings.Contains(rendered, "recovery_continued") {
+				t.Errorf("blocked resume must not journal recovery_continued:\n%s", rendered)
+			}
+		})
+	}
+}
+
 func TestResumeTaskNotFoundAndTerminal(t *testing.T) {
 	store := openStore(t)
 	if _, err := recovery.Resume(context.Background(), store, recovery.Options{TaskID: "missing"}); err == nil {
