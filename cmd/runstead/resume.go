@@ -202,7 +202,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			fmt.Fprintf(errOut, "resume: task %q has an unresolved human review requirement\n", taskID)
 			return exitHumanReview
 		}
-		fmt.Fprintf(errOut, "resume: task %q is not resumable: %v\n", taskID, err)
+		fmt.Fprintf(errOut, "resume: %v\n", err)
 		return exitNotResumable
 	}
 	if err != nil {
