@@ -77,7 +77,12 @@ func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client p
 			State:            g.PersistedState(),
 		}
 		if err := g.persistence.RecordProviderPrepared(ctx, prepared); err != nil {
-			completion := admission.Permit.Finish(Outcome{Class: OutcomeCancelledBeforeUpstream})
+			// The durable intent could not be committed, so the provider call
+			// must not proceed. Abort the started permit with no additional
+			// debit and a fully released lane. This path is valid for
+			// receipt-aware permits too: Finish would refuse them, and an
+			// upstream call that never happened must not leave the lane stuck.
+			completion := admission.Permit.CancelAfterStart()
 			return ExecutionResult{
 				Admission:  admission,
 				Completion: completion,

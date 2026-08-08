@@ -2,6 +2,7 @@ package governor_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -380,5 +381,77 @@ func TestReceiptAwareExecutionUsesLocalStartForRollingWindowWithDelayedClock(t *
 	})
 	if next.Code != policy.AdmissionDelayed || next.Reason != policy.AdmissionRollingBudgetExhausted || !next.RetryAt.Equal(localStart.Add(10*time.Minute)) {
 		t.Fatalf("delayed-clock rolling budget = %#v, want local ten-minute window", next)
+	}
+}
+
+// failPersistence is a governor.Persistence stub whose RecordProviderPrepared
+// always fails, simulating a durable-intent write error at TX 1.
+type failPersistence struct{}
+
+func (failPersistence) RecordProviderPrepared(context.Context, policy.ProviderPrepared) error {
+	return errors.New("durable write failed")
+}
+
+func (failPersistence) RecordProviderFinished(context.Context, policy.ProviderFinished) error {
+	return nil
+}
+
+// TestReceiptAwareTX1FailureReleasesLane proves the reviewer-requested abort
+// path: when the durable provider intent (TX 1) cannot be committed after a
+// receipt-aware start, the provider is never called, no debit is recorded,
+// and the account lane is fully released instead of being stuck waiting for
+// receipts that will never arrive.
+func TestReceiptAwareTX1FailureReleasesLane(t *testing.T) {
+	events := &eventSink{}
+	config := fastConfig(t)
+	config.ProviderID = "provider"
+	config.ModelPool = "model"
+	config.Model = "concrete-model"
+	config.RequireSingleAttempt = false
+	config.RequireAttemptReceipts = true
+	config.AttemptProviderID = "provider"
+	config.AccountLaneHash = "lane"
+	config.RouteSafety = provider.ReceiptRouteSafety()
+	accountGovernor, err := policy.New(config, policy.Options{
+		Clock:       newFakeClock(),
+		Jitter:      fixedJitter{},
+		Events:      events,
+		Persistence: failPersistence{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &receiptClient{set: receiptSet(time.Now(), 1)}
+
+	result := accountGovernor.Execute(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-1",
+		ClientRequestID: "request-1",
+		ModelPool:       "model",
+		ProviderRequest: provider.Request{Prompt: "p", Model: "concrete-model"},
+	}, client, nil)
+	if result.Err == nil {
+		t.Fatal("Execute must fail when the durable intent cannot be persisted")
+	}
+	if client.calls != 0 {
+		t.Fatalf("provider must never be called when TX 1 fails: calls=%d", client.calls)
+	}
+	if result.Completion.AttemptDebited != 0 {
+		t.Fatalf("aborted start must not debit: debited=%d", result.Completion.AttemptDebited)
+	}
+	snapshot := accountGovernor.Snapshot()
+	if snapshot.InFlight {
+		t.Fatal("account lane must be released after the aborted receipt-aware start")
+	}
+	if snapshot.QueueLength != 0 {
+		t.Fatalf("queue length = %d, want 0", snapshot.QueueLength)
+	}
+	// A subsequent admission must succeed: the lane is not stuck.
+	next := accountGovernor.TryAdmit(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-1",
+		ClientRequestID: "request-2",
+		ModelPool:       "model",
+	})
+	if next.Code != policy.AdmissionAdmitted {
+		t.Fatalf("post-abort admission = %s, want admitted", next.Code)
 	}
 }
