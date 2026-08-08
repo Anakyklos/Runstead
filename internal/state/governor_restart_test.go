@@ -329,3 +329,88 @@ func TestGovernorProtectionSurvivesSubprocessRestart(t *testing.T) {
 		t.Fatalf("restarted process must not reach the provider: %s", content)
 	}
 }
+
+// TestGovernorRateEventsSurviveRestart proves the #21 rate-response history is
+// durable: two rate/capacity responses before a restart, then a third after
+// the restart, must open the circuit to human_review_required. Without
+// persisted RateEvents the restart would reset the threshold and the circuit
+// would stay closed.
+func TestGovernorRateEventsSurviveRestart(t *testing.T) {
+	store := openTestStore(t)
+	clock := &governorFakeClock{now: time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)}
+	client := fakeResponses(2)
+	classifier := func(provider.Response, error) governor.Outcome {
+		return governor.Outcome{Class: governor.OutcomeRateCapacity, UpstreamReached: true}
+	}
+	mustGovernorTask(t, store)
+
+	accountGovernor := newGovernorWithClock(t, store, nil, 80, clock)
+	for turn := 1; turn <= 2; turn++ {
+		// Each rate/capacity response arms a cooldown; advance the fake clock
+		// past it so admission never blocks on a real timer.
+		clock.Advance(16 * time.Second)
+		result := accountGovernor.Execute(context.Background(), governor.AttemptRequest{
+			TaskID:          "task-1",
+			ClientRequestID: "task-1-000" + string(rune('0'+turn)),
+			ProviderRequest: provider.Request{Prompt: "p", Model: "scripted"},
+		}, client, classifier)
+		if !result.Admission.Admitted() || result.Err != nil {
+			t.Fatalf("execution %d failed: %#v", turn, result)
+		}
+	}
+	if accountGovernor.Snapshot().Circuit.State != governor.CircuitClosed {
+		t.Fatalf("circuit after two rate events = %s, want closed", accountGovernor.Snapshot().Circuit.State)
+	}
+
+	restoredState, ok, err := store.GovernorState(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("GovernorState() = ok %t err %v", ok, err)
+	}
+	if len(restoredState.RateEvents) != 2 {
+		t.Fatalf("persisted rate events = %d, want 2", len(restoredState.RateEvents))
+	}
+
+	// Restart: a fresh governor restores the projection, and the third rate
+	// response must trip the human_review_required threshold.
+	restored := newGovernorWithClock(t, store, &restoredState, 80, clock)
+	if got := len(restored.PersistedState().RateEvents); got != 2 {
+		t.Fatalf("restored rate events = %d, want 2", got)
+	}
+	clock.Advance(31 * time.Second)
+	result := restored.Execute(context.Background(), governor.AttemptRequest{
+		TaskID:          "task-1",
+		ClientRequestID: "task-1-0003",
+		ProviderRequest: provider.Request{Prompt: "p", Model: "scripted"},
+	}, fakeResponses(1), classifier)
+	if result.Err != nil {
+		t.Fatalf("third execution failed: %#v", result)
+	}
+	if result.Completion.Circuit.State != governor.CircuitHumanReviewRequired {
+		t.Fatalf("circuit after third rate event = %s, want human_review_required", result.Completion.Circuit.State)
+	}
+}
+
+// newGovernorWithClock builds a governor wired to a store and a deterministic
+// clock so cooldown/rate scenarios never sleep in real time.
+func newGovernorWithClock(t *testing.T, store *Store, restore *governor.PersistedState, taskBudget int, clock governor.Clock) *governor.Governor {
+	t.Helper()
+	config := governor.DefaultInstantConfig("policy-restart", "scripted", "instant", provider.SafeRouteSafety())
+	config.TaskBudget = taskBudget
+	config.MinimumStartInterval = time.Millisecond
+	accountGovernor, err := governor.New(config, governor.Options{
+		Persistence: store,
+		Restore:     restore,
+		Clock:       clock,
+		Jitter:      fixedGovernorJitter{},
+	})
+	if err != nil {
+		t.Fatalf("governor.New() error = %v", err)
+	}
+	return accountGovernor
+}
+
+// fixedGovernorJitter returns the base backoff unchanged so cooldown math is
+// deterministic in tests.
+type fixedGovernorJitter struct{}
+
+func (fixedGovernorJitter) Apply(base time.Duration, _ int) time.Duration { return base }

@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -151,4 +152,65 @@ func taskEventKinds(t *testing.T, store *Store, taskID string) []string {
 		kinds[index] = event.Kind
 	}
 	return kinds
+}
+
+// governorFakeClock is a deterministic governor.Clock for state tests: it
+// never sleeps in real time, so rate-event and cooldown scenarios run fast
+// and deterministically.
+type governorFakeClock struct {
+	mu     sync.Mutex
+	now    time.Time
+	timers []*governorFakeTimer
+}
+
+type governorFakeTimer struct {
+	clock *governorFakeClock
+	at    time.Time
+	c     chan time.Time
+	mu    sync.Mutex
+	stop  bool
+	fired bool
+}
+
+func (t *governorFakeTimer) C() <-chan time.Time { return t.c }
+
+func (t *governorFakeTimer) Stop() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.stop || t.fired {
+		return false
+	}
+	t.stop = true
+	return true
+}
+
+func (c *governorFakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *governorFakeClock) NewTimer(delay time.Duration) governor.Timer {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	timer := &governorFakeTimer{clock: c, at: c.now.Add(delay), c: make(chan time.Time, 1)}
+	c.timers = append(c.timers, timer)
+	return timer
+}
+
+// Advance moves the clock forward and fires due timers.
+func (c *governorFakeClock) Advance(delay time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(delay)
+	now := c.now
+	timers := append([]*governorFakeTimer(nil), c.timers...)
+	c.mu.Unlock()
+	for _, timer := range timers {
+		timer.mu.Lock()
+		if !timer.stop && !timer.fired && !now.Before(timer.at) {
+			timer.fired = true
+			timer.c <- now
+		}
+		timer.mu.Unlock()
+	}
 }

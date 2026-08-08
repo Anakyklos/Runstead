@@ -99,6 +99,16 @@ func (s *Store) saveGovernorStateInTx(ctx context.Context, tx *sql.Tx, state gov
 			return fmt.Errorf("save governor attempt id: %w", err)
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM governor_rate_events`); err != nil {
+		return fmt.Errorf("reset governor rate events: %w", err)
+	}
+	for _, at := range state.RateEvents {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO governor_rate_events (at) VALUES (?)`,
+			formatTime(at)); err != nil {
+			return fmt.Errorf("save governor rate event: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -225,6 +235,23 @@ func (s *Store) GovernorState(ctx context.Context) (governor.PersistedState, boo
 		}
 		record.SeenAt = parseTime(seenAt)
 		state.AttemptIDs = append(state.AttemptIDs, record)
+	}
+	if err := rows.Err(); err != nil {
+		return governor.PersistedState{}, false, err
+	}
+
+	rows, err = s.db.QueryContext(ctx,
+		`SELECT at FROM governor_rate_events ORDER BY id`)
+	if err != nil {
+		return governor.PersistedState{}, false, fmt.Errorf("load governor rate events: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var at string
+		if err := rows.Scan(&at); err != nil {
+			return governor.PersistedState{}, false, fmt.Errorf("scan governor rate event: %w", err)
+		}
+		state.RateEvents = append(state.RateEvents, parseTime(at))
 	}
 	if err := rows.Err(); err != nil {
 		return governor.PersistedState{}, false, err
