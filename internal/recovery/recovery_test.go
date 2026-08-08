@@ -615,6 +615,52 @@ func TestResumeTaskNotFoundAndTerminal(t *testing.T) {
 	}
 }
 
+func TestResumeFailedToolAttemptIsUnresolvedFailure(t *testing.T) {
+	store := openStore(t)
+	mustCreate(t, store, fixtureTask)
+	// A deterministic typed failure: the tool ran and failed with a typed code.
+	actionID := mustAction(t, store, fixtureTask, "read_file", `{"path":"missing.txt"}`, "fp-missing", "sig-alpha")
+	executionID := mustToolAttempt(t, store, fixtureTask, actionID, "read_file", `{"path":"missing.txt"}`, 1)
+	if err := store.CompleteToolAttempt(context.Background(), state.ToolAttemptCompleted{
+		TaskID: fixtureTask, ExecutionID: executionID, Status: "failed",
+		Classification: "path_not_found", DurationNanos: 1000,
+	}); err != nil {
+		t.Fatalf("CompleteToolAttempt(failed) error = %v", err)
+	}
+
+	plan, err := recovery.Resume(context.Background(), store, recovery.Options{TaskID: fixtureTask})
+	if err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	if plan.Decision != recovery.DecisionContinue {
+		t.Fatalf("decision = %q, want continue", plan.Decision)
+	}
+	// The failed attempt is not reconciled (it is terminal deterministic
+	// failure) and stays failed in the snapshot.
+	if plan.ReconciledToolAttempts != 0 {
+		t.Errorf("reconciled tool attempts = %d, want 0 (failed is terminal)", plan.ReconciledToolAttempts)
+	}
+	if snapshot := mustLoadSnapshot(t, store, fixtureTask); snapshot.ToolAttempts[0].Status != "failed" {
+		t.Errorf("failed attempt status = %q, want failed (untouched)", snapshot.ToolAttempts[0].Status)
+	}
+	// The context renders it as an unresolved failure with the typed code.
+	if !strings.Contains(plan.Seed.Context, "Unresolved failures:") {
+		t.Error("reconstructed context must include the unresolved failures section")
+	}
+	if !strings.Contains(plan.Seed.Context, "path_not_found") {
+		t.Error("reconstructed context must retain the typed failure classification")
+	}
+	// Like a fresh run, the failed action is repeat-guarded: a re-proposal
+	// under the same workspace signature is rejected.
+	if plan.Seed.Guard["fp-missing"] != "sig-alpha" {
+		t.Errorf("failed action must seed the repeat guard: %v", plan.Seed.Guard)
+	}
+	// No citable evidence exists for a failed observation.
+	if len(plan.Seed.Evidence) != 0 {
+		t.Errorf("failed attempt must not produce citable evidence: %v", plan.Seed.Evidence)
+	}
+}
+
 func TestResumeContextCancellationPropagates(t *testing.T) {
 	store := openStore(t)
 	mustCreate(t, store, fixtureTask)

@@ -177,47 +177,43 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		return exitUsage
 	}
 
-	// The recovery pipeline: load persisted history, classify and reconcile
-	// interrupted attempts, decide whether automatic continuation is safe, and
-	// reconstruct the bounded model context. All transitions are journaled.
-	// Task validation errors (not found, already terminal) take precedence over
-	// provider configuration, so the provider is resolved only when the task
-	// can actually continue.
-	plan, err := recovery.Resume(ctx, store, recovery.Options{
-		TaskID: taskID,
-		Trace:  traceSink,
-		Blocked: func() (bool, string) {
-			return recovery.GovernorBlocks(accountGovernor, taskID)
-		},
-	})
+	// Pre-flight validation BEFORE the recovery pipeline: a resume invocation
+	// that cannot possibly execute (missing workspace, undecodable persisted
+	// configuration, no provider input) must fail without journaling recovery
+	// events or inflating the resume count. The snapshot load also carries the
+	// task-level errors (not found, already terminal) with their typed codes.
+	preload, err := store.LoadRecoverySnapshot(ctx, taskID)
 	if errors.Is(err, state.ErrTaskNotFound) {
 		fmt.Fprintf(errOut, "resume: task %q not found in %s\n", taskID, dir)
 		return exitNotFound
-	}
-	if errors.Is(err, state.ErrNotResumable) {
-		// A task already stopped for human review reports the unresolved
-		// requirement with the human-review exit code rather than the generic
-		// not-resumable code.
-		if status, statusErr := store.TaskStatus(ctx, taskID); statusErr == nil && status == "human_review_required" {
-			fmt.Fprintf(errOut, "resume: task %q has an unresolved human review requirement\n", taskID)
-			return exitHumanReview
-		}
-		fmt.Fprintf(errOut, "resume: %v\n", err)
-		return exitNotResumable
 	}
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: %v\n", err)
 		return exitCorrupt
 	}
-	if plan.Decision == recovery.DecisionHumanReview {
-		fmt.Fprintf(errOut, "resume: %s\n", plan.Reason)
+	switch preload.Task.Status {
+	case "human_review_required":
+		fmt.Fprintf(errOut, "resume: task %q has an unresolved human review requirement\n", taskID)
 		return exitHumanReview
-	}
-	if plan.Decision == recovery.DecisionBlocked {
-		fmt.Fprintf(errOut, "resume: continuation blocked: %s\n", plan.Reason)
-		return exitGovernorBlocked
+	case "planned", "running":
+		// resumable
+	default:
+		fmt.Fprintf(errOut, "resume: task %q is not resumable: %s\n", taskID, preload.Task.Status)
+		return exitNotResumable
 	}
 
+	workspacePath := preload.Task.Workspace
+	if workspace != "" {
+		workspacePath = workspace
+	}
+	if _, err := tools.NewRegistry(tools.Options{Workspace: workspacePath}); err != nil {
+		fmt.Fprintf(errOut, "resume: workspace unavailable: %v\n", err)
+		return exitUnavailable
+	}
+	if _, err := limitsFromConfig(preload.Task.ConfigJSON); err != nil {
+		fmt.Fprintf(errOut, "resume: invalid persisted configuration: %v\n", err)
+		return exitCorrupt
+	}
 	// The provider input is supplied again at resume time: the original remote
 	// conversation is disposable metadata, never an authority over task state.
 	scriptedPath, scriptedSet := resolveScriptedFlag(scripted)
@@ -231,6 +227,29 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		return exitUsage
 	}
 
+	// The recovery pipeline: load persisted history, classify and reconcile
+	// interrupted attempts, decide whether automatic continuation is safe, and
+	// reconstruct the bounded model context. All transitions are journaled.
+	plan, err := recovery.Resume(ctx, store, recovery.Options{
+		TaskID: taskID,
+		Trace:  traceSink,
+		Blocked: func() (bool, string) {
+			return recovery.GovernorBlocks(accountGovernor, taskID)
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(errOut, "resume: %v\n", err)
+		return exitCorrupt
+	}
+	if plan.Decision == recovery.DecisionHumanReview {
+		fmt.Fprintf(errOut, "resume: %s\n", plan.Reason)
+		return exitHumanReview
+	}
+	if plan.Decision == recovery.DecisionBlocked {
+		fmt.Fprintf(errOut, "resume: continuation blocked: %s\n", plan.Reason)
+		return exitGovernorBlocked
+	}
+
 	// Wire the resumed task with the same control boundaries as a normal run:
 	// the restored account governor, the read-only registry, the protocol
 	// parser and the persistence boundary.
@@ -239,10 +258,6 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: executor unavailable: %v\n", err)
 		return exitUnavailable
-	}
-	workspacePath := plan.Task.Workspace
-	if workspace != "" {
-		workspacePath = workspace
 	}
 	registry, err := tools.NewRegistry(tools.Options{
 		Workspace:            workspacePath,

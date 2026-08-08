@@ -425,13 +425,14 @@ func TestResumeNewProviderConversation(t *testing.T) {
 // pending.
 func TestResumeGovernorProtectionSurvivesRestart(t *testing.T) {
 	stateDir := t.TempDir()
+	workspace := crashWorkspace(t)
 	store, err := state.Open(state.Options{Path: filepath.Join(stateDir, "runstead.db")})
 	if err != nil {
 		t.Fatalf("state.Open() error = %v", err)
 	}
 	ctx := context.Background()
 	if err := store.CreateTask(ctx, state.TaskRecord{
-		TaskID: "task-blocked", Objective: "inspect", Workspace: "/ws", Model: "scripted",
+		TaskID: "task-blocked", Objective: "inspect", Workspace: workspace, Model: "scripted",
 		ConfigJSON: []byte(`{"max_steps":24,"provider_budget":80}`),
 	}); err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
@@ -488,13 +489,14 @@ func TestResumeGovernorProtectionSurvivesRestart(t *testing.T) {
 // code 5 and a persisted human_review_required state.
 func TestResumeHumanReviewRequiredCLI(t *testing.T) {
 	stateDir := t.TempDir()
+	workspace := crashWorkspace(t)
 	store, err := state.Open(state.Options{Path: filepath.Join(stateDir, "runstead.db")})
 	if err != nil {
 		t.Fatalf("state.Open() error = %v", err)
 	}
 	ctx := context.Background()
 	if err := store.CreateTask(ctx, state.TaskRecord{
-		TaskID: "task-review", Objective: "inspect", Workspace: "/ws", Model: "scripted",
+		TaskID: "task-review", Objective: "inspect", Workspace: workspace, Model: "scripted",
 	}); err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
@@ -576,6 +578,53 @@ func TestResumeCancellationPropagates(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "canceled") {
 		t.Fatalf("canceled resume diagnostic = %q", errOut)
+	}
+}
+
+// TestResumeMissingPersistedWorkspaceFailsCleanly proves resume fails with the
+// stable unavailable code and never reaches the provider when the persisted
+// task workspace no longer exists and no --workspace override is supplied.
+func TestResumeMissingPersistedWorkspaceFailsCleanly(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := state.Open(state.Options{Path: filepath.Join(stateDir, "runstead.db")})
+	if err != nil {
+		t.Fatalf("state.Open() error = %v", err)
+	}
+	ctx := context.Background()
+	missing := filepath.Join(t.TempDir(), "gone")
+	if err := store.CreateTask(ctx, state.TaskRecord{
+		TaskID: "task-missing-ws", Objective: "inspect", Workspace: missing, Model: "scripted",
+		ConfigJSON: []byte(`{"max_steps":24,"provider_budget":80}`),
+	}); err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if err := store.StartTask(ctx, "task-missing-ws"); err != nil {
+		t.Fatalf("StartTask() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	script := crashScript(t, `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"must not run","evidence":[]}</runstead_final>`)
+	resumeCode, _, resumeErr := runResume(context.Background(),
+		"task-missing-ws", "--state-dir", stateDir, "--scripted", script, "--log-level", "error")
+	if resumeCode != exitUnavailable {
+		t.Fatalf("resume exit = %d, want %d (unavailable)\nstderr:\n%s", resumeCode, exitUnavailable, resumeErr)
+	}
+	if !strings.Contains(resumeErr, "workspace unavailable") {
+		t.Fatalf("resume diagnostic must explain the missing workspace:\n%s", resumeErr)
+	}
+	if got := countRowsFor(t, stateDir, "task-missing-ws", "provider_attempts"); got != 0 {
+		t.Fatalf("provider_attempts = %d, want 0 (missing workspace must fail before any provider call)", got)
+	}
+	// Pre-flight validation means no recovery events were journaled and the
+	// resume count was not inflated by an invocation that could not execute.
+	rendered := inspectRendered(t, stateDir, "task-missing-ws")
+	if strings.Contains(rendered, "recovery_started") {
+		t.Errorf("pre-flight failure must not journal recovery_started:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "Resumes:") {
+		t.Errorf("pre-flight failure must not inflate the resume count:\n%s", rendered)
 	}
 }
 
