@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/provider"
@@ -155,7 +156,51 @@ func TestRenderInspectShowsGovernorConsumption(t *testing.T) {
 	if !strings.Contains(rendered, "rolling usage: 10m=2/25 1h=2/80 3h=2/140") {
 		t.Errorf("inspect must show windowed governor consumption:\n%s", rendered)
 	}
+	// Task usage is the inspected task's own attempt count (2 executions),
+	// not the number of tasks the governor has retained.
+	if !strings.Contains(rendered, "task attempts: 2/80") {
+		t.Errorf("inspect must show the inspected task's attempt usage:\n%s", rendered)
+	}
 	if !strings.Contains(rendered, "cooldown until: none") {
 		t.Errorf("inspect must render empty cooldown as none:\n%s", rendered)
+	}
+}
+
+// TestRenderInspectFiltersGovernorLedgerByWindow proves the 3h rolling count
+// excludes ledger entries outside the window instead of counting every
+// retained record.
+func TestRenderInspectFiltersGovernorLedgerByWindow(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	mustTask(t, store, "task-1")
+	// One governed execution creates the governor_state projection row.
+	accountGovernor := newGovernor(t, store, nil, 80)
+	result := accountGovernor.Execute(ctx, governor.AttemptRequest{
+		TaskID:          "task-1",
+		ClientRequestID: "task-1-0001",
+		ProviderRequest: provider.Request{Prompt: "p", Model: "scripted"},
+	}, fakeResponses(1), nil)
+	if !result.Admission.Admitted() || result.Err != nil {
+		t.Fatalf("execution failed: %#v", result)
+	}
+	// Replace the ledger with controlled timestamps: two entries inside the
+	// 3h window (one exactly at the 1h boundary) and one outside it.
+	if _, err := store.db.Exec(`DELETE FROM governor_ledger`); err != nil {
+		t.Fatalf("clear ledger: %v", err)
+	}
+	base := newFixedClock().Now()
+	for _, at := range []time.Time{base, base.Add(-time.Hour), base.Add(-4 * time.Hour)} {
+		if _, err := store.db.Exec(`INSERT INTO governor_ledger (at, task_id) VALUES (?, 'task-1')`, formatTime(at)); err != nil {
+			t.Fatalf("seed ledger: %v", err)
+		}
+	}
+
+	var out bytes.Buffer
+	if err := store.RenderInspect(ctx, &out, "task-1"); err != nil {
+		t.Fatalf("RenderInspect() error = %v", err)
+	}
+	rendered := out.String()
+	if !strings.Contains(rendered, "rolling usage: 10m=1/25 1h=2/80 3h=2/140") {
+		t.Errorf("inspect must filter the ledger by window:\n%s", rendered)
 	}
 }

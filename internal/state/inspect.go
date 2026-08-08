@@ -112,7 +112,7 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 	if err != nil {
 		return err
 	}
-	governor, err := s.loadInspectGovernor(ctx)
+	governor, err := s.loadInspectGovernor(ctx, taskID)
 	if err != nil {
 		return err
 	}
@@ -372,7 +372,7 @@ type inspectGovernor struct {
 	TelemetryUnsafe   bool
 }
 
-func (s *Store) loadInspectGovernor(ctx context.Context) (*inspectGovernor, error) {
+func (s *Store) loadInspectGovernor(ctx context.Context, taskID string) (*inspectGovernor, error) {
 	var governor inspectGovernor
 	var cooldown string
 	err := s.db.QueryRowContext(ctx,
@@ -400,7 +400,9 @@ func (s *Store) loadInspectGovernor(ctx context.Context) (*inspectGovernor, erro
 		if at.IsZero() {
 			continue
 		}
-		governor.Rolling3h++
+		if now.Sub(at) <= 3*time.Hour {
+			governor.Rolling3h++
+		}
 		if now.Sub(at) <= time.Hour {
 			governor.Rolling1h++
 		}
@@ -408,8 +410,11 @@ func (s *Store) loadInspectGovernor(ctx context.Context) (*inspectGovernor, erro
 			governor.Rolling10m++
 		}
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM governor_task_states`).Scan(&governor.TaskUsed); err != nil {
-		return nil, fmt.Errorf("load governor task states: %w", err)
+	// The inspected task's own attempt usage, not the number of tasks the
+	// governor has retained.
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT attempts FROM governor_task_states WHERE task_id = ?`, taskID).Scan(&governor.TaskUsed); err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("load governor task usage: %w", err)
 	}
 	return &governor, nil
 }
