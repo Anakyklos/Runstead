@@ -628,6 +628,72 @@ func TestResumeContextCancellationPropagates(t *testing.T) {
 	}
 }
 
+// TestResumeCancellationMidPipelinePropagates covers the "cancellation during
+// resume/reconciliation" requirement deterministically: the trace sink cancels
+// the context right after the recovery_started event commits, so the next
+// reconciliation transaction fails with the canceled context. The committed
+// prefix (recovery_started + resume_count) must stay consistent, the task must
+// remain resumable, and a second resume with a fresh context must complete.
+func TestResumeCancellationMidPipelinePropagates(t *testing.T) {
+	store := openStore(t)
+	mustCreate(t, store, fixtureTask)
+	// Two interrupted prepared observations so the pipeline has work after the
+	// recovery_started commit.
+	actionID1 := mustAction(t, store, fixtureTask, "read_file", `{"path":"a.txt"}`, "fp-a", "sig-alpha")
+	mustToolAttempt(t, store, fixtureTask, actionID1, "read_file", `{"path":"a.txt"}`, 1)
+	actionID2 := mustAction(t, store, fixtureTask, "read_file", `{"path":"b.txt"}`, "fp-b", "sig-alpha")
+	mustToolAttempt(t, store, fixtureTask, actionID2, "read_file", `{"path":"b.txt"}`, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelled := false
+	_, err := recovery.Resume(ctx, store, recovery.Options{
+		TaskID: fixtureTask,
+		Trace: func(line agent.TraceLine) {
+			if line.Kind == agent.TraceRecoveryStart && !cancelled {
+				cancelled = true
+				cancel()
+			}
+		},
+	})
+	if err == nil {
+		t.Fatal("Resume() must fail when the context is canceled mid-pipeline")
+	}
+	if !cancelled {
+		t.Fatal("the trace sink must have observed the recovery_start event")
+	}
+	// The committed prefix is consistent: recovery_started journaled, resume
+	// count incremented, the task still pending, and no recovery_continued.
+	snapshot := mustLoadSnapshot(t, store, fixtureTask)
+	if snapshot.Task.Status != "running" {
+		t.Fatalf("task status = %q, want running after mid-pipeline cancellation", snapshot.Task.Status)
+	}
+	if snapshot.Task.ResumeCount != 1 {
+		t.Errorf("resume count = %d, want 1 (recovery_started committed)", snapshot.Task.ResumeCount)
+	}
+	rendered := mustRender(t, store, fixtureTask)
+	if !strings.Contains(rendered, "recovery_started") {
+		t.Errorf("journal must retain the committed recovery_started:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "recovery_continued") {
+		t.Errorf("canceled resume must not journal recovery_continued:\n%s", rendered)
+	}
+	// A second resume with a fresh context reconciles the still-prepared
+	// attempts and continues.
+	plan, err := recovery.Resume(context.Background(), store, recovery.Options{TaskID: fixtureTask})
+	if err != nil {
+		t.Fatalf("second Resume() error = %v", err)
+	}
+	if plan.Decision != recovery.DecisionContinue {
+		t.Fatalf("second resume decision = %q, want continue", plan.Decision)
+	}
+	if plan.ReconciledToolAttempts != 2 {
+		t.Errorf("second resume reconciled %d tool attempts, want 2", plan.ReconciledToolAttempts)
+	}
+	if snapshot := mustLoadSnapshot(t, store, fixtureTask); snapshot.Task.ResumeCount != 2 {
+		t.Errorf("resume count after second resume = %d, want 2", snapshot.Task.ResumeCount)
+	}
+}
+
 func TestResumeCredentialShapedStateIsRedacted(t *testing.T) {
 	store := openStore(t)
 	ctx := context.Background()
