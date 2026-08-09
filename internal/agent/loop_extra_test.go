@@ -430,6 +430,8 @@ func TestOutcomeExitCodesAreStableAndDistinct(t *testing.T) {
 		agent.OutcomeCanceled,
 		agent.OutcomeFinalNotGrounded,
 		agent.OutcomeProviderFailure,
+		agent.OutcomePersistenceFailure,
+		agent.OutcomePersistencePaused,
 		agent.OutcomeFinalIncomplete,
 	}
 	seen := make(map[int]agent.Outcome)

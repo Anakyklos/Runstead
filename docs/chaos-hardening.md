@@ -20,7 +20,8 @@ The core invariant the whole matrix protects:
 | `state.SetCrashPoint` | `internal/state` | deterministic process death at named persistence boundaries (TX 1, TX 2, finalize, verification, recovery) |
 | `tools.SetWriteCrashPoint` | `internal/tools` | death before/after the write effect (before result persistence) |
 | `recipe.SetCrashPoint` | `internal/recipe` | death right after the process started (effect provably in flight) |
-| `faultyPersistence` | test-only wrapper over `state.Persistence` | SQLite failure injection per named method (fails the Nth call) |
+| `faultyPersistence` | test-only wrapper over `state.Persistence` + `governor.Persistence` | SQLite failure injection per named method (fails the Nth call), including the provider TX 1/TX 2 paths |
+| `state.SetFaultPoint` | `internal/state` | deterministic persistence ERROR at `tool_tx2` (the result commit after an executed effect) for CLI-level regressions |
 | `chaosProvider` / `receiptChaosProvider` | test-only fake clients | scripted provider errors classified by the real `omniroute.Classify`, scripted attempt-receipt sets |
 | subprocess crash helpers | `cmd/runstead` | the real CLI composition dies at a boundary and the parent resumes it |
 
@@ -81,6 +82,7 @@ proves the contract with fixtures and fakes.
 | before the effect (intent persisted, effect not started) | existing `TestRuntimeCrashBeforeWriteEffectKeepsFileUnchanged` (reused) | recovery does not presume the effect happened; file unchanged; reconciliation `write_effect_not_started` |
 | after first write effect (coding loop) | `TestCodingLoopCrashAfterFirstWriteReconcilesAndCompletes` | write reconciled from filesystem as completed, never re-executed; task completes with a new conversation |
 | after failing test evidence | `TestCodingLoopCrashAfterFailingTestResumesWithoutRerun` | failing test never re-run after resume; diagnosis continues; exactly 3 recipe runs total |
+| injected TX 2 persistence failure (tool) | `TestPersistenceChaosTX2FailurePausesForRecovery` | run pauses `persistence_paused` (not finalized); recovery reconciles the write from the filesystem and the resumed loop completes with a new conversation; exactly one write attempt |
 | after corrective write | `TestCodingLoopCrashAfterCorrectiveWriteReconcilesAndReruns` | corrective write reconciled as completed; passing rerun runs once; completes |
 | after passing verifier, before finalize | `TestCodingLoopCrashAfterPassingVerifierResumesWithoutReExecution` | restart does not repeat effects (3 reads / 2 writes / 3 recipes unchanged); completion re-decided by the verifier from persisted history |
 | mid provider effect | existing `TestCrashMidProviderEffectParent` (reused) | provider attempt stays prepared/uncertain, never success |
@@ -94,8 +96,9 @@ proves the contract with fixtures and fakes.
 | failure before any state persists | `TestPersistenceChaosCreateTaskFailure` | run stops `persistence_failure`, no task row, no attempt |
 | failure persisting action intent | `TestPersistenceChaosActionRecordFailure` | effect never executes, workspace untouched |
 | failure at TX 1 (durable intent) | `TestPersistenceChaosTX1FailureProvesEffectNeverStarts` | effect never starts |
-| failure at TX 2 (result commit) | `TestPersistenceChaosTX2FailureKeepsEffectUnrecorded` | effect happened but state does not advance; attempt stays prepared, no evidence, outcome typed `persistence_failure`, never completed |
+| failure at TX 2 (result commit) | `TestPersistenceChaosTX2FailurePausesForRecovery` (tool) + `TestRunPersistenceTX2FailurePausesAndResumeReconciles` (CLI) + `TestProviderChaosTX2PersistenceFailurePausesForRecovery` (provider) | effect happened but state does not advance; attempt stays prepared, no evidence, outcome typed `persistence_paused`, task stays resumable; `runstead resume` reconciles the attempt from observable state (never re-executes it) or escalates to human review |
 | failure at finalize | `TestPersistenceChaosFinalizeFailureLeavesResumableState` | history intact, task stays running (resumable), never completed |
+| TX 2 pause -> CLI resume (review regression) | `TestRunPersistenceTX2FailurePausesAndResumeReconciles` | run exits with the `persistence_paused` code (36), resume does not return `not resumable`, the prepared write is reconciled as `write_effect_completed`, the effect is not duplicated |
 | failure persisting verification | `TestPersistenceChaosVerificationPersistFailureBlocksCompletion` | completion gate cannot be proven durable -> `verification_blocked`, task stays resumable |
 
 No SQLite error is ever converted into task success; the store is never

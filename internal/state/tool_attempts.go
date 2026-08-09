@@ -66,6 +66,12 @@ func (s *Store) CompleteToolAttempt(ctx context.Context, record ToolAttemptCompl
 	// The effect already returned; this crash point simulates death before
 	// TX 2 commits, leaving the attempt 'prepared'.
 	hitCrashPoint("tool_tx2_before")
+	// The fault seam simulates a real persistence ERROR at the same boundary:
+	// the effect returned but the result commit fails, leaving the attempt
+	// 'prepared' with no citable evidence (issue #13 review).
+	if err := hitFaultPoint("tool_tx2"); err != nil {
+		return err
+	}
 	now := s.now()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

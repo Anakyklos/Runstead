@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -371,6 +372,18 @@ func (l *Loop) Run(ctx context.Context, task Task) Result {
 					result.Outcome = OutcomePersistenceFailure
 					result.StopReason = fmt.Sprintf("durable state could not be persisted: %v", err)
 				}
+			} else if outcome == OutcomePersistencePaused {
+				// A durable write failed AFTER a potentially executed effect
+				// (TX 2 did not commit): the prepared attempt is the
+				// uncertain-effect record and must stay reachable by the
+				// recovery pipeline. The task is NOT finalized: it stays
+				// durably resumable (status running) so `runstead resume`
+				// reconciles the attempt from observable state or escalates
+				// it to human_review_required (issue #13 review).
+				if err := l.state.MarkTaskPersistencePaused(context.Background(), task.ID, result.StopReason); err != nil {
+					result.Outcome = OutcomePersistenceFailure
+					result.StopReason = fmt.Sprintf("durable state could not be persisted: %v", err)
+				}
 			} else if err := l.state.FinalizeTask(context.Background(), state.TaskFinalize{
 				TaskID:         task.ID,
 				Outcome:        string(result.Outcome),
@@ -551,6 +564,19 @@ func (l *Loop) modelTurn(
 		return l.classifyAdmission(execution.Admission, pressure, emit, stop), true
 	}
 	if execution.Err != nil {
+		if errors.Is(execution.Err, governor.ErrProviderOutcomePersist) {
+			// The upstream call returned but its classified outcome (TX 2)
+			// could not be persisted: the provider attempt stays durably
+			// 'prepared' (the upstream may have been reached). The task is
+			// NOT finalized terminally: it pauses durably resumable so
+			// `runstead resume` reconciles the attempt conservatively
+			// (debit preserved, never re-issued) (issue #13 review).
+			return stop(OutcomePersistencePaused,
+				fmt.Sprintf("durable provider outcome could not be persisted; task remains resumable for recovery: %v", execution.Err), func(result *Result) {
+					result.Classification = string(execution.Completion.Outcome)
+					result.Err = execution.Err
+				}), true
+		}
 		return stopOutcomeForContext(ctx, l.clock.Now(), deadline,
 			func(result *Result) {
 				result.Classification = string(execution.Completion.Outcome)
@@ -869,7 +895,14 @@ func (l *Loop) handleAction(
 			DurationNanos:  int64(executionDuration),
 			Observation:    observation,
 		}); err != nil {
-			return stop(OutcomePersistenceFailure, fmt.Sprintf("%s: %v", OutcomePersistenceFailure.StopReason(), err), nil), true
+			// The effect already happened but its result could not be
+			// persisted: the attempt stays 'prepared' (uncertain effect).
+			// The task is NOT finalized terminally: it pauses durably
+			// resumable so `runstead resume` reconciles the attempt from
+			// observable state or escalates it to human review (issue #13
+			// review).
+			return stop(OutcomePersistencePaused,
+				fmt.Sprintf("durable tool result could not be persisted after the effect; task remains resumable for recovery: %v", err), nil), true
 		}
 	}
 

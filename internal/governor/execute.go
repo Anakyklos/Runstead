@@ -133,7 +133,7 @@ func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client p
 				Admission:  admission,
 				Response:   response,
 				Completion: completion,
-				Err:        fmt.Errorf("durable provider outcome could not be persisted: %w", err),
+				Err:        fmt.Errorf("%w: %v", ErrProviderOutcomePersist, err),
 			}
 		}
 	}

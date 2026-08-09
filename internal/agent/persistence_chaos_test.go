@@ -22,6 +22,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/policy"
 	"github.com/RenyEnnos/Runstead/internal/provider"
+	"github.com/RenyEnnos/Runstead/internal/recovery"
 	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
 	"github.com/RenyEnnos/Runstead/internal/verifier"
@@ -116,11 +117,26 @@ func (f *faultyPersistence) SaveVerificationAttempt(ctx context.Context, record 
 	return f.Persistence.SaveVerificationAttempt(ctx, record)
 }
 
+func (f *faultyPersistence) RecordProviderPrepared(ctx context.Context, record governor.ProviderPrepared) error {
+	if err := f.maybeFail("RecordProviderPrepared"); err != nil {
+		return err
+	}
+	return f.Persistence.(governor.Persistence).RecordProviderPrepared(ctx, record)
+}
+
+func (f *faultyPersistence) RecordProviderFinished(ctx context.Context, record governor.ProviderFinished) error {
+	if err := f.maybeFail("RecordProviderFinished"); err != nil {
+		return err
+	}
+	return f.Persistence.(governor.Persistence).RecordProviderFinished(ctx, record)
+}
+
 // persistenceChaosHarness is the loop composition over the fault wrapper.
 type persistenceChaosHarness struct {
 	store    *state.Store
 	faulty   *faultyPersistence
 	clock    *fakeClock
+	governor *governor.Governor
 	provider *scriptedProvider
 	executor *agent.Executor
 	registry *tools.Registry
@@ -155,6 +171,7 @@ func newPersistenceChaosHarness(t *testing.T, workspace string, responses ...pro
 		store:    store,
 		faulty:   &faultyPersistence{Persistence: store},
 		clock:    clock,
+		governor: accountGovernor,
 		provider: client,
 		executor: executor,
 		registry: registry,
@@ -250,11 +267,13 @@ func TestPersistenceChaosTX1FailureProvesEffectNeverStarts(t *testing.T) {
 	}
 }
 
-// TestPersistenceChaosTX2FailureKeepsEffectUnrecorded is the uncertain-effect
+// TestPersistenceChaosTX2FailurePausesForRecovery is the uncertain-effect
 // boundary: the write effect happened, the TX 2 result commit failed. The
-// task must NOT advance to completed, no citable evidence may exist, and the
-// attempt stays prepared so recovery can reconcile it from the filesystem.
-func TestPersistenceChaosTX2FailureKeepsEffectUnrecorded(t *testing.T) {
+// task must NOT advance to completed AND must NOT be finalized terminally: it
+// pauses durably resumable with the prepared attempt intact, and the recovery
+// pipeline reconciles the effect from the observable filesystem state instead
+// of re-executing it (issue #13 review).
+func TestPersistenceChaosTX2FailurePausesForRecovery(t *testing.T) {
 	workspace := t.TempDir()
 	writeFixture(t, workspace, "a.txt", "alpha\n")
 	h := newPersistenceChaosHarness(t, workspace, writeFixtureAction("a.txt", "bravo\n", "alpha\n"))
@@ -262,8 +281,8 @@ func TestPersistenceChaosTX2FailureKeepsEffectUnrecorded(t *testing.T) {
 
 	loop := h.loop(t, agent.Limits{}, nil)
 	result := loop.Run(context.Background(), testTask("task-db-tx2"))
-	if result.Outcome != agent.OutcomePersistenceFailure {
-		t.Fatalf("outcome = %q, want persistence_failure (reason %q)", result.Outcome, result.StopReason)
+	if result.Outcome != agent.OutcomePersistencePaused {
+		t.Fatalf("outcome = %q, want persistence_paused (reason %q)", result.Outcome, result.StopReason)
 	}
 	// The effect DID happen (the file was written) but the result commit
 	// failed: the durable attempt stays prepared, with no citable evidence.
@@ -275,21 +294,94 @@ func TestPersistenceChaosTX2FailureKeepsEffectUnrecorded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if snapshot.Task.Status != "running" {
+		t.Fatalf("task status = %q, want running (resumable, not finalized)", snapshot.Task.Status)
+	}
 	if len(snapshot.ToolAttempts) != 1 || snapshot.ToolAttempts[0].Status != "prepared" {
 		t.Fatalf("attempt must stay prepared after the failed TX 2: %+v", snapshot.ToolAttempts)
 	}
 	if len(snapshot.Evidence) != 0 {
 		t.Fatalf("no citable evidence may exist after the failed TX 2: %+v", snapshot.Evidence)
 	}
-	// The loop then finalized the task as persistence_failure (not completed)
-	// because the task row and action exist; the authoritative outcome is the
-	// typed failure.
 	rendered := renderedInspect(t, h.store, "task-db-tx2")
 	if strings.Contains(rendered, "Outcome: completed") {
 		t.Fatal("a failed result commit must never produce a completed task")
 	}
-	if !strings.Contains(rendered, "Outcome: persistence_failure") {
-		t.Fatalf("inspect must show the typed persistence failure:\n%s", rendered)
+	if !strings.Contains(rendered, "Outcome: persistence_paused") {
+		t.Fatalf("inspect must show the typed persistence pause:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Status: running") {
+		t.Fatalf("inspect must show the task as resumable:\n%s", rendered)
+	}
+
+	// Resume through the REAL recovery pipeline: the prepared write attempt is
+	// reconciled from the current filesystem state (the file matches the
+	// expected after-hash), never re-executed. The recovered seed then runs
+	// the loop to a verified completion with a new provider conversation.
+	plan, err := recovery.Resume(context.Background(), h.store, recovery.Options{TaskID: "task-db-tx2"})
+	if err != nil {
+		t.Fatalf("recovery.Resume() error = %v", err)
+	}
+	if plan.Decision != recovery.DecisionContinue {
+		t.Fatalf("recovery decision = %s, want continue (reason %s)", plan.Decision, plan.Reason)
+	}
+	if plan.ReconciledToolAttempts != 1 {
+		t.Fatalf("reconciled tool attempts = %d, want 1", plan.ReconciledToolAttempts)
+	}
+	// The harness governor is not persistence-backed (unlike the CLI), so the
+	// recovery seed cannot derive the continued turn counters from persisted
+	// provider attempts; seed them explicitly so the resumed loop's request
+	// ids stay fresh for the governor's dedup, exactly like the CLI resume
+	// path does.
+	plan.Seed.Turns = 1
+	plan.Seed.Attempts = 1
+	// The reconciled evidence must be citable in the resumed run and the write
+	// attempt must be durably reconciled as completed from observable state.
+	resumedSnapshot, err := h.store.LoadRecoverySnapshot(context.Background(), "task-db-tx2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumedSnapshot.Evidence) != 1 || resumedSnapshot.Evidence[0].Tool != "write_file" {
+		t.Fatalf("reconciled evidence = %+v, want the write evidence", resumedSnapshot.Evidence)
+	}
+	if resumedSnapshot.ToolAttempts[0].Status != "reconciled" || resumedSnapshot.ToolAttempts[0].RecoveryReason != "write_effect_completed" {
+		t.Fatalf("reconciled attempt = %+v, want write_effect_completed", resumedSnapshot.ToolAttempts[0])
+	}
+	// The resumed loop continues with a fresh provider that proposes the final
+	// grounded on the reconciled evidence; the file is written exactly once.
+	newProvider := &scriptedProvider{clock: h.clock, pace: time.Millisecond, responses: []provider.Response{
+		finalResponse("complete", "done", finalEvidence("obs-000001", "write_file")),
+	}}
+	executor2, err := agent.NewExecutor(h.governor, newProvider, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loop2, err := agent.NewLoop(agent.Config{
+		Runner: executor2, Registry: h.registry, Limits: agent.Limits{MaxSteps: 10}, Clock: h.clock,
+		State: h.store, Policy: h.policy, Recovery: plan.Seed,
+		Verifier: verifier.New(h.registry, existsPlan("a.txt")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result2 := loop2.Run(context.Background(), testTask("task-db-tx2"))
+	if result2.Outcome != agent.OutcomeCompleted {
+		t.Fatalf("resumed outcome = %q, want completed (reason %q)", result2.Outcome, result2.StopReason)
+	}
+	content, err = readFileContent(workspace, "a.txt")
+	if err != nil || content != "bravo\n" {
+		t.Fatalf("workspace = %q, want bravo\\n exactly once (err %v)", content, err)
+	}
+	counts := make(map[string]int)
+	finalSnapshot, err := h.store.LoadRecoverySnapshot(context.Background(), "task-db-tx2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, attempt := range finalSnapshot.ToolAttempts {
+		counts[attempt.Tool+"/"+attempt.Status]++
+	}
+	if counts["write_file/prepared"] != 0 || counts["write_file/reconciled"] != 1 || counts["write_file/completed"] != 0 {
+		t.Fatalf("write attempt projections = %v, want exactly one reconciled attempt (no duplication)", counts)
 	}
 }
 

@@ -49,6 +49,15 @@ const (
 	// authoritative, so a failed projection/journal write mid-run is a
 	// terminal condition rather than something to silently continue past.
 	OutcomePersistenceFailure Outcome = "persistence_failure"
+	// OutcomePersistencePaused means a durable write failed AFTER a
+	// potentially executed effect (TX 2 did not commit): the prepared attempt
+	// is the uncertain-effect record and must stay reachable by the recovery
+	// pipeline, so the task is NOT finalized. It stays durably resumable
+	// (status running) and recovery reconciles the attempt from observable
+	// state, or escalates it to human_review_required when that is
+	// impossible (issue #13 review). It is a control-plane pause, never a
+	// completed or failed terminal state.
+	OutcomePersistencePaused Outcome = "persistence_paused"
 	// OutcomeFinalIncomplete means the model emitted a grounded final with
 	// status incomplete: the run ends honestly without claiming completion.
 	OutcomeFinalIncomplete Outcome = "final_incomplete"
@@ -134,6 +143,8 @@ func (o Outcome) ExitCode() int {
 		return exitOutcomeBase + 14
 	case OutcomeVerificationFailuresExhausted:
 		return exitOutcomeBase + 15
+	case OutcomePersistencePaused:
+		return exitOutcomeBase + 16
 	default:
 		return exitUnknown
 	}
@@ -176,6 +187,8 @@ func (o Outcome) StopReason() string {
 		return "consecutive tool/process failures exhausted"
 	case OutcomeVerificationFailuresExhausted:
 		return "repeated verification failures exhausted"
+	case OutcomePersistencePaused:
+		return "durable write failed after a potentially executed effect; task remains resumable for recovery"
 	default:
 		return "unknown terminal outcome"
 	}

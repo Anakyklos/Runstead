@@ -19,6 +19,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/policy"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/provider/omniroute"
+	"github.com/RenyEnnos/Runstead/internal/recovery"
 	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
 	"github.com/RenyEnnos/Runstead/internal/verifier"
@@ -44,6 +45,9 @@ type chaosProvider struct {
 	steps   []chaosStep
 	attempt int
 	seen    []string
+	// sessions records every response session id the provider stamped, so
+	// tests can assert the session metadata actually reached the client.
+	sessions []string
 	// sessionPrefix is stamped into every response metadata so the test can
 	// distinguish one provider generation from another.
 	sessionPrefix string
@@ -71,8 +75,14 @@ func (p *chaosProvider) Complete(ctx context.Context, request provider.Request) 
 		return provider.Response{}, provider.ErrNoPredefinedResponse
 	}
 	response := *step.response
-	if p.sessionPrefix != "" && response.Metadata.SessionID == "" {
+	switch {
+	case step.sessionID != "":
+		response.Metadata.SessionID = step.sessionID
+	case p.sessionPrefix != "" && response.Metadata.SessionID == "":
 		response.Metadata.SessionID = p.sessionPrefix + "-session"
+	}
+	if response.Metadata.SessionID != "" {
+		p.sessions = append(p.sessions, response.Metadata.SessionID)
 	}
 	return response, nil
 }
@@ -80,6 +90,8 @@ func (p *chaosProvider) Complete(ctx context.Context, request provider.Request) 
 func (p *chaosProvider) Attempts() int { return p.attempt }
 
 func (p *chaosProvider) prompts() []string { return append([]string(nil), p.seen...) }
+
+func (p *chaosProvider) sessionIDs() []string { return append([]string(nil), p.sessions...) }
 
 func typedError(kind omniroute.ErrorKind) error {
 	return &omniroute.Error{Kind: kind, UpstreamReached: true}
@@ -106,6 +118,22 @@ func newChaosHarness(t *testing.T, workspace string, configure func(*governor.Co
 
 func newChaosHarnessUnlimited(t *testing.T, workspace string, unlimited bool, configure func(*governor.Config), steps ...chaosStep) *chaosHarness {
 	t.Helper()
+	return newChaosHarnessPersistence(t, workspace, unlimited, configure, nil, steps...)
+}
+
+// newChaosHarnessPersistence is the general harness constructor. A non-nil
+// persist overrides the governor's persistence boundary (the fault wrapper),
+// so tests can inject persistence failures into the provider TX 1/TX 2 paths.
+func newChaosHarnessPersistence(t *testing.T, workspace string, unlimited bool, configure func(*governor.Config), persist governor.Persistence, steps ...chaosStep) *chaosHarness {
+	t.Helper()
+	return newChaosHarnessWithStore(t, workspace, unlimited, configure, nil, persist, steps...)
+}
+
+// newChaosHarnessWithStore is the full harness constructor: the caller may
+// provide the shared store (so a fault wrapper and the loop task state live
+// in the SAME database) and the governor persistence boundary.
+func newChaosHarnessWithStore(t *testing.T, workspace string, unlimited bool, configure func(*governor.Config), shared *state.Store, persist governor.Persistence, steps ...chaosStep) *chaosHarness {
+	t.Helper()
 	clock := newFakeClock()
 	var config governor.Config
 	if unlimited {
@@ -117,15 +145,24 @@ func newChaosHarnessUnlimited(t *testing.T, workspace string, unlimited bool, co
 	if configure != nil {
 		configure(&config)
 	}
-	store, err := state.Open(state.Options{Path: filepath.Join(t.TempDir(), "runstead.db")})
-	if err != nil {
-		t.Fatalf("state.Open() error = %v", err)
+	var store *state.Store
+	var err error
+	if shared != nil {
+		store = shared
+	} else {
+		store, err = state.Open(state.Options{Path: filepath.Join(t.TempDir(), "runstead.db")})
+		if err != nil {
+			t.Fatalf("state.Open() error = %v", err)
+		}
+		t.Cleanup(func() { store.Close() })
 	}
-	t.Cleanup(func() { store.Close() })
+	if persist == nil {
+		persist = store
+	}
 	accountGovernor, err := governor.New(config, governor.Options{
 		Clock:       clock,
 		Jitter:      fixedJitter{},
-		Persistence: store,
+		Persistence: persist,
 	})
 	if err != nil {
 		t.Fatalf("governor.New() error = %v", err)
@@ -388,6 +425,19 @@ func TestProviderChaosStaleSessionMetadataDisposable(t *testing.T) {
 	if len(newProvider.prompts()) == 0 || !strings.Contains(newProvider.prompts()[0], "RecoveryMarker-CONTINUE") {
 		t.Fatal("the new conversation must receive the reconstructed recovery context")
 	}
+	// The session metadata was actually observed: run 1 stamped the stale
+	// session id on every response, and the new provider generation stamps
+	// its own id, so the session claim is grounded in the fake's evidence.
+	sessions := h.provider.sessionIDs()
+	// Only the response step carries metadata (the connection-reset step
+	// returns an error with no response); the one response that was produced
+	// must carry the stale session id.
+	if len(sessions) != 1 || sessions[0] != "stale-session-1" {
+		t.Fatalf("run 1 session metadata = %v, want stale-session-1 on the response", sessions)
+	}
+	if newSessions := newProvider.sessionIDs(); len(newSessions) != 1 || newSessions[0] != "gen-2-session" {
+		t.Fatalf("run 2 session metadata = %v, want gen-2-session", newSessions)
+	}
 	// The old session id is gone from the new conversation's metadata and the
 	// task truth (evidence) came from local durable state, not the old session.
 	recovery, err := store.LoadRecoverySnapshot(ctx, "task-session")
@@ -429,4 +479,77 @@ func providerResponseText(text string) provider.Response {
 
 func toolsHash(content string) string {
 	return tools.HashBytes([]byte(content))
+}
+
+// TestProviderChaosTX2PersistenceFailurePausesForRecovery proves the
+// provider-side TX 2 contract: the upstream call returned but the classified
+// outcome could not be persisted, so the provider attempt stays 'prepared'
+// (the upstream may have been reached). The task pauses durably resumable
+// instead of finalizing terminally, and recovery reconciles the attempt
+// conservatively (debit preserved, never re-issued) (issue #13 review).
+func TestProviderChaosTX2PersistenceFailurePausesForRecovery(t *testing.T) {
+	workspace := t.TempDir()
+	writeFixture(t, workspace, "a.txt", "alpha\n")
+
+	store, err := state.Open(state.Options{Path: filepath.Join(t.TempDir(), "runstead.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	faulty := &faultyPersistence{Persistence: store}
+	faulty.failNext("RecordProviderFinished", 1)
+	// The governor persists through the fault wrapper and the LOOP task state
+	// lives in the SAME store, so the TX 2 failure is a real injected
+	// persistence error at the governor boundary with the task row present.
+	h := newChaosHarnessWithStore(t, workspace, false, nil, store, faulty,
+		chaosStep{response: responsePtr(actionResponse("read_file", `{"path":"a.txt"}`))},
+	)
+	loop := h.loop(t, agent.Limits{})
+	result := loop.Run(context.Background(), testTask("task-provider-tx2"))
+	if result.Outcome != agent.OutcomePersistencePaused {
+		t.Fatalf("outcome = %q, want persistence_paused (reason %q)", result.Outcome, result.StopReason)
+	}
+	if !strings.Contains(result.StopReason, "durable provider outcome could not be persisted") {
+		t.Fatalf("stop reason must identify the provider persistence failure: %q", result.StopReason)
+	}
+	// The provider call happened exactly once (no retry) and the durable
+	// provider attempt stays prepared: the upstream may have been reached.
+	if h.provider.Attempts() != 1 {
+		t.Fatalf("provider attempts = %d, want exactly 1", h.provider.Attempts())
+	}
+	snapshot, err := store.LoadRecoverySnapshot(context.Background(), "task-provider-tx2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Task.Status != "running" {
+		t.Fatalf("task status = %q, want running (resumable, not finalized)", snapshot.Task.Status)
+	}
+	if len(snapshot.ProviderAttempts) != 1 || snapshot.ProviderAttempts[0].Status != "prepared" {
+		t.Fatalf("provider attempt must stay prepared: %+v", snapshot.ProviderAttempts)
+	}
+	// The pause fired before the proposed read action could execute: no tool
+	// attempt and no evidence exist, and none was invented.
+	if len(snapshot.ToolAttempts) != 0 || len(snapshot.Evidence) != 0 {
+		t.Fatalf("no tool effect may exist after the provider TX 2 pause: %+v / %+v", snapshot.ToolAttempts, snapshot.Evidence)
+	}
+
+	// Recovery reconciles the prepared provider attempt conservatively: the
+	// debit stands and the request is never re-issued.
+	plan, err := recovery.Resume(context.Background(), store, recovery.Options{TaskID: "task-provider-tx2"})
+	if err != nil {
+		t.Fatalf("recovery.Resume() error = %v", err)
+	}
+	if plan.Decision != recovery.DecisionContinue {
+		t.Fatalf("recovery decision = %s, want continue (reason %s)", plan.Decision, plan.Reason)
+	}
+	if plan.UncertainProviderAttempts != 1 || plan.ReconciledProviderAttempts != 1 {
+		t.Fatalf("reconciled provider attempts = %d (uncertain %d), want 1/1", plan.ReconciledProviderAttempts, plan.UncertainProviderAttempts)
+	}
+	reconciled, err := store.LoadRecoverySnapshot(context.Background(), "task-provider-tx2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconciled.ProviderAttempts[0].Status != "reconciled" || !reconciled.ProviderAttempts[0].Uncertain {
+		t.Fatalf("reconciled provider attempt = %+v, want reconciled+uncertain", reconciled.ProviderAttempts[0])
+	}
 }
