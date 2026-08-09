@@ -380,6 +380,7 @@ Every loop exit is a typed `agent.Outcome` with one stable process exit code:
 | `verification_blocked` | 33 |
 | `consecutive_failures_exhausted` | 34 |
 | `verification_failures_exhausted` | 35 |
+| `persistence_paused` | 36 |
 | `canceled` | 130 |
 
 The mapping is centralized in `agent.Outcome.ExitCode`. `canceled` follows the
@@ -390,6 +391,11 @@ the stop reason. The #12 guard outcomes (`consecutive_failures_exhausted`,
 `verification_failures_exhausted`) stop loops that keep producing distinct
 failing observations or repeated premature completion proposals with a typed
 reason; each counted failure already consumed a normal model/tool turn.
+`persistence_paused` is a control-plane pause, not a terminal failure: it
+fires when a durable write fails after a potentially executed effect (tool or
+provider TX 2 did not commit), keeping the task resumable so recovery can
+reconcile the prepared attempt from observable state or escalate it to
+`human_review_required` (issue #13 review).
 
 ### Trace
 

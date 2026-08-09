@@ -106,6 +106,10 @@ durability, security/redaction and the recovery contract
 (`docs/persistence.md`, `docs/adr/0001-durable-execution.md`) document the
 implemented behavior.
 
+The deterministic chaos and interruption suite (issue #13) and its auditable
+failure matrix are documented in
+[`docs/chaos-hardening.md`](docs/chaos-hardening.md).
+
 ## Development environment
 
 A Docker-based development environment is recommended to keep Go, `jq`, test utilities, caches and later transport-specific native dependencies out of the host system.

@@ -102,6 +102,24 @@ func hitCrashPoint(name string) {
 	}
 }
 
+// faultPoint is a deterministic test seam invoked at named persistence
+// methods so tests can inject a real persistence ERROR (as opposed to a
+// process crash) at a specific boundary. Production code leaves it nil.
+var faultPoint func(string) error
+
+// SetFaultPoint installs the persistence fault test seam. When the callback
+// returns a non-nil error for a named method, that method fails with the
+// error instead of committing, leaving the durable state exactly as it was
+// before the call. Only tests call this.
+func SetFaultPoint(fn func(string) error) { faultPoint = fn }
+
+func hitFaultPoint(name string) error {
+	if faultPoint != nil {
+		return faultPoint(name)
+	}
+	return nil
+}
+
 // Open creates (or reopens) the database at path, applies embedded
 // migrations, configures the SQLite operational policy and returns a ready
 // Store. The parent directory is created when missing; failures to create or
@@ -284,6 +302,13 @@ type Persistence interface {
 	// and a task_verification_paused event; no terminal finalize happens
 	// (issue #11).
 	MarkTaskVerificationPaused(ctx context.Context, taskID, stopReason string) error
+	// MarkTaskPersistencePaused records a control-plane persistence pause: a
+	// durable write failed after a potentially executed effect (TX 2 did not
+	// commit), so the task stays resumable (status running) with the prepared
+	// attempt intact and the typed reason journaled; recovery reconciles the
+	// attempt from observable state instead of the run finalizing it
+	// terminally (issue #13 review).
+	MarkTaskPersistencePaused(ctx context.Context, taskID, stopReason string) error
 	// PendingApprovals returns the write actions of one task still awaiting an
 	// operator decision (approval_required policy decision, no approval row).
 	PendingApprovals(ctx context.Context, taskID string) ([]PendingApproval, error)

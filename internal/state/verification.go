@@ -328,6 +328,40 @@ func (s *Store) MarkTaskVerificationPaused(ctx context.Context, taskID, stopReas
 	return nil
 }
 
+// MarkTaskPersistencePaused records a control-plane persistence pause: a
+// durable write failed after a potentially executed effect (TX 2 did not
+// commit), so the task stays resumable (status running) with the prepared
+// attempt intact and the typed reason journaled. Recovery reconciles the
+// attempt from observable state instead of the run finalizing it terminally
+// (issue #13 review).
+func (s *Store) MarkTaskPersistencePaused(ctx context.Context, taskID, stopReason string) error {
+	now := s.now()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin persistence pause: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx,
+		`UPDATE tasks SET status = 'running', outcome = 'persistence_paused', stop_reason = ?
+		 WHERE task_id = ? AND status IN ('running', 'planned')`,
+		Redact(stopReason), taskID)
+	if err != nil {
+		return fmt.Errorf("mark persistence pause: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected == 0 {
+		return fmt.Errorf("mark persistence pause: task %q not running", taskID)
+	}
+	if err := appendEvent(ctx, tx, taskID, "task_persistence_paused", map[string]any{
+		"stop_reason": Redact(stopReason),
+	}, now); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit persistence pause: %w", err)
+	}
+	return nil
+}
+
 // LatestVerificationDecision returns the decision of the latest verification
 // attempt of one task. The second result reports whether any attempt exists.
 func (s *Store) LatestVerificationDecision(ctx context.Context, taskID string) (string, bool, error) {

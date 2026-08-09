@@ -560,6 +560,13 @@ var (
 	ErrGovernorClosed          = errors.New("governor is closed")
 	ErrAttemptReceiptsRequired = errors.New("authoritative attempt receipts are required")
 	ErrAttemptReceiptReplayed  = errors.New("attempt receipt was already reconciled")
+	// ErrProviderOutcomePersist reports that the classified provider outcome
+	// (TX 2) could not be persisted after the upstream call returned. The
+	// provider attempt stays durably 'prepared' (the upstream may have been
+	// reached), so the runtime must keep the task resumable instead of
+	// finalizing it terminally; recovery reconciles the attempt
+	// conservatively (issue #13 review).
+	ErrProviderOutcomePersist = errors.New("durable provider outcome could not be persisted")
 )
 
 type FinishResult struct {
