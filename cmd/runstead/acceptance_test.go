@@ -1,0 +1,149 @@
+package main
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/RenyEnnos/Runstead/internal/state"
+	"github.com/RenyEnnos/Runstead/internal/verifier"
+)
+
+// writeAcceptanceFile writes an operator acceptance plan and returns its path.
+func writeAcceptanceFile(t *testing.T, plan string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "acceptance.json")
+	if err := os.WriteFile(path, []byte(plan), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestRunAcceptanceRejectsMissingFile proves the full CLI flow: with an
+// acceptance plan requiring a file that the model never creates, completion
+// is refused by the runtime verifier; the failed verification is persisted
+// and inspect explains the decision.
+func TestRunAcceptanceRejectsMissingFile(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "readme.txt"), []byte("info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	acceptance := writeAcceptanceFile(t, `{"version":1,"checks":[{"id":"artifact","type":"file_exists","path":"result.txt"}]}`)
+	script := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"readme.txt"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+	)
+	stateDir := t.TempDir()
+	var out, errOut strings.Builder
+	code := run(context.Background(), []string{
+		"run", "--task", "Create result.txt.",
+		"--workspace", workspace,
+		"--scripted", script,
+		"--acceptance", acceptance,
+		"--state-dir", stateDir,
+		"--min-start-interval", "1ms",
+		"--log-level", "error",
+	}, &out, &errOut)
+	if code == exitSuccess {
+		t.Fatalf("run must not complete when the acceptance check fails\n%s", out.String())
+	}
+	taskID := taskIDFromOutput(t, errOut.String())
+	rendered := inspectRendered(t, stateDir, taskID)
+	if !strings.Contains(rendered, "decision=failed") {
+		t.Fatalf("inspect must show the failed verification:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "check=artifact type=file_exists status=failed") {
+		t.Fatalf("inspect must show the failed artifact check:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "Status: completed") {
+		t.Fatalf("task must not be completed:\n%s", rendered)
+	}
+}
+
+// TestRunAcceptancePassesWhenFileCreated proves the happy path: the model
+// creates the required file, verification passes, and the task completes.
+func TestRunAcceptancePassesWhenFileCreated(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "readme.txt"), []byte("info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	acceptance := writeAcceptanceFile(t, `{"version":1,"checks":[{"id":"artifact","type":"file_exists","path":"result.txt"}]}`)
+	script := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"readme.txt"}}</runstead_action>`,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"write_file","arguments":{"path":"result.txt","content":"ok\n","expected_before_hash":"absent"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"created","evidence":["obs-000001","obs-000002"]}</runstead_final>`,
+	)
+	stateDir := t.TempDir()
+	var out, errOut strings.Builder
+	code := run(context.Background(), []string{
+		"run", "--task", "Create result.txt.",
+		"--workspace", workspace,
+		"--scripted", script,
+		"--acceptance", acceptance,
+		"--write-policy", "write_file=allow",
+		"--state-dir", stateDir,
+		"--min-start-interval", "1ms",
+		"--log-level", "error",
+	}, &out, &errOut)
+	if code != exitSuccess {
+		t.Fatalf("run exit = %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "outcome: completed") {
+		t.Fatalf("run must complete:\n%s", out.String())
+	}
+	taskID := taskIDFromOutput(t, errOut.String())
+	rendered := inspectRendered(t, stateDir, taskID)
+	if !strings.Contains(rendered, "decision=passed") {
+		t.Fatalf("inspect must show the passed verification:\n%s", rendered)
+	}
+}
+
+// TestResumeRejectsAcceptancePlanDrift proves resume rejects a divergent
+// --acceptance override fail-closed: the plan is persisted with the task at
+// run start, so a task cannot continue under a different acceptance plan.
+func TestResumeRejectsAcceptancePlanDrift(t *testing.T) {
+	workspace := t.TempDir()
+	planSpec := `{"version":1,"checks":[{"id":"a","type":"file_exists","path":"a.txt"}]}`
+	plan, err := verifier.ParsePlan([]byte(planSpec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := t.TempDir()
+	store, err := state.Open(state.Options{Path: filepath.Join(stateDir, state.DefaultDBFile)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := store.CreateTask(ctx, state.TaskRecord{TaskID: "task-plan", Objective: "o", Workspace: workspace}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StartTask(ctx, "task-plan"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAcceptancePlan(ctx, "task-plan", []byte(planSpec), plan.Digest()); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	script := writeScript(t,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+	)
+	// A divergent plan is rejected before any recovery side effect.
+	planB := writeAcceptanceFile(t, `{"version":1,"checks":[{"id":"a","type":"file_exists","path":"b.txt"}]}`)
+	var resumeOut, resumeErr strings.Builder
+	resumeCode := run(context.Background(), []string{
+		"resume", "task-plan",
+		"--state-dir", stateDir,
+		"--scripted", script,
+		"--acceptance", planB,
+		"--log-level", "error",
+	}, &resumeOut, &resumeErr)
+	if resumeCode != exitUsage {
+		t.Fatalf("resume exit = %d, want %d (plan drift)\nstderr:\n%s", resumeCode, exitUsage, resumeErr.String())
+	}
+	if !strings.Contains(resumeErr.String(), "acceptance plan") {
+		t.Fatalf("resume diagnostic = %q, want a plan drift diagnostic", resumeErr.String())
+	}
+}

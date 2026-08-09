@@ -20,6 +20,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
 	"github.com/RenyEnnos/Runstead/internal/trace"
+	"github.com/RenyEnnos/Runstead/internal/verifier"
 )
 
 // Resume-specific exit codes. The generic codes (0 success, 1 not found,
@@ -53,6 +54,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	writePolicy := ""
 	recipesFile := ""
 	recipePolicy := ""
+	acceptanceFile := ""
 	// Parse manually so flags may appear before or after the task id (the flag
 	// package stops at the first positional argument).
 	for index := 0; index < len(args); index++ {
@@ -114,6 +116,14 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			}
 		case strings.HasPrefix(arg, "--recipe-policy="):
 			recipePolicy = strings.TrimPrefix(arg, "--recipe-policy=")
+		case arg == "--acceptance":
+			if next, ok := value("--acceptance"); ok {
+				acceptanceFile = next
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--acceptance="):
+			acceptanceFile = strings.TrimPrefix(arg, "--acceptance=")
 		case arg == "--min-start-interval":
 			if next, ok := value("--min-start-interval"); ok {
 				minStartInterval = next
@@ -275,6 +285,14 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintf(errOut, "resume: %v\n", err)
 		return exitUsage
 	}
+	// The acceptance plan is part of the authoritative task configuration: it
+	// is persisted with the task at run start and loaded from state on resume.
+	// A divergent --acceptance override is rejected fail-closed (issue #11).
+	resumeAcceptance, resumeAcceptanceDigest, err := resolveResumeAcceptancePlan(ctx, store, taskID, acceptanceFile, acceptanceFile != "")
+	if err != nil {
+		fmt.Fprintf(errOut, "resume: %v\n", err)
+		return exitUsage
+	}
 	// The provider input is supplied again at resume time: the original remote
 	// conversation is disposable metadata, never an authority over task state.
 	scriptedPath, scriptedSet := resolveScriptedFlag(scripted)
@@ -348,17 +366,19 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	policyConfig := resumePolicy
 	policyConfig.RecipeModes = resumeRecipePolicy.RecipeModes
 	loop, err := agent.NewLoop(agent.Config{
-		Runner:              executor,
-		Registry:            registry,
-		Limits:              limits,
-		Model:               plan.Task.Model,
-		Trace:               traceSink,
-		State:               store,
-		Policy:              policy.NewStatic(policyConfig, storeApprovals(store)),
-		WritePolicy:         resumePolicy.Spec(),
-		RecipePolicy:        resumeRecipePolicy.RecipeSpec(recipeIDs(resumeRecipes)),
-		RecipeCatalogDigest: resumeRecipes.Digest(),
-		Recovery:            plan.Seed,
+		Runner:               executor,
+		Registry:             registry,
+		Limits:               limits,
+		Model:                plan.Task.Model,
+		Trace:                traceSink,
+		State:                store,
+		Policy:               policy.NewStatic(policyConfig, storeApprovals(store)),
+		WritePolicy:          resumePolicy.Spec(),
+		RecipePolicy:         resumeRecipePolicy.RecipeSpec(recipeIDs(resumeRecipes)),
+		RecipeCatalogDigest:  resumeRecipes.Digest(),
+		Verifier:             verifier.New(registry, resumeAcceptance),
+		AcceptancePlanDigest: resumeAcceptanceDigest,
+		Recovery:             plan.Seed,
 	})
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: loop unavailable: %v\n", err)
@@ -601,6 +621,41 @@ func resolveResumeRecipePolicy(configJSON, flagValue string, flagSet bool, catal
 	return persisted, nil
 }
 
+// resolveResumeAcceptancePlan reconstructs the effective acceptance plan of a
+// resumed task (issue #11). The plan persisted with the task at run start is
+// authoritative: resume loads it from state, and a --acceptance override that
+// diverges from the persisted plan is rejected fail-closed. A task that
+// started without a plan cannot silently gain one at resume, and a task that
+// started with a plan cannot resume without it.
+func resolveResumeAcceptancePlan(ctx context.Context, store *state.Store, taskID, flagValue string, flagSet bool) (*verifier.Plan, string, error) {
+	persistedSpec, persistedDigest, persisted, err := store.AcceptancePlan(ctx, taskID)
+	if err != nil {
+		return nil, "", err
+	}
+	if !persisted {
+		if flagSet {
+			return nil, "", errors.New("the task has no persisted acceptance plan; supplying one at resume is a policy change and is rejected")
+		}
+		return nil, "", nil
+	}
+	var plan *verifier.Plan
+	if flagSet {
+		plan, _, err = resolveAcceptancePlan(flagValue, true)
+		if err != nil {
+			return nil, "", err
+		}
+		if plan.Digest() != persistedDigest {
+			return nil, "", errors.New("--acceptance diverges from the task's persisted acceptance plan; resume always continues under the plan the task started with")
+		}
+		return plan, persistedDigest, nil
+	}
+	plan, err = verifier.ParsePlan(persistedSpec)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid persisted acceptance plan: %w", err)
+	}
+	return plan, persistedDigest, nil
+}
+
 // limitsFromConfig reconstructs the loop limits from the persisted sanitized
 // configuration snapshot (the same snapshot `run` writes). Unknown or missing
 // fields fall back to the loop defaults.
@@ -676,6 +731,7 @@ func printResumeHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --write-policy SPEC       write tool modes, e.g. write_file=allow (RUNSTEAD_WRITE_POLICY, default approval_required)")
 	fmt.Fprintln(out, "  --recipes FILE            operator-controlled recipe catalog (RUNSTEAD_RECIPES); re-supplied at resume")
 	fmt.Fprintln(out, "  --recipe-policy SPEC      recipe modes, e.g. test=allow (RUNSTEAD_RECIPE_POLICY; must match the persisted policy)")
+	fmt.Fprintln(out, "  --acceptance FILE         operator acceptance plan (RUNSTEAD_ACCEPTANCE_PLAN; must match the persisted plan; loaded from state when omitted)")
 	fmt.Fprintln(out, "  --min-start-interval DURATION  account governor pacing override (RUNSTEAD_MIN_START_INTERVAL)")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Exit codes: 0 resumed and finished, 1 task not found, 2 usage, 3 state database unavailable,")
