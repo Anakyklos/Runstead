@@ -68,6 +68,22 @@ const (
 	// operator can reconcile the effect or decide the approval before a
 	// normal `runstead resume` continues.
 	OutcomeVerificationBlocked Outcome = "verification_blocked"
+	// OutcomeConsecutiveFailuresExhausted means the model produced more
+	// consecutive failing tool/process observations (a failed tool
+	// observation, or a run_recipe observation whose real exit code is
+	// non-zero) than the configured allowance, with no successful observation
+	// in between. Each failure already consumed a normal model/tool turn and
+	// its correction was free to proceed; the guard stops the unproductive
+	// repetition with a typed reason (issue #12). The task is finalized as a
+	// terminal failure; a new task (or a corrective operator reset of the
+	// workspace) is required.
+	OutcomeConsecutiveFailuresExhausted Outcome = "consecutive_failures_exhausted"
+	// OutcomeVerificationFailuresExhausted means the model proposed completion
+	// more times than the configured allowance while the control-plane
+	// verifier kept deciding failed. Each failed verification already returned
+	// to execution as a structured observation; the guard stops the repeated
+	// premature completion proposals with a typed reason (issue #12).
+	OutcomeVerificationFailuresExhausted Outcome = "verification_failures_exhausted"
 )
 
 // exitSuccess, exitCanceled and the usage/unavailable codes are shared with the
@@ -114,6 +130,10 @@ func (o Outcome) ExitCode() int {
 		return exitOutcomeBase + 12
 	case OutcomeVerificationBlocked:
 		return exitOutcomeBase + 13
+	case OutcomeConsecutiveFailuresExhausted:
+		return exitOutcomeBase + 14
+	case OutcomeVerificationFailuresExhausted:
+		return exitOutcomeBase + 15
 	default:
 		return exitUnknown
 	}
@@ -152,6 +172,10 @@ func (o Outcome) StopReason() string {
 		return "write approval required"
 	case OutcomeVerificationBlocked:
 		return "completion refused by control-plane verification"
+	case OutcomeConsecutiveFailuresExhausted:
+		return "consecutive tool/process failures exhausted"
+	case OutcomeVerificationFailuresExhausted:
+		return "repeated verification failures exhausted"
 	default:
 		return "unknown terminal outcome"
 	}

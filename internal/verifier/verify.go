@@ -136,8 +136,12 @@ func (v *Verifier) Verify(input Input) Report {
 		appendResult(CheckResult{ID: checkNoPendingApproval, Type: "structural", Status: CheckPassed})
 	}
 
-	// 4. Write evidence reconciled against the real filesystem: a write the
-	// task persisted must match the current authoritative file state.
+	// 4. Write evidence reconciled against the real filesystem: the LATEST
+	// persisted write of every target path must match the current
+	// authoritative file state. Earlier writes to the same path are
+	// superseded by the corrective trajectory of the #12 coding loop and are
+	// recorded honestly in the report (their intermediate state legitimately
+	// no longer exists); they never fail the check by themselves.
 	reconciled := v.reconcileWrites(input)
 	report.WriteReconciliation = reconciled
 	writeResult := CheckResult{ID: checkWritesReconciled, Type: "structural", Status: CheckPassed}
@@ -149,7 +153,7 @@ func (v *Verifier) Verify(input Input) Report {
 	}
 	if len(mismatches) > 0 {
 		writeResult.Status = CheckFailed
-		writeResult.Expected = "every persisted write matches the current filesystem"
+		writeResult.Expected = "the latest persisted write of every target path matches the current filesystem"
 		writeResult.Observed = "mismatch: " + strings.Join(mismatches, ",")
 		writeResult.Reason = "write_evidence_does_not_match_filesystem"
 	}
@@ -297,10 +301,20 @@ func uncertainAttempts(attempts []state.RecoveryToolAttempt) []AttemptRef {
 	return refs
 }
 
-// reconcileWrites compares every persisted write evidence against the current
-// filesystem through the observer.
+// reconcileWrites compares the latest persisted write evidence of every
+// target path against the current filesystem through the observer. Evidence
+// IDs are allocated in execution order, so the highest ID for a path is the
+// latest write; earlier writes to the same path are recorded as Superseded
+// (a corrective write in the #12 coding loop legitimately overwrites a
+// previous attempt). Only the latest write of a path must match the current
+// file, so the final state is provably the state the task's own last write
+// produced.
 func (v *Verifier) reconcileWrites(input Input) []WriteReconciled {
-	var reconciled []WriteReconciled
+	type candidate struct {
+		item  state.RecoveryEvidence
+		write tools.WriteEvidence
+	}
+	byPath := make(map[string][]candidate)
 	for _, item := range input.Evidence {
 		if item.Tool != tools.ToolWriteFile && item.Tool != tools.ToolApplyPatch {
 			continue
@@ -312,13 +326,28 @@ func (v *Verifier) reconcileWrites(input Input) []WriteReconciled {
 		if write.Path == "" || write.AfterHash == "" {
 			continue
 		}
+		byPath[write.Path] = append(byPath[write.Path], candidate{item: item, write: write})
+	}
+	paths := make([]string, 0, len(byPath))
+	for path := range byPath {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	var reconciled []WriteReconciled
+	for _, path := range paths {
+		writes := byPath[path]
+		sort.Slice(writes, func(i, j int) bool { return writes[i].item.EvidenceID < writes[j].item.EvidenceID })
+		latest := writes[len(writes)-1]
 		entry := WriteReconciled{
-			Path:       write.Path,
-			ChangeKind: write.ChangeKind,
-			AfterHash:  write.AfterHash,
-			EvidenceID: item.EvidenceID,
+			Path:       latest.write.Path,
+			ChangeKind: latest.write.ChangeKind,
+			AfterHash:  latest.write.AfterHash,
+			EvidenceID: latest.item.EvidenceID,
 		}
-		observed, present, failure := v.observer.FileSHA256(write.Path)
+		for _, prior := range writes[:len(writes)-1] {
+			entry.Superseded = append(entry.Superseded, prior.item.EvidenceID)
+		}
+		observed, present, failure := v.observer.FileSHA256(latest.write.Path)
 		switch {
 		case failure != nil:
 			entry.ObservedHash = "unreadable"
@@ -327,14 +356,9 @@ func (v *Verifier) reconcileWrites(input Input) []WriteReconciled {
 		default:
 			entry.ObservedHash = observed
 		}
-		if write.ChangeKind == "created" {
-			entry.Matches = present && observed == write.AfterHash
-		} else {
-			entry.Matches = present && observed == write.AfterHash
-		}
+		entry.Matches = present && observed == latest.write.AfterHash
 		reconciled = append(reconciled, entry)
 	}
-	sort.Slice(reconciled, func(i, j int) bool { return reconciled[i].Path < reconciled[j].Path })
 	return reconciled
 }
 
@@ -375,12 +399,18 @@ func failureText(failure error) string {
 
 // parseGitStatus parses `git status --short` output into changed files. Each
 // line is "<XY> <path>"; with --no-renames and core.quotepath=false the path
-// is the rest of the line after the two status columns and one space.
+// is the rest of the line after the two status columns and one space. The
+// branch header line that `--branch` emits ("## main...origin/main") is not
+// a changed file and is never attributed as one (issue #12 final evidence
+// report).
 func parseGitStatus(output string) map[string]string {
 	files := make(map[string]string)
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimRight(line, "\r")
 		if len(line) < 3 {
+			continue
+		}
+		if strings.HasPrefix(line, "##") {
 			continue
 		}
 		status := line[:2]

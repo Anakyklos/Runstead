@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "checks": [
+    {"id": "tests-pass", "type": "recipe_exit_zero", "recipe": "test", "require_untruncated": true}
+  ]
+}

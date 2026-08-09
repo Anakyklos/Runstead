@@ -98,8 +98,13 @@ task, with or without an operator plan:
   persisted tool of the evidence row;
 - `no_uncertain_attempts`: no interrupted/uncertain/human-review attempt;
 - `no_pending_approvals`: no operator approval is still pending;
-- `writes_reconciled`: every persisted write evidence matches the current
-  filesystem (created files exist, hashes match);
+- `writes_reconciled`: the latest persisted write of every target path
+  matches the current filesystem (created files exist, hashes match). A
+  corrective write in the #12 coding loop legitimately supersedes an earlier
+  write to the same path: the earlier write is recorded in the report as
+  superseded (its intermediate state no longer exists), and only the latest
+  write must match the current file — so the final state is provably the
+  state the task's own last write produced;
 - `git_observed`: real Git status/diff captured, with change attribution and
   an explicit limitation when the task-start baseline was truncated;
 - `acceptance_criteria_required`: an operator acceptance plan with at least one

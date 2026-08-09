@@ -507,3 +507,68 @@ func changedPaths(files []ChangedFile) []string {
 	}
 	return paths
 }
+
+// Issue #12: a corrective write legitimately supersedes an earlier write to
+// the same path (the coding-loop trajectory writes a wrong fix, then
+// overwrites it with the correct fix). The latest write must match the
+// current filesystem; the superseded intermediate state is recorded in the
+// report instead of failing the writes_reconciled check.
+func TestVerifySupersededWriteDoesNotFail(t *testing.T) {
+	first := writeEvidence(t, "obs-000001", "src/calc.go", hashOf("wrong\n"), "modified")
+	second := writeEvidence(t, "obs-000002", "src/calc.go", hashOf("right\n"), "modified")
+	report := mustReport(t, &fakeObserver{files: map[string]string{"src/calc.go": "right\n"}}, Input{
+		TaskID:   "t-superseded",
+		Evidence: []state.RecoveryEvidence{first, second},
+	})
+	check := findCheck(report, checkWritesReconciled)
+	if check.Status != CheckPassed {
+		t.Fatalf("writes check = %+v, want passed (the latest write matches)", check)
+	}
+	if len(report.WriteReconciliation) != 1 {
+		t.Fatalf("reconciliation = %+v, want exactly one entry per path", report.WriteReconciliation)
+	}
+	entry := report.WriteReconciliation[0]
+	if entry.EvidenceID != "obs-000002" || !entry.Matches {
+		t.Fatalf("reconciliation = %+v, want the latest evidence matching the filesystem", entry)
+	}
+	if len(entry.Superseded) != 1 || entry.Superseded[0] != "obs-000001" {
+		t.Fatalf("superseded = %v, want [obs-000001]", entry.Superseded)
+	}
+}
+
+// The superseded semantics never hide a real mismatch: when the LATEST write
+// does not match the current filesystem (for example an external edit after
+// the corrective write), the writes_reconciled check still fails.
+func TestVerifyLatestWriteMismatchStillFails(t *testing.T) {
+	first := writeEvidence(t, "obs-000001", "src/calc.go", hashOf("wrong\n"), "modified")
+	second := writeEvidence(t, "obs-000002", "src/calc.go", hashOf("right\n"), "modified")
+	report := mustReport(t, &fakeObserver{files: map[string]string{"src/calc.go": "external edit\n"}}, Input{
+		TaskID:   "t-superseded-mismatch",
+		Evidence: []state.RecoveryEvidence{first, second},
+	})
+	check := findCheck(report, checkWritesReconciled)
+	if check.Status != CheckFailed || check.Reason != "write_evidence_does_not_match_filesystem" {
+		t.Fatalf("writes check = %+v, want failed for the latest write mismatch", check)
+	}
+}
+
+// Issue #12: `git status --short --branch` emits a branch header line
+// ("## main...origin/main") that is NOT a changed file. It must never be
+// attributed as a pre-existing or during-task change in the final evidence
+// report.
+func TestVerifyBranchHeaderNotAttributed(t *testing.T) {
+	observer := &fakeObserver{gitStatus: "## main...origin/main\n M app/calc.go\n"}
+	report := mustReport(t, observer, Input{
+		TaskID: "t-branch", BaselineGitStatus: "## main...origin/main\n",
+	})
+	if report.Git == nil || !report.Git.Available {
+		t.Fatalf("git = %+v", report.Git)
+	}
+	if got := changedPaths(report.Git.PreExisting); len(got) != 0 {
+		t.Fatalf("pre-existing = %v, want none (the branch header is not a file)", got)
+	}
+	during := changedPaths(report.Git.DuringTask)
+	if len(during) != 1 || during[0] != "app/calc.go" {
+		t.Fatalf("during-task = %v, want [app/calc.go]", during)
+	}
+}

@@ -509,6 +509,13 @@ continues the task-scoped evidence ID space from the persisted maximum
 (`tools.Options.NextEvidenceSequence`), so new observations never collide with
 persisted `(task_id, evidence_id)` rows.
 
+The #12 failure-guard counters are part of the resumed loop budgets: the
+recovery pipeline recomputes the trailing consecutive tool/process failure
+streak and the trailing failed-verification streak from the persisted attempt
+and verification history and seeds them into `agent.RecoverySeed`, so a
+resumed run continues the guards instead of silently resetting them (see
+[coding-loop.md](coding-loop.md)).
+
 ### Governor restoration
 
 The resumed run rebuilds the account governor from the persisted protection

@@ -178,6 +178,12 @@ type WriteReconciled struct {
 	Matches bool `json:"matches"`
 	// EvidenceID is the write evidence used.
 	EvidenceID string `json:"evidence_id,omitempty"`
+	// Superseded lists the evidence IDs of EARLIER writes to the same path
+	// that this write replaced. A corrective write in the #12 coding loop
+	// legitimately overwrites a previous attempt, so only the latest write of
+	// a path must match the current filesystem; the superseded intermediate
+	// states are recorded honestly and never silently dropped (issue #12).
+	Superseded []string `json:"superseded,omitempty"`
 }
 
 // EvidenceClaim is one typed evidence citation from the final response: the

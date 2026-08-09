@@ -25,6 +25,7 @@ import (
 
 	"github.com/RenyEnnos/Runstead/internal/agent"
 	"github.com/RenyEnnos/Runstead/internal/governor"
+	"github.com/RenyEnnos/Runstead/internal/recipe"
 	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
 )
@@ -519,18 +520,82 @@ func classifyProviderAttempt(attempt state.RecoveryProviderAttempt) providerClas
 // buildSeed reconstructs the agent loop seed from the persisted snapshot:
 // continued run counters, persisted evidence, the repeat guard seeded with the
 // workspace signatures recorded when historical actions were accepted, and the
-// bounded recovery context.
+// bounded recovery context. The #12 failure guard counters are recomputed from
+// the persisted trailing streaks so a resumed run continues the guards that
+// bound unproductive repetition instead of silently resetting them.
 func buildSeed(snapshot *state.RecoverySnapshot, context Context, traceSequence int) *agent.RecoverySeed {
 	seed := &agent.RecoverySeed{
-		Turns:         len(snapshot.ProviderAttempts),
-		Attempts:      len(snapshot.ProviderAttempts),
-		Repeated:      rejectedCount(snapshot),
-		Evidence:      reconstructedObservations(snapshot),
-		Guard:         reconstructedGuard(snapshot),
-		Context:       context.Text,
-		TraceSequence: traceSequence,
+		Turns:               len(snapshot.ProviderAttempts),
+		Attempts:            len(snapshot.ProviderAttempts),
+		Repeated:            rejectedCount(snapshot),
+		ConsecutiveFailures: trailingToolFailures(snapshot),
+		VerificationRetries: trailingVerificationFailures(snapshot),
+		Evidence:            reconstructedObservations(snapshot),
+		Guard:               reconstructedGuard(snapshot),
+		Context:             context.Text,
+		TraceSequence:       traceSequence,
 	}
 	return seed
+}
+
+// trailingToolFailures recomputes the #12 consecutive-failure streak from the
+// persisted tool attempts at the moment of interruption: the trailing
+// observations that were failing (a failed attempt, or a completed run_recipe
+// attempt whose real exit code is non-zero), stopping at the first
+// non-failing observation. The persisted attempt order (creation order) is
+// the loop's execution order.
+func trailingToolFailures(snapshot *state.RecoverySnapshot) int {
+	byID := make(map[string]state.RecoveryEvidence, len(snapshot.Evidence))
+	for _, item := range snapshot.Evidence {
+		byID[item.EvidenceID] = item
+	}
+	count := 0
+	for index := len(snapshot.ToolAttempts) - 1; index >= 0; index-- {
+		attempt := snapshot.ToolAttempts[index]
+		if !toolAttemptCountedAsFailure(attempt, byID) {
+			break
+		}
+		count++
+	}
+	return count
+}
+
+// toolAttemptCountedAsFailure mirrors the loop's failureCountedForGuard
+// predicate against persisted state: a failed attempt counts, and a completed
+// run_recipe attempt counts only when its persisted process evidence shows a
+// real non-zero exit code (including signal/timeout terminations with a
+// negative exit code).
+func toolAttemptCountedAsFailure(attempt state.RecoveryToolAttempt, byID map[string]state.RecoveryEvidence) bool {
+	if attempt.Status == "failed" {
+		return true
+	}
+	if attempt.Status == "completed" && attempt.Tool == tools.ToolRunRecipe {
+		item, ok := byID[attempt.EvidenceID]
+		if !ok {
+			return false
+		}
+		var evidence recipe.Evidence
+		if err := json.Unmarshal([]byte(item.DataJSON), &evidence); err != nil {
+			return false
+		}
+		return evidence.ExitCode != 0
+	}
+	return false
+}
+
+// trailingVerificationFailures recomputes the #12 repeated-verification-
+// failure streak from the persisted verification attempts (oldest first): the
+// trailing attempts that decided failed. A passed, blocked or uncertain
+// decision breaks the streak.
+func trailingVerificationFailures(snapshot *state.RecoverySnapshot) int {
+	count := 0
+	for index := len(snapshot.VerificationAttempts) - 1; index >= 0; index-- {
+		if snapshot.VerificationAttempts[index].Decision != "failed" {
+			break
+		}
+		count++
+	}
+	return count
 }
 
 // reconstructedObservations rebuilds citable observations from the persisted

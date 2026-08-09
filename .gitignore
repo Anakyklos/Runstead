@@ -4,3 +4,6 @@
 # Local agent workspace artifacts (never part of the repository)
 /.omx/
 /CLAUDE.md
+
+# Local agent scratch (never part of the repository)
+/scratch/

@@ -49,21 +49,38 @@ type AttemptRunner interface {
 // the defaults. The remaining fields treat zero or negative as "use the
 // default", since zero steps, zero elapsed time or zero provider attempts are
 // meaningless budgets.
+//
+// MaxConsecutiveFailures and MaxVerificationRetries are the #12 loop guards
+// for unproductive repetition that the repeat guard cannot classify: distinct
+// actions that keep failing, and repeated completion proposals that the
+// control-plane verifier keeps rejecting. Every counted failure already
+// consumed a normal model/tool turn; the guard only stops the loop with a
+// typed reason when the configured allowance is exceeded.
 type Limits struct {
 	MaxSteps           int           // total model turns
 	MaxCorrections     int           // protocol correction attempts; 0 disables
 	MaxRepeatedActions int           // repeated-action corrections; 0 disables
 	TimeBudget         time.Duration // elapsed task time
 	ProviderBudget     int           // governed provider attempts per task
+	// MaxConsecutiveFailures caps consecutive failing tool/process observations
+	// (a failed tool observation, or a run_recipe observation whose real exit
+	// code is non-zero) with no successful observation in between.
+	MaxConsecutiveFailures int
+	// MaxVerificationRetries caps consecutive failed verification attempts
+	// (decision=failed). A passed, blocked or uncertain decision resets the
+	// streak; blocked/uncertain stop the run as a control-plane pause anyway.
+	MaxVerificationRetries int
 }
 
 func DefaultLimits() Limits {
 	return Limits{
-		MaxSteps:           24,
-		MaxCorrections:     2,
-		MaxRepeatedActions: 2,
-		TimeBudget:         10 * time.Minute,
-		ProviderBudget:     80,
+		MaxSteps:               24,
+		MaxCorrections:         2,
+		MaxRepeatedActions:     2,
+		TimeBudget:             10 * time.Minute,
+		ProviderBudget:         80,
+		MaxConsecutiveFailures: 5,
+		MaxVerificationRetries: 3,
 	}
 }
 
@@ -178,6 +195,12 @@ func NewLoop(config Config) (*Loop, error) {
 	}
 	if limits.ProviderBudget <= 0 {
 		limits.ProviderBudget = DefaultLimits().ProviderBudget
+	}
+	if limits.MaxConsecutiveFailures <= 0 {
+		limits.MaxConsecutiveFailures = DefaultLimits().MaxConsecutiveFailures
+	}
+	if limits.MaxVerificationRetries <= 0 {
+		limits.MaxVerificationRetries = DefaultLimits().MaxVerificationRetries
 	}
 	clock := config.Clock
 	if clock == nil {
@@ -300,6 +323,12 @@ func (l *Loop) Run(ctx context.Context, task Task) Result {
 		run.turns = maxInt(run.turns, l.recovery.Turns)
 		run.attempts = maxInt(run.attempts, l.recovery.Attempts)
 		run.repeated = maxInt(run.repeated, l.recovery.Repeated)
+		// The #12 failure guards continue their counters across restart: the
+		// recovery pipeline recomputes the trailing streaks from the persisted
+		// attempt and verification history, so a resumed run cannot silently
+		// reset the guards that stopped an unproductive loop (issue #12).
+		run.consecutiveFailures = maxInt(run.consecutiveFailures, l.recovery.ConsecutiveFailures)
+		run.verificationRetries = maxInt(run.verificationRetries, l.recovery.VerificationRetries)
 		run.sequence = maxInt(run.sequence, l.recovery.TraceSequence)
 		// The recovery boundary marks where reconciliation ends and new
 		// governed execution begins in the resumed trace.
@@ -394,6 +423,15 @@ type runState struct {
 	corrections int
 	repeated    int
 	mixedProse  int
+	// consecutiveFailures counts failing tool/process observations with no
+	// successful observation in between (issue #12). A failed observation, or
+	// a run_recipe observation whose real exit code is non-zero, increments
+	// it; any other successful observation resets it.
+	consecutiveFailures int
+	// verificationRetries counts consecutive failed verification attempts
+	// (decision=failed). A passed, blocked or uncertain decision resets it
+	// (blocked/uncertain stop the run as a control-plane pause anyway).
+	verificationRetries int
 }
 
 // captureGitBaseline captures the bounded real git status/diff at task start
@@ -421,17 +459,19 @@ func (l *Loop) captureGitBaseline() (status, diff string, statusTruncated, diffT
 // review).
 func (l *Loop) configSnapshot() []byte {
 	encoded, err := json.Marshal(map[string]any{
-		"workspace":              l.registry.Workspace(),
-		"model":                  l.model,
-		"write_policy":           l.writePolicy,
-		"recipe_policy":          l.recipePolicy,
-		"recipe_catalog_digest":  l.recipeCatalogDigest,
-		"acceptance_plan_digest": l.acceptancePlanDigest,
-		"max_steps":              l.limits.MaxSteps,
-		"max_corrections":        l.limits.MaxCorrections,
-		"max_repeated_actions":   l.limits.MaxRepeatedActions,
-		"time_budget_ns":         int64(l.limits.TimeBudget),
-		"provider_budget":        l.limits.ProviderBudget,
+		"workspace":                l.registry.Workspace(),
+		"model":                    l.model,
+		"write_policy":             l.writePolicy,
+		"recipe_policy":            l.recipePolicy,
+		"recipe_catalog_digest":    l.recipeCatalogDigest,
+		"acceptance_plan_digest":   l.acceptancePlanDigest,
+		"max_steps":                l.limits.MaxSteps,
+		"max_corrections":          l.limits.MaxCorrections,
+		"max_repeated_actions":     l.limits.MaxRepeatedActions,
+		"time_budget_ns":           int64(l.limits.TimeBudget),
+		"provider_budget":          l.limits.ProviderBudget,
+		"max_consecutive_failures": l.limits.MaxConsecutiveFailures,
+		"max_verification_retries": l.limits.MaxVerificationRetries,
 	})
 	if err != nil {
 		return []byte("{}")
@@ -833,10 +873,49 @@ func (l *Loop) handleAction(
 		}
 	}
 
+	// #12 failure guard: count consecutive failing tool/process observations.
+	// A failed observation, or a run_recipe observation whose real exit code
+	// is non-zero, increments the streak; any other successful observation
+	// resets it. Every counted failure already consumed a normal model/tool
+	// turn and was persisted as durable history (TX 2); when the configured
+	// allowance is exceeded the loop stops with a typed reason instead of
+	// letting the unproductive repetition consume the whole step budget.
+	// The repeat guard stays the first line of defense (an identical proposal
+	// under the same workspace signature is rejected before execution); this
+	// guard covers DISTINCT failing actions that keep producing failures.
+	if failureCountedForGuard(*action, observation) {
+		run.consecutiveFailures++
+		if run.consecutiveFailures > l.limits.MaxConsecutiveFailures {
+			return stop(OutcomeConsecutiveFailuresExhausted,
+				fmt.Sprintf("%s: %d consecutive failing observation(s)", OutcomeConsecutiveFailuresExhausted.StopReason(), run.consecutiveFailures), nil), true
+		}
+	} else {
+		run.consecutiveFailures = 0
+	}
+
 	guard.record(*action, signatureFor())
 	evidence.Add(observation)
 	transcript.observation(observation)
 	return Result{}, false
+}
+
+// failureCountedForGuard reports whether one tool observation counts as a
+// failing tool/process observation for the #12 consecutive-failure guard: a
+// failed observation, or a run_recipe observation whose REAL process exit
+// code is non-zero (including signal/timeout terminations, which are recorded
+// with a negative exit code). A non-zero recipe exit is a real process
+// failure while the observation remains citable evidence; it is exactly the
+// "the test fails" observation the model must diagnose from bounded evidence.
+func failureCountedForGuard(action protocol.Action, observation tools.Observation) bool {
+	if !observation.Success {
+		return true
+	}
+	if action.Tool == tools.ToolRunRecipe {
+		if evidence, ok := observation.Data.(recipe.Evidence); ok && evidence.ExitCode != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (l *Loop) handleFinal(
@@ -902,6 +981,17 @@ func (l *Loop) handleFinal(
 		// completion. This is NOT a protocol correction: no correction budget
 		// is consumed. The structured verification result becomes a bounded
 		// observation under the verification role and execution continues.
+		//
+		// #12 guard: repeated premature completion proposals are bounded by
+		// MaxVerificationRetries. Each failed verification already consumed a
+		// normal model turn and was persisted as authoritative history; when
+		// the allowance is exceeded the loop stops with a typed reason
+		// instead of letting the model keep proposing complete.
+		run.verificationRetries++
+		if run.verificationRetries > l.limits.MaxVerificationRetries {
+			return stop(OutcomeVerificationFailuresExhausted,
+				fmt.Sprintf("%s: %d consecutive failed verification attempt(s)", OutcomeVerificationFailuresExhausted.StopReason(), run.verificationRetries), nil), true
+		}
 		views := make([]verificationCheckView, 0, len(report.Checks))
 		for _, check := range report.Checks {
 			views = append(views, verificationCheckView{
