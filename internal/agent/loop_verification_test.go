@@ -46,6 +46,47 @@ func planDigest(plan *verifier.Plan) string {
 	return plan.Digest()
 }
 
+// Issue #11 review blocker E2E at the loop level: the final response cites a
+// REAL evidence id but with a WRONG claimed tool (a read_file observation
+// cited as write_file). The verification fails with evidence_claims_typed and
+// execution continues; after the model cites the same evidence with the
+// correct tool the verification passes.
+func TestLoopVerificationTypeIncompatibleCitationFailsThenCorrectedPasses(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "readme.txt"), []byte("info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan := existsPlan("readme.txt")
+	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
+		actionResponse("read_file", `{"path":"readme.txt"}`),
+		// Wrong claimed tool: the observation was produced by read_file.
+		finalResponse("complete", "Done.", finalEvidence("obs-000001", "write_file")),
+		// Corrected citation: same id, right tool.
+		finalResponse("complete", "Done.", finalEvidence("obs-000001", "read_file")),
+	)
+	loop := verifierLoop(t, h, plan, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3}, nil)
+	result := loop.Run(context.Background(), testTask("task-verify-typed"))
+	if result.Outcome != agent.OutcomeCompleted {
+		t.Fatalf("outcome = %s, reason = %s", result.Outcome, result.StopReason)
+	}
+	attempts, err := h.store.VerificationAttempts(context.Background(), "task-verify-typed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 2 || attempts[0].Decision != "failed" || attempts[1].Decision != "passed" {
+		t.Fatalf("attempts = %+v, want failed then passed", attempts)
+	}
+	var typedCheck bool
+	for _, check := range attempts[0].Checks {
+		if check.CheckID == "evidence_claims_typed" && check.Status == "failed" && check.Reason == "evidence_type_mismatch" {
+			typedCheck = true
+		}
+	}
+	if !typedCheck {
+		t.Fatalf("failed attempt must carry the typed mismatch check: %+v", attempts[0].Checks)
+	}
+}
+
 // Issue #11 review blocker E2E: the objective requires creating a file; the
 // model only reads an existing file and proposes complete. Without an operator
 // acceptance plan, completion is refused blocked and the task can never reach
