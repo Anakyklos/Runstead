@@ -1,2 +1,6 @@
 .env.local
 /runstead
+
+# Local agent workspace artifacts (never part of the repository)
+/.omx/
+/CLAUDE.md

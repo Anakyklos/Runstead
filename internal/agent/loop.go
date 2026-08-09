@@ -93,9 +93,9 @@ type Loop struct {
 	// catalog, used to reject catalog drift on resume (issue #26 review).
 	recipeCatalogDigest string
 	// verifier is the control-plane verification boundary (issue #11). It is
-	// never nil: a default verifier with an empty plan and the registry
-	// observer is constructed in NewLoop, so every completion proposal goes
-	// through independent verification.
+	// never nil: a default verifier with the registry observer and no plan is
+	// constructed in NewLoop, so every completion proposal goes through
+	// independent verification; without a plan completion is refused blocked.
 	verifier *verifier.Verifier
 	// acceptancePlanDigest is the digest of the operator acceptance plan,
 	// persisted with the task configuration so resume rejects plan drift.
@@ -137,9 +137,10 @@ type Config struct {
 	// when no catalog is configured.
 	RecipeCatalogDigest string
 	// Verifier is the control-plane verification boundary (issue #11). A nil
-	// value constructs a default verifier with an empty acceptance plan and
-	// the registry observer, so every completion proposal is independently
-	// verified even when no plan is configured.
+	// value constructs a default verifier with the registry observer and NO
+	// acceptance plan, so every completion proposal is independently verified
+	// even when no plan is configured; without a plan completion is refused
+	// blocked (fail closed, issue #11 review).
 	Verifier *verifier.Verifier
 	// AcceptancePlanDigest is the digest of the operator acceptance plan,
 	// persisted with the task configuration so resume rejects plan drift.
@@ -188,10 +189,9 @@ func NewLoop(config Config) (*Loop, error) {
 	}
 	verification := config.Verifier
 	if verification == nil {
-		// The default verifier uses the registry observer and an empty
-		// acceptance plan: structural completion checks (evidence grounding,
-		// uncertain effects, pending approvals, write reconciliation, git
-		// observation) always run, even without an operator plan (issue #11).
+		// The default verifier uses the registry observer and no acceptance
+		// plan: structural completion checks always run, and without a plan
+		// completion is refused blocked (fail closed, issue #11 review).
 		verification = verifier.New(config.Registry, nil)
 	}
 	return &Loop{

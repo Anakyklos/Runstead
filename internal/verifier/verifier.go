@@ -209,7 +209,8 @@ type Input struct {
 	Evidence []state.RecoveryEvidence
 	// PendingApprovals are the pending operator approval action ids.
 	PendingApprovals []string
-	// Plan is the operator acceptance plan (nil means an empty plan).
+	// Plan is the operator acceptance plan (nil means none is configured:
+	// completion is refused blocked, issue #11 review).
 	Plan *Plan
 	// BaselineGitStatus is the bounded `git status --short` captured at task
 	// start (empty when unavailable or not captured).

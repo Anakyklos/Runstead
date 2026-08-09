@@ -227,3 +227,53 @@ func TestResumeAttachesAcceptancePlanToPlanlessTask(t *testing.T) {
 		t.Fatalf("attached plan digest mismatch: %q vs %q", plan.Digest(), digest)
 	}
 }
+
+// TestRunRejectsTypeIncompatibleEvidenceCitation proves Blocker 2 of the
+// issue #11 review at the CLI level: the model reads a file and proposes
+// complete citing that observation with a WRONG claimed tool (read_file
+// evidence cited as run_recipe). The runtime verification fails with
+// evidence_claims_typed, execution continues, and the corrected citation
+// completes. The failed attempt is persisted and inspect explains it.
+func TestRunRejectsTypeIncompatibleEvidenceCitation(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "readme.txt"), []byte("info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	acceptance := acceptanceFor(t, "readme.txt")
+	script := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"readme.txt"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"run_recipe"}]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
+	)
+	stateDir := t.TempDir()
+	var out, errOut strings.Builder
+	code := run(context.Background(), []string{
+		"run", "--task", "Inspect the workspace.",
+		"--workspace", workspace,
+		"--scripted", script,
+		"--acceptance", acceptance,
+		"--state-dir", stateDir,
+		"--min-start-interval", "1ms",
+		"--log-level", "error",
+	}, &out, &errOut)
+	if code != exitSuccess {
+		t.Fatalf("run exit = %d, want 0 (corrected citation must complete)\nstderr:\n%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "outcome: completed") {
+		t.Fatalf("run output missing completed:\n%s", out.String())
+	}
+	taskID := taskIDFromOutput(t, errOut.String())
+	rendered := inspectRendered(t, stateDir, taskID)
+	if !strings.Contains(rendered, "decision=failed") {
+		t.Fatalf("inspect must show the failed attempt:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "check=evidence_claims_typed type=structural status=failed") {
+		t.Fatalf("inspect must show the typed mismatch check:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "reason: evidence_type_mismatch") {
+		t.Fatalf("inspect must show the mismatch reason:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Status: completed") {
+		t.Fatalf("task must complete after the corrected citation:\n%s", rendered)
+	}
+}
