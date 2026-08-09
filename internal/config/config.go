@@ -20,6 +20,12 @@ const (
 	EnvMinStartInterval  = "RUNSTEAD_MIN_START_INTERVAL"
 	EnvStateDir          = "RUNSTEAD_STATE_DIR"
 
+	// EnvAllowanceProfile selects the explicit account allowance profile for
+	// `run` (issue #58): plus_go_instant (default), luna_unlimited_text or
+	// unknown. It is an explicit operator configuration; model naming alone
+	// never activates unlimited text, and live rollout observation is opt-in.
+	EnvAllowanceProfile = "RUNSTEAD_ALLOWANCE_PROFILE"
+
 	EnvMaxSteps           = "RUNSTEAD_MAX_STEPS"
 	EnvMaxCorrections     = "RUNSTEAD_MAX_CORRECTIONS"
 	EnvMaxRepeatedActions = "RUNSTEAD_MAX_REPEATED_ACTIONS"

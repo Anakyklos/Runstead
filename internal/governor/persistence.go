@@ -95,24 +95,34 @@ type AttemptIDRecord struct {
 
 // BudgetCeilings is the informational account policy snapshot persisted with
 // the governor projection so inspect can render usage against ceilings.
+// ManualReserve is the profile-specific manual reserve and is only nonzero
+// for published-quota allowances (#58); unlimited-text and unknown policies
+// persist zero.
 type BudgetCeilings struct {
-	Rolling3h   int
-	Rolling1h   int
-	Rolling10m  int
-	TaskBudget  int
-	RetryBudget int
+	Rolling3h     int
+	Rolling1h     int
+	Rolling10m    int
+	TaskBudget    int
+	RetryBudget   int
+	ManualReserve int
 }
 
 // PersistedState is the serializable account-protection projection (#21):
 // the rolling usage ledger, cooldown, circuit and retained accounting state
 // required so that restarting the process does not reset account protection.
 // In-flight and queue state are process-local and deliberately not persisted.
+// AllowanceKind is the typed upstream allowance semantic (#58); when it is
+// empty the caller derives it from AllowanceProfile, so legacy persisted
+// projections remain usable without a schema migration. Changing the
+// allowance kind never resets the durable ledger, task, circuit, cooldown or
+// receipt-replay state below.
 type PersistedState struct {
 	AccountPolicyID  string
 	ProviderID       string
 	ModelPool        string
 	Model            string
 	AllowanceProfile AllowanceProfile
+	AllowanceKind    AllowanceKind
 	NextAttempt      int
 	LastStart        time.Time
 	CooldownUntil    time.Time

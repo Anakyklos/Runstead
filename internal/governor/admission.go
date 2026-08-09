@@ -329,8 +329,11 @@ func (g *Governor) checkLocked(now time.Time, request AttemptRequest) admissionC
 		}
 		return admissionCheck{code: AdmissionUpstreamAllowanceExhausted}
 	}
-	if g.telemetry.available != nil {
-		available := *g.telemetry.available - g.config.ManualReserve
+	if g.telemetry.available != nil && g.remainingSignalApplies() {
+		available := *g.telemetry.available
+		if g.manualReserveApplies() {
+			available -= g.config.ManualReserve
+		}
 		if available <= 0 {
 			if g.telemetry.resetAt.After(now) {
 				return admissionCheck{code: AdmissionUpstreamAllowanceExhausted, until: g.telemetry.resetAt, delayed: true}
@@ -345,14 +348,16 @@ func (g *Governor) checkLocked(now time.Time, request AttemptRequest) admissionC
 	if request.Retry && state.retries >= g.config.RetryBudget {
 		return admissionCheck{code: AdmissionRetryBudgetExhausted}
 	}
-	if next := g.ledger.next(now, 3*time.Hour, g.config.Rolling3h); !next.IsZero() {
-		return admissionCheck{code: AdmissionRollingBudgetExhausted, until: next, delayed: true}
-	}
-	if next := g.ledger.next(now, time.Hour, g.config.Rolling1h); !next.IsZero() {
-		return admissionCheck{code: AdmissionRollingBudgetExhausted, until: next, delayed: true}
-	}
-	if next := g.ledger.next(now, 10*time.Minute, g.config.Rolling10m); !next.IsZero() {
-		return admissionCheck{code: AdmissionRollingBudgetExhausted, until: next, delayed: true}
+	if g.rollingBudgetsApply() {
+		if next := g.ledger.next(now, 3*time.Hour, g.config.Rolling3h); !next.IsZero() {
+			return admissionCheck{code: AdmissionRollingBudgetExhausted, until: next, delayed: true}
+		}
+		if next := g.ledger.next(now, time.Hour, g.config.Rolling1h); !next.IsZero() {
+			return admissionCheck{code: AdmissionRollingBudgetExhausted, until: next, delayed: true}
+		}
+		if next := g.ledger.next(now, 10*time.Minute, g.config.Rolling10m); !next.IsZero() {
+			return admissionCheck{code: AdmissionRollingBudgetExhausted, until: next, delayed: true}
+		}
 	}
 	if !g.lastStart.IsZero() {
 		next := g.lastStart.Add(g.config.MinimumStartInterval)
@@ -361,6 +366,38 @@ func (g *Governor) checkLocked(now time.Time, request AttemptRequest) admissionC
 		}
 	}
 	return admissionCheck{}
+}
+
+// localNumericLayerApplies reports whether the active allowance policy keeps
+// a numeric local workload layer (#58, #58 review): published_quota enforces
+// the published ceilings, and unknown enforces explicit conservative local
+// ceilings and a local manual-use reserve (the #21 contract). Unlimited text
+// is the only kind without a numeric local layer, and that is explicit
+// operator configuration only.
+func (g *Governor) localNumericLayerApplies() bool {
+	return g.config.AllowanceKind != AllowanceKindUnlimitedText
+}
+
+// rollingBudgetsApply is the admission gate for the numeric rolling windows.
+func (g *Governor) rollingBudgetsApply() bool {
+	return g.localNumericLayerApplies()
+}
+
+// manualReserveApplies reports whether a manual reserve is subtracted from
+// observed upstream remaining. For published_quota it protects the shared
+// numeric allowance; for unknown it is a conservative local manual-use
+// buffer (the #21 contract). Unlimited text has no reserve at all.
+func (g *Governor) manualReserveApplies() bool {
+	return g.localNumericLayerApplies()
+}
+
+// remainingSignalApplies reports whether an observed upstream remaining
+// counter gates admission. Under published_quota and unknown it is a
+// restriction-only signal (it can never expand admission); under unlimited
+// text it is not a numeric text-allowance signal, so it never gates text
+// admission and is only tracked for observability.
+func (g *Governor) remainingSignalApplies() bool {
+	return g.localNumericLayerApplies()
 }
 
 func (g *Governor) nextAvailableLocked(now time.Time) time.Time {

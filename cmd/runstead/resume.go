@@ -411,9 +411,11 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 
 // resolveResumeGovernorConfig reconstructs the account governor policy for a
 // resumed task from the persisted protection state plus the optional
-// min-start-interval override. It fails closed when the persisted ceilings
-// disagree with the reconstructed policy, so restored protection is never
-// silently checked against different budgets.
+// min-start-interval override. The allowance policy is reconstructed from the
+// persisted profile/kind so a resumed unlimited-text or unknown allowance
+// does not silently become a published-quota policy (or vice versa). It fails
+// closed when the persisted ceilings disagree with the reconstructed policy,
+// so restored protection is never silently checked against different budgets.
 func resolveResumeGovernorConfig(restored *governor.PersistedState, minStartInterval string, intervalSet bool) (governor.Config, error) {
 	providerID := "scripted"
 	model := "scripted"
@@ -433,7 +435,36 @@ func resolveResumeGovernorConfig(restored *governor.PersistedState, minStartInte
 			policyID = restored.AccountPolicyID
 		}
 	}
-	accountConfig := governor.DefaultInstantConfig(policyID, providerID, modelPool, provider.SafeRouteSafety())
+	var accountConfig governor.Config
+	if restored != nil {
+		switch governor.AllowanceKindForProfile(restored.AllowanceProfile) {
+		case governor.AllowanceKindUnlimitedText:
+			accountConfig = governor.DefaultLunaUnlimitedTextConfig(policyID, providerID, modelPool, provider.SafeRouteSafety())
+		case governor.AllowanceKindUnknown:
+			// The upstream allowance is unknown, so the conservative local
+			// layer is the durable policy the operator configured: rebuild it
+			// from the persisted explicit ceilings instead of inventing
+			// values. A projection without explicit local ceilings is
+			// malformed and fails closed (#21 contract, #58 review).
+			accountConfig = governor.DefaultUnknownConfig(policyID, providerID, modelPool, provider.SafeRouteSafety())
+			if restored.Ceilings.Rolling3h == 0 || restored.Ceilings.Rolling1h == 0 || restored.Ceilings.Rolling10m == 0 ||
+				restored.Ceilings.TaskBudget == 0 || restored.Ceilings.RetryBudget == 0 {
+				return governor.Config{}, fmt.Errorf("incompatible persisted account policy: unknown allowance projection carries no explicit local ceilings")
+			}
+			accountConfig.Rolling3h = restored.Ceilings.Rolling3h
+			accountConfig.Rolling1h = restored.Ceilings.Rolling1h
+			accountConfig.Rolling10m = restored.Ceilings.Rolling10m
+			accountConfig.TaskBudget = restored.Ceilings.TaskBudget
+			accountConfig.RetryBudget = restored.Ceilings.RetryBudget
+			if restored.Ceilings.ManualReserve != 0 {
+				accountConfig.ManualReserve = restored.Ceilings.ManualReserve
+			}
+		default:
+			accountConfig = governor.DefaultInstantConfig(policyID, providerID, modelPool, provider.SafeRouteSafety())
+		}
+	} else {
+		accountConfig = governor.DefaultInstantConfig(policyID, providerID, modelPool, provider.SafeRouteSafety())
+	}
 	accountConfig.Model = model
 	if intervalSet {
 		interval, err := time.ParseDuration(strings.TrimSpace(minStartInterval))
@@ -452,13 +483,34 @@ func resolveResumeGovernorConfig(restored *governor.PersistedState, minStartInte
 		return governor.Config{}, err
 	}
 	if restored != nil {
-		switch {
-		case restored.Ceilings.Rolling3h != 0 && restored.Ceilings.Rolling3h != accountConfig.Rolling3h,
-			restored.Ceilings.Rolling1h != 0 && restored.Ceilings.Rolling1h != accountConfig.Rolling1h,
-			restored.Ceilings.Rolling10m != 0 && restored.Ceilings.Rolling10m != accountConfig.Rolling10m,
-			restored.Ceilings.TaskBudget != 0 && restored.Ceilings.TaskBudget != accountConfig.TaskBudget,
-			restored.Ceilings.RetryBudget != 0 && restored.Ceilings.RetryBudget != accountConfig.RetryBudget:
-			return governor.Config{}, fmt.Errorf("incompatible persisted account policy: restored ceilings disagree with the reconstructed policy")
+		switch governor.AllowanceKindForProfile(restored.AllowanceProfile) {
+		case governor.AllowanceKindPublishedQuota:
+			if restored.Ceilings.Rolling3h != 0 && restored.Ceilings.Rolling3h != accountConfig.Rolling3h ||
+				restored.Ceilings.Rolling1h != 0 && restored.Ceilings.Rolling1h != accountConfig.Rolling1h ||
+				restored.Ceilings.Rolling10m != 0 && restored.Ceilings.Rolling10m != accountConfig.Rolling10m ||
+				restored.Ceilings.TaskBudget != 0 && restored.Ceilings.TaskBudget != accountConfig.TaskBudget ||
+				restored.Ceilings.RetryBudget != 0 && restored.Ceilings.RetryBudget != accountConfig.RetryBudget ||
+				restored.Ceilings.ManualReserve != 0 && restored.Ceilings.ManualReserve != accountConfig.ManualReserve {
+				return governor.Config{}, fmt.Errorf("incompatible persisted account policy: restored ceilings disagree with the reconstructed policy")
+			}
+		case governor.AllowanceKindUnlimitedText:
+			// An unlimited-text allowance must not carry fabricated persisted
+			// rolling ceilings. Legacy rows predating #58 stored zeros for
+			// these profiles; any nonzero value means the restored policy is
+			// not the policy that produced the projection, so resume fails
+			// closed instead of silently checking against different budgets.
+			if restored.Ceilings.Rolling3h != 0 || restored.Ceilings.Rolling1h != 0 || restored.Ceilings.Rolling10m != 0 {
+				return governor.Config{}, fmt.Errorf("incompatible persisted account policy: restored rolling ceilings on an unlimited-text allowance")
+			}
+			if restored.Ceilings.TaskBudget != 0 && restored.Ceilings.TaskBudget != accountConfig.TaskBudget ||
+				restored.Ceilings.RetryBudget != 0 && restored.Ceilings.RetryBudget != accountConfig.RetryBudget ||
+				restored.Ceilings.ManualReserve != 0 && restored.Ceilings.ManualReserve != accountConfig.ManualReserve {
+				return governor.Config{}, fmt.Errorf("incompatible persisted account policy: restored ceilings disagree with the reconstructed policy")
+			}
+		case governor.AllowanceKindUnknown:
+			// The policy was reconstructed from the persisted explicit local
+			// ceilings above; the durable projection is authoritative, so
+			// there is nothing to re-check.
 		}
 	}
 	return accountConfig, nil
@@ -770,6 +822,7 @@ func printResumeHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --recipe-policy SPEC      recipe modes, e.g. test=allow (RUNSTEAD_RECIPE_POLICY; must match the persisted policy)")
 	fmt.Fprintln(out, "  --acceptance FILE         operator acceptance plan (RUNSTEAD_ACCEPTANCE_PLAN; must match the persisted plan; loaded from state when omitted; may ATTACH a plan to a task that started without one, since completion fails closed without acceptance criteria)")
 	fmt.Fprintln(out, "  --min-start-interval DURATION  account governor pacing override (RUNSTEAD_MIN_START_INTERVAL)")
+	fmt.Fprintln(out, "  allowance profile is reconstructed from the persisted governor state (RUNSTEAD_ALLOWANCE_PROFILE applies to `run` only)")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Exit codes: 0 resumed and finished, 1 task not found, 2 usage, 3 state database unavailable,")
 	fmt.Fprintln(out, "4 task not resumable (already terminal), 5 human review required, 6 corrupted/incompatible state,")

@@ -102,23 +102,40 @@ func (g *Governor) budgetLocked(now time.Time, taskID string) BudgetSnapshot {
 	if taskID != "" {
 		taskUsed = g.taskLocked(taskID).attempts
 	}
-	manualReserveRemaining := g.config.ManualReserve
-	if g.telemetry.available != nil && *g.telemetry.available < manualReserveRemaining {
-		manualReserveRemaining = *g.telemetry.available
+	// Numeric ceilings, the automated 3h ceiling and the manual reserve are
+	// the numeric local workload layer (#58): published_quota renders the
+	// published ceilings and reserve, unknown renders its explicit
+	// conservative local ceilings and local manual-use reserve, and
+	// unlimited_text renders none. The ledger usage counts remain the
+	// authoritative attempt accounting under every kind.
+	rolling3hCeiling := 0
+	rolling1hCeiling := 0
+	rolling10mCeiling := 0
+	manualReserve := 0
+	manualReserveRemaining := 0
+	if g.localNumericLayerApplies() {
+		rolling3hCeiling = g.config.Rolling3h
+		rolling1hCeiling = g.config.Rolling1h
+		rolling10mCeiling = g.config.Rolling10m
+		manualReserve = g.config.ManualReserve
+		manualReserveRemaining = g.config.ManualReserve
+		if g.telemetry.available != nil && *g.telemetry.available < manualReserveRemaining {
+			manualReserveRemaining = *g.telemetry.available
+		}
 	}
 	return BudgetSnapshot{
 		Rolling3hUsed:          g.ledger.count(now, 3*time.Hour),
-		Rolling3hCeiling:       g.config.Rolling3h,
-		Automated3hCeiling:     g.config.Rolling3h,
+		Rolling3hCeiling:       rolling3hCeiling,
+		Automated3hCeiling:     rolling3hCeiling,
 		Rolling1hUsed:          g.ledger.count(now, time.Hour),
-		Rolling1hCeiling:       g.config.Rolling1h,
+		Rolling1hCeiling:       rolling1hCeiling,
 		Rolling10mUsed:         g.ledger.count(now, 10*time.Minute),
-		Rolling10mCeiling:      g.config.Rolling10m,
+		Rolling10mCeiling:      rolling10mCeiling,
 		TaskUsed:               taskUsed,
 		TaskCeiling:            g.config.TaskBudget,
 		RetriesUsed:            g.taskRetryCountLocked(taskID),
 		RetryCeiling:           g.config.RetryBudget,
-		ManualReserve:          g.config.ManualReserve,
+		ManualReserve:          manualReserve,
 		ManualReserveRemaining: manualReserveRemaining,
 	}
 }
@@ -159,6 +176,7 @@ func (g *Governor) emitAdmissionLocked(request AttemptRequest, result AdmissionR
 		ModelPool:        g.config.ModelPool,
 		Model:            g.config.Model,
 		AllowanceProfile: g.config.AllowanceProfile,
+		AllowanceKind:    g.config.AllowanceKind,
 		TaskID:           request.TaskID,
 		ClientRequestID:  request.ClientRequestID,
 		Admission:        result.Code,

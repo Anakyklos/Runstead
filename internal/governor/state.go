@@ -24,6 +24,7 @@ func (g *Governor) persistedStateLocked() PersistedState {
 		ModelPool:        g.config.ModelPool,
 		Model:            g.config.Model,
 		AllowanceProfile: g.config.AllowanceProfile,
+		AllowanceKind:    g.config.AllowanceKind,
 		NextAttempt:      g.nextAttempt,
 		LastStart:        g.lastStart,
 		CooldownUntil:    g.cooldownUntil,
@@ -42,11 +43,12 @@ func (g *Governor) persistedStateLocked() PersistedState {
 		RollingEvents: persistedLedgerEvents(g.ledger.copyEvents()),
 		AttemptIDs:    attemptIDRecords(g.attemptIDs),
 		Ceilings: BudgetCeilings{
-			Rolling3h:   g.config.Rolling3h,
-			Rolling1h:   g.config.Rolling1h,
-			Rolling10m:  g.config.Rolling10m,
-			TaskBudget:  g.config.TaskBudget,
-			RetryBudget: g.config.RetryBudget,
+			Rolling3h:     g.config.Rolling3h,
+			Rolling1h:     g.config.Rolling1h,
+			Rolling10m:    g.config.Rolling10m,
+			TaskBudget:    g.config.TaskBudget,
+			RetryBudget:   g.config.RetryBudget,
+			ManualReserve: g.config.ManualReserve,
 		},
 	}
 	for taskID, record := range g.tasks {
@@ -96,15 +98,35 @@ func requestStateName(state requestState) string {
 	}
 }
 
+// normalizeAllowanceKind resolves the persisted allowance semantic: an
+// explicit valid kind wins, an empty or invalid kind is derived from the
+// persisted profile (legacy projections predating #58), and a kind that
+// contradicts the profile is treated as corrupted and derived from the
+// profile, which remains the authoritative historical identifier.
+func normalizeAllowanceKind(kind AllowanceKind, profile AllowanceProfile) AllowanceKind {
+	if kind.Valid() && kind == AllowanceKindForProfile(profile) {
+		return kind
+	}
+	return AllowanceKindForProfile(profile)
+}
+
 // RestorePersistedState applies a previously persisted protection projection
 // to the governor. Restored state must obey the existing governor invariants:
 // usage counts are additive with the restored ledger, cooldown and circuit
 // continue to gate admission, and expired circuit windows are normalized to
 // closed. In-flight and queue state are never restored.
+//
+// The restored allowance kind is derived from the persisted profile when the
+// projection predates #58 (AllowanceKind empty), so legacy rows restore
+// exactly like before. A transition between allowance kinds never resets the
+// durable ledger, task, circuit, cooldown or receipt-replay state: the
+// configured kind is authoritative for admission, and the restored accounting
+// carries over unchanged.
 func (g *Governor) RestorePersistedState(state PersistedState) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.clock.Now()
+	state.AllowanceKind = normalizeAllowanceKind(state.AllowanceKind, state.AllowanceProfile)
 	if state.NextAttempt > g.nextAttempt {
 		g.nextAttempt = state.NextAttempt
 	}

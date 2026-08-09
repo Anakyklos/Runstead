@@ -19,8 +19,9 @@ func (s *Store) saveGovernorStateInTx(ctx context.Context, tx *sql.Tx, state gov
 		  cooldown_until, circuit_state, circuit_reason, circuit_open_until, circuit_refresh_required,
 		  circuit_last_rate_reset, telemetry_available, telemetry_reset_at, telemetry_cooldown_until,
 		  telemetry_rate_limited, telemetry_capacity_exhausted, telemetry_upstream_circuit, telemetry_unsafe,
-		  rolling_3h_ceiling, rolling_1h_ceiling, rolling_10m_ceiling, task_budget_ceiling, retry_budget_ceiling, updated_at)
-		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		  rolling_3h_ceiling, rolling_1h_ceiling, rolling_10m_ceiling, task_budget_ceiling, retry_budget_ceiling,
+		  manual_reserve_ceiling, updated_at)
+		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   account_policy_id = excluded.account_policy_id,
 		   provider_id = excluded.provider_id,
@@ -47,6 +48,7 @@ func (s *Store) saveGovernorStateInTx(ctx context.Context, tx *sql.Tx, state gov
 		   rolling_10m_ceiling = excluded.rolling_10m_ceiling,
 		   task_budget_ceiling = excluded.task_budget_ceiling,
 		   retry_budget_ceiling = excluded.retry_budget_ceiling,
+		   manual_reserve_ceiling = excluded.manual_reserve_ceiling,
 		   updated_at = excluded.updated_at`,
 		state.AccountPolicyID, state.ProviderID, state.ModelPool, state.Model,
 		string(state.AllowanceProfile), state.NextAttempt, formatTime(state.LastStart), formatTime(state.CooldownUntil),
@@ -56,7 +58,7 @@ func (s *Store) saveGovernorStateInTx(ctx context.Context, tx *sql.Tx, state gov
 		boolInt(state.Telemetry.RateLimited), boolInt(state.Telemetry.CapacityExhausted),
 		string(state.Telemetry.UpstreamCircuit), boolInt(state.Telemetry.Unsafe),
 		state.Ceilings.Rolling3h, state.Ceilings.Rolling1h, state.Ceilings.Rolling10m,
-		state.Ceilings.TaskBudget, state.Ceilings.RetryBudget, updatedAt); err != nil {
+		state.Ceilings.TaskBudget, state.Ceilings.RetryBudget, state.Ceilings.ManualReserve, updatedAt); err != nil {
 		return fmt.Errorf("save governor state: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM governor_ledger`); err != nil {
@@ -146,7 +148,8 @@ func loadGovernorState(ctx context.Context, q queryer) (governor.PersistedState,
 		        circuit_refresh_required, circuit_last_rate_reset, telemetry_available,
 		        telemetry_reset_at, telemetry_cooldown_until, telemetry_rate_limited,
 		        telemetry_capacity_exhausted, telemetry_upstream_circuit, telemetry_unsafe,
-		        rolling_3h_ceiling, rolling_1h_ceiling, rolling_10m_ceiling, task_budget_ceiling, retry_budget_ceiling
+		        rolling_3h_ceiling, rolling_1h_ceiling, rolling_10m_ceiling, task_budget_ceiling,
+		        retry_budget_ceiling, manual_reserve_ceiling
 		 FROM governor_state WHERE id = 1`).Scan(
 		&state.AccountPolicyID, &state.ProviderID, &state.ModelPool, &state.Model, &allowanceProfile,
 		&state.NextAttempt, &lastStart, &cooldownUntil, &circuitState, &circuitReason, &circuitOpenUntil,
@@ -154,7 +157,7 @@ func loadGovernorState(ctx context.Context, q queryer) (governor.PersistedState,
 		&telemetryResetAt, &telemetryCooldown, &state.Telemetry.RateLimited,
 		&state.Telemetry.CapacityExhausted, &upstreamCircuit, &state.Telemetry.Unsafe,
 		&state.Ceilings.Rolling3h, &state.Ceilings.Rolling1h, &state.Ceilings.Rolling10m,
-		&state.Ceilings.TaskBudget, &state.Ceilings.RetryBudget)
+		&state.Ceilings.TaskBudget, &state.Ceilings.RetryBudget, &state.Ceilings.ManualReserve)
 	if err == sql.ErrNoRows {
 		return governor.PersistedState{}, false, nil
 	}
@@ -162,6 +165,10 @@ func loadGovernorState(ctx context.Context, q queryer) (governor.PersistedState,
 		return governor.PersistedState{}, false, fmt.Errorf("load governor state: %w", err)
 	}
 	state.AllowanceProfile = governor.AllowanceProfile(allowanceProfile)
+	// The typed allowance semantic is derived from the persisted profile so
+	// legacy projections predating #58 restore exactly like before, with no
+	// schema migration. The profile remains the durable historical identifier.
+	state.AllowanceKind = governor.AllowanceKindForProfile(state.AllowanceProfile)
 	state.Circuit.State = governor.CircuitState(circuitState)
 	state.Circuit.Reason = governor.OutcomeClass(circuitReason)
 	state.Circuit.OpenUntil = parseTime(circuitOpenUntil)
@@ -282,6 +289,7 @@ func governorEventPayload(state governor.PersistedState) map[string]any {
 	}
 	return map[string]any{
 		"next_attempt":   state.NextAttempt,
+		"allowance_kind": state.AllowanceKind,
 		"rolling_3h":     len(state.RollingEvents),
 		"rolling_1h":     rollingCount(state.RollingEvents, now, time.Hour),
 		"rolling_10m":    rollingCount(state.RollingEvents, now, 10*time.Minute),

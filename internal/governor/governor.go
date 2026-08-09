@@ -66,6 +66,13 @@ func New(config Config, options Options) (*Governor, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
+	// Normalize the typed allowance semantic into the runtime config once, at
+	// construction (#58 review). Validate accepts a legacy config with an
+	// empty AllowanceKind (derived from the profile) so pre-#58 callers keep
+	// working; without this normalization the admission gates and emitted
+	// snapshots/events would read an empty kind and silently skip the
+	// published-quota rolling policy, which is fail-open.
+	config.AllowanceKind = config.EffectiveAllowanceKind()
 	clock := options.Clock
 	if clock == nil {
 		clock = realClock{}

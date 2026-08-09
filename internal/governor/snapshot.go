@@ -15,6 +15,7 @@ func (g *Governor) Snapshot() Snapshot {
 		ModelPool:          g.config.ModelPool,
 		Model:              g.config.Model,
 		AllowanceProfile:   g.config.AllowanceProfile,
+		AllowanceKind:      g.config.AllowanceKind,
 		InFlight:           g.inFlight,
 		QueueLength:        len(g.queue),
 		NextAttempt:        g.nextAttempt,
