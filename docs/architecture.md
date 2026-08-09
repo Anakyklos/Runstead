@@ -159,10 +159,11 @@ The governor keeps upstream allowance semantics (#58) separate from
 Runstead-local workload controls. A typed `AllowanceKind` distinguishes
 `published_quota` (numeric rolling ceilings and a profile-specific manual
 reserve), `unlimited_text` (explicitly configured; no fabricated quota, no
-reserve) and `unknown` (no evidence; never upgraded by success). Local
-controls, cooldown, circuit breakers, fail-closed security and receipt
-accounting are identical across kinds, and changing the allowance kind never
-resets the durable projection.
+reserve) and `unknown` (no evidence; explicit conservative local ceilings and
+a local manual-use reserve stay mandatory from the #21 contract, and success
+never upgrades the semantic). Local controls, cooldown, circuit breakers,
+fail-closed security and receipt accounting are identical across kinds, and
+changing the allowance kind never resets the durable projection.
 
 Packages separate responsibilities, but they do not become services. Internal interfaces are introduced only where real substitution or test isolation is required.
 

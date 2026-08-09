@@ -368,33 +368,36 @@ func (g *Governor) checkLocked(now time.Time, request AttemptRequest) admissionC
 	return admissionCheck{}
 }
 
-// numericAllowanceApplies reports whether the active allowance policy carries
-// a published numeric rolling quota (#58). Rolling admission checks and the
-// manual reserve are only meaningful for that kind.
-func (g *Governor) numericAllowanceApplies() bool {
-	return g.config.AllowanceKind == AllowanceKindPublishedQuota
+// localNumericLayerApplies reports whether the active allowance policy keeps
+// a numeric local workload layer (#58, #58 review): published_quota enforces
+// the published ceilings, and unknown enforces explicit conservative local
+// ceilings and a local manual-use reserve (the #21 contract). Unlimited text
+// is the only kind without a numeric local layer, and that is explicit
+// operator configuration only.
+func (g *Governor) localNumericLayerApplies() bool {
+	return g.config.AllowanceKind != AllowanceKindUnlimitedText
 }
 
-// rollingBudgetsApply is the admission gate for the numeric rolling windows:
-// they execute only when a published numeric allowance is applicable.
+// rollingBudgetsApply is the admission gate for the numeric rolling windows.
 func (g *Governor) rollingBudgetsApply() bool {
-	return g.numericAllowanceApplies()
+	return g.localNumericLayerApplies()
 }
 
 // manualReserveApplies reports whether a manual reserve is subtracted from
-// observed upstream remaining. The reserve protects a shared numeric
-// allowance; it is never fabricated for unlimited-text or unknown policies.
+// observed upstream remaining. For published_quota it protects the shared
+// numeric allowance; for unknown it is a conservative local manual-use
+// buffer (the #21 contract). Unlimited text has no reserve at all.
 func (g *Governor) manualReserveApplies() bool {
-	return g.numericAllowanceApplies()
+	return g.localNumericLayerApplies()
 }
 
 // remainingSignalApplies reports whether an observed upstream remaining
-// counter is a text-allowance signal. Under unlimited text the counter is not
-// a numeric text allowance signal, so it never gates admission; it is still
-// tracked for observability. For published-quota and unknown policies an
-// observed remaining counter can only restrict admission, never expand it.
+// counter gates admission. Under published_quota and unknown it is a
+// restriction-only signal (it can never expand admission); under unlimited
+// text it is not a numeric text-allowance signal, so it never gates text
+// admission and is only tracked for observability.
 func (g *Governor) remainingSignalApplies() bool {
-	return g.config.AllowanceKind != AllowanceKindUnlimitedText
+	return g.localNumericLayerApplies()
 }
 
 func (g *Governor) nextAvailableLocked(now time.Time) time.Time {

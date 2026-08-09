@@ -103,15 +103,17 @@ func (g *Governor) budgetLocked(now time.Time, taskID string) BudgetSnapshot {
 		taskUsed = g.taskLocked(taskID).attempts
 	}
 	// Numeric ceilings, the automated 3h ceiling and the manual reserve are
-	// only meaningful for a published numeric allowance (#58). For
-	// unlimited-text and unknown policies they are zero; the ledger usage
-	// counts remain the authoritative attempt accounting.
+	// the numeric local workload layer (#58): published_quota renders the
+	// published ceilings and reserve, unknown renders its explicit
+	// conservative local ceilings and local manual-use reserve, and
+	// unlimited_text renders none. The ledger usage counts remain the
+	// authoritative attempt accounting under every kind.
 	rolling3hCeiling := 0
 	rolling1hCeiling := 0
 	rolling10mCeiling := 0
 	manualReserve := 0
 	manualReserveRemaining := 0
-	if g.numericAllowanceApplies() {
+	if g.localNumericLayerApplies() {
 		rolling3hCeiling = g.config.Rolling3h
 		rolling1hCeiling = g.config.Rolling1h
 		rolling10mCeiling = g.config.Rolling10m

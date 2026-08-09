@@ -227,10 +227,11 @@ remains optional and pending #15; native commands are authoritative.
 
 The account-scoped governor is process-local M1 policy above every provider
 adapter. It owns admission, one-account serialization, start-to-start pacing,
-numeric rolling budgets and manual reserve (published-quota allowances only),
-cooldowns, retry eligibility and circuit state; unlimited-text and unknown
-allowances (issue #58) keep every local control without fabricating a numeric
-quota. A provider call is one logical completion. On a legacy route, the permit
+numeric rolling budgets and manual reserve, cooldowns, retry eligibility and
+circuit state; `unlimited_text` (issue #58) keeps every local control without
+a numeric layer, and `unknown` keeps its explicit conservative local ceilings
+and local manual-use reserve from the #21 contract. A provider call is one
+logical completion. On a legacy route, the permit
 start is the single-attempt debit point. On a receipt-aware route, the permit
 reserves the logical request and finish validates and reconciles one debit per
 authoritative upstream-attempt receipt. Missing or structurally invalid
@@ -347,12 +348,13 @@ without granting a single correction or repeat. In the `agent.Limits` struct,
 zero has the same meaning; only negative values for those two fields fall back
 to the defaults.
 
-The account governor below the loop enforces its own numeric rolling 3h/1h/10m
-ceilings and manual reserve when the allowance kind is `published_quota`
-(issue #58), and always enforces the task budget, retry budget,
-start-to-start pacing, cooldowns and circuit state. Unlimited-text and unknown
-allowances carry no fabricated numeric quota or reserve while keeping every
-local workload control. Every model turn, including the initial request,
+The account governor below the loop enforces numeric rolling 3h/1h/10m
+ceilings and a manual reserve for `published_quota` allowances and keeps the
+explicit conservative local ceilings and local manual-use reserve for
+`unknown` allowances (issue #58); `unlimited_text` is the only kind with no
+numeric layer, and it is explicit operator configuration only. The task
+budget, retry budget, start-to-start pacing, cooldowns and circuit state are
+always enforced. Every model turn, including the initial request,
 tool-follow-up turns, corrections and any retry, re-enters governor admission
 and counts against the task request budget; no retry can bypass the governor.
 

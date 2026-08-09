@@ -84,17 +84,31 @@ func TestUnlimitedTextProfileValidationIsExplicit(t *testing.T) {
 	if err := unknown.Validate(); err != nil {
 		t.Fatalf("unknown default Validate() error = %v", err)
 	}
-	if unknown.AllowanceKind != policy.AllowanceKindUnknown || unknown.Rolling3h != 0 || unknown.ManualReserve != 0 {
+	if unknown.AllowanceKind != policy.AllowanceKindUnknown {
 		t.Fatalf("unknown defaults = %#v", unknown)
 	}
-	unknown.Rolling3h = 40
-	if err := unknown.Validate(); err == nil {
-		t.Fatal("unknown profile accepted a fabricated rolling ceiling")
+	// The upstream allowance is unknown, so the conservative local layer
+	// stays mandatory (#21 contract, #58 review): explicit positive local
+	// ceilings and a local manual-use reserve are required and enforced.
+	if unknown.Rolling3h <= 0 || unknown.Rolling1h <= 0 || unknown.Rolling10m <= 0 || unknown.ManualReserve <= 0 {
+		t.Fatalf("unknown defaults dropped the conservative local layer: %#v", unknown)
 	}
 	unknown.Rolling3h = 0
-	unknown.ManualReserve = 8
 	if err := unknown.Validate(); err == nil {
-		t.Fatal("unknown profile accepted a manual reserve without a numeric allowance")
+		t.Fatal("unknown profile accepted zero local rolling ceilings")
+	}
+	unknown.Rolling3h = 40
+	unknown.Rolling1h = 20
+	unknown.Rolling10m = 8
+	unknown.ManualReserve = 40
+	if err := unknown.Validate(); err == nil {
+		t.Fatal("unknown profile accepted a manual reserve above the 3h ceiling")
+	}
+	// A zero reserve is legal exactly as in the #21 contract (0 <= reserve <
+	// 3h); what is mandatory is the explicit conservative local layer.
+	unknown.ManualReserve = 0
+	if err := unknown.Validate(); err != nil {
+		t.Fatalf("unknown profile with zero reserve failed validation: %v", err)
 	}
 }
 
@@ -374,14 +388,121 @@ func TestUnknownNeverBecomesUnlimitedFromRepeatedSuccess(t *testing.T) {
 		}
 		result.Permit.Start()
 		result.Permit.Finish(policy.Outcome{Class: policy.OutcomeSuccess})
-		clock.Advance(time.Nanosecond)
+		// Spread the attempts across the local windows so the conservative
+		// local ceilings (10m=25, 1h=80, 3h=140) do not exhaust; the point of
+		// this test is that success never promotes the allowance semantic.
+		clock.Advance(time.Minute)
 	}
 	snapshot := governor.Snapshot()
 	if snapshot.AllowanceKind != policy.AllowanceKindUnknown {
 		t.Fatalf("unknown kind after repeated success = %q, want unknown (success never upgrades the allowance)", snapshot.AllowanceKind)
 	}
-	if snapshot.Budgets.Rolling3hCeiling != 0 || snapshot.Budgets.ManualReserve != 0 {
-		t.Fatalf("unknown budgets fabricated numeric allowance state: %#v", snapshot.Budgets)
+	// The conservative local layer stays in force under unknown: explicit
+	// local ceilings and a manual-use reserve are rendered and enforced.
+	if snapshot.Budgets.Rolling3hCeiling <= 0 || snapshot.Budgets.ManualReserve <= 0 {
+		t.Fatalf("unknown budgets dropped the conservative local layer: %#v", snapshot.Budgets)
+	}
+}
+
+// TestUnknownLocalRollingCeilingsStillEnforced proves the #21 conservative
+// local ceilings remain admission gates under the unknown allowance: the
+// upstream allowance is unknown, the Runstead local layer is not.
+func TestUnknownLocalRollingCeilingsStillEnforced(t *testing.T) {
+	clock := newFakeClock()
+	config := policy.DefaultUnknownConfig("policy-unknown", "omniroute", "instant", provider.SafeRouteSafety())
+	config.MinimumStartInterval = time.Nanosecond
+	config.Rolling10m = 2
+	config.Rolling1h = 3
+	config.Rolling3h = 5
+	config.ManualReserve = 1
+	governor, err := policy.New(config, policy.Options{Clock: clock, Jitter: fixedJitter{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 2; i++ {
+		request := "request-" + string(rune('0'+i))
+		result := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: request})
+		if !result.Admitted() {
+			t.Fatalf("unknown admission %d = %#v", i, result)
+		}
+		result.Permit.Start()
+		result.Permit.Finish(policy.Outcome{Class: policy.OutcomeSuccess})
+		clock.Advance(time.Nanosecond)
+	}
+	blocked := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "request-3"})
+	if blocked.Code != policy.AdmissionDelayed || blocked.Reason != policy.AdmissionRollingBudgetExhausted {
+		t.Fatalf("unknown admission past the local 10m ceiling = %#v, want delayed rolling_budget_exhausted", blocked)
+	}
+	snapshot := governor.Snapshot()
+	if snapshot.AllowanceKind != policy.AllowanceKindUnknown || snapshot.Budgets.Rolling10mCeiling != 2 {
+		t.Fatalf("unknown snapshot = %#v, want kind unknown with local ceiling 2", snapshot)
+	}
+}
+
+// TestLegacyConfigWithoutAllowanceKindNormalizesToPublishedQuota is the #58
+// review regression: a legacy config that predates the typed kind (empty
+// AllowanceKind on a plus_go_instant profile) must validate, normalize to
+// published_quota at construction, enforce the numeric rolling policy and
+// emit the kind in snapshots and events. Skipping the rolling gates on an
+// empty kind would be fail-open.
+func TestLegacyConfigWithoutAllowanceKindNormalizesToPublishedQuota(t *testing.T) {
+	events := &eventSink{}
+	clock := newFakeClock()
+	config := policy.Config{
+		AccountPolicyID:       "policy-account-1",
+		ProviderID:            "omniroute",
+		ModelPool:             "instant",
+		AllowanceProfile:      policy.AllowanceProfileInstant,
+		Rolling3h:             5,
+		ManualReserve:         1,
+		Rolling1h:             4,
+		Rolling10m:            2,
+		TaskBudget:            80,
+		RetryBudget:           2,
+		QueueCapacity:         16,
+		FairnessQuantum:       1,
+		MinimumStartInterval:  time.Nanosecond,
+		BurstCapacity:         1,
+		MaxInFlight:           1,
+		RequireSingleAttempt:  true,
+		RateResponseThreshold: 3,
+		RateResponseWindow:    time.Hour,
+		ResetSafetyMargin:     5 * time.Minute,
+		RouteSafety:           provider.SafeRouteSafety(),
+	}
+	if err := config.Validate(); err != nil {
+		t.Fatalf("legacy config Validate() error = %v", err)
+	}
+	governor, err := policy.New(config, policy.Options{Clock: clock, Jitter: fixedJitter{}, Events: events})
+	if err != nil {
+		t.Fatalf("legacy config New() error = %v", err)
+	}
+	snapshot := governor.Snapshot()
+	if snapshot.AllowanceKind != policy.AllowanceKindPublishedQuota {
+		t.Fatalf("normalized kind = %q, want published_quota", snapshot.AllowanceKind)
+	}
+	// The numeric rolling policy must be enforced: exhaust the local 10m
+	// ceiling of 2 and the third attempt must be rolling-budget blocked.
+	for i := 1; i <= 2; i++ {
+		request := "request-" + string(rune('0'+i))
+		result := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: request})
+		if !result.Admitted() {
+			t.Fatalf("legacy admission %d = %#v", i, result)
+		}
+		result.Permit.Start()
+		result.Permit.Finish(policy.Outcome{Class: policy.OutcomeSuccess})
+		clock.Advance(time.Nanosecond)
+	}
+	blocked := governor.TryAdmit(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "request-3"})
+	if blocked.Code != policy.AdmissionDelayed || blocked.Reason != policy.AdmissionRollingBudgetExhausted {
+		t.Fatalf("legacy rolling gate = %#v, want delayed rolling_budget_exhausted", blocked)
+	}
+	// Events must carry the normalized kind, not an empty string.
+	governor.DrainEvents()
+	for _, event := range events.Events() {
+		if event.AllowanceKind != policy.AllowanceKindPublishedQuota {
+			t.Fatalf("event allowance kind = %q, want published_quota", event.AllowanceKind)
+		}
 	}
 }
 

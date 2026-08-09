@@ -160,18 +160,18 @@ func DefaultLunaUnlimitedTextConfig(accountPolicyID, providerID, modelPool strin
 	return config
 }
 
-// DefaultUnknownConfig is the no-evidence allowance policy (#58): no numeric
-// allowance is published or configured, and no unlimited contract is claimed.
-// Repeated successful calls never upgrade Unknown to unlimited or to a
-// fabricated quota; the local workload controls remain fully active.
+// DefaultUnknownConfig is the no-evidence allowance policy (#58). The
+// upstream allowance is unknown, so the conservative local layer stays
+// mandatory exactly as in the #21 contract: explicit positive local rolling
+// ceilings and a local manual-use reserve are enforced as Runstead workload
+// protections, not as upstream allowance claims. The convenience defaults
+// reuse the same conservative local family as the Instant profile; operators
+// must review and may override them, and repeated successful calls never
+// promote Unknown to unlimited.
 func DefaultUnknownConfig(accountPolicyID, providerID, modelPool string, safety provider.RouteSafety) Config {
 	config := DefaultInstantConfig(accountPolicyID, providerID, modelPool, safety)
 	config.AllowanceProfile = AllowanceProfileUnknown
 	config.AllowanceKind = AllowanceKindUnknown
-	config.Rolling3h = 0
-	config.Rolling1h = 0
-	config.Rolling10m = 0
-	config.ManualReserve = 0
 	return config
 }
 
@@ -217,11 +217,19 @@ func (c Config) Validate() error {
 			return errors.New("unlimited-text allowances have no shared numeric allowance to protect with a manual reserve")
 		}
 	case AllowanceKindUnknown:
-		if c.Rolling3h != 0 || c.Rolling1h != 0 || c.Rolling10m != 0 {
-			return errors.New("unknown allowances must not fabricate numeric rolling ceilings without evidence")
+		// The upstream allowance is unknown, so the conservative local layer
+		// remains mandatory (#21 contract, #58 review): explicit positive
+		// local rolling ceilings and a local manual-use reserve are enforced
+		// as Runstead workload protections. This is not an upstream claim:
+		// Unknown still never becomes unlimited from repeated success.
+		if c.Rolling3h <= 0 || c.Rolling1h <= 0 || c.Rolling10m <= 0 {
+			return errors.New("unknown allowances require explicit conservative local rolling ceilings")
 		}
-		if c.ManualReserve != 0 {
-			return errors.New("unknown allowances have no shared numeric allowance to protect with a manual reserve")
+		if c.Rolling10m >= c.Rolling1h || c.Rolling1h >= c.Rolling3h {
+			return errors.New("rolling windows require 10m < 1h < 3h ceilings")
+		}
+		if c.ManualReserve < 0 || c.ManualReserve >= c.Rolling3h {
+			return errors.New("manual reserve must be non-negative and below the 3h ceiling")
 		}
 	default:
 		return fmt.Errorf("unsupported allowance kind %q", kind)

@@ -206,3 +206,43 @@ func TestInspectShowsPublishedQuotaReserveAndLocalCeilings(t *testing.T) {
 		}
 	}
 }
+
+func TestInspectShowsUnknownUpstreamWithLocalConservativeCeilings(t *testing.T) {
+	store := openTestStore(t)
+	client := fakeResponses(2)
+	mustGovernorTask(t, store)
+
+	config := governor.DefaultUnknownConfig("policy-unknown", "scripted", "instant", provider.SafeRouteSafety())
+	config.MinimumStartInterval = time.Millisecond
+	accountGovernor, err := governor.New(config, governor.Options{Persistence: store})
+	if err != nil {
+		t.Fatalf("governor.New() error = %v", err)
+	}
+	for turn := 1; turn <= 2; turn++ {
+		result := accountGovernor.Execute(context.Background(), governor.AttemptRequest{
+			TaskID:          "task-1",
+			ClientRequestID: "task-1-000" + string(rune('0'+turn)),
+			ProviderRequest: provider.Request{Prompt: "p", Model: "scripted"},
+		}, client, nil)
+		if !result.Admission.Admitted() || result.Err != nil {
+			t.Fatalf("execution %d failed: %#v", turn, result)
+		}
+	}
+
+	var out bytes.Buffer
+	if err := store.RenderInspect(context.Background(), &out, "task-1"); err != nil {
+		t.Fatalf("RenderInspect() error = %v", err)
+	}
+	rendered := out.String()
+	for _, want := range []string{
+		"upstream allowance: unknown profile=unknown",
+		"no published numeric rolling quota (no evidence; explicit local conservative ceilings still enforced)",
+		"rolling usage: 10m=2/25 1h=2/80 3h=2/140",
+		"manual reserve: 20 (20 remaining)",
+		"local workload ceilings: task=80 retry=2",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("inspect output missing %q:\n%s", want, rendered)
+		}
+	}
+}

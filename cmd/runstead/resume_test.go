@@ -15,6 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/RenyEnnos/Runstead/internal/agent"
+	"github.com/RenyEnnos/Runstead/internal/config"
 	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/recovery"
@@ -994,18 +995,39 @@ func TestResumeReconstructsUnknownPolicyFromPersistedState(t *testing.T) {
 		AllowanceProfile: governor.ProfileUnknown,
 		AllowanceKind:    governor.AllowanceKindUnknown,
 		Circuit:          governor.CircuitSnapshot{State: governor.CircuitClosed},
-		Ceilings:         governor.BudgetCeilings{TaskBudget: 80, RetryBudget: 2},
+		Ceilings: governor.BudgetCeilings{
+			Rolling3h: 40, Rolling1h: 20, Rolling10m: 8, TaskBudget: 10, RetryBudget: 1, ManualReserve: 8,
+		},
 	}
 	accountConfig, err := resolveResumeGovernorConfig(&persisted, "", false)
 	if err != nil {
 		t.Fatalf("resolveResumeGovernorConfig() error = %v", err)
 	}
-	if accountConfig.AllowanceKind != governor.AllowanceKindUnknown || accountConfig.Rolling3h != 0 {
+	if accountConfig.AllowanceKind != governor.AllowanceKindUnknown {
 		t.Fatalf("reconstructed unknown policy = %#v", accountConfig)
+	}
+	// The conservative local layer is the durable policy the operator
+	// configured: the reconstructed unknown policy must carry the persisted
+	// explicit ceilings and reserve (#21 contract, #58 review).
+	if accountConfig.Rolling3h != 40 || accountConfig.Rolling1h != 20 || accountConfig.Rolling10m != 8 ||
+		accountConfig.ManualReserve != 8 || accountConfig.TaskBudget != 10 || accountConfig.RetryBudget != 1 {
+		t.Fatalf("reconstructed unknown policy lost the persisted local layer: %#v", accountConfig)
 	}
 }
 
-func TestResumeFailsClosedOnFabricatedCeilingsForNonNumericAllowance(t *testing.T) {
+func TestResumeFailsClosedOnUnknownProjectionWithoutLocalCeilings(t *testing.T) {
+	persisted := governor.PersistedState{
+		AllowanceProfile: governor.ProfileUnknown,
+		AllowanceKind:    governor.AllowanceKindUnknown,
+		Circuit:          governor.CircuitSnapshot{State: governor.CircuitClosed},
+		Ceilings:         governor.BudgetCeilings{},
+	}
+	if _, err := resolveResumeGovernorConfig(&persisted, "", false); err == nil {
+		t.Fatal("resolveResumeGovernorConfig() accepted an unknown projection without explicit local ceilings")
+	}
+}
+
+func TestResumeFailsClosedOnFabricatedCeilingsForUnlimitedText(t *testing.T) {
 	persisted := governor.PersistedState{
 		AllowanceProfile: governor.ProfileLunaUnlimitedText,
 		AllowanceKind:    governor.AllowanceKindUnlimitedText,
@@ -1030,5 +1052,50 @@ func TestResumeFailsClosedOnIncompatiblePersistedReserve(t *testing.T) {
 	}
 	if _, err := resolveResumeGovernorConfig(&persisted, "", false); err == nil {
 		t.Fatal("resolveResumeGovernorConfig() accepted a persisted reserve that contradicts the reconstructed policy")
+	}
+}
+
+// Issue #58 review: the CLI profile selection must be explicit and must not
+// weaken the local layer. Unknown keeps the conservative local ceilings and
+// reserve; unlimited text keeps no numeric layer; the default remains the
+// historical published-quota Instant policy.
+func TestResolveGovernorConfigSelectsExplicitAllowanceProfiles(t *testing.T) {
+	t.Setenv(config.EnvAllowanceProfile, "")
+
+	defaultConfig, err := resolveGovernorConfig(true, config.Config{}, "", false, "", false)
+	if err != nil {
+		t.Fatalf("default resolveGovernorConfig() error = %v", err)
+	}
+	if defaultConfig.AllowanceProfile != governor.ProfileInstant || defaultConfig.AllowanceKind != governor.AllowanceKindPublishedQuota {
+		t.Fatalf("default profile = %#v, want plus_go_instant published_quota", defaultConfig)
+	}
+	if defaultConfig.Rolling3h != 140 || defaultConfig.ManualReserve != 20 {
+		t.Fatalf("default profile lost the historical numbers: %#v", defaultConfig)
+	}
+
+	unknown, err := resolveGovernorConfig(true, config.Config{}, "", false, "unknown", true)
+	if err != nil {
+		t.Fatalf("unknown resolveGovernorConfig() error = %v", err)
+	}
+	if unknown.AllowanceKind != governor.AllowanceKindUnknown || unknown.Rolling3h <= 0 || unknown.ManualReserve <= 0 {
+		t.Fatalf("CLI unknown profile dropped the conservative local layer: %#v", unknown)
+	}
+
+	unlimited, err := resolveGovernorConfig(true, config.Config{}, "", false, "luna_unlimited_text", true)
+	if err != nil {
+		t.Fatalf("luna resolveGovernorConfig() error = %v", err)
+	}
+	if unlimited.AllowanceKind != governor.AllowanceKindUnlimitedText || unlimited.Rolling3h != 0 || unlimited.ManualReserve != 0 {
+		t.Fatalf("CLI luna profile fabricated numeric allowance state: %#v", unlimited)
+	}
+	if unlimited.MaxInFlight != 1 || unlimited.TaskBudget != 80 || unlimited.RetryBudget != 2 {
+		t.Fatalf("CLI luna profile dropped local workload controls: %#v", unlimited)
+	}
+
+	if _, err := resolveGovernorConfig(true, config.Config{}, "", false, "reasoning", true); err == nil {
+		t.Fatal("CLI accepted reasoning without explicit ceilings")
+	}
+	if _, err := resolveGovernorConfig(true, config.Config{}, "", false, "not-a-profile", true); err == nil {
+		t.Fatal("CLI accepted an unsupported allowance profile")
 	}
 }

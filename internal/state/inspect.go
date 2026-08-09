@@ -350,7 +350,13 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 		case governor.AllowanceKindUnlimitedText:
 			builder.WriteString("  no published numeric rolling quota (explicitly configured unlimited text)\n")
 		case governor.AllowanceKindUnknown:
-			builder.WriteString("  no published numeric rolling quota (no evidence; never becomes unlimited from success)\n")
+			builder.WriteString("  no published numeric rolling quota (no evidence; explicit local conservative ceilings still enforced)\n")
+			fmt.Fprintf(&builder, "  rolling usage: 10m=%d/%d 1h=%d/%d 3h=%d/%d\n",
+				governorState.Rolling10m, governorState.Rolling10mCeiling, governorState.Rolling1h, governorState.Rolling1hCeiling, governorState.Rolling3h, governorState.Rolling3hCeiling)
+			fmt.Fprintf(&builder, "  task attempts: %d/%d\n", governorState.TaskUsed, governorState.TaskCeiling)
+			if governorState.ManualReserve > 0 {
+				fmt.Fprintf(&builder, "  manual reserve: %d (%d remaining)\n", governorState.ManualReserve, governorState.ManualReserveRemaining)
+			}
 		default:
 			fmt.Fprintf(&builder, "  rolling usage: 10m=%d/%d 1h=%d/%d 3h=%d/%d\n",
 				governorState.Rolling10m, governorState.Rolling10mCeiling, governorState.Rolling1h, governorState.Rolling1hCeiling, governorState.Rolling3h, governorState.Rolling3hCeiling)

@@ -58,7 +58,7 @@ the second. A numeric allowance is not account safety, and "unlimited" is not
 | --- | --- | --- | --- |
 | `published_quota` | Upstream publishes/exposes a numeric text allowance | Enforced (must be positive, 10m < 1h < 3h) | Profile-specific; never consumed automatically |
 | `unlimited_text` | Explicitly configured (or observed through trustworthy evidence) unlimited text | Absent; fabricating one fails validation | Absent; configuring one fails validation |
-| `unknown` | No evidence either way | Absent; fabricating one fails validation | Absent; configuring one fails validation |
+| `unknown` | No evidence either way; upstream allowance unknown | Absent as an upstream claim; explicit conservative local ceilings are required and enforced (#21 contract) | Local manual-use reserve; required as part of the local layer (#21 contract) |
 
 `plus_go_instant` and `reasoning` are `published_quota` profiles.
 `luna_unlimited_text` is the explicit unlimited-text profile.
@@ -102,10 +102,15 @@ required by #58. Model naming alone is never evidence: a model called
 to discover limits. Live rollout verification is an opt-in manual procedure
 (see below) that never intentionally drives the account into a restriction.
 
-`Unknown` is the no-evidence profile. It carries no numeric allowance and no
-reserve; local workload controls remain fully active, and observed
-rate/capacity/cooldown/reset telemetry still constrains admission. Repeated
-successful calls never promote Unknown to unlimited or fabricate a quota.
+`Unknown` is the no-evidence profile: the upstream allowance is unknown, so
+the conservative local layer remains mandatory exactly as in the #21 contract.
+Explicit positive local rolling ceilings and a local manual-use reserve are
+required and enforced as Runstead workload protections, not as upstream
+allowance claims; `DefaultUnknownConfig` supplies the same conservative local
+family as the Instant profile as a reviewed starting point. Observed
+rate/capacity/cooldown/reset telemetry still constrains admission, and
+repeated successful calls never promote Unknown to unlimited or relax the
+local ceilings.
 
 Rolling ledgers use event timestamps and expire events relative to the current
 time; they are not clock-aligned buckets. Local ceilings remain effective when
@@ -118,13 +123,15 @@ the strictest known constraint after preserving the reserve:
 The Instant local ceiling of 140 already represents the automated portion of
 the published 160-message family, so the reserve is not subtracted a second
 time from that rolling ledger. The 10-minute and 1-hour burst guards remain
-independent local windows. Under `unlimited_text` and `unknown` no reserve is
-subtracted, because there is no shared numeric allowance for a reserve to
-protect; an observed remaining counter is a restriction-only signal where it
-applies (`published_quota` and `unknown`) and is deliberately not a
-text-allowance signal under `unlimited_text`, while `Retry-After`, cooldown,
-rate-limited, capacity-exhausted and explicit-reset signals remain
-authoritative under every kind.
+independent local windows. Under `unlimited_text` no reserve exists and none
+is subtracted. Under `unknown` the local manual-use reserve remains part of
+the conservative local layer and is still subtracted from observed upstream
+remaining, exactly as in the #21 contract. An observed remaining counter is a
+restriction-only signal under `published_quota` and `unknown` (it can never
+expand admission) and is deliberately not a text-allowance signal under
+`unlimited_text`, while `Retry-After`, cooldown, rate-limited,
+capacity-exhausted and explicit-reset signals remain authoritative under every
+kind.
 
 ## Opt-in live observation procedure
 
