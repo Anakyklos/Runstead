@@ -14,6 +14,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/recipe"
 	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
+	"github.com/RenyEnnos/Runstead/internal/verifier"
 )
 
 // Clock is the loop's time seam. Tests share one clock between the loop and
@@ -91,7 +92,15 @@ type Loop struct {
 	// recipeCatalogDigest is the persisted digest of the effective recipe
 	// catalog, used to reject catalog drift on resume (issue #26 review).
 	recipeCatalogDigest string
-	recovery            *RecoverySeed
+	// verifier is the control-plane verification boundary (issue #11). It is
+	// never nil: a default verifier with an empty plan and the registry
+	// observer is constructed in NewLoop, so every completion proposal goes
+	// through independent verification.
+	verifier *verifier.Verifier
+	// acceptancePlanDigest is the digest of the operator acceptance plan,
+	// persisted with the task configuration so resume rejects plan drift.
+	acceptancePlanDigest string
+	recovery             *RecoverySeed
 }
 
 // Config wires one loop instance at the composition root.
@@ -127,6 +136,14 @@ type Config struct {
 	// effective definitions changed can never silently continue the task. Empty
 	// when no catalog is configured.
 	RecipeCatalogDigest string
+	// Verifier is the control-plane verification boundary (issue #11). A nil
+	// value constructs a default verifier with an empty acceptance plan and
+	// the registry observer, so every completion proposal is independently
+	// verified even when no plan is configured.
+	Verifier *verifier.Verifier
+	// AcceptancePlanDigest is the digest of the operator acceptance plan,
+	// persisted with the task configuration so resume rejects plan drift.
+	AcceptancePlanDigest string
 	// Recovery is the optional reconstructed state of an interrupted task
 	// (issue #9). A nil value starts a fresh run; a non-nil value resumes the
 	// same durable task from persisted state without replaying historical
@@ -169,20 +186,30 @@ func NewLoop(config Config) (*Loop, error) {
 	if traceSink == nil {
 		traceSink = nopTrace
 	}
+	verification := config.Verifier
+	if verification == nil {
+		// The default verifier uses the registry observer and an empty
+		// acceptance plan: structural completion checks (evidence grounding,
+		// uncertain effects, pending approvals, write reconciliation, git
+		// observation) always run, even without an operator plan (issue #11).
+		verification = verifier.New(config.Registry, nil)
+	}
 	return &Loop{
-		runner:              config.Runner,
-		registry:            config.Registry,
-		contract:            contract,
-		limits:              limits,
-		clock:               clock,
-		trace:               traceSink,
-		model:               strings.TrimSpace(config.Model),
-		state:               config.State,
-		policy:              config.Policy,
-		writePolicy:         strings.TrimSpace(config.WritePolicy),
-		recipePolicy:        strings.TrimSpace(config.RecipePolicy),
-		recipeCatalogDigest: strings.TrimSpace(config.RecipeCatalogDigest),
-		recovery:            config.Recovery,
+		runner:               config.Runner,
+		registry:             config.Registry,
+		contract:             contract,
+		limits:               limits,
+		clock:                clock,
+		trace:                traceSink,
+		model:                strings.TrimSpace(config.Model),
+		state:                config.State,
+		policy:               config.Policy,
+		writePolicy:          strings.TrimSpace(config.WritePolicy),
+		recipePolicy:         strings.TrimSpace(config.RecipePolicy),
+		recipeCatalogDigest:  strings.TrimSpace(config.RecipeCatalogDigest),
+		verifier:             verification,
+		acceptancePlanDigest: strings.TrimSpace(config.AcceptancePlanDigest),
+		recovery:             config.Recovery,
 	}, nil
 }
 
@@ -232,6 +259,26 @@ func (l *Loop) Run(ctx context.Context, task Task) Result {
 		if err := l.state.StartTask(context.Background(), task.ID); err != nil {
 			return persistenceFailure(err)
 		}
+		// Persist the operator acceptance plan with the task so verification
+		// always reads the same plan (issue #11). The model can never invent
+		// acceptance criteria after execution.
+		if plan := l.verifier.Plan(); plan != nil {
+			spec, err := json.Marshal(plan)
+			if err != nil {
+				return persistenceFailure(fmt.Errorf("marshal acceptance plan: %w", err))
+			}
+			if err := l.state.SaveAcceptancePlan(context.Background(), task.ID, spec, plan.Digest()); err != nil {
+				return persistenceFailure(err)
+			}
+		}
+		// Capture the real git baseline at task start, BEFORE any model turn,
+		// so verification can attribute pre-existing repository changes. The
+		// observation happens outside any SQLite transaction.
+		if status, diff, ok := l.captureGitBaseline(); ok {
+			if err := l.state.SaveWorkspaceBaseline(context.Background(), task.ID, status, diff); err != nil {
+				return persistenceFailure(err)
+			}
+		}
 	}
 
 	if l.recovery != nil {
@@ -280,6 +327,17 @@ func (l *Loop) Run(ctx context.Context, task Task) Result {
 				// budget is consumed and no further provider attempt is made
 				// to wait for the operator.
 				if err := l.state.MarkTaskApprovalRequired(context.Background(), task.ID, result.PendingActionID, result.StopReason); err != nil {
+					result.Outcome = OutcomePersistenceFailure
+					result.StopReason = fmt.Sprintf("durable state could not be persisted: %v", err)
+				}
+			} else if outcome == OutcomeVerificationBlocked {
+				// Completion was refused by a control-plane verification
+				// dependency (uncertain effect, pending approval at completion
+				// time, blocked check): the task is NOT finalized. It stays
+				// durably resumable so the operator can reconcile the effect
+				// or decide the approval before a normal resume continues
+				// (issue #11).
+				if err := l.state.MarkTaskVerificationPaused(context.Background(), task.ID, result.StopReason); err != nil {
 					result.Outcome = OutcomePersistenceFailure
 					result.StopReason = fmt.Sprintf("durable state could not be persisted: %v", err)
 				}
@@ -337,6 +395,19 @@ type runState struct {
 	mixedProse  int
 }
 
+// captureGitBaseline captures the bounded real git status/diff at task start
+// through the registry observer (the same seam as the git tools). It returns
+// ok=false when the workspace is not a git repository or git observation
+// fails; verification then reports the git limitation honestly.
+func (l *Loop) captureGitBaseline() (status, diff string, ok bool) {
+	statusText, _, statusFailure := l.registry.GitStatusText()
+	if statusFailure != nil {
+		return "", "", false
+	}
+	diffText, _, _ := l.registry.GitDiffText()
+	return statusText, diffText, true
+}
+
 // configSnapshot renders the meaningful execution configuration as a
 // sanitized JSON snapshot for the durable task row. It contains no secrets:
 // workspace, model, the loop limits, the effective write policy, the effective
@@ -347,16 +418,17 @@ type runState struct {
 // review).
 func (l *Loop) configSnapshot() []byte {
 	encoded, err := json.Marshal(map[string]any{
-		"workspace":             l.registry.Workspace(),
-		"model":                 l.model,
-		"write_policy":          l.writePolicy,
-		"recipe_policy":         l.recipePolicy,
-		"recipe_catalog_digest": l.recipeCatalogDigest,
-		"max_steps":             l.limits.MaxSteps,
-		"max_corrections":       l.limits.MaxCorrections,
-		"max_repeated_actions":  l.limits.MaxRepeatedActions,
-		"time_budget_ns":        int64(l.limits.TimeBudget),
-		"provider_budget":       l.limits.ProviderBudget,
+		"workspace":              l.registry.Workspace(),
+		"model":                  l.model,
+		"write_policy":           l.writePolicy,
+		"recipe_policy":          l.recipePolicy,
+		"recipe_catalog_digest":  l.recipeCatalogDigest,
+		"acceptance_plan_digest": l.acceptancePlanDigest,
+		"max_steps":              l.limits.MaxSteps,
+		"max_corrections":        l.limits.MaxCorrections,
+		"max_repeated_actions":   l.limits.MaxRepeatedActions,
+		"time_budget_ns":         int64(l.limits.TimeBudget),
+		"provider_budget":        l.limits.ProviderBudget,
 	})
 	if err != nil {
 		return []byte("{}")
@@ -464,7 +536,7 @@ func (l *Loop) modelTurn(
 	case protocol.KindAction:
 		return l.handleAction(ctx, task, parse.Action, transcript, evidence, guard, run, emit, stop)
 	case protocol.KindFinal:
-		return l.handleFinal(ctx, task, parse.Final, evidence, run, emit, stop)
+		return l.handleFinal(ctx, task, parse.Final, transcript, evidence, run, emit, stop)
 	default:
 		return stop(OutcomeProviderFailure, "provider failure: unrecognized envelope kind", nil), true
 	}
@@ -768,6 +840,7 @@ func (l *Loop) handleFinal(
 	ctx context.Context,
 	task Task,
 	final *protocol.FinalResponse,
+	transcript *transcript,
 	evidence *EvidenceSet,
 	run *runState,
 	emit func(TraceLine),
@@ -794,16 +867,127 @@ func (l *Loop) handleFinal(
 			}), true
 		}
 	}
-	if final.Status == protocol.StatusComplete {
-		return stop(OutcomeCompleted, OutcomeCompleted.StopReason(), func(result *Result) {
+	if final.Status == protocol.StatusIncomplete {
+		return stop(OutcomeFinalIncomplete, OutcomeFinalIncomplete.StopReason(), func(result *Result) {
 			result.Summary = final.Summary
 			result.Evidence = append([]string(nil), final.Evidence...)
 		}), true
 	}
-	return stop(OutcomeFinalIncomplete, OutcomeFinalIncomplete.StopReason(), func(result *Result) {
-		result.Summary = final.Summary
-		result.Evidence = append([]string(nil), final.Evidence...)
-	}), true
+
+	// StatusComplete is only a PROPOSAL. The runtime verifier independently
+	// observes authoritative state (persisted evidence, filesystem, git,
+	// acceptance checks) and decides whether completion is permitted (issue
+	// #11). Model claims never decide completion.
+	report := l.verifyCompletion(ctx, task, final, evidence)
+	emit(TraceLine{Kind: TraceVerification, Status: string(report.Decision), Classification: report.Summary})
+	switch report.Decision {
+	case verifier.DecisionPassed:
+		return stop(OutcomeCompleted, "verification passed: "+report.Summary, func(result *Result) {
+			result.Summary = final.Summary
+			result.Evidence = append([]string(nil), final.Evidence...)
+			result.Classification = string(report.Decision)
+		}), true
+	case verifier.DecisionFailed:
+		// The model produced a valid final; the environment did not satisfy
+		// completion. This is NOT a protocol correction: no correction budget
+		// is consumed. The structured verification result becomes a bounded
+		// observation under the verification role and execution continues.
+		views := make([]verificationCheckView, 0, len(report.Checks))
+		for _, check := range report.Checks {
+			views = append(views, verificationCheckView{
+				ID: check.ID, Type: check.Type, Status: string(check.Status),
+				Expected: check.Expected, Observed: check.Observed,
+				Evidence: check.EvidenceIDs, Reason: check.Reason,
+			})
+		}
+		transcript.verification(string(report.Decision), report.Summary, views)
+		return Result{}, false
+	default:
+		// blocked or uncertain: a control-plane dependency prevents
+		// completion. The task is not finalized; it stays durably resumable.
+		return stop(OutcomeVerificationBlocked, report.Summary, func(result *Result) {
+			result.Summary = final.Summary
+			result.Evidence = append([]string(nil), final.Evidence...)
+			result.Classification = string(report.Decision)
+		}), true
+	}
+}
+
+// verifyCompletion runs the control-plane verifier for one completion
+// proposal and persists the verification attempt (issue #11). The verifier
+// input is built from authoritative persisted history when a store exists,
+// and from the in-run evidence set otherwise (the M1 in-memory mode). The
+// attempt is persisted AFTER the external observations complete; no SQLite
+// transaction is open during verification.
+func (l *Loop) verifyCompletion(ctx context.Context, task Task, final *protocol.FinalResponse, evidence *EvidenceSet) verifier.Report {
+	input := verifier.Input{
+		TaskID:        task.ID,
+		FinalEvidence: append([]string(nil), final.Evidence...),
+		Plan:          l.verifier.Plan(),
+	}
+	if l.state != nil {
+		snapshot, err := l.state.LoadRecoverySnapshot(ctx, task.ID)
+		if err == nil {
+			input.Actions = snapshot.Actions
+			input.ToolAttempts = snapshot.ToolAttempts
+			input.Evidence = snapshot.Evidence
+			input.BaselineGitStatus = snapshot.BaselineGitStatus
+			input.BaselineGitDiff = snapshot.BaselineGitDiff
+			if pending, pendingErr := l.state.PendingApprovals(ctx, task.ID); pendingErr == nil {
+				for _, item := range pending {
+					input.PendingApprovals = append(input.PendingApprovals, item.ActionID)
+				}
+			}
+		}
+	} else {
+		// In-memory mode: build the authoritative-ish input from the run's
+		// own evidence set (no persisted history exists).
+		for _, observation := range evidence.observations {
+			encoded, err := json.Marshal(observation.Data)
+			if err != nil {
+				continue
+			}
+			input.Evidence = append(input.Evidence, state.RecoveryEvidence{
+				EvidenceID: observation.ID,
+				Tool:       observation.Tool,
+				DataJSON:   string(encoded),
+			})
+		}
+	}
+	report := l.verifier.Verify(input)
+	// Persist the verification attempt (projection + journal) after the
+	// observations completed. A failed/blocked attempt is still authoritative
+	// history and must survive restart.
+	if l.state != nil {
+		checks := make([]state.VerificationCheckRecord, 0, len(report.Checks))
+		for _, check := range report.Checks {
+			checks = append(checks, state.VerificationCheckRecord{
+				CheckID: check.ID, Type: check.Type, Status: string(check.Status),
+				Expected: check.Expected, Observed: check.Observed,
+				Evidence: check.EvidenceIDs, Reason: check.Reason,
+			})
+		}
+		reportJSON, err := json.Marshal(report)
+		if err != nil {
+			reportJSON = []byte(`{"decision":"` + string(report.Decision) + `"}`)
+		}
+		if err := l.state.SaveVerificationAttempt(ctx, state.VerificationAttemptRecord{
+			TaskID: task.ID, Decision: string(report.Decision), Summary: report.Summary,
+			ReportJSON: reportJSON, Checks: checks,
+		}); err != nil {
+			// A failed persistence of verification history is a terminal
+			// condition: the completion gate cannot be proven durable.
+			return verifier.Report{
+				TaskID: task.ID, Decision: verifier.DecisionBlocked,
+				Summary: "verification could not be persisted",
+				Checks: []verifier.CheckResult{{
+					ID: "verification_persisted", Type: "structural", Status: verifier.CheckBlocked,
+					Reason: err.Error(),
+				}},
+			}
+		}
+	}
+	return report
 }
 
 // evaluatePolicy computes and persists the control-plane decision for one

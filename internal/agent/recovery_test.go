@@ -163,7 +163,7 @@ func TestLoopResumeWorkspaceChangeAllowsFreshObservation(t *testing.T) {
 		t.Fatalf("outcome = %q, want completed\nreason: %s", result.Outcome, result.StopReason)
 	}
 	// The read_file executed as a new attempt with fresh evidence obs-000002.
-	if !strings.Contains(result.StopReason, "grounded final accepted") {
+	if !strings.Contains(result.StopReason, "completion verified") {
 		t.Fatalf("stop reason = %q", result.StopReason)
 	}
 }

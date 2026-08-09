@@ -130,6 +130,15 @@ func BuildContext(snapshot *state.RecoverySnapshot, budget Budget) Context {
 		builder.WriteString("\n")
 	}
 
+	// Pending verification (issue #11): a completion proposal that was refused
+	// by the runtime verifier is authoritative history. The model must see the
+	// typed reason so it can correct the real environment instead of repeating
+	// the same proposal.
+	if verification := pendingVerificationFailure(snapshot); verification != "" {
+		builder.WriteString("Pending verification failure:\n")
+		builder.WriteString("- " + verification + "\n\n")
+	}
+
 	// Available evidence: every citable ID survives so a grounded final can
 	// reference historical observations without re-executing them.
 	if len(progress) > 0 {
@@ -222,6 +231,38 @@ func unresolvedFailures(snapshot *state.RecoverySnapshot) []failureItem {
 		})
 	}
 	return items
+}
+
+// pendingVerificationFailure renders the latest failed verification attempt as
+// a bounded one-line description (issue #11). It returns "" when there is no
+// failed/blocked/uncertain verification to report.
+func pendingVerificationFailure(snapshot *state.RecoverySnapshot) string {
+	attempts := snapshot.VerificationAttempts
+	if len(attempts) == 0 {
+		return ""
+	}
+	latest := attempts[len(attempts)-1]
+	if latest.Decision == "passed" {
+		return ""
+	}
+	summary := latest.Summary
+	if summary == "" {
+		summary = latest.Decision
+	}
+	failed := 0
+	for _, check := range latest.Checks {
+		if check.Status == "failed" {
+			failed++
+		}
+	}
+	line := "completion was refused by the runtime verifier (decision " + latest.Decision + ")"
+	if summary != "" {
+		line += ": " + summary
+	}
+	if failed > 0 {
+		line += fmt.Sprintf("; %d acceptance check(s) failed", failed)
+	}
+	return line
 }
 
 // uncertainAttempts returns deterministic human-readable lines for provider
