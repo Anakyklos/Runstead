@@ -118,19 +118,37 @@ Deliverables:
   output, process-tree termination and structured process evidence);
 - explicit acceptance checks (implemented in #11: the operator acceptance
   plan, typed checks, and the independent completion verifier; the
-  inspect/edit/test/fix loop remains #12);
+  inspect/edit/test/fix loop is #12);
 - completion verifier (implemented in #11: runtime-decided completion with a
   persisted verification report and a state-layer completion gate);
-- loop and repetition detection;
-- malformed-action correction policy;
-- failure classification and retry limits;
-- final evidence report.
+- loop and repetition detection (implemented in #7/#9: bounded steps,
+  corrections, repeats, provider attempts, time; #12 adds the consecutive
+  tool/process failure and repeated verification failure guards);
+- malformed-action correction policy (implemented in #5/#7);
+- failure classification and retry limits (implemented in #12: recoverable
+  recipe/verification/write failures continue the loop; terminal and
+  human-review conditions stop or pause with typed outcomes; no hidden retry
+  loop);
+- final evidence report (implemented in #11/#12: verified summary from the
+  acceptance checks, persisted verification report, process evidence,
+  write hashes and the real Git observation with change attribution rendered
+  by `runstead inspect`).
 
 Exit criteria:
 
-- a real repository task is completed through multiple tool cycles;
-- at least one test failure is diagnosed and corrected;
-- the model cannot mark the task complete when acceptance checks fail.
+- a real repository task is completed through multiple tool cycles
+  (implemented in #12: the deterministic scenario in
+  `fixtures/coding-loop/` runs the full inspect -> edit -> failing test ->
+  diagnose -> corrective edit -> passing rerun -> verifier -> completed
+  trajectory with a real `go test` recipe and real Git observation);
+- at least one test failure is diagnosed and corrected (implemented in #12);
+- the model cannot mark the task complete when acceptance checks fail
+  (implemented in #11/#12).
+
+The live ChatGPT Web scenario of #12 remains blocked by #29 (producer-side
+receipts) -> #30 (protected live activation) -> #4 (OmniRoute live provider);
+the deterministic offline core is implemented and the live gate fails closed
+(see [coding-loop.md](coding-loop.md)).
 
 ## Milestone 5 — OmniRoute-backed v0.1 hardening
 

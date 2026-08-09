@@ -227,6 +227,25 @@ automatic Git operation in this milestone.
 
 The model never executes a tool directly. It proposes an action. Runstead remains responsible for whether that action is valid, permitted, executed and proven.
 
+Issue #12 completes the inspect-edit-test-fix coding loop on top of these
+boundaries (see [`coding-loop.md`](coding-loop.md)): a recipe observation
+whose real exit code is non-zero is recoverable evidence returned to the next
+model turn with the recipe id, real exit status, signal, bounded output,
+truncation flags and evidence ID; a corrective write followed by a rerun is
+allowed because the workspace signature changed; a premature completion
+proposal is refused by the verifier and returns to execution; and two new
+loop guards stop unproductive repetition with typed outcomes
+(`consecutive_failures_exhausted`, `verification_failures_exhausted`), with
+counters that survive resume through the recovery seed. The verifier's
+`writes_reconciled` check reconciles the LATEST persisted write of every
+target path against the current filesystem and records earlier writes to the
+same path as superseded, so the multi-write corrective trajectory is provable
+without pretending intermediate states still exist. The deterministic sample
+repository (`fixtures/coding-loop/`) requires real inspection, two writes, a
+real failing test recipe, diagnosis from bounded process evidence, a
+corrective write, a passing rerun, real Git attribution and a passed
+verification before `completed`.
+
 ## Action protocol
 
 Runstead uses a protocol it controls instead of requiring provider-native or emulated tool calling to work perfectly.
