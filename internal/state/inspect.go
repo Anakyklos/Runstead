@@ -133,6 +133,10 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 	if err != nil {
 		return err
 	}
+	verificationAttempts, err := s.VerificationAttempts(ctx, taskID)
+	if err != nil {
+		return err
+	}
 	governor, err := s.loadInspectGovernor(ctx, taskID)
 	if err != nil {
 		return err
@@ -306,6 +310,29 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 			fmt.Fprintf(&builder, " truncated=stdout:%t/stderr:%t", item.StdoutTruncated, item.StderrTruncated)
 		}
 		fmt.Fprintf(&builder, " network_isolation=%s\n", item.NetworkIsolation)
+	}
+
+	builder.WriteString("\nVerification:\n")
+	if len(verificationAttempts) == 0 {
+		builder.WriteString("  (none)\n")
+	}
+	for _, attempt := range verificationAttempts {
+		fmt.Fprintf(&builder, "  %s decision=%s summary=%s\n", attempt.AttemptID, attempt.Decision, attempt.Summary)
+		for _, check := range attempt.Checks {
+			fmt.Fprintf(&builder, "    check=%s type=%s status=%s\n", check.CheckID, check.Type, check.Status)
+			if check.Expected != "" {
+				fmt.Fprintf(&builder, "      expected: %s\n", boundedRender(check.Expected))
+			}
+			if check.Observed != "" {
+				fmt.Fprintf(&builder, "      observed: %s\n", boundedRender(check.Observed))
+			}
+			if len(check.Evidence) > 0 {
+				fmt.Fprintf(&builder, "      evidence: %s\n", strings.Join(check.Evidence, ","))
+			}
+			if check.Reason != "" {
+				fmt.Fprintf(&builder, "      reason: %s\n", boundedRender(check.Reason))
+			}
+		}
 	}
 
 	builder.WriteString("\nGovernor state:\n")
@@ -678,4 +705,14 @@ func shortID(value string) string {
 		return value
 	}
 	return value[:16] + "..."
+}
+
+// boundedRender caps one verification description line for human rendering so
+// inspect output stays bounded even when a persisted description is long.
+func boundedRender(value string) string {
+	const maxInspectLine = 200
+	if len(value) <= maxInspectLine {
+		return value
+	}
+	return value[:maxInspectLine] + "...(truncated)"
 }

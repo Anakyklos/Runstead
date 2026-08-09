@@ -115,6 +115,7 @@ func TestCrashStoreHelper(t *testing.T) {
 			t.Fatalf("CompleteToolAttempt() error = %v", err)
 		}
 		mustProviderAttempt(t, store, "task-1", "task-1-0001", 1)
+		mustPassVerification(t, store, "task-1")
 		if err := store.FinalizeTask(ctx, TaskFinalize{TaskID: "task-1", Outcome: "completed", StopReason: "done"}); err != nil {
 			t.Fatalf("FinalizeTask() error = %v", err)
 		}
@@ -311,7 +312,8 @@ func TestCrashFullLifecycleWithoutCrashCommitsEverything(t *testing.T) {
 		t.Fatal("full lifecycle must persist attempts and evidence")
 	}
 	want := []string{"task_created", "task_started", "action_planned", "tool_attempt_prepared",
-		"tool_attempt_completed", "provider_attempt_prepared", "provider_attempt_completed", "task_finalized"}
+		"tool_attempt_completed", "provider_attempt_prepared", "provider_attempt_completed",
+		"verification_recorded", "task_finalized"}
 	if got := taskEventKinds(t, store, "task-1"); !equalKinds(got, want) {
 		t.Fatalf("journal = %v, want %v", got, want)
 	}

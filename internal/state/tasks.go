@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
 
@@ -105,6 +106,24 @@ func (s *Store) FinalizeTask(ctx context.Context, record TaskFinalize) error {
 		}
 		if pending > 0 {
 			return fmt.Errorf("finalize task %q as completed: %w (%d)", record.TaskID, ErrPendingApprovals, pending)
+		}
+		// Issue #11 completion gate: a task may only be persisted as
+		// 'completed' when the latest control-plane verification attempt
+		// decided 'passed'. This defends the invariant at the state layer, so
+		// no alternate code path can persist completed without a valid
+		// verification.
+		var verificationDecision string
+		err := tx.QueryRowContext(ctx,
+			`SELECT decision FROM verification_attempts WHERE task_id = ? ORDER BY sequence DESC LIMIT 1`,
+			record.TaskID).Scan(&verificationDecision)
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("finalize task %q as completed: %w", record.TaskID, ErrVerificationRequired)
+		}
+		if err != nil {
+			return fmt.Errorf("check verification before finalize: %w", err)
+		}
+		if verificationDecision != "passed" {
+			return fmt.Errorf("finalize task %q as completed: %w (decision %s)", record.TaskID, ErrVerificationNotPassed, verificationDecision)
 		}
 	}
 	result, err := tx.ExecContext(ctx,

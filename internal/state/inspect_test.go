@@ -39,7 +39,7 @@ func TestRenderInspectReconstructsCompletedTask(t *testing.T) {
 		"Objective: inspect the workspace",
 		"Status: completed",
 		"Outcome: completed",
-		"Stop reason: grounded final accepted",
+		"Stop reason: completion verified by the control plane",
 		"Workspace: /tmp/ws",
 		"Model: scripted",
 		"Configuration:",

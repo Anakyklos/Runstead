@@ -175,6 +175,7 @@ func TestTaskLifecycleProjectionAndJournal(t *testing.T) {
 	if status != "running" {
 		t.Fatalf("status after start = %q, want running", status)
 	}
+	mustPassVerification(t, store, "task-1")
 	if err := store.FinalizeTask(ctx, TaskFinalize{TaskID: "task-1", Outcome: "completed", StopReason: "done"}); err != nil {
 		t.Fatalf("FinalizeTask() error = %v", err)
 	}
@@ -183,7 +184,7 @@ func TestTaskLifecycleProjectionAndJournal(t *testing.T) {
 		t.Fatalf("status after finalize = %q, want completed", status)
 	}
 
-	want := []string{"task_created", "task_started", "task_finalized"}
+	want := []string{"task_created", "task_started", "verification_recorded", "task_finalized"}
 	if got := taskEventKinds(t, store, "task-1"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("journal kinds = %v, want %v", got, want)
 	}

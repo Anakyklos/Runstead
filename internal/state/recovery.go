@@ -330,6 +330,19 @@ type RecoverySnapshot struct {
 	ToolAttempts     []RecoveryToolAttempt
 	ProviderAttempts []RecoveryProviderAttempt
 	Evidence         []RecoveryEvidence
+	// AcceptancePlanSpec is the persisted operator acceptance plan spec JSON
+	// (empty when the task has no plan).
+	AcceptancePlanSpec string
+	// AcceptancePlanDigest is the persisted plan digest.
+	AcceptancePlanDigest string
+	// BaselineGitStatus / BaselineGitDiff are the bounded git observations
+	// captured at task start (issue #11), used by verification to attribute
+	// pre-existing vs during-task changes.
+	BaselineGitStatus string
+	BaselineGitDiff   string
+	// VerificationAttempts are the persisted verification attempts (issue
+	// #11), newest first.
+	VerificationAttempts []VerificationAttemptRow
 }
 
 // RecoveryTask is the durable task root used by the recovery pipeline.
@@ -431,6 +444,23 @@ func (s *Store) LoadRecoverySnapshot(ctx context.Context, taskID string) (*Recov
 	}
 	if snapshot.Evidence, err = s.loadRecoveryEvidence(ctx, taskID); err != nil {
 		return nil, err
+	}
+	if spec, digest, ok, err := s.AcceptancePlan(ctx, taskID); err != nil {
+		return nil, err
+	} else if ok {
+		snapshot.AcceptancePlanSpec = string(spec)
+		snapshot.AcceptancePlanDigest = digest
+	}
+	if gitStatus, gitDiff, ok, err := s.WorkspaceBaseline(ctx, taskID); err != nil {
+		return nil, err
+	} else if ok {
+		snapshot.BaselineGitStatus = gitStatus
+		snapshot.BaselineGitDiff = gitDiff
+	}
+	if attempts, err := s.VerificationAttempts(ctx, taskID); err != nil {
+		return nil, err
+	} else {
+		snapshot.VerificationAttempts = attempts
 	}
 	return snapshot, nil
 }
