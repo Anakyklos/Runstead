@@ -271,3 +271,23 @@ func TestCatalogRejectsUnknownFieldsAndDuplicateKeys(t *testing.T) {
 		t.Fatal("duplicate catalog key must be rejected")
 	}
 }
+
+func TestCatalogRejectsTrailingContent(t *testing.T) {
+	valid := `[{"id":"x","executable":"go","capabilities":["execute_repository_code"]}]`
+	cases := []string{
+		valid + ` {"ignored":true}`, // a second JSON value
+		valid + ` []`,               // a second JSON array
+		valid + ` trailing garbage`, // non-JSON trailing garbage
+		valid + ` 0`,                // trailing number
+		valid + `},`,                // trailing punctuation
+	}
+	for _, raw := range cases {
+		if _, err := recipe.ParseCatalog([]byte(raw)); err == nil {
+			t.Fatalf("catalog with trailing content %q must be rejected", raw)
+		}
+	}
+	// Whitespace after the array is fine.
+	if _, err := recipe.ParseCatalog([]byte(valid + "\n \t")); err != nil {
+		t.Fatalf("trailing whitespace must be accepted: %v", err)
+	}
+}

@@ -677,7 +677,7 @@ func (l *Loop) handleAction(
 			arguments = []byte("{}")
 		}
 		plan := l.registry.PlanWrite(*action)
-		processIntent, intentErr := l.buildProcessIntent(action)
+		processIntent, intentErr := l.buildProcessIntent(action, policyOutcome)
 		if intentErr != nil {
 			return stop(OutcomePersistenceFailure, fmt.Sprintf("%s: %v", OutcomePersistenceFailure.StopReason(), intentErr), nil), true
 		}
@@ -947,9 +947,13 @@ func policyMessage(tool string, outcome policy.Outcome, retriesRemaining int) (s
 }
 
 // buildProcessIntent renders the bounded, sanitized process intent for a
-// run_recipe attempt, persisted at TX 1. It is evidence of intent only. For
+// run_recipe attempt, persisted at TX 1. It is evidence of intent only and
+// carries the REAL control-plane policy decision (decision + reason) that
+// released the attempt, exactly as documented: TX 1 records what was
+// authorized, so a crash after TX 1 leaves an auditable intent that shows
+// both the attempted definition and the policy that allowed it. For
 // non-process tools it returns nil.
-func (l *Loop) buildProcessIntent(action *protocol.Action) ([]byte, error) {
+func (l *Loop) buildProcessIntent(action *protocol.Action, outcome policy.Outcome) ([]byte, error) {
 	if !l.registry.IsRecipeTool(action.Tool) {
 		return nil, nil
 	}
@@ -971,6 +975,8 @@ func (l *Loop) buildProcessIntent(action *protocol.Action) ([]byte, error) {
 		MaxStdoutBytes   int                 `json:"max_stdout_bytes"`
 		MaxStderrBytes   int                 `json:"max_stderr_bytes"`
 		Digest           string              `json:"digest"`
+		Decision         string              `json:"decision"`
+		Reason           string              `json:"reason"`
 	}{
 		RecipeID:         selected.ID,
 		Executable:       selected.Executable,
@@ -981,6 +987,8 @@ func (l *Loop) buildProcessIntent(action *protocol.Action) ([]byte, error) {
 		MaxStdoutBytes:   selected.OutputLimits.MaxStdoutBytes,
 		MaxStderrBytes:   selected.OutputLimits.MaxStderrBytes,
 		Digest:           selected.Digest(),
+		Decision:         string(outcome.Decision),
+		Reason:           outcome.Reason,
 	})
 	if err != nil {
 		return nil, err

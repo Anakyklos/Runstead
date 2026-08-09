@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -301,9 +302,10 @@ func NewCatalog(recipes []Recipe) (*Catalog, error) {
 }
 
 // ParseCatalog decodes a JSON array of recipes with a strict decoder and
-// validates it. Unknown fields and duplicate object keys are rejected, so a
-// typo can never silently change a recipe definition (consistent with the
-// main protocol parser).
+// validates it. Unknown fields, duplicate object keys and any trailing JSON
+// after the array are rejected, so a typo or a concatenated payload can never
+// silently change a recipe definition (consistent with the main protocol
+// parser).
 func ParseCatalog(data []byte) (*Catalog, error) {
 	if err := rejectDuplicateObjectKeys(data); err != nil {
 		return nil, fmt.Errorf("decode recipe catalog: %w", err)
@@ -313,6 +315,14 @@ func ParseCatalog(data []byte) (*Catalog, error) {
 	var recipes []Recipe
 	if err := decoder.Decode(&recipes); err != nil {
 		return nil, fmt.Errorf("decode recipe catalog: %w", err)
+	}
+	// Strict single-value decoding: the document must end at EOF. A second
+	// JSON value or trailing garbage is refused, never silently ignored.
+	if _, err := decoder.Token(); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("decode recipe catalog: trailing JSON value after the recipe array")
+		}
+		return nil, fmt.Errorf("decode recipe catalog: trailing content after the recipe array: %w", err)
 	}
 	return NewCatalog(recipes)
 }

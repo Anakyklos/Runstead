@@ -150,6 +150,16 @@ func TestRecipeLoopAllowedExecutesWithEvidence(t *testing.T) {
 	if evidence.NetworkIsolation != recipe.NetworkIsolationValue {
 		t.Fatalf("network isolation = %q", evidence.NetworkIsolation)
 	}
+	// The TX 1 process intent must carry the REAL policy decision (decision +
+	// reason) that released the attempt, matching the durable-execution
+	// contract in docs/process-runner.md (issue #26 re-review).
+	intent := mustPersistedProcessIntent(t, h.store, "task-recipe-ok")
+	if intent.RecipeID != "test" || intent.Digest == "" {
+		t.Fatalf("process intent = %+v, want recipe+digest", intent)
+	}
+	if intent.Decision != "allowed" || intent.Reason != "policy_allow" {
+		t.Fatalf("process intent policy decision = %+v, want allowed/policy_allow", intent)
+	}
 }
 
 func TestRecipeLoopDeniedNeverStarts(t *testing.T) {
@@ -310,6 +320,16 @@ func TestRecipeLoopApprovalNormalFlow(t *testing.T) {
 	}
 	if evidence.ActionID == "" || evidence.ExecutionID == "" || evidence.EvidenceID != "obs-000002" {
 		t.Fatalf("evidence ids must be annotated before TX 2: %+v", evidence)
+	}
+	// The TX 1 process intent records the SAME real decision, so a crash
+	// after TX 1 leaves an auditable intent that shows the operator released
+	// this exact definition (issue #26 re-review).
+	intent := mustPersistedProcessIntent(t, h.store, taskID)
+	if intent.Decision != "allowed" || intent.Reason != "approved_by_operator" {
+		t.Fatalf("process intent policy decision = %+v, want allowed/approved_by_operator", intent)
+	}
+	if intent.Digest == "" {
+		t.Fatal("process intent must carry the recipe definition digest")
 	}
 }
 
@@ -624,6 +644,64 @@ func mustPersistedRecipeEvidence(t *testing.T, store *state.Store, taskID, evide
 	}
 	t.Fatalf("evidence %s not persisted", evidenceID)
 	return recipe.Evidence{}
+}
+
+// mustPersistedProcessIntent reads the TX 1 process intent of a run_recipe
+// attempt from the recovery snapshot.
+func mustPersistedProcessIntent(t *testing.T, store *state.Store, taskID string) struct {
+	RecipeID         string   `json:"recipe_id"`
+	Executable       string   `json:"executable"`
+	Argv             []string `json:"argv"`
+	Capabilities     []string `json:"capabilities"`
+	Digest           string   `json:"digest"`
+	Decision         string   `json:"decision"`
+	Reason           string   `json:"reason"`
+	TimeoutNanos     int64    `json:"timeout_nanos"`
+	MaxStdoutBytes   int      `json:"max_stdout_bytes"`
+	MaxStderrBytes   int      `json:"max_stderr_bytes"`
+	WorkingDirectory string   `json:"working_directory"`
+} {
+	t.Helper()
+	snapshot, err := store.LoadRecoverySnapshot(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("LoadRecoverySnapshot() error = %v", err)
+	}
+	for _, attempt := range snapshot.ToolAttempts {
+		if attempt.Tool != "run_recipe" || attempt.ProcessIntentJSON == "" {
+			continue
+		}
+		var intent struct {
+			RecipeID         string   `json:"recipe_id"`
+			Executable       string   `json:"executable"`
+			Argv             []string `json:"argv"`
+			Capabilities     []string `json:"capabilities"`
+			Digest           string   `json:"digest"`
+			Decision         string   `json:"decision"`
+			Reason           string   `json:"reason"`
+			TimeoutNanos     int64    `json:"timeout_nanos"`
+			MaxStdoutBytes   int      `json:"max_stdout_bytes"`
+			MaxStderrBytes   int      `json:"max_stderr_bytes"`
+			WorkingDirectory string   `json:"working_directory"`
+		}
+		if err := json.Unmarshal([]byte(attempt.ProcessIntentJSON), &intent); err != nil {
+			t.Fatalf("decode process intent: %v", err)
+		}
+		return intent
+	}
+	t.Fatalf("no run_recipe process intent persisted for %s", taskID)
+	return struct {
+		RecipeID         string   `json:"recipe_id"`
+		Executable       string   `json:"executable"`
+		Argv             []string `json:"argv"`
+		Capabilities     []string `json:"capabilities"`
+		Digest           string   `json:"digest"`
+		Decision         string   `json:"decision"`
+		Reason           string   `json:"reason"`
+		TimeoutNanos     int64    `json:"timeout_nanos"`
+		MaxStdoutBytes   int      `json:"max_stdout_bytes"`
+		MaxStderrBytes   int      `json:"max_stderr_bytes"`
+		WorkingDirectory string   `json:"working_directory"`
+	}{}
 }
 
 func mustHaveRecipeDecision(t *testing.T, store *state.Store, taskID, actionID, decision string) bool {
