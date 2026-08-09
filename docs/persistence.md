@@ -349,8 +349,9 @@ implemented:
   `actions.recipe_fingerprint` migration 0007 for the digest-bound recipe
   approval identity, and `config_json.recipe_catalog_digest` for the durable
   catalog digest that resume compares against the re-supplied catalog), and
-  the verification schema (migration 0008: `acceptance_plans`,
-  `workspace_baselines`, `verification_attempts`, `verification_checks`).
+  the verification schema (migrations 0008-0009: `acceptance_plans`,
+  `workspace_baselines` with its git truncation flags,
+  `verification_attempts`, `verification_checks`).
 
 The schema keeps a compatible seam for those milestones (for example
 `provider_attempt_receipts` is one-to-many and `recovery_class` is stored on

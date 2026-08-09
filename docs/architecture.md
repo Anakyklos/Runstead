@@ -210,7 +210,9 @@ process evidence consumed by the #11 verifier (see
 [`verification.md`](verification.md)). A `status="complete"` final is only a
 proposal: the independent verifier (`internal/verifier`) observes persisted
 evidence, the real filesystem, real git state and the operator acceptance
-plan, and the state layer refuses `completed` without a passed verification
+plan, rejects cited evidence whose declared tool does not match the persisted
+row, refuses completion `blocked` when no acceptance plan exists (fail
+closed), and the state layer refuses `completed` without a passed verification
 attempt. The loop enforces bounded steps, corrections, repeated
 actions, elapsed task time and provider attempts, and every terminal exit maps
 to a typed outcome with a stable exit code (see
