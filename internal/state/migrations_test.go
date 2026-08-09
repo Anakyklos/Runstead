@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io/fs"
@@ -316,5 +317,90 @@ func TestMigrationsUpgradeEmbeddedV1ToCurrent(t *testing.T) {
 	// Re-running on the upgraded database is a no-op.
 	if err := migrate(db); err != nil {
 		t.Fatalf("re-migrate after upgrade error = %v", err)
+	}
+}
+
+// TestMigrationsUpgradeEmbeddedV8ToCurrentWithBaselineData proves the real
+// embedded migration set upgrades a version-8 database (the previous release
+// of the verification schema, issue #11) to the current version: an existing
+// workspace_baselines row survives, the truncation columns are added with the
+// default 0, and the store API round-trips the new flags (migration 0009,
+// issue #11 review).
+func TestMigrationsUpgradeEmbeddedV8ToCurrentWithBaselineData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "upgrade.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open error = %v", err)
+	}
+	// Build a version-8 database from the real embedded migrations 1..8.
+	entries := make(map[int]string)
+	for version := 1; version <= 8; version++ {
+		name := fmt.Sprintf("migrations/%04d_*.sql", version)
+		matches, matchErr := fs.Glob(migrationFS, name)
+		if matchErr != nil || len(matches) != 1 {
+			t.Fatalf("embedded migration %04d not found: %v", version, matchErr)
+		}
+		sqlText, readErr := fs.ReadFile(migrationFS, matches[0])
+		if readErr != nil {
+			t.Fatalf("read embedded migration %d: %v", version, readErr)
+		}
+		entries[version] = string(sqlText)
+	}
+	v8 := testMigrations(t, entries)
+	if err := migrateFS(db, v8); err != nil {
+		t.Fatalf("migrate to v8 error = %v", err)
+	}
+	version, err := schemaVersion(db)
+	if err != nil || version != 8 {
+		t.Fatalf("schema version after v8 = %d (err %v), want 8", version, err)
+	}
+	// Seed a task and a v8-shape workspace_baselines row (no truncation flags).
+	if _, err := db.Exec(`INSERT INTO tasks (task_id, objective, status, workspace, created_at, started_at)
+		VALUES ('task-v8', 'inspect', 'running', '/ws', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed v8 task: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO workspace_baselines (task_id, git_status_json, git_diff_json, created_at)
+		VALUES ('task-v8', ' M pre-existing.txt', 'diff', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed v8 baseline: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close v8 db: %v", err)
+	}
+
+	// state.Open runs the full embedded migration set: 8 -> 9.
+	store, err := Open(Options{Path: path})
+	if err != nil {
+		t.Fatalf("state.Open() upgrade error = %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	status, diff, statusTruncated, diffTruncated, ok, err := store.WorkspaceBaseline(ctx, "task-v8")
+	if err != nil || !ok {
+		t.Fatalf("WorkspaceBaseline() = ok %v, err %v", ok, err)
+	}
+	if status != " M pre-existing.txt" || diff != "diff" {
+		t.Fatalf("v8 baseline data lost after upgrade: %q/%q", status, diff)
+	}
+	if statusTruncated || diffTruncated {
+		t.Fatalf("upgraded baseline flags = %t/%t, want false/false (default 0)", statusTruncated, diffTruncated)
+	}
+	// The store API round-trips the new flags on the upgraded database.
+	if err := store.SaveWorkspaceBaseline(ctx, "task-v8", status, diff, true, false); err != nil {
+		t.Fatalf("SaveWorkspaceBaseline() on upgraded db error = %v", err)
+	}
+	_, _, statusTruncated, diffTruncated, ok, err = store.WorkspaceBaseline(ctx, "task-v8")
+	if err != nil || !ok || !statusTruncated || diffTruncated {
+		t.Fatalf("flag round trip = ok %v, %t/%t, err %v; want true/false", ok, statusTruncated, diffTruncated, err)
+	}
+	snapshot, err := store.LoadRecoverySnapshot(ctx, "task-v8")
+	if err != nil {
+		t.Fatalf("LoadRecoverySnapshot() error = %v", err)
+	}
+	if !snapshot.BaselineGitStatusTruncated || snapshot.BaselineGitDiffTruncated {
+		t.Fatalf("snapshot baseline flags = %t/%t, want true/false", snapshot.BaselineGitStatusTruncated, snapshot.BaselineGitDiffTruncated)
+	}
+	current, err := schemaVersion(store.db)
+	if err != nil || current != supportedSchemaVersion() {
+		t.Fatalf("schema version after upgrade = %d (err %v), want %d", current, err, supportedSchemaVersion())
 	}
 }
