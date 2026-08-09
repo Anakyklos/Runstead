@@ -583,11 +583,6 @@ func (r *Registry) AnnotateWriteEvidence(observation *Observation, actionID, exe
 	observation.Data = evidence
 }
 
-// IsWriteTool reports whether the tool is a policy-gated write tool.
-func (r *Registry) IsWriteTool(tool string) bool {
-	return tool == ToolWriteFile || tool == ToolApplyPatch
-}
-
 // writeCrashPoint is the deterministic test seam at write-effect boundaries.
 // Production code leaves it nil; subprocess crash tests install it to die
 // between TX 1 and the effect ("write_before_effect") or between the effect

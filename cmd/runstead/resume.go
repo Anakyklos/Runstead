@@ -15,6 +15,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/policy"
 	"github.com/RenyEnnos/Runstead/internal/provider"
+	"github.com/RenyEnnos/Runstead/internal/recipe"
 	"github.com/RenyEnnos/Runstead/internal/recovery"
 	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
@@ -50,6 +51,8 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	minStartInterval := ""
 	intervalSet := false
 	writePolicy := ""
+	recipesFile := ""
+	recipePolicy := ""
 	// Parse manually so flags may appear before or after the task id (the flag
 	// package stops at the first positional argument).
 	for index := 0; index < len(args); index++ {
@@ -95,6 +98,22 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			}
 		case strings.HasPrefix(arg, "--write-policy="):
 			writePolicy = strings.TrimPrefix(arg, "--write-policy=")
+		case arg == "--recipes":
+			if next, ok := value("--recipes"); ok {
+				recipesFile = next
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--recipes="):
+			recipesFile = strings.TrimPrefix(arg, "--recipes=")
+		case arg == "--recipe-policy":
+			if next, ok := value("--recipe-policy"); ok {
+				recipePolicy = next
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--recipe-policy="):
+			recipePolicy = strings.TrimPrefix(arg, "--recipe-policy=")
 		case arg == "--min-start-interval":
 			if next, ok := value("--min-start-interval"); ok {
 				minStartInterval = next
@@ -228,6 +247,34 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintf(errOut, "resume: %v\n", err)
 		return exitUsage
 	}
+	// The effective recipe policy is part of the authoritative task
+	// configuration, exactly like the write policy: resume uses the persisted
+	// recipe policy by default, and a divergent --recipe-policy override is
+	// rejected fail-closed before any recovery or execution side effect. The
+	// recipe catalog must be re-supplied at resume time (like --scripted) and
+	// must match the effective catalog the task started with; a missing or
+	// drifted catalog is rejected below before any recovery or execution side
+	// effect.
+	resumeRecipes, err := resolveRecipeCatalog(recipesFile, recipesFile != "")
+	if err != nil {
+		fmt.Fprintf(errOut, "resume: %v\n", err)
+		return exitUsage
+	}
+	// The recipe catalog is part of the authoritative task configuration: the
+	// task started under one effective catalog, its digest was persisted with
+	// the task, and resume rejects any drift fail-closed. A different catalog
+	// (changed executable/argv/capabilities/env/timeout, added or removed
+	// recipes) can never silently continue a task under a different recipe
+	// set (issue #26 review).
+	if err := resolveResumeRecipeCatalog(preload.Task.ConfigJSON, resumeRecipes); err != nil {
+		fmt.Fprintf(errOut, "resume: %v\n", err)
+		return exitUsage
+	}
+	resumeRecipePolicy, err := resolveResumeRecipePolicy(preload.Task.ConfigJSON, recipePolicy, recipePolicy != "", resumeRecipes)
+	if err != nil {
+		fmt.Fprintf(errOut, "resume: %v\n", err)
+		return exitUsage
+	}
 	// The provider input is supplied again at resume time: the original remote
 	// conversation is disposable metadata, never an authority over task state.
 	scriptedPath, scriptedSet := resolveScriptedFlag(scripted)
@@ -286,6 +333,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	}
 	registry, err := tools.NewRegistry(tools.Options{
 		Workspace:            workspacePath,
+		Recipes:              resumeRecipes,
 		NextEvidenceSequence: plan.NextEvidenceSequence,
 	})
 	if err != nil {
@@ -297,16 +345,20 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintf(errOut, "resume: invalid persisted configuration: %v\n", err)
 		return exitCorrupt
 	}
+	policyConfig := resumePolicy
+	policyConfig.RecipeModes = resumeRecipePolicy.RecipeModes
 	loop, err := agent.NewLoop(agent.Config{
-		Runner:      executor,
-		Registry:    registry,
-		Limits:      limits,
-		Model:       plan.Task.Model,
-		Trace:       traceSink,
-		State:       store,
-		Policy:      policy.NewStatic(resumePolicy, storeApprovals(store)),
-		WritePolicy: resumePolicy.Spec(),
-		Recovery:    plan.Seed,
+		Runner:              executor,
+		Registry:            registry,
+		Limits:              limits,
+		Model:               plan.Task.Model,
+		Trace:               traceSink,
+		State:               store,
+		Policy:              policy.NewStatic(policyConfig, storeApprovals(store)),
+		WritePolicy:         resumePolicy.Spec(),
+		RecipePolicy:        resumeRecipePolicy.RecipeSpec(recipeIDs(resumeRecipes)),
+		RecipeCatalogDigest: resumeRecipes.Digest(),
+		Recovery:            plan.Seed,
 	})
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: loop unavailable: %v\n", err)
@@ -450,6 +502,105 @@ func resolveResumeWritePolicy(configJSON, flagValue string, flagSet bool) (polic
 	return persisted, nil
 }
 
+// recipeCatalogDigestFromConfig reads the digest of the effective recipe
+// catalog persisted with the task configuration snapshot. Empty when the task
+// started without a recipe catalog.
+func recipeCatalogDigestFromConfig(configJSON string) string {
+	if strings.TrimSpace(configJSON) == "" || strings.TrimSpace(configJSON) == "{}" {
+		return ""
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal([]byte(configJSON), &snapshot); err != nil {
+		return ""
+	}
+	raw, ok := snapshot["recipe_catalog_digest"]
+	if !ok {
+		return ""
+	}
+	value, _ := raw.(string)
+	return strings.TrimSpace(value)
+}
+
+// resolveResumeRecipeCatalog rejects recipe catalog drift between run and
+// resume fail-closed (issue #26 review). The catalog the task started with is
+// part of the authoritative task configuration: resume requires the same
+// effective catalog (its digest is compared, so any change to a recipe
+// definition, an added recipe or a removed recipe is drift), and a task that
+// started without a catalog cannot silently gain one at resume.
+func resolveResumeRecipeCatalog(configJSON string, catalog *recipe.Catalog) error {
+	persisted := recipeCatalogDigestFromConfig(configJSON)
+	if persisted == "" {
+		if catalog != nil {
+			return errors.New("the task has no persisted recipe catalog; supplying one at resume is a policy change and is rejected")
+		}
+		return nil
+	}
+	if catalog == nil {
+		return errors.New("the task started with a recipe catalog; resume requires the same catalog (--recipes)")
+	}
+	if catalog.Digest() != persisted {
+		return errors.New("recipe catalog drift: the re-supplied catalog differs from the effective catalog the task started with; resume requires the exact same catalog")
+	}
+	return nil
+}
+
+// recipePolicyFromConfig reconstructs the effective recipe policy persisted
+// with the task configuration snapshot. A legacy task without a persisted
+// recipe_policy falls back to an empty recipe policy (every recipe defaults
+// to approval_required), never to a permissive gap.
+func recipePolicyFromConfig(configJSON string) (policy.Config, error) {
+	if strings.TrimSpace(configJSON) == "" || strings.TrimSpace(configJSON) == "{}" {
+		return policy.Config{Modes: map[string]policy.Mode{}, RecipeModes: map[string]policy.Mode{}}, nil
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal([]byte(configJSON), &snapshot); err != nil {
+		return policy.Config{}, fmt.Errorf("decode persisted configuration snapshot: %w", err)
+	}
+	raw, ok := snapshot["recipe_policy"]
+	if !ok {
+		return policy.Config{Modes: map[string]policy.Mode{}, RecipeModes: map[string]policy.Mode{}}, nil
+	}
+	spec, ok := raw.(string)
+	if !ok || strings.TrimSpace(spec) == "" {
+		return policy.Config{Modes: map[string]policy.Mode{}, RecipeModes: map[string]policy.Mode{}}, nil
+	}
+	config, err := policy.ParseRecipePolicy(spec)
+	if err != nil {
+		return policy.Config{}, fmt.Errorf("invalid persisted recipe policy: %w", err)
+	}
+	return config, nil
+}
+
+// resolveResumeRecipePolicy reconstructs the effective recipe policy of a
+// resumed task. The policy persisted with the task configuration is
+// authoritative: resume uses it by default, and a --recipe-policy override
+// that diverges from the persisted policy is rejected fail-closed. The
+// override must also reference recipes that exist in the re-supplied catalog.
+func resolveResumeRecipePolicy(configJSON, flagValue string, flagSet bool, catalog *recipe.Catalog) (policy.Config, error) {
+	persisted, err := recipePolicyFromConfig(configJSON)
+	if err != nil {
+		return policy.Config{}, err
+	}
+	if flagSet {
+		requested, err := policy.ParseRecipePolicy(strings.TrimSpace(flagValue))
+		if err != nil {
+			return policy.Config{}, err
+		}
+		for id := range requested.RecipeModes {
+			if catalog == nil {
+				return policy.Config{}, fmt.Errorf("--recipe-policy configures %q but no recipes are configured", id)
+			}
+			if _, ok := catalog.Get(id); !ok {
+				return policy.Config{}, fmt.Errorf("--recipe-policy configures unknown recipe %q", id)
+			}
+		}
+		if !policy.RecipeEqual(requested, persisted, recipeIDs(catalog)) {
+			return policy.Config{}, fmt.Errorf("--recipe-policy diverges from the task's persisted recipe policy %q; resume always continues under the policy the task started with", persisted.RecipeSpec(recipeIDs(catalog)))
+		}
+	}
+	return persisted, nil
+}
+
 // limitsFromConfig reconstructs the loop limits from the persisted sanitized
 // configuration snapshot (the same snapshot `run` writes). Unknown or missing
 // fields fall back to the loop defaults.
@@ -523,6 +674,8 @@ func printResumeHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --state-dir PATH          durable state directory (RUNSTEAD_STATE_DIR)")
 	fmt.Fprintln(out, "  --log-level LEVEL         debug, info, warn or error (RUNSTEAD_LOG_LEVEL, default info)")
 	fmt.Fprintln(out, "  --write-policy SPEC       write tool modes, e.g. write_file=allow (RUNSTEAD_WRITE_POLICY, default approval_required)")
+	fmt.Fprintln(out, "  --recipes FILE            operator-controlled recipe catalog (RUNSTEAD_RECIPES); re-supplied at resume")
+	fmt.Fprintln(out, "  --recipe-policy SPEC      recipe modes, e.g. test=allow (RUNSTEAD_RECIPE_POLICY; must match the persisted policy)")
 	fmt.Fprintln(out, "  --min-start-interval DURATION  account governor pacing override (RUNSTEAD_MIN_START_INTERVAL)")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Exit codes: 0 resumed and finished, 1 task not found, 2 usage, 3 state database unavailable,")

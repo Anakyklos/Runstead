@@ -231,3 +231,46 @@ func TestResumeNotStartedWriteDoesNotSeedRepeatGuard(t *testing.T) {
 		t.Fatalf("repeat guard seed = %v, want empty for a not-started write", plan.Seed.Guard)
 	}
 }
+
+// TestResumeCrashedProcessAttemptRequiresHumanReview proves issue #26's
+// crash/uncertain behavior: a prepared run_recipe attempt (recovery class 4)
+// left by a crash is never blindly re-executed; automatic continuation stops
+// with human_review_required.
+func TestResumeCrashedProcessAttemptRequiresHumanReview(t *testing.T) {
+	workspace := t.TempDir()
+	store := openStore(t)
+	taskID := "task-process-crash"
+	mustTaskInWorkspace(t, store, taskID, workspace)
+	actionID, err := store.RecordAction(context.Background(), state.ActionRecord{
+		TaskID: taskID, Tool: "run_recipe", Arguments: []byte(`{"recipe":"test"}`), Fingerprint: "fp-recipe",
+	})
+	if err != nil {
+		t.Fatalf("RecordAction() error = %v", err)
+	}
+	executionID, err := store.PrepareToolAttempt(context.Background(), state.ToolAttemptPrepared{
+		TaskID: taskID, ActionID: actionID, Tool: "run_recipe",
+		Arguments:     []byte(`{"recipe":"test"}`),
+		RecoveryClass: 4,
+		ProcessIntent: []byte(`{"recipe_id":"test","executable":"go","argv":["test","./..."],"capabilities":["execute_repository_code"]}`),
+	})
+	if err != nil {
+		t.Fatalf("PrepareToolAttempt() error = %v", err)
+	}
+
+	// The process may have started and produced unknown effects: resume must
+	// stop with human_review_required and never re-run the recipe.
+	plan, err := recovery.Resume(context.Background(), store, recovery.Options{TaskID: taskID})
+	if err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	if plan.Decision != recovery.DecisionHumanReview {
+		t.Fatalf("decision = %s, want human_review_required", plan.Decision)
+	}
+	attempt := attemptByExecution(t, store, taskID, executionID)
+	if attempt.Status != "human_review_required" || attempt.RecoveryReason != "unreconcilable_effect" {
+		t.Fatalf("attempt = status %q reason %q, want human_review_required/unreconcilable_effect", attempt.Status, attempt.RecoveryReason)
+	}
+	if plan.Seed != nil {
+		t.Fatal("no seed may be produced for a human-review decision")
+	}
+}

@@ -27,10 +27,10 @@ func (s *Store) RecordAction(ctx context.Context, record ActionRecord) (string, 
 		return "", fmt.Errorf("allocate action sequence: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO actions (action_id, task_id, action_sequence, tool, arguments_json, fingerprint, workspace_signature, status, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 'planned', ?)`,
+		`INSERT INTO actions (action_id, task_id, action_sequence, tool, arguments_json, fingerprint, recipe_fingerprint, workspace_signature, status, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?)`,
 		actionID, record.TaskID, sequence, Redact(record.Tool),
-		string(RedactJSON(record.Arguments)), Redact(record.Fingerprint), Redact(record.WorkspaceSignature), createdAt); err != nil {
+		string(RedactJSON(record.Arguments)), Redact(record.Fingerprint), Redact(record.RecipeFingerprint), Redact(record.WorkspaceSignature), createdAt); err != nil {
 		return "", fmt.Errorf("insert action: %w", err)
 	}
 	if err := appendEvent(ctx, tx, record.TaskID, "action_planned", map[string]any{

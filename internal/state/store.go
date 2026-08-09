@@ -272,6 +272,9 @@ type Persistence interface {
 	// RecordWritePolicyDecision persists one typed control-plane decision for
 	// a write proposal (issue #10) with its journal event.
 	RecordWritePolicyDecision(ctx context.Context, record WritePolicyDecision) error
+	// RecordRecipePolicyDecision persists one typed control-plane decision for
+	// a run_recipe proposal (issue #26) with its journal event.
+	RecordRecipePolicyDecision(ctx context.Context, record RecipePolicyDecision) error
 	// MarkTaskApprovalRequired records a control-plane pause: the task stays
 	// resumable (status running) with the pending action and a
 	// task_approval_required event; no terminal finalize happens.
@@ -318,6 +321,12 @@ type ActionRecord struct {
 	Arguments []byte
 	// Fingerprint is repeat/loop evidence only.
 	Fingerprint string
+	// RecipeFingerprint is the digest-bound approval identity of a run_recipe
+	// proposal (issue #26 review): it binds the recipe id to the effective
+	// definition digest, so an operator approval for one definition can never
+	// authorize a different definition of the same id. Empty for non-recipe
+	// actions, which use Fingerprint for approval identity.
+	RecipeFingerprint string
 	// WorkspaceSignature is the workspace state marker recorded when the
 	// action was accepted. It is repeat/loop evidence only (issue #9): resume
 	// seeds the repeat guard with it so an identical proposal is rejected only
@@ -343,6 +352,12 @@ type ToolAttemptPrepared struct {
 	// to reconciled completed evidence only when the current filesystem state
 	// matches EffectAfterHash. Empty for read-only attempts.
 	PlannedEffect tools.PlannedEffect
+	// ProcessIntent is the bounded, sanitized process intent of a run_recipe
+	// attempt (issue #26): resolved recipe, argv, capabilities and the
+	// control-plane policy decision. It is evidence of intent only; a
+	// prepared process attempt left by a crash is recovery class 4 and is
+	// never blindly re-run. Empty for non-process attempts.
+	ProcessIntent []byte
 }
 
 // ToolAttemptCompleted is the TX 2 result of one concrete tool execution.

@@ -19,6 +19,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/policy"
 	"github.com/RenyEnnos/Runstead/internal/provider"
+	"github.com/RenyEnnos/Runstead/internal/recipe"
 	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
 	"github.com/RenyEnnos/Runstead/internal/trace"
@@ -87,12 +88,16 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	omniSafeRoute := false
 	stateDir := ""
 	writePolicy := ""
+	recipesFile := ""
+	recipePolicy := ""
 	flags.StringVar(&workspace, "workspace", "", "workspace path (default: RUNSTEAD_WORKSPACE or .)")
 	flags.StringVar(&logLevel, "log-level", "", "log level: debug, info, warn or error")
 	flags.StringVar(&task, "task", "", "task prompt (RUNSTEAD_TASK)")
 	flags.StringVar(&scripted, "scripted", "", "JSONL file of scripted model responses for a deterministic offline run (RUNSTEAD_SCRIPTED_RESPONSES)")
 	flags.StringVar(&stateDir, "state-dir", "", "durable state directory (RUNSTEAD_STATE_DIR; default: $XDG_DATA_HOME/runstead or ~/.local/share/runstead)")
 	flags.StringVar(&writePolicy, "write-policy", "", "write tool policy modes, e.g. write_file=allow,apply_patch=approval_required (RUNSTEAD_WRITE_POLICY; default: approval_required for every write tool)")
+	flags.StringVar(&recipesFile, "recipes", "", "operator-controlled recipe catalog file (RUNSTEAD_RECIPES): JSON array of recipes; run_recipe fails closed without it")
+	flags.StringVar(&recipePolicy, "recipe-policy", "", "recipe policy modes, e.g. test=allow,vet=approval_required (RUNSTEAD_RECIPE_POLICY; default: approval_required for every recipe)")
 	flags.IntVar(&maxSteps, "max-steps", 0, "maximum model turns (RUNSTEAD_MAX_STEPS, default 24)")
 	flags.IntVar(&maxCorrections, "max-corrections", 0, "protocol correction attempts (RUNSTEAD_MAX_CORRECTIONS, default 2)")
 	flags.IntVar(&maxRepeatedActions, "max-repeated-actions", 0, "repeated-action corrections before stopping (RUNSTEAD_MAX_REPEATED_ACTIONS, default 2)")
@@ -254,7 +259,16 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "run: executor unavailable: %v\n", err)
 		return exitUnavailable
 	}
-	registry, err := tools.NewRegistry(tools.Options{Workspace: cfg.Workspace})
+	// The recipe catalog is operator-controlled control-plane input: it is
+	// read once at startup and is never derived from workspace content. The
+	// effective recipe policy defaults to approval_required for every recipe
+	// and is persisted with the task configuration.
+	recipes, err := resolveRecipeCatalog(recipesFile, flagWasSet(flags, "recipes"))
+	if err != nil {
+		fmt.Fprintf(errOut, "run: %v\n", err)
+		return exitUsage
+	}
+	registry, err := tools.NewRegistry(tools.Options{Workspace: cfg.Workspace, Recipes: recipes})
 	if err != nil {
 		fmt.Fprintf(errOut, "run: workspace unavailable: %v\n", err)
 		return exitUnavailable
@@ -264,15 +278,24 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "run: %v\n", err)
 		return exitUsage
 	}
+	recipePolicyConfig, err := resolveRecipePolicy(recipePolicy, flagWasSet(flags, "recipe-policy"), recipes)
+	if err != nil {
+		fmt.Fprintf(errOut, "run: %v\n", err)
+		return exitUsage
+	}
+	policyConfig := writePolicyConfig
+	policyConfig.RecipeModes = recipePolicyConfig.RecipeModes
 	loop, err := agent.NewLoop(agent.Config{
-		Runner:      executor,
-		Registry:    registry,
-		Limits:      limits,
-		Model:       model,
-		Trace:       cliTraceSink(errOut),
-		State:       store,
-		Policy:      policy.NewStatic(writePolicyConfig, storeApprovals(store)),
-		WritePolicy: writePolicyConfig.Spec(),
+		Runner:              executor,
+		Registry:            registry,
+		Limits:              limits,
+		Model:               model,
+		Trace:               cliTraceSink(errOut),
+		State:               store,
+		Policy:              policy.NewStatic(policyConfig, storeApprovals(store)),
+		WritePolicy:         writePolicyConfig.Spec(),
+		RecipePolicy:        recipePolicyConfig.RecipeSpec(recipeIDs(recipes)),
+		RecipeCatalogDigest: recipes.Digest(),
 	})
 	if err != nil {
 		fmt.Fprintf(errOut, "run: loop unavailable: %v\n", err)
@@ -339,6 +362,74 @@ func resolveWritePolicy(flagValue string, flagSet bool) (policy.Config, error) {
 		return policy.DefaultConfig(), nil
 	}
 	return policy.ParseConfig(value)
+}
+
+// resolveRecipeCatalog loads the operator-controlled recipe catalog from the
+// --recipes flag, then RUNSTEAD_RECIPES. A nil catalog (no flag and no env)
+// makes run_recipe fail closed; an explicit but unreadable catalog is an
+// error.
+func resolveRecipeCatalog(flagValue string, flagSet bool) (*recipe.Catalog, error) {
+	value := ""
+	if flagSet {
+		value = strings.TrimSpace(flagValue)
+		if value == "" {
+			return nil, errors.New("recipes file must not be empty")
+		}
+	} else if envValue, ok := os.LookupEnv(config.EnvRecipes); ok {
+		value = strings.TrimSpace(envValue)
+	}
+	if value == "" {
+		return nil, nil
+	}
+	catalog, err := recipe.LoadCatalog(value)
+	if err != nil {
+		return nil, err
+	}
+	return catalog, nil
+}
+
+// resolveRecipePolicy resolves the recipe policy modes from the
+// --recipe-policy flag, then RUNSTEAD_RECIPE_POLICY, then the fail-closed
+// default (approval_required for every recipe in the catalog). Modes for
+// recipes that are not in the configured catalog are rejected: a policy for
+// an unavailable recipe is meaningless and a typo must never silently
+// reconfigure the effective policy.
+func resolveRecipePolicy(flagValue string, flagSet bool, catalog *recipe.Catalog) (policy.Config, error) {
+	value := ""
+	if flagSet {
+		value = strings.TrimSpace(flagValue)
+		if value == "" {
+			return policy.Config{}, errors.New("recipe policy must not be empty")
+		}
+	} else if envValue, ok := os.LookupEnv(config.EnvRecipePolicy); ok {
+		value = strings.TrimSpace(envValue)
+	}
+	config := policy.Config{Modes: map[string]policy.Mode{}, RecipeModes: map[string]policy.Mode{}}
+	if value == "" {
+		return config, nil
+	}
+	parsed, err := policy.ParseRecipePolicy(value)
+	if err != nil {
+		return policy.Config{}, err
+	}
+	for id := range parsed.RecipeModes {
+		if catalog == nil {
+			return policy.Config{}, fmt.Errorf("recipe policy configures %q but no recipes are configured", id)
+		}
+		if _, ok := catalog.Get(id); !ok {
+			return policy.Config{}, fmt.Errorf("recipe policy configures unknown recipe %q", id)
+		}
+	}
+	config.RecipeModes = parsed.RecipeModes
+	return config, nil
+}
+
+// recipeIDs returns the sorted recipe ids of the catalog (empty for nil).
+func recipeIDs(catalog *recipe.Catalog) []string {
+	if catalog == nil {
+		return nil
+	}
+	return catalog.IDs()
 }
 
 func resolveLimits(flags *flag.FlagSet, maxSteps, maxCorrections, maxRepeatedActions int, timeBudget string, providerBudget int) (agent.Limits, error) {
@@ -499,6 +590,9 @@ func cliTraceSink(errOut io.Writer) agent.TraceSink {
 		}
 		if line.Classification != "" {
 			fmt.Fprintf(&builder, " classification=%s", line.Classification)
+		}
+		if line.ExitCode != 0 {
+			fmt.Fprintf(&builder, " exit=%d", line.ExitCode)
 		}
 		if line.Duration > 0 {
 			fmt.Fprintf(&builder, " duration=%s", line.Duration)
@@ -694,7 +788,7 @@ func decideCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		}
 	}
 	if !found {
-		fmt.Fprintf(errOut, "decide: action %q of task %q is not pending approval; only write actions awaiting an operator decision can be decided\n", actionID, taskID)
+		fmt.Fprintf(errOut, "decide: action %q of task %q is not pending approval; only write and recipe actions awaiting an operator decision can be decided\n", actionID, taskID)
 		return exitUsage
 	}
 	approvalID, err := store.RecordApproval(ctx, state.Approval{
@@ -781,10 +875,10 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage: runstead <command> [flags]")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Commands:")
-	fmt.Fprintln(out, "  run       run a bounded agent task with durable state and policy-bound writes")
+	fmt.Fprintln(out, "  run       run a bounded agent task with durable state, policy-bound writes and recipes")
 	fmt.Fprintln(out, "  inspect   inspect durable task state by task id")
 	fmt.Fprintln(out, "  resume    resume an interrupted task from durable state")
-	fmt.Fprintln(out, "  decide    approve or reject a pending write action (operator control plane)")
+	fmt.Fprintln(out, "  decide    approve or reject a pending write/recipe action (operator control plane)")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Configuration precedence: flags > environment > defaults")
 	fmt.Fprintf(out, "  %s, %s, %s, %s\n", config.EnvWorkspace, config.EnvLogLevel, config.EnvTask, config.EnvStateDir)
@@ -797,16 +891,20 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Runs one bounded agent task: every model turn is admitted by the")
 	fmt.Fprintln(out, "account governor, actions are validated and executed by the tool")
-	fmt.Fprintln(out, "registry (read-only tools plus policy-gated write_file/apply_patch),")
-	fmt.Fprintln(out, "and a final answer is accepted only when grounded in real evidence")
-	fmt.Fprintln(out, "IDs produced in this run. Writes are stale-state protected, stay inside")
-	fmt.Fprintln(out, "the workspace, and never execute without control-plane approval when the")
-	fmt.Fprintln(out, "policy requires it. When a write needs approval the run PAUSES with the")
-	fmt.Fprintln(out, "typed approval_required outcome, reports the task and pending action for")
+	fmt.Fprintln(out, "registry (read-only tools plus policy-gated write_file/apply_patch and")
+	fmt.Fprintln(out, "operator-declared process recipes), and a final answer is accepted only")
+	fmt.Fprintln(out, "when grounded in real evidence IDs produced in this run. Writes are")
+	fmt.Fprintln(out, "stale-state protected, stay inside the workspace, and never execute")
+	fmt.Fprintln(out, "without control-plane approval when the policy requires it. Process")
+	fmt.Fprintln(out, "recipes (--recipes FILE) run their fixed operator-declared argv with an")
+	fmt.Fprintln(out, "allowlisted environment, bounded output and full process-tree")
+	fmt.Fprintln(out, "termination; the model never supplies commands or argv. When a")
+	fmt.Fprintln(out, "policy-gated effect needs approval the run PAUSES with the typed")
+	fmt.Fprintln(out, "approval_required outcome, reports the task and pending action for")
 	fmt.Fprintln(out, "'runstead decide <task-id> <action-id> approved|rejected', and stays")
 	fmt.Fprintln(out, "durably resumable; no correction budget is consumed. The task never")
-	fmt.Fprintln(out, "shells out; durable task, action, attempt, evidence, journal, write-policy")
-	fmt.Fprintln(out, "and account-protection state is persisted to SQLite (issues #8/#10) and")
+	fmt.Fprintln(out, "shells out; durable task, action, attempt, evidence, journal, policy and")
+	fmt.Fprintln(out, "account-protection state is persisted to SQLite (issues #8/#10/#26) and")
 	fmt.Fprintln(out, "can be inspected with 'runstead inspect <task-id>'.")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "The deterministic offline mode replays scripted model responses (JSONL with")
@@ -820,6 +918,8 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --workspace PATH          workspace path (RUNSTEAD_WORKSPACE, default .)")
 	fmt.Fprintln(out, "  --state-dir PATH          durable state directory (RUNSTEAD_STATE_DIR, default $XDG_DATA_HOME/runstead or ~/.local/share/runstead)")
 	fmt.Fprintln(out, "  --write-policy SPEC       write tool modes, e.g. write_file=allow,apply_patch=deny (RUNSTEAD_WRITE_POLICY, default approval_required)")
+	fmt.Fprintln(out, "  --recipes FILE            operator-controlled recipe catalog (RUNSTEAD_RECIPES); run_recipe fails closed without it")
+	fmt.Fprintln(out, "  --recipe-policy SPEC      recipe modes, e.g. test=allow,vet=deny (RUNSTEAD_RECIPE_POLICY, default approval_required)")
 	fmt.Fprintln(out, "  --log-level LEVEL         debug, info, warn or error (RUNSTEAD_LOG_LEVEL, default info)")
 	fmt.Fprintln(out, "  --max-steps N             maximum model turns (default 24)")
 	fmt.Fprintln(out, "  --max-corrections N       protocol correction attempts (default 2)")

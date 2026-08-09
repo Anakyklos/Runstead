@@ -345,10 +345,13 @@ type RecoveryTask struct {
 
 // RecoveryAction is one logical action with its repeat/loop evidence.
 type RecoveryAction struct {
-	ActionID           string
-	Tool               string
-	ArgumentsJSON      string
-	Fingerprint        string
+	ActionID      string
+	Tool          string
+	ArgumentsJSON string
+	Fingerprint   string
+	// RecipeFingerprint is the digest-bound approval identity of a run_recipe
+	// action (issue #26 review); empty for non-recipe actions.
+	RecipeFingerprint  string
 	Status             string
 	WorkspaceSignature string
 }
@@ -372,6 +375,10 @@ type RecoveryToolAttempt struct {
 	// only; recovery promotes it to reconciled completed evidence only when
 	// the current filesystem state matches EffectAfterHash.
 	PlannedEffectJSON string
+	// ProcessIntentJSON is the bounded process intent persisted at TX 1 for
+	// run_recipe attempts (empty otherwise): resolved recipe, argv,
+	// capabilities and policy decision. Intent evidence only.
+	ProcessIntentJSON string
 }
 
 // RecoveryProviderAttempt is one concrete governed provider execution.
@@ -445,7 +452,7 @@ func (s *Store) loadRecoveryTask(ctx context.Context, taskID string) (RecoveryTa
 
 func (s *Store) loadRecoveryActions(ctx context.Context, taskID string) ([]RecoveryAction, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT action_id, tool, arguments_json, fingerprint, status, workspace_signature
+		`SELECT action_id, tool, arguments_json, fingerprint, recipe_fingerprint, status, workspace_signature
 		 FROM actions WHERE task_id = ? ORDER BY action_sequence`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load recovery actions: %w", err)
@@ -454,7 +461,7 @@ func (s *Store) loadRecoveryActions(ctx context.Context, taskID string) ([]Recov
 	var actions []RecoveryAction
 	for rows.Next() {
 		var action RecoveryAction
-		if err := rows.Scan(&action.ActionID, &action.Tool, &action.ArgumentsJSON, &action.Fingerprint, &action.Status, &action.WorkspaceSignature); err != nil {
+		if err := rows.Scan(&action.ActionID, &action.Tool, &action.ArgumentsJSON, &action.Fingerprint, &action.RecipeFingerprint, &action.Status, &action.WorkspaceSignature); err != nil {
 			return nil, fmt.Errorf("scan recovery action: %w", err)
 		}
 		actions = append(actions, action)
@@ -464,7 +471,7 @@ func (s *Store) loadRecoveryActions(ctx context.Context, taskID string) ([]Recov
 
 func (s *Store) loadRecoveryToolAttempts(ctx context.Context, taskID string) ([]RecoveryToolAttempt, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT execution_id, action_id, tool, arguments_json, status, classification, recovery_class, evidence_id, recovery_reason, effect_after_hash, planned_diff_json
+		`SELECT execution_id, action_id, tool, arguments_json, status, classification, recovery_class, evidence_id, recovery_reason, effect_after_hash, planned_diff_json, process_intent_json
 		 FROM tool_attempts WHERE task_id = ? ORDER BY created_at, execution_id`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load recovery tool attempts: %w", err)
@@ -475,7 +482,7 @@ func (s *Store) loadRecoveryToolAttempts(ctx context.Context, taskID string) ([]
 		var attempt RecoveryToolAttempt
 		if err := rows.Scan(&attempt.ExecutionID, &attempt.ActionID, &attempt.Tool, &attempt.ArgumentsJSON,
 			&attempt.Status, &attempt.Classification, &attempt.RecoveryClass, &attempt.EvidenceID, &attempt.RecoveryReason,
-			&attempt.EffectAfterHash, &attempt.PlannedEffectJSON); err != nil {
+			&attempt.EffectAfterHash, &attempt.PlannedEffectJSON, &attempt.ProcessIntentJSON); err != nil {
 			return nil, fmt.Errorf("scan recovery tool attempt: %w", err)
 		}
 		attempts = append(attempts, attempt)

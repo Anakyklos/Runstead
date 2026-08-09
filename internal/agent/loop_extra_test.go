@@ -467,16 +467,19 @@ func TestSystemContractIsDeterministicAndDescribesRegisteredTools(t *testing.T) 
 	if first != second {
 		t.Fatal("system contract is not deterministic")
 	}
-	for _, tool := range []string{"read_file", "list_files", "search_text", "git_status", "git_diff", "write_file", "apply_patch"} {
+	for _, tool := range []string{"read_file", "list_files", "search_text", "git_status", "git_diff", "write_file", "apply_patch", "run_recipe"} {
 		if !strings.Contains(first, tool) {
 			t.Errorf("system contract missing tool %q", tool)
 		}
 	}
-	if !strings.Contains(first, "[read-only]") || !strings.Contains(first, "[policy-gated write]") {
-		t.Fatal("system contract must distinguish read-only and policy-gated write tools")
+	if !strings.Contains(first, "[read-only]") || !strings.Contains(first, "[policy-gated effect]") {
+		t.Fatal("system contract must distinguish read-only and policy-gated effect tools")
 	}
 	if !strings.Contains(first, "expected_before_hash") {
 		t.Fatal("system contract missing the stale-state precondition rule")
+	}
+	if !strings.Contains(first, "No recipes are configured") {
+		t.Fatal("system contract must state that no recipes are configured")
 	}
 	if !strings.Contains(first, "runstead.protocol.v1") {
 		t.Fatal("system contract missing protocol version")

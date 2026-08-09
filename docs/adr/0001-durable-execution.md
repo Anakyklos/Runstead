@@ -289,7 +289,7 @@ Example classification:
 | Git commit (future) | 2 | Local mutation with deterministic reconciliation via `git log`/`git status`/reflog. If the commit exists, never create a duplicate; if it does not, a new commit is a new attempt. |
 | Git push (future) | 4 | Remote state is not locally determinable and push has no idempotency contract. A retry may duplicate or surprise the remote. Reconcile from remote evidence or require human review. |
 | Generic HTTP effect (future) | 3 or 4 | Class 3 only when the receiver's idempotency contract is explicit and tested; otherwise class 4. |
-| Generic shell/process effect (future) | 4 unless proven otherwise | Arbitrary effects cannot be reconciled generically. A separately reviewed policy boundary is required before any such tool exists. |
+| `run_recipe` (#26, operator-declared recipes) | 4 | Process effects are not generically reconcilable: a prepared process attempt left by a crash stops automatic continuation with `human_review_required`, never blindly re-run. The separately reviewed policy boundary (recipe catalog + capability policy) is #26. Generic shell remains out of scope. |
 
 ## 6. Uncertain outcomes
 
@@ -426,7 +426,8 @@ decided by this ADR:
 - a fast-vs-durable write API;
 - `runstead inspect` and `runstead resume` behavior;
 - write tools and approval UX were decided by #10 (see `docs/writes.md`);
-  process runner and arbitrary shell remain deferred to #26;
+  the bounded process runner and recipe capability policy were decided by #26
+  (see `docs/process-runner.md`); arbitrary shell remains out of scope;
 - #38 headers, retry policy and delivery-state persistence;
 - #29/#30 producer contract and live activation;
 - any claim of exactly-once execution.

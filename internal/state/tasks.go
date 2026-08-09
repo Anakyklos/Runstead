@@ -99,7 +99,7 @@ func (s *Store) FinalizeTask(ctx context.Context, record TaskFinalize) error {
 			 WHERE d.task_id = ? AND d.decision = 'approval_required'
 			   AND NOT EXISTS (
 			       SELECT 1 FROM approvals ap
-			       WHERE ap.task_id = d.task_id AND ap.fingerprint = a.fingerprint
+			       WHERE ap.task_id = d.task_id AND ap.fingerprint = `+effectiveFingerprintExpr+`
 			   )`, record.TaskID).Scan(&pending); err != nil {
 			return fmt.Errorf("check pending approvals before finalize: %w", err)
 		}

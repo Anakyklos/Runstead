@@ -101,26 +101,36 @@ runstead resume --help
 ```
 
 `run` executes one bounded task with the issue #7 agent loop, the policy-gated
-write tools from issue #10 and durable SQLite state (issue #8). When a write
-requires operator approval the run pauses with the typed `approval_required`
-outcome (a control-plane dependency, not a protocol correction): no correction
-budget is consumed, no further provider attempt is made, and the task stays
-durably resumable. `inspect <task-id>` renders the persisted task, attempts,
-journal, write-policy decisions, pending approvals, approvals and governor
+write tools from issue #10, the policy-gated process recipes from issue #26 and
+durable SQLite state (issue #8). When a policy-gated effect requires operator
+approval the run pauses with the typed `approval_required` outcome (a
+control-plane dependency, not a protocol correction): no correction budget is
+consumed, no further provider attempt is made, and the task stays durably
+resumable. `inspect <task-id>` renders the persisted task, attempts, journal,
+policy decisions, pending approvals, approvals, process evidence and governor
 state after the run process exits (see [`persistence.md`](persistence.md)).
-`resume` reconciles interrupted attempts from durable state (issue #9,
-extended by #10 for writes) and continues under the task's persisted write
-policy; a divergent `--write-policy` override is rejected fail-closed.
+`resume` reconciles interrupted attempts from durable state (issues #9/#10/#26)
+and continues under the task's persisted write and recipe policies; divergent
+`--write-policy` / `--recipe-policy` overrides are rejected fail-closed, and a
+re-supplied recipe catalog that drifts from the effective catalog the task
+started with is rejected before any recovery side effect (the catalog digest
+is persisted with the task).
 `decide <task-id> <action-id> approved|rejected` is the operator control plane
-that records write approvals for actions actually pending approval; model
-output can never approve a write.
+that records approvals for actions actually pending approval (writes and
+recipes); model output can never approve an effect.
 
 Write-tool policy is configured with `--write-policy tool=mode,...` (or
 `RUNSTEAD_WRITE_POLICY`); the default is `approval_required` for every write
 tool. The effective policy is persisted with the task configuration and is
-authoritative across restart. See [`writes.md`](writes.md) for the full
-safe-writes contract, including approval pause semantics and the effect-boundary
-TOCTOU revalidation (which is not a compare-and-swap).
+authoritative across restart. Process recipes are configured with
+`--recipes FILE` (or `RUNSTEAD_RECIPES`) and gated by `--recipe-policy
+recipe=mode,...` (or `RUNSTEAD_RECIPE_POLICY`); the default is
+`approval_required` for every recipe, and the effective recipe policy is
+persisted and authoritative across restart exactly like the write policy. See
+[`writes.md`](writes.md) for the safe-writes contract and
+[`process-runner.md`](process-runner.md) for the process-runner contract,
+including the honest native limitations (no kernel sandbox, network isolation
+unenforced).
 
 Configuration precedence is deterministic: command-line flags, then
 environment, then conservative defaults. Workspace/logging use
@@ -174,10 +184,17 @@ Implemented package responsibilities are deliberately narrow:
 - `internal/tools`: the issue #6 registry with workspace boundary, typed
   observations, deterministic truncation and evidence identifiers, plus the
   issue #10 policy-gated `write_file`/`apply_patch` effects with stale-state
-  protection and structured write evidence;
-- `internal/policy`: the issue #10 control-plane write-policy seam (allow,
-  deny, approval_required) with operator-approval lookup; model output is
-  never an input to a decision;
+  protection and structured write evidence, and the issue #26 policy-gated
+  `run_recipe` effect;
+- `internal/recipe`: the issue #26 operator-controlled recipe model and
+  process runner: catalog parsing/validation, capability declarations,
+  environment allowlist with credential denylist, bounded per-stream output
+  capture, process-group execution with full-tree termination on
+  timeout/cancellation, and structured process evidence;
+- `internal/policy`: the control-plane policy seam (allow, deny,
+  approval_required) shared by write tools (#10) and process recipes (#26),
+  with operator-approval lookup; model output is never an input to a
+  decision;
 - `internal/state`: SQLite persistence for tasks, actions, attempts, evidence,
   journal, write-policy decisions, approvals and governor protection;
 - `internal/recovery`: the issue #9 resume/reconciliation pipeline, extended

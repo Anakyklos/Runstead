@@ -129,6 +129,10 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 	if err != nil {
 		return err
 	}
+	processEvidence, err := s.loadInspectProcessEvidence(ctx, taskID)
+	if err != nil {
+		return err
+	}
 	governor, err := s.loadInspectGovernor(ctx, taskID)
 	if err != nil {
 		return err
@@ -254,12 +258,12 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 			receipt.ReceiptAttemptID, receipt.ExecutionID, receipt.Sequence, receipt.Outcome, receipt.Trigger, receipt.UpstreamReached)
 	}
 
-	builder.WriteString("\nWrite policy decisions:\n")
+	builder.WriteString("\nPolicy decisions:\n")
 	if len(writeDecisions) == 0 {
 		builder.WriteString("  (none)\n")
 	}
 	for _, decision := range writeDecisions {
-		fmt.Fprintf(&builder, "  %s %s decision=%s reason=%s\n", decision.CreatedAt, decision.ActionID, decision.Decision, decision.Reason)
+		fmt.Fprintf(&builder, "  %s %s tool=%s decision=%s reason=%s\n", decision.CreatedAt, decision.ActionID, decision.Tool, decision.Decision, decision.Reason)
 	}
 
 	builder.WriteString("\nApprovals:\n")
@@ -278,6 +282,30 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 			fmt.Fprintf(&builder, "  action=%s tool=%s awaiting operator decision\n", item.ActionID, item.Tool)
 		}
 		builder.WriteString("  decide with: runstead decide <task-id> <action-id> approved|rejected\n")
+	}
+
+	builder.WriteString("\nProcess attempts:\n")
+	if len(processEvidence) == 0 {
+		builder.WriteString("  (none)\n")
+	}
+	for _, item := range processEvidence {
+		fmt.Fprintf(&builder, "  %s execution=%s recipe=%s exit=%d", item.CreatedAt, item.ExecutionID, item.RecipeID, item.ExitCode)
+		if item.Signal != "" {
+			fmt.Fprintf(&builder, " signal=%s", item.Signal)
+		}
+		if item.DurationNanos > 0 {
+			fmt.Fprintf(&builder, " duration=%dns", item.DurationNanos)
+		}
+		if item.TimedOut {
+			builder.WriteString(" timed_out=yes")
+		}
+		if item.Canceled {
+			builder.WriteString(" canceled=yes")
+		}
+		if item.StdoutTruncated || item.StderrTruncated {
+			fmt.Fprintf(&builder, " truncated=stdout:%t/stderr:%t", item.StdoutTruncated, item.StderrTruncated)
+		}
+		fmt.Fprintf(&builder, " network_isolation=%s\n", item.NetworkIsolation)
 	}
 
 	builder.WriteString("\nGovernor state:\n")
@@ -411,6 +439,7 @@ func (s *Store) loadInspectReceipts(ctx context.Context, taskID string) ([]inspe
 
 type inspectWritePolicyDecision struct {
 	ActionID  string
+	Tool      string
 	Decision  string
 	Reason    string
 	CreatedAt string
@@ -424,9 +453,79 @@ type inspectApproval struct {
 	CreatedAt string
 }
 
+// inspectProcessEvidence is the bounded render of one run_recipe attempt's
+// persisted evidence.
+type inspectProcessEvidence struct {
+	ExecutionID      string
+	RecipeID         string
+	ExitCode         int
+	Signal           string
+	DurationNanos    int64
+	TimedOut         bool
+	Canceled         bool
+	StdoutTruncated  bool
+	StderrTruncated  bool
+	NetworkIsolation string
+	CreatedAt        string
+}
+
+// loadInspectProcessEvidence loads the citable process evidence of one task:
+// tool_results rows for completed run_recipe attempts, joined with their
+// execution id. Output content is never rendered; only the bounded summary
+// fields.
+func (s *Store) loadInspectProcessEvidence(ctx context.Context, taskID string) ([]inspectProcessEvidence, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT r.execution_id, r.data_json, r.created_at
+		 FROM tool_results r JOIN tool_attempts t ON t.execution_id = r.execution_id
+		 WHERE r.task_id = ? AND t.tool = 'run_recipe'
+		 ORDER BY r.created_at, r.evidence_id`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("load process evidence: %w", err)
+	}
+	defer rows.Close()
+	var items []inspectProcessEvidence
+	for rows.Next() {
+		var item inspectProcessEvidence
+		var dataJSON, createdAt string
+		if err := rows.Scan(&item.ExecutionID, &dataJSON, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan process evidence: %w", err)
+		}
+		var evidence struct {
+			RecipeID         string `json:"recipe_id"`
+			ExitCode         int    `json:"exit_code"`
+			Signal           string `json:"signal"`
+			DurationNanos    int64  `json:"duration_nanos"`
+			TimedOut         bool   `json:"timed_out"`
+			Canceled         bool   `json:"canceled"`
+			StdoutTruncated  bool   `json:"stdout_truncated"`
+			StderrTruncated  bool   `json:"stderr_truncated"`
+			NetworkIsolation string `json:"network_isolation"`
+		}
+		if err := json.Unmarshal([]byte(dataJSON), &evidence); err != nil {
+			// An undecodable evidence row still renders as an attempt with
+			// unknown details rather than failing the whole inspection.
+			item.CreatedAt = createdAt
+			items = append(items, item)
+			continue
+		}
+		item.RecipeID = evidence.RecipeID
+		item.ExitCode = evidence.ExitCode
+		item.Signal = evidence.Signal
+		item.DurationNanos = evidence.DurationNanos
+		item.TimedOut = evidence.TimedOut
+		item.Canceled = evidence.Canceled
+		item.StdoutTruncated = evidence.StdoutTruncated
+		item.StderrTruncated = evidence.StderrTruncated
+		item.NetworkIsolation = evidence.NetworkIsolation
+		item.CreatedAt = createdAt
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) loadInspectWritePolicyDecisions(ctx context.Context, taskID string) ([]inspectWritePolicyDecision, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT action_id, decision, reason, created_at FROM write_policy_decisions WHERE task_id = ? ORDER BY id`, taskID)
+		`SELECT action_id, tool, decision, reason, created_at FROM write_policy_decisions WHERE task_id = ? ORDER BY id`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load write policy decisions: %w", err)
 	}
@@ -434,7 +533,7 @@ func (s *Store) loadInspectWritePolicyDecisions(ctx context.Context, taskID stri
 	var decisions []inspectWritePolicyDecision
 	for rows.Next() {
 		var decision inspectWritePolicyDecision
-		if err := rows.Scan(&decision.ActionID, &decision.Decision, &decision.Reason, &decision.CreatedAt); err != nil {
+		if err := rows.Scan(&decision.ActionID, &decision.Tool, &decision.Decision, &decision.Reason, &decision.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan write policy decision: %w", err)
 		}
 		decisions = append(decisions, decision)

@@ -77,5 +77,13 @@ func (r *Registry) Describe() []ToolSpec {
 			},
 			ReadOnly: false,
 		},
+		{
+			Name:    ToolRunRecipe,
+			Summary: "Run one operator-declared recipe (test, build, vet, ...) inside the workspace. The model selects a recipe ID from the catalog; it never supplies a command, argv or shell string.",
+			Arguments: []ArgumentSpec{
+				{Name: "recipe", Type: "string", Required: true, Note: "recipe id from the configured operator catalog"},
+			},
+			ReadOnly: false,
+		},
 	}
 }

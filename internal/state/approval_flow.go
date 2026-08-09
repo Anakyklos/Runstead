@@ -15,6 +15,13 @@ import (
 // actions and approvals. `runstead decide` records the operator decision;
 // `runstead resume` then continues the same task under the persisted policy.
 
+// effectiveFingerprintExpr is the approval identity of one action row:
+// run_recipe actions are bound to their digest-bound recipe fingerprint
+// (issue #26 review), every other action uses the plain repeat/loop
+// fingerprint. Approval rows are keyed by this identity, so an approval for
+// one recipe definition never matches a different definition of the same id.
+const effectiveFingerprintExpr = `CASE WHEN a.tool = 'run_recipe' AND a.recipe_fingerprint != '' THEN a.recipe_fingerprint ELSE a.fingerprint END`
+
 // ErrPendingApprovals is returned by FinalizeTask when a task would be
 // finalized as completed while one or more mandatory writes are still awaiting
 // an operator approval. The state machine refuses the transition: the task
@@ -70,9 +77,12 @@ func (s *Store) MarkTaskApprovalRequired(ctx context.Context, taskID, actionID, 
 
 // PendingApprovals returns the write actions of one task that are still
 // awaiting an operator decision: they have a persisted approval_required
-// policy decision and their fingerprint has no approvals row yet (neither
-// approved nor rejected). Deterministic order follows the decision insert
-// order (oldest first).
+// policy decision and their effective fingerprint has no approvals row yet
+// (neither approved nor rejected). The effective fingerprint is the
+// digest-bound recipe fingerprint for run_recipe actions and the plain
+// fingerprint otherwise, so a pending recipe approval is bound to the recipe
+// definition that was actually proposed. Deterministic order follows the
+// decision insert order (oldest first).
 func (s *Store) PendingApprovals(ctx context.Context, taskID string) ([]PendingApproval, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.action_id, a.tool, a.fingerprint
@@ -81,7 +91,7 @@ func (s *Store) PendingApprovals(ctx context.Context, taskID string) ([]PendingA
 		 WHERE d.task_id = ? AND d.decision = 'approval_required'
 		   AND NOT EXISTS (
 		       SELECT 1 FROM approvals ap
-		       WHERE ap.task_id = d.task_id AND ap.fingerprint = a.fingerprint
+		       WHERE ap.task_id = d.task_id AND ap.fingerprint = `+effectiveFingerprintExpr+`
 		   )
 		 ORDER BY d.id`, taskID)
 	if err != nil {

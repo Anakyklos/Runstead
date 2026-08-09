@@ -3,6 +3,7 @@ package policy_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/RenyEnnos/Runstead/internal/policy"
@@ -155,5 +156,104 @@ func TestDefaultConfigIsApprovalRequiredForAllWriteTools(t *testing.T) {
 		if config.Modes[tool] != policy.ModeApprovalRequired {
 			t.Fatalf("default mode for %s = %q, want approval_required", tool, config.Modes[tool])
 		}
+	}
+}
+
+func recipeRequest(recipeID, fingerprint string) policy.Request {
+	return policy.Request{TaskID: "task-1", ActionID: "action-000001", Tool: "run_recipe", Fingerprint: fingerprint, Recipe: recipeID, Workspace: "/ws"}
+}
+
+func recipePolicyConfig(modes map[string]policy.Mode) policy.Config {
+	return policy.Config{Modes: map[string]policy.Mode{}, RecipeModes: modes}
+}
+
+func TestPolicyRecipeAllowExecutes(t *testing.T) {
+	static := policy.NewStatic(recipePolicyConfig(map[string]policy.Mode{"test": policy.ModeAllow}), nil)
+	outcome := static.Evaluate(context.Background(), recipeRequest("test", "fp"))
+	if outcome.Decision != policy.Allowed {
+		t.Fatalf("decision = %q, want allowed", outcome.Decision)
+	}
+}
+
+func TestPolicyRecipeDenyNeverStarts(t *testing.T) {
+	static := policy.NewStatic(recipePolicyConfig(map[string]policy.Mode{"test": policy.ModeDeny}), nil)
+	outcome := static.Evaluate(context.Background(), recipeRequest("test", "fp"))
+	if outcome.Decision != policy.Denied {
+		t.Fatalf("decision = %q, want denied", outcome.Decision)
+	}
+}
+
+func TestPolicyRecipeDefaultIsApprovalRequired(t *testing.T) {
+	// A recipe with no configured mode defaults to approval_required.
+	static := policy.NewStatic(recipePolicyConfig(map[string]policy.Mode{}), nil)
+	outcome := static.Evaluate(context.Background(), recipeRequest("test", "fp"))
+	if outcome.Decision != policy.ApprovalRequired {
+		t.Fatalf("decision = %q, want approval_required (default)", outcome.Decision)
+	}
+}
+
+func TestPolicyRecipeApprovalRequiredNeedsOperatorApproval(t *testing.T) {
+	static := policy.NewStatic(recipePolicyConfig(map[string]policy.Mode{"test": policy.ModeApprovalRequired}), &fakeApprovals{decisions: map[string]string{}})
+	outcome := static.Evaluate(context.Background(), recipeRequest("test", "fp-test"))
+	if outcome.Decision != policy.ApprovalRequired {
+		t.Fatalf("decision = %q, want approval_required", outcome.Decision)
+	}
+	// A persisted operator approval unlocks the recipe.
+	approved := policy.NewStatic(recipePolicyConfig(map[string]policy.Mode{"test": policy.ModeApprovalRequired}), &fakeApprovals{decisions: map[string]string{"fp-test": "approved"}})
+	outcome = approved.Evaluate(context.Background(), recipeRequest("test", "fp-test"))
+	if outcome.Decision != policy.Allowed {
+		t.Fatalf("decision = %q, want allowed after operator approval", outcome.Decision)
+	}
+}
+
+func TestPolicyRecipeRejectionPersists(t *testing.T) {
+	static := policy.NewStatic(recipePolicyConfig(map[string]policy.Mode{"test": policy.ModeApprovalRequired}), &fakeApprovals{decisions: map[string]string{"fp-test": "rejected"}})
+	outcome := static.Evaluate(context.Background(), recipeRequest("test", "fp-test"))
+	if outcome.Decision != policy.Denied || outcome.Reason != "rejected_by_operator" {
+		t.Fatalf("decision/reason = %q/%q, want denied/rejected_by_operator", outcome.Decision, outcome.Reason)
+	}
+}
+
+func TestPolicyRecipeModelContentCannotInfluence(t *testing.T) {
+	// The request carries no model content; the fake approvals only grants a
+	// persisted operator decision.
+	static := policy.NewStatic(recipePolicyConfig(map[string]policy.Mode{"test": policy.ModeApprovalRequired}), &fakeApprovals{decisions: map[string]string{}})
+	outcome := static.Evaluate(context.Background(), recipeRequest("test", "fp"))
+	if outcome.Decision == policy.Allowed {
+		t.Fatal("model content must never unlock a recipe")
+	}
+}
+
+func TestParseRecipePolicyAndRoundTrip(t *testing.T) {
+	config, err := policy.ParseRecipePolicy("test=allow,vet=deny")
+	if err != nil {
+		t.Fatalf("ParseRecipePolicy() error = %v", err)
+	}
+	if config.RecipeModes["test"] != policy.ModeAllow || config.RecipeModes["vet"] != policy.ModeDeny {
+		t.Fatalf("parsed modes = %+v", config.RecipeModes)
+	}
+	// Unknown modes and empty values are rejected.
+	if _, err := policy.ParseRecipePolicy("test=bogus"); err == nil {
+		t.Fatal("bogus mode must be rejected")
+	}
+	if _, err := policy.ParseRecipePolicy(""); err == nil {
+		t.Fatal("empty value must be rejected")
+	}
+	if _, err := policy.ParseRecipePolicy("test"); err == nil {
+		t.Fatal("missing =MODE must be rejected")
+	}
+	// RecipeSpec renders the full effective policy including defaults.
+	spec := config.RecipeSpec([]string{"test", "vet", "lint"})
+	if !strings.Contains(spec, "test=allow") || !strings.Contains(spec, "vet=deny") || !strings.Contains(spec, "lint=approval_required") {
+		t.Fatalf("spec = %q", spec)
+	}
+	// RecipeEqual treats missing modes as approval_required.
+	other := policy.Config{RecipeModes: map[string]policy.Mode{"test": policy.ModeAllow, "vet": policy.ModeDeny, "lint": policy.ModeApprovalRequired}}
+	if !policy.RecipeEqual(config, other, []string{"test", "vet", "lint"}) {
+		t.Fatal("identical effective recipe policies must be equal")
+	}
+	widened := policy.Config{RecipeModes: map[string]policy.Mode{"test": policy.ModeAllow, "vet": policy.ModeAllow, "lint": policy.ModeApprovalRequired}}
+	if policy.RecipeEqual(config, widened, []string{"test", "vet", "lint"}) {
+		t.Fatal("a widened recipe policy must not compare equal")
 	}
 }

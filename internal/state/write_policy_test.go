@@ -478,3 +478,96 @@ func TestFinalizeTaskRefusesCompletedWithPendingApproval(t *testing.T) {
 		t.Fatalf("FinalizeTask() after approval error = %v", err)
 	}
 }
+
+// TestRecipeApprovalBoundToRecipeFingerprint proves the approval identity of a
+// run_recipe action is the digest-bound recipe fingerprint, never the plain
+// repeat fingerprint: an approval for one effective recipe definition can
+// never authorize a different definition of the same id (issue #26 review).
+func TestRecipeApprovalBoundToRecipeFingerprint(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	mustTask(t, store, "task-recipe-fp")
+
+	actionID, err := store.RecordAction(ctx, ActionRecord{
+		TaskID: "task-recipe-fp", Tool: "run_recipe", Arguments: []byte(`{"recipe":"test"}`),
+		Fingerprint: "fp-repeat", RecipeFingerprint: "fp-recipe-digest-v1",
+	})
+	if err != nil {
+		t.Fatalf("RecordAction() error = %v", err)
+	}
+	if _, err := store.RecordApproval(ctx, Approval{
+		TaskID: "task-recipe-fp", ActionID: actionID, Decision: "approved", Reason: "ok", Actor: "operator",
+	}); err != nil {
+		t.Fatalf("RecordApproval() error = %v", err)
+	}
+	// The approval is keyed by the recipe fingerprint...
+	approval, ok, err := store.Approval(ctx, "task-recipe-fp", "fp-recipe-digest-v1")
+	if err != nil || !ok {
+		t.Fatalf("Approval(recipe fp) = ok %v, err %v", ok, err)
+	}
+	if approval.Decision != "approved" {
+		t.Fatalf("decision = %q, want approved", approval.Decision)
+	}
+	// ...NOT by the plain repeat fingerprint...
+	if _, ok, err := store.Approval(ctx, "task-recipe-fp", "fp-repeat"); err != nil || ok {
+		t.Fatalf("Approval(plain fp) = ok %v, err %v (must not match)", ok, err)
+	}
+	// ...and a different recipe definition (different digest) has no approval.
+	if _, ok, err := store.Approval(ctx, "task-recipe-fp", "fp-recipe-digest-v2"); err != nil || ok {
+		t.Fatalf("Approval(different digest) = ok %v, err %v (must not match)", ok, err)
+	}
+}
+
+// TestPendingRecipeApprovalUsesRecipeFingerprint proves a pending run_recipe
+// approval is derived from the digest-bound recipe fingerprint stored with the
+// action: RecordApproval resolves the action's recipe_fingerprint (never the
+// plain repeat fingerprint), the approval resolves the pending decision, and
+// the task can then complete.
+func TestPendingRecipeApprovalUsesRecipeFingerprint(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	mustTask(t, store, "task-recipe-pending")
+
+	actionID, err := store.RecordAction(ctx, ActionRecord{
+		TaskID: "task-recipe-pending", Tool: "run_recipe", Arguments: []byte(`{"recipe":"test"}`),
+		Fingerprint: "fp-repeat", RecipeFingerprint: "fp-recipe-digest-v1",
+	})
+	if err != nil {
+		t.Fatalf("RecordAction() error = %v", err)
+	}
+	if err := store.RecordRecipePolicyDecision(ctx, RecipePolicyDecision{
+		TaskID: "task-recipe-pending", ActionID: actionID, Recipe: "test",
+		Decision: "approval_required", Reason: "recipe_policy",
+	}); err != nil {
+		t.Fatalf("RecordRecipePolicyDecision() error = %v", err)
+	}
+	pending, err := store.PendingApprovals(ctx, "task-recipe-pending")
+	if err != nil {
+		t.Fatalf("PendingApprovals() error = %v", err)
+	}
+	if len(pending) != 1 || pending[0].ActionID != actionID {
+		t.Fatalf("pending = %+v, want the pending recipe action", pending)
+	}
+	// The task cannot complete around the pending recipe approval.
+	err = store.FinalizeTask(ctx, TaskFinalize{TaskID: "task-recipe-pending", Outcome: "completed", StopReason: "done"})
+	if !errors.Is(err, ErrPendingApprovals) {
+		t.Fatalf("FinalizeTask() error = %v, want ErrPendingApprovals", err)
+	}
+	// RecordApproval keys the approval by the action's digest-bound recipe
+	// fingerprint, which resolves the pending decision; the task can complete.
+	if _, err := store.RecordApproval(ctx, Approval{
+		TaskID: "task-recipe-pending", ActionID: actionID, Decision: "approved", Reason: "ok", Actor: "operator",
+	}); err != nil {
+		t.Fatalf("RecordApproval() error = %v", err)
+	}
+	pending, err = store.PendingApprovals(ctx, "task-recipe-pending")
+	if err != nil {
+		t.Fatalf("PendingApprovals() error = %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending = %+v, want the approval to resolve the pending decision", pending)
+	}
+	if err := store.FinalizeTask(ctx, TaskFinalize{TaskID: "task-recipe-pending", Outcome: "completed", StopReason: "done"}); err != nil {
+		t.Fatalf("FinalizeTask() after recipe approval error = %v", err)
+	}
+}

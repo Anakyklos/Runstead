@@ -153,7 +153,11 @@ Read-only tools come first:
 
 Write tools (`write_file`, `apply_patch`) are implemented (issue #10) with
 workspace containment, stale-state protection, durable intent/effect/result
-ordering, structured evidence and control-plane approval.
+ordering, structured evidence and control-plane approval. Bounded process
+recipes (`run_recipe`, issue #26) let the model select operator-declared
+recipes (test, build, vet, ...) by ID with no generic shell: fixed argv,
+allowlisted environment, bounded output, full process-tree termination on
+timeout/cancellation and structured process evidence.
 
 ## Explicit non-goals for the OmniRoute-backed v0.1
 
@@ -181,12 +185,14 @@ strict `runstead.protocol.v1` parser (#5), the tool registry with workspace
 boundary and evidence identifiers (#6), the account-scoped request governor
 with attempt receipts (#21, PR #33), the fail-closed OmniRoute adapter
 scaffold (#28), the bounded agent loop (#7), durable SQLite state (#8),
-resume/recovery (#9) and the policy-gated safe write tools (#10). `runstead
-run` executes a deterministic task end to end: every model turn is admitted
-by the account governor, actions are validated and executed by the registry
-(read-only tools plus policy-gated `write_file`/`apply_patch` with stale-state
-protection), observations return as untrusted data, and a final answer is
-accepted only when grounded in evidence IDs produced during the run. The
+resume/recovery (#9), the policy-gated safe write tools (#10) and the bounded
+process runner (#26). `runstead run` executes a deterministic task end to end:
+every model turn is admitted by the account governor, actions are validated
+and executed by the registry (read-only tools plus policy-gated
+`write_file`/`apply_patch` with stale-state protection and operator-declared
+`run_recipe` processes with no generic shell), observations return as
+untrusted data, and a final answer is accepted only when grounded in evidence
+IDs produced during the run. The
 deterministic offline mode replays scripted model responses through the real
 governor and tools (`--scripted FILE`); live OmniRoute execution remains
 disabled until a compatible attempt-receipt producer exists and #30 activates
