@@ -118,7 +118,7 @@ func TestResumeBasicInterruptedReadOnlyTask(t *testing.T) {
 	workspace := crashWorkspace(t)
 	script := crashScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
 	code, output := runCrashedRunAfter(t, crashRunArgs(script, workspace, stateDir), "tool_tx2_after", 1)
@@ -132,10 +132,10 @@ func TestResumeBasicInterruptedReadOnlyTask(t *testing.T) {
 	// then finishes grounded on the persisted evidence.
 	resumeScript := crashScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"continued after crash","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"continued after crash","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	resumeCode, resumeOut, resumeErr := runResume(context.Background(),
-		taskID, "--state-dir", stateDir, "--scripted", resumeScript, "--min-start-interval", "1ms", "--log-level", "error")
+		taskID, "--state-dir", stateDir, "--scripted", resumeScript, "--acceptance", acceptanceFor(t, "a.txt"), "--min-start-interval", "1ms", "--log-level", "error")
 	if resumeCode != exitSuccess {
 		t.Fatalf("resume exit = %d, want 0\nstderr:\n%s", resumeCode, resumeErr)
 	}
@@ -174,7 +174,7 @@ func TestResumeCompletedActionNotDuplicated(t *testing.T) {
 	workspace := crashWorkspace(t)
 	script := crashScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
 	code, output := runCrashedRunAfter(t, crashRunArgs(script, workspace, stateDir), "tool_tx2_after", 1)
@@ -189,10 +189,10 @@ func TestResumeCompletedActionNotDuplicated(t *testing.T) {
 	resumeScript := crashScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	resumeCode, resumeOut, resumeErr := runResume(context.Background(),
-		taskID, "--state-dir", stateDir, "--scripted", resumeScript, "--min-start-interval", "1ms", "--log-level", "error")
+		taskID, "--state-dir", stateDir, "--scripted", resumeScript, "--acceptance", acceptanceFor(t, "a.txt"), "--min-start-interval", "1ms", "--log-level", "error")
 	if resumeCode != exitSuccess {
 		t.Fatalf("resume exit = %d, want 0\nstderr:\n%s", resumeCode, resumeErr)
 	}
@@ -217,7 +217,7 @@ func TestResumePreparedReplaySafeObservationContinues(t *testing.T) {
 	workspace := crashWorkspace(t)
 	script := crashScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
 	code, output := runCrashedRunAfter(t, crashRunArgs(script, workspace, stateDir), "tool_tx1_after", 1)
@@ -232,10 +232,10 @@ func TestResumePreparedReplaySafeObservationContinues(t *testing.T) {
 
 	resumeScript := crashScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	resumeCode, resumeOut, resumeErr := runResume(context.Background(),
-		taskID, "--state-dir", stateDir, "--scripted", resumeScript, "--min-start-interval", "1ms", "--log-level", "error")
+		taskID, "--state-dir", stateDir, "--scripted", resumeScript, "--acceptance", acceptanceFor(t, "a.txt"), "--min-start-interval", "1ms", "--log-level", "error")
 	if resumeCode != exitSuccess {
 		t.Fatalf("resume exit = %d, want 0\nstderr:\n%s", resumeCode, resumeErr)
 	}
@@ -261,7 +261,7 @@ func TestResumeUncertainProviderAttemptKeepsDebit(t *testing.T) {
 	workspace := crashWorkspace(t)
 	script := crashScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
 	code, output := runCrashedRunAfter(t, crashRunArgs(script, workspace, stateDir), "provider_tx1_after", 1)
@@ -276,10 +276,10 @@ func TestResumeUncertainProviderAttemptKeepsDebit(t *testing.T) {
 
 	resumeScript := crashScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	resumeCode, _, resumeErr := runResume(context.Background(),
-		taskID, "--state-dir", stateDir, "--scripted", resumeScript, "--min-start-interval", "1ms", "--log-level", "error")
+		taskID, "--state-dir", stateDir, "--scripted", resumeScript, "--acceptance", acceptanceFor(t, "a.txt"), "--min-start-interval", "1ms", "--log-level", "error")
 	if resumeCode != exitSuccess {
 		t.Fatalf("resume exit = %d, want 0\nstderr:\n%s", resumeCode, resumeErr)
 	}
@@ -304,7 +304,7 @@ func TestResumeObservationAfterWorkspaceMutation(t *testing.T) {
 	workspace := crashWorkspace(t)
 	script := crashScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
 	code, output := runCrashedRunAfter(t, crashRunArgs(script, workspace, stateDir), "tool_tx2_after", 1)
@@ -320,10 +320,10 @@ func TestResumeObservationAfterWorkspaceMutation(t *testing.T) {
 
 	resumeScript := crashScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"fresh","evidence":["obs-000002"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"fresh","evidence":[{"evidence_id":"obs-000002","tool":"read_file"}]}</runstead_final>`,
 	)
 	resumeCode, resumeOut, resumeErr := runResume(context.Background(),
-		taskID, "--state-dir", stateDir, "--scripted", resumeScript, "--min-start-interval", "1ms", "--log-level", "error")
+		taskID, "--state-dir", stateDir, "--scripted", resumeScript, "--acceptance", acceptanceFor(t, "a.txt"), "--min-start-interval", "1ms", "--log-level", "error")
 	if resumeCode != exitSuccess {
 		t.Fatalf("resume exit = %d, want 0\nstderr:\n%s", resumeCode, resumeErr)
 	}
@@ -351,7 +351,7 @@ func TestResumeResultCommittedNextTurnMissing(t *testing.T) {
 	workspace := crashWorkspace(t)
 	script := crashScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
 	code, output := runCrashedRunAfter(t, crashRunArgs(script, workspace, stateDir), "tool_tx2_after", 1)
@@ -366,10 +366,10 @@ func TestResumeResultCommittedNextTurnMissing(t *testing.T) {
 
 	resumeScript := crashScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"consumed old evidence","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"consumed old evidence","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	resumeCode, _, resumeErr := runResume(context.Background(),
-		taskID, "--state-dir", stateDir, "--scripted", resumeScript, "--min-start-interval", "1ms", "--log-level", "error")
+		taskID, "--state-dir", stateDir, "--scripted", resumeScript, "--acceptance", acceptanceFor(t, "a.txt"), "--min-start-interval", "1ms", "--log-level", "error")
 	if resumeCode != exitSuccess {
 		t.Fatalf("resume exit = %d, want 0\nstderr:\n%s", resumeCode, resumeErr)
 	}
@@ -389,7 +389,7 @@ func TestResumeNewProviderConversation(t *testing.T) {
 	workspace := crashWorkspace(t)
 	scriptA := crashScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"old conversation","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"old conversation","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
 	code, output := runCrashedRunAfter(t, crashRunArgs(scriptA, workspace, stateDir), "tool_tx2_after", 1)
@@ -402,10 +402,10 @@ func TestResumeNewProviderConversation(t *testing.T) {
 	// script A; the resume must succeed from durable state alone.
 	scriptB := crashScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"list_files","arguments":{"path":"."}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"continued via a brand new conversation","evidence":["obs-000001","obs-000002"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"continued via a brand new conversation","evidence":[{"evidence_id":"obs-000001","tool":"read_file"},{"evidence_id":"obs-000002","tool":"list_files"}]}</runstead_final>`,
 	)
 	resumeCode, resumeOut, resumeErr := runResume(context.Background(),
-		taskID, "--state-dir", stateDir, "--scripted", scriptB, "--min-start-interval", "1ms", "--log-level", "error")
+		taskID, "--state-dir", stateDir, "--scripted", scriptB, "--acceptance", acceptanceFor(t, "a.txt"), "--min-start-interval", "1ms", "--log-level", "error")
 	if resumeCode != exitSuccess {
 		t.Fatalf("resume exit = %d, want 0\nstderr:\n%s", resumeCode, resumeErr)
 	}
@@ -917,9 +917,9 @@ func TestResumeCrashDuringRecoveryLeavesConsistentState(t *testing.T) {
 
 	script := crashScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
-	resumeArgs := []string{"resume", "task-crash", "--state-dir", stateDir, "--scripted", script, "--min-start-interval", "1ms", "--log-level", "error"}
+	resumeArgs := []string{"resume", "task-crash", "--state-dir", stateDir, "--scripted", script, "--acceptance", acceptanceFor(t, "a.txt"), "--min-start-interval", "1ms", "--log-level", "error"}
 	cmd := exec.Command(os.Args[0], "-test.run=TestRuntimeResumeCrashHelper")
 	cmd.Env = append(os.Environ(),
 		"RUNSTEAD_RUNTIME_RESUME_CRASH_HELPER=1",
@@ -946,7 +946,7 @@ func TestResumeCrashDuringRecoveryLeavesConsistentState(t *testing.T) {
 	// A second resume completes the task; the already-reconciled attempt is
 	// not re-reconciled.
 	resumeCode, resumeOut, resumeErr := runResume(context.Background(),
-		"task-crash", "--state-dir", stateDir, "--scripted", script, "--min-start-interval", "1ms", "--log-level", "error")
+		"task-crash", "--state-dir", stateDir, "--scripted", script, "--acceptance", acceptanceFor(t, "a.txt"), "--min-start-interval", "1ms", "--log-level", "error")
 	if resumeCode != exitSuccess {
 		t.Fatalf("second resume exit = %d, want 0\nstderr:\n%s", resumeCode, resumeErr)
 	}

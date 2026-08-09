@@ -49,7 +49,7 @@ func TestRunRecipeCLIAllowedFlow(t *testing.T) {
 	recipes := writeRecipesFile(t, echoRecipes())
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"run_recipe","arguments":{"recipe":"test"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"tests passed","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"tests passed","evidence":[{"evidence_id":"obs-000001","tool":"run_recipe"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
 	var out, errOut strings.Builder
@@ -59,6 +59,7 @@ func TestRunRecipeCLIAllowedFlow(t *testing.T) {
 		"--scripted", script,
 		"--recipes", recipes,
 		"--recipe-policy", "test=allow",
+		"--acceptance", acceptanceRecipeFor(t, "test"),
 		"--state-dir", stateDir,
 		"--min-start-interval", "1ms",
 		"--log-level", "error",
@@ -91,7 +92,7 @@ func TestRunRecipeCLIUnknownFailsClosed(t *testing.T) {
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"readme.txt"}}</runstead_action>`,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"run_recipe","arguments":{"recipe":"does-not-exist"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
 	var out, errOut strings.Builder
@@ -101,6 +102,7 @@ func TestRunRecipeCLIUnknownFailsClosed(t *testing.T) {
 		"--scripted", script,
 		"--recipes", recipes,
 		"--recipe-policy", "test=allow",
+		"--acceptance", acceptanceFor(t, "readme.txt"),
 		"--state-dir", stateDir,
 		"--min-start-interval", "1ms",
 		"--log-level", "error",
@@ -121,16 +123,18 @@ func TestRunRecipeCLIApprovalFlowEndToEnd(t *testing.T) {
 	recipes := writeRecipesFile(t, echoRecipes())
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"run_recipe","arguments":{"recipe":"test"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"run_recipe"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
 	// Default recipe policy: approval_required (no --recipe-policy).
 	var out, errOut strings.Builder
+	acceptance := acceptanceRecipeFor(t, "test")
 	code := run(context.Background(), []string{
 		"run", "--task", "Run the tests.",
 		"--workspace", workspace,
 		"--scripted", script,
 		"--recipes", recipes,
+		"--acceptance", acceptance,
 		"--state-dir", stateDir,
 		"--min-start-interval", "1ms",
 		"--log-level", "error",
@@ -154,7 +158,7 @@ func TestRunRecipeCLIApprovalFlowEndToEnd(t *testing.T) {
 
 	resumeScript := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"run_recipe","arguments":{"recipe":"test"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"run_recipe"}]}</runstead_final>`,
 	)
 	var resumeOut, resumeErr strings.Builder
 	resumeCode := run(context.Background(), []string{
@@ -162,6 +166,7 @@ func TestRunRecipeCLIApprovalFlowEndToEnd(t *testing.T) {
 		"--state-dir", stateDir,
 		"--scripted", resumeScript,
 		"--recipes", recipes,
+		"--acceptance", acceptance,
 		"--log-level", "error",
 	}, &resumeOut, &resumeErr)
 	if resumeCode != exitSuccess {
@@ -277,10 +282,11 @@ func TestResumeUsesPersistedDenyRecipePolicy(t *testing.T) {
 
 	resumeScript := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"run_recipe","arguments":{"recipe":"test"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	resumeCode, resumeOut, resumeErr := runResume(context.Background(),
-		"task-recipe-deny", "--state-dir", stateDir, "--scripted", resumeScript, "--recipes", recipes, "--min-start-interval", "1ms", "--log-level", "error")
+		"task-recipe-deny", "--state-dir", stateDir, "--scripted", resumeScript, "--recipes", recipes,
+		"--acceptance", acceptanceFor(t, "readme.txt"), "--min-start-interval", "1ms", "--log-level", "error")
 	if resumeCode != exitSuccess {
 		t.Fatalf("resume exit = %d\nstderr:\n%s", resumeCode, resumeErr)
 	}

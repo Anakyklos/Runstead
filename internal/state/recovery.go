@@ -337,9 +337,13 @@ type RecoverySnapshot struct {
 	AcceptancePlanDigest string
 	// BaselineGitStatus / BaselineGitDiff are the bounded git observations
 	// captured at task start (issue #11), used by verification to attribute
-	// pre-existing vs during-task changes.
-	BaselineGitStatus string
-	BaselineGitDiff   string
+	// pre-existing vs during-task changes. The truncated flags record that
+	// those bounded observations were truncated, so verification can surface
+	// the limitation (issue #11 review).
+	BaselineGitStatus          string
+	BaselineGitDiff            string
+	BaselineGitStatusTruncated bool
+	BaselineGitDiffTruncated   bool
 	// VerificationAttempts are the persisted verification attempts (issue
 	// #11), newest first.
 	VerificationAttempts []VerificationAttemptRow
@@ -451,11 +455,13 @@ func (s *Store) LoadRecoverySnapshot(ctx context.Context, taskID string) (*Recov
 		snapshot.AcceptancePlanSpec = string(spec)
 		snapshot.AcceptancePlanDigest = digest
 	}
-	if gitStatus, gitDiff, ok, err := s.WorkspaceBaseline(ctx, taskID); err != nil {
+	if gitStatus, gitDiff, statusTruncated, diffTruncated, ok, err := s.WorkspaceBaseline(ctx, taskID); err != nil {
 		return nil, err
 	} else if ok {
 		snapshot.BaselineGitStatus = gitStatus
 		snapshot.BaselineGitDiff = gitDiff
+		snapshot.BaselineGitStatusTruncated = statusTruncated
+		snapshot.BaselineGitDiffTruncated = diffTruncated
 	}
 	if attempts, err := s.VerificationAttempts(ctx, taskID); err != nil {
 		return nil, err

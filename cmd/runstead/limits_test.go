@@ -119,7 +119,7 @@ func TestRunFlagOverridesEnvironmentLimit(t *testing.T) {
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"list_files","arguments":{"path":"."}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001","obs-000002"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"},{"evidence_id":"obs-000002","tool":"list_files"}]}</runstead_final>`,
 	)
 	t.Setenv(config.EnvMaxSteps, "1")
 	var out, errOut bytes.Buffer
@@ -128,6 +128,7 @@ func TestRunFlagOverridesEnvironmentLimit(t *testing.T) {
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
+		"--acceptance", acceptanceFor(t, "a.txt"),
 		"--min-start-interval", "1ms",
 		"--max-steps", "24",
 		"--log-level", "error",
@@ -140,7 +141,7 @@ func TestRunFlagOverridesEnvironmentLimit(t *testing.T) {
 
 func TestRunEnvironmentTimeBudget(t *testing.T) {
 	workspace := t.TempDir()
-	script := writeScript(t, `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"too late","evidence":["obs-000001"]}</runstead_final>`)
+	script := writeScript(t, `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"too late","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`)
 	t.Setenv(config.EnvTimeBudget, "1ns")
 	var out, errOut bytes.Buffer
 

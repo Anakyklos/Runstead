@@ -100,7 +100,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	flags.StringVar(&writePolicy, "write-policy", "", "write tool policy modes, e.g. write_file=allow,apply_patch=approval_required (RUNSTEAD_WRITE_POLICY; default: approval_required for every write tool)")
 	flags.StringVar(&recipesFile, "recipes", "", "operator-controlled recipe catalog file (RUNSTEAD_RECIPES): JSON array of recipes; run_recipe fails closed without it")
 	flags.StringVar(&recipePolicy, "recipe-policy", "", "recipe policy modes, e.g. test=allow,vet=approval_required (RUNSTEAD_RECIPE_POLICY; default: approval_required for every recipe)")
-	flags.StringVar(&acceptanceFile, "acceptance", "", "operator acceptance plan file (RUNSTEAD_ACCEPTANCE_PLAN): versioned JSON of typed acceptance checks; completion requires every check to pass")
+	flags.StringVar(&acceptanceFile, "acceptance", "", "operator acceptance plan file (RUNSTEAD_ACCEPTANCE_PLAN): versioned JSON of typed acceptance checks; completion requires every check to pass. Without a plan, completion is refused (fail closed)")
 	flags.IntVar(&maxSteps, "max-steps", 0, "maximum model turns (RUNSTEAD_MAX_STEPS, default 24)")
 	flags.IntVar(&maxCorrections, "max-corrections", 0, "protocol correction attempts (RUNSTEAD_MAX_CORRECTIONS, default 2)")
 	flags.IntVar(&maxRepeatedActions, "max-repeated-actions", 0, "repeated-action corrections before stopping (RUNSTEAD_MAX_REPEATED_ACTIONS, default 2)")
@@ -400,9 +400,11 @@ func resolveRecipeCatalog(flagValue string, flagSet bool) (*recipe.Catalog, erro
 
 // resolveAcceptancePlan loads the operator acceptance plan from the
 // --acceptance flag, then RUNSTEAD_ACCEPTANCE_PLAN. A nil plan (no flag and no
-// env) means an empty plan: structural completion checks still run, but no
-// operator acceptance checks are required (issue #11). An explicit but
-// unreadable or invalid plan is an error.
+// env) fails closed: the verifier refuses completion blocked, because without
+// task-specific acceptance criteria a completion proposal can never be proven
+// against the task objective (issue #11 review). The operator attaches a plan
+// at resume with --acceptance for tasks that started without one. An explicit
+// but unreadable or invalid plan is an error.
 func resolveAcceptancePlan(flagValue string, flagSet bool) (*verifier.Plan, string, error) {
 	value := ""
 	if flagSet {

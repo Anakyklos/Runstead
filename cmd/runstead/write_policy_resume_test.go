@@ -150,10 +150,11 @@ func TestResumeUsesPersistedDenyPolicy(t *testing.T) {
 	// the write proposal is denied, and the final grounds on the read evidence.
 	resumeScript := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"write_file","arguments":{"path":"out.txt","content":"x\n","expected_before_hash":"absent"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	resumeCode, resumeOut, resumeErr := runResume(context.Background(),
-		"task-deny", "--state-dir", stateDir, "--scripted", resumeScript, "--min-start-interval", "1ms", "--log-level", "error")
+		"task-deny", "--state-dir", stateDir, "--scripted", resumeScript,
+		"--acceptance", acceptanceFor(t, "readme.txt"), "--min-start-interval", "1ms", "--log-level", "error")
 	if resumeCode != exitSuccess {
 		t.Fatalf("resume exit = %d\nstderr:\n%s", resumeCode, resumeErr)
 	}

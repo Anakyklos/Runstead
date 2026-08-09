@@ -15,6 +15,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/tools"
+	"github.com/RenyEnnos/Runstead/internal/verifier"
 )
 
 // fakeClock implements both the governor clock and the loop clock so task
@@ -262,17 +263,42 @@ func newHarnessPaced(t *testing.T, workspace string, configure func(*governor.Co
 
 func (h *harness) loop(t *testing.T, limits agent.Limits) *agent.Loop {
 	t.Helper()
+	return h.loopPlan(t, limits, nil)
+}
+
+// loopPlan builds a loop with an explicit operator acceptance plan. Without a
+// plan the verifier refuses completion blocked (fail closed, issue #11
+// review), so tests that expect completed must supply acceptance criteria.
+func (h *harness) loopPlan(t *testing.T, limits agent.Limits, plan *verifier.Plan) *agent.Loop {
+	t.Helper()
 	loop, err := agent.NewLoop(agent.Config{
 		Runner:   h.executor,
 		Registry: h.registry,
 		Limits:   limits,
 		Clock:    h.clock,
 		Trace:    h.traces.emit,
+		Verifier: verifier.New(h.registry, plan),
 	})
 	if err != nil {
 		t.Fatalf("agent.NewLoop() error = %v", err)
 	}
 	return loop
+}
+
+// existsPlan is the minimal operator acceptance plan for tests that complete
+// against an existing file: the file must exist.
+func existsPlan(path string) *verifier.Plan {
+	return &verifier.Plan{Version: verifier.PlanVersion, Checks: []verifier.Check{{
+		ID: "artifact", Type: verifier.CheckFileExists, Path: path,
+	}}}
+}
+
+// recipePlan is the operator acceptance plan for tests that complete after a
+// recipe exits zero.
+func recipePlan(recipeID string) *verifier.Plan {
+	return &verifier.Plan{Version: verifier.PlanVersion, Checks: []verifier.Check{{
+		ID: "recipe-ok", Type: verifier.CheckRecipeExitZero, Recipe: recipeID,
+	}}}
 }
 
 func writeFixture(t *testing.T, root, name, content string) {
@@ -290,8 +316,22 @@ func actionResponse(tool string, arguments string) provider.Response {
 	return provider.Response{Text: "<runstead_action>\n{\"version\":\"runstead.protocol.v1\",\"tool\":\"" + tool + "\",\"arguments\":" + arguments + "}\n</runstead_action>"}
 }
 
-func finalResponse(status, summary string, evidence ...string) provider.Response {
-	encoded, _ := json.Marshal(evidence)
+// finalCitation is the typed evidence citation of a final response in tests:
+// the model must declare the tool that produced each cited observation (issue
+// #11 review).
+type finalCitation struct {
+	EvidenceID string `json:"evidence_id"`
+	Tool       string `json:"tool"`
+}
+
+// finalEvidence builds one typed citation for the tool that produced the
+// observation with the given id.
+func finalEvidence(id, tool string) finalCitation {
+	return finalCitation{EvidenceID: id, Tool: tool}
+}
+
+func finalResponse(status, summary string, citations ...finalCitation) provider.Response {
+	encoded, _ := json.Marshal(citations)
 	return provider.Response{Text: "<runstead_final>\n{\"version\":\"runstead.protocol.v1\",\"status\":\"" + status + "\",\"summary\":\"" + summary + "\",\"evidence\":" + string(encoded) + "}\n</runstead_final>"}
 }
 
@@ -328,9 +368,9 @@ func TestLoopCompletesGroundedMultiTurn(t *testing.T) {
 	h := newHarness(t, workspace, nil,
 		actionResponse("read_file", `{"path":"a.txt"}`),
 		actionResponse("list_files", `{"path":"."}`),
-		finalResponse("complete", "Inspected the fixture repository.", "obs-000001", "obs-000002"),
+		finalResponse("complete", "Inspected the fixture repository.", finalEvidence("obs-000001", "read_file"), finalEvidence("obs-000002", "list_files")),
 	)
-	loop := h.loop(t, agent.Limits{})
+	loop := h.loopPlan(t, agent.Limits{}, existsPlan("a.txt"))
 
 	result := loop.Run(context.Background(), testTask("task-1"))
 
@@ -372,9 +412,9 @@ func TestLoopObservationReturnsUntrustedDataNotSystemInstructions(t *testing.T) 
 	writeFixture(t, workspace, "a.txt", secret)
 	h := newHarness(t, workspace, nil,
 		actionResponse("read_file", `{"path":"a.txt"}`),
-		finalResponse("complete", "done", "obs-000001"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "read_file")),
 	)
-	loop := h.loop(t, agent.Limits{})
+	loop := h.loopPlan(t, agent.Limits{}, existsPlan("a.txt"))
 
 	result := loop.Run(context.Background(), testTask("task-1"))
 	if result.Outcome != agent.OutcomeCompleted {
@@ -423,9 +463,9 @@ func TestLoopInvalidActionCorrectionThenSuccess(t *testing.T) {
 	h := newHarness(t, workspace, nil,
 		provider.Response{Text: "<runstead_action>\n{\"version\":\"runstead.protocol.v1\",\"tool\":\"read_file\",\"arguments\":{\"path\":42}}\n</runstead_action>"},
 		actionResponse("read_file", `{"path":"a.txt"}`),
-		finalResponse("complete", "done", "obs-000001"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "read_file")),
 	)
-	loop := h.loop(t, agent.Limits{MaxCorrections: 2})
+	loop := h.loopPlan(t, agent.Limits{MaxCorrections: 2}, existsPlan("a.txt"))
 
 	result := loop.Run(context.Background(), testTask("task-1"))
 	if result.Outcome != agent.OutcomeCompleted {
@@ -554,7 +594,7 @@ func TestLoopRepeatedActionAllowedAfterWorkspaceChange(t *testing.T) {
 		actionResponse("read_file", `{"path":"a.txt"}`),
 		actionResponse("read_file", `{"path":"a.txt"}`),
 		actionResponse("read_file", `{"path":"a.txt"}`),
-		finalResponse("complete", "observed both versions", "obs-000001", "obs-000002"),
+		finalResponse("complete", "observed both versions", finalEvidence("obs-000001", "read_file"), finalEvidence("obs-000002", "read_file")),
 	)
 	h.provider.mutate = func(attempt int) {
 		if attempt == 3 {
@@ -563,7 +603,7 @@ func TestLoopRepeatedActionAllowedAfterWorkspaceChange(t *testing.T) {
 			}
 		}
 	}
-	loop := h.loop(t, agent.Limits{MaxRepeatedActions: 2})
+	loop := h.loopPlan(t, agent.Limits{MaxRepeatedActions: 2}, existsPlan("a.txt"))
 
 	result := loop.Run(context.Background(), testTask("task-1"))
 	if result.Outcome != agent.OutcomeCompleted {
@@ -582,7 +622,7 @@ func TestLoopFabricatedEvidenceRejected(t *testing.T) {
 	writeFixture(t, workspace, "a.txt", "alpha\n")
 	h := newHarness(t, workspace, nil,
 		actionResponse("read_file", `{"path":"a.txt"}`),
-		finalResponse("complete", "I invented an observation.", "obs-999999"),
+		finalResponse("complete", "I invented an observation.", finalEvidence("obs-999999", "read_file")),
 	)
 	loop := h.loop(t, agent.Limits{})
 

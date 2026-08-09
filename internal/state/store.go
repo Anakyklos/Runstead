@@ -296,10 +296,11 @@ type Persistence interface {
 	// and digest. The third result reports whether a plan exists.
 	AcceptancePlan(ctx context.Context, taskID string) (specJSON []byte, digest string, ok bool, err error)
 	// SaveWorkspaceBaseline persists the bounded real git status/diff observed
-	// at task start (issue #11).
-	SaveWorkspaceBaseline(ctx context.Context, taskID, gitStatus, gitDiff string) error
-	// WorkspaceBaseline returns the persisted git baseline of one task.
-	WorkspaceBaseline(ctx context.Context, taskID string) (gitStatus, gitDiff string, ok bool, err error)
+	// at task start with its truncation flags (issue #11 review).
+	SaveWorkspaceBaseline(ctx context.Context, taskID, gitStatus, gitDiff string, statusTruncated, diffTruncated bool) error
+	// WorkspaceBaseline returns the persisted git baseline of one task with its
+	// truncation flags.
+	WorkspaceBaseline(ctx context.Context, taskID string) (gitStatus, gitDiff string, statusTruncated, diffTruncated bool, ok bool, err error)
 	// SaveVerificationAttempt persists one verification attempt and its
 	// journal event atomically (issue #11).
 	SaveVerificationAttempt(ctx context.Context, record VerificationAttemptRecord) error

@@ -288,7 +288,11 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	// The acceptance plan is part of the authoritative task configuration: it
 	// is persisted with the task at run start and loaded from state on resume.
 	// A divergent --acceptance override is rejected fail-closed (issue #11).
-	resumeAcceptance, resumeAcceptanceDigest, err := resolveResumeAcceptancePlan(ctx, store, taskID, acceptanceFile, acceptanceFile != "")
+	// A task that started WITHOUT a plan can never complete (the verifier
+	// refuses completion blocked, issue #11 review), so the operator may
+	// explicitly attach a plan at resume; that operator-owned act is persisted
+	// with the task before any recovery or execution side effect.
+	resumeAcceptance, resumeAcceptanceDigest, attachedPlan, err := resolveResumeAcceptancePlan(ctx, store, taskID, acceptanceFile, acceptanceFile != "")
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: %v\n", err)
 		return exitUsage
@@ -304,6 +308,19 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	if loadErr != nil {
 		fmt.Fprintf(errOut, "resume: %v\n", loadErr)
 		return exitUsage
+	}
+	// Persist an operator-attached acceptance plan before the recovery pipeline
+	// so the task is durably resumable under the SAME plan from here on.
+	if attachedPlan {
+		spec, marshalErr := json.Marshal(resumeAcceptance)
+		if marshalErr != nil {
+			fmt.Fprintf(errOut, "resume: cannot encode acceptance plan: %v\n", marshalErr)
+			return exitCorrupt
+		}
+		if err := store.SaveAcceptancePlan(ctx, taskID, spec, resumeAcceptanceDigest); err != nil {
+			fmt.Fprintf(errOut, "resume: cannot attach acceptance plan: %v\n", err)
+			return exitCorrupt
+		}
 	}
 
 	// The recovery pipeline: load persisted history, classify and reconcile
@@ -623,37 +640,48 @@ func resolveResumeRecipePolicy(configJSON, flagValue string, flagSet bool, catal
 
 // resolveResumeAcceptancePlan reconstructs the effective acceptance plan of a
 // resumed task (issue #11). The plan persisted with the task at run start is
-// authoritative: resume loads it from state, and a --acceptance override that
+// authoritative: resume loads it from state, and an --acceptance override that
 // diverges from the persisted plan is rejected fail-closed. A task that
-// started without a plan cannot silently gain one at resume, and a task that
-// started with a plan cannot resume without it.
-func resolveResumeAcceptancePlan(ctx context.Context, store *state.Store, taskID, flagValue string, flagSet bool) (*verifier.Plan, string, error) {
+// started with a plan cannot resume without it, and an override cannot change
+// it. A task that started WITHOUT a plan is refused completion by the verifier
+// (blocked, issue #11 review), so the operator may explicitly attach a plan at
+// resume: the returned attached flag reports that operator-owned act, and the
+// caller persists the plan with the task before any recovery or execution side
+// effect. The model can never attach or modify acceptance criteria.
+func resolveResumeAcceptancePlan(ctx context.Context, store *state.Store, taskID, flagValue string, flagSet bool) (*verifier.Plan, string, bool, error) {
 	persistedSpec, persistedDigest, persisted, err := store.AcceptancePlan(ctx, taskID)
 	if err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
 	if !persisted {
-		if flagSet {
-			return nil, "", errors.New("the task has no persisted acceptance plan; supplying one at resume is a policy change and is rejected")
+		if !flagSet {
+			return nil, "", false, nil
 		}
-		return nil, "", nil
+		// No plan was ever persisted: the operator explicitly supplies one at
+		// resume. This is the only way a task without acceptance criteria can
+		// become completable; it is an operator-owned act, never a model one.
+		plan, digest, err := resolveAcceptancePlan(flagValue, true)
+		if err != nil {
+			return nil, "", false, err
+		}
+		return plan, digest, true, nil
 	}
 	var plan *verifier.Plan
 	if flagSet {
 		plan, _, err = resolveAcceptancePlan(flagValue, true)
 		if err != nil {
-			return nil, "", err
+			return nil, "", false, err
 		}
 		if plan.Digest() != persistedDigest {
-			return nil, "", errors.New("--acceptance diverges from the task's persisted acceptance plan; resume always continues under the plan the task started with")
+			return nil, "", false, errors.New("--acceptance diverges from the task's persisted acceptance plan; resume always continues under the plan the task started with")
 		}
-		return plan, persistedDigest, nil
+		return plan, persistedDigest, false, nil
 	}
 	plan, err = verifier.ParsePlan(persistedSpec)
 	if err != nil {
-		return nil, "", fmt.Errorf("invalid persisted acceptance plan: %w", err)
+		return nil, "", false, fmt.Errorf("invalid persisted acceptance plan: %w", err)
 	}
-	return plan, persistedDigest, nil
+	return plan, persistedDigest, false, nil
 }
 
 // limitsFromConfig reconstructs the loop limits from the persisted sanitized

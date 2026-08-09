@@ -111,15 +111,18 @@ func TestAcceptancePlanAndBaselinePersist(t *testing.T) {
 	if string(loaded) != string(spec) || loadedDigest != digest {
 		t.Fatalf("plan = %s digest=%s", loaded, loadedDigest)
 	}
-	if err := store.SaveWorkspaceBaseline(ctx, "task-1", " M a.txt\n", "diff"); err != nil {
+	if err := store.SaveWorkspaceBaseline(ctx, "task-1", " M a.txt\n", "diff", true, false); err != nil {
 		t.Fatalf("SaveWorkspaceBaseline() error = %v", err)
 	}
-	status, diff, ok, err := store.WorkspaceBaseline(ctx, "task-1")
+	status, diff, statusTruncated, diffTruncated, ok, err := store.WorkspaceBaseline(ctx, "task-1")
 	if err != nil || !ok {
 		t.Fatalf("WorkspaceBaseline() = ok %v, err %v", ok, err)
 	}
 	if status != " M a.txt\n" || diff != "diff" {
 		t.Fatalf("baseline = %q/%q", status, diff)
+	}
+	if !statusTruncated || diffTruncated {
+		t.Fatalf("baseline truncation flags = %t/%t, want true/false", statusTruncated, diffTruncated)
 	}
 	snapshot, err := store.LoadRecoverySnapshot(ctx, "task-1")
 	if err != nil {
@@ -130,6 +133,9 @@ func TestAcceptancePlanAndBaselinePersist(t *testing.T) {
 	}
 	if snapshot.BaselineGitStatus != " M a.txt\n" {
 		t.Fatalf("snapshot baseline = %q", snapshot.BaselineGitStatus)
+	}
+	if !snapshot.BaselineGitStatusTruncated || snapshot.BaselineGitDiffTruncated {
+		t.Fatalf("snapshot baseline truncation flags = %t/%t, want true/false", snapshot.BaselineGitStatusTruncated, snapshot.BaselineGitDiffTruncated)
 	}
 	kinds := taskEventKinds(t, store, "task-1")
 	if !containsKind(kinds, "acceptance_plan_saved") || !containsKind(kinds, "workspace_baseline_saved") {

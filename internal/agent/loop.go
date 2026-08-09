@@ -273,9 +273,10 @@ func (l *Loop) Run(ctx context.Context, task Task) Result {
 		}
 		// Capture the real git baseline at task start, BEFORE any model turn,
 		// so verification can attribute pre-existing repository changes. The
-		// observation happens outside any SQLite transaction.
-		if status, diff, ok := l.captureGitBaseline(); ok {
-			if err := l.state.SaveWorkspaceBaseline(context.Background(), task.ID, status, diff); err != nil {
+		// observation happens outside any SQLite transaction. Truncation flags
+		// are persisted with the baseline (issue #11 review).
+		if status, diff, statusTruncated, diffTruncated, ok := l.captureGitBaseline(); ok {
+			if err := l.state.SaveWorkspaceBaseline(context.Background(), task.ID, status, diff, statusTruncated, diffTruncated); err != nil {
 				return persistenceFailure(err)
 			}
 		}
@@ -398,14 +399,16 @@ type runState struct {
 // captureGitBaseline captures the bounded real git status/diff at task start
 // through the registry observer (the same seam as the git tools). It returns
 // ok=false when the workspace is not a git repository or git observation
-// fails; verification then reports the git limitation honestly.
-func (l *Loop) captureGitBaseline() (status, diff string, ok bool) {
-	statusText, _, statusFailure := l.registry.GitStatusText()
+// fails; verification then reports the git limitation honestly. The truncation
+// flags are returned so the limitation is persisted with the baseline (issue
+// #11 review).
+func (l *Loop) captureGitBaseline() (status, diff string, statusTruncated, diffTruncated bool, ok bool) {
+	statusText, statusFlag, statusFailure := l.registry.GitStatusText()
 	if statusFailure != nil {
-		return "", "", false
+		return "", "", false, false, false
 	}
-	diffText, _, _ := l.registry.GitDiffText()
-	return statusText, diffText, true
+	diffText, diffFlag, _ := l.registry.GitDiffText()
+	return statusText, diffText, statusFlag, diffFlag, true
 }
 
 // configSnapshot renders the meaningful execution configuration as a
@@ -870,7 +873,7 @@ func (l *Loop) handleFinal(
 	if final.Status == protocol.StatusIncomplete {
 		return stop(OutcomeFinalIncomplete, OutcomeFinalIncomplete.StopReason(), func(result *Result) {
 			result.Summary = final.Summary
-			result.Evidence = append([]string(nil), final.Evidence...)
+			result.Evidence = citedEvidenceIDs(final.Evidence)
 		}), true
 	}
 
@@ -884,7 +887,7 @@ func (l *Loop) handleFinal(
 	case verifier.DecisionPassed:
 		return stop(OutcomeCompleted, "verification passed: "+report.Summary, func(result *Result) {
 			result.Summary = final.Summary
-			result.Evidence = append([]string(nil), final.Evidence...)
+			result.Evidence = citedEvidenceIDs(final.Evidence)
 			result.Classification = string(report.Decision)
 		}), true
 	case verifier.DecisionFailed:
@@ -907,10 +910,20 @@ func (l *Loop) handleFinal(
 		// completion. The task is not finalized; it stays durably resumable.
 		return stop(OutcomeVerificationBlocked, report.Summary, func(result *Result) {
 			result.Summary = final.Summary
-			result.Evidence = append([]string(nil), final.Evidence...)
+			result.Evidence = citedEvidenceIDs(final.Evidence)
 			result.Classification = string(report.Decision)
 		}), true
 	}
+}
+
+// citedEvidenceIDs extracts the evidence ids of typed citations, preserving
+// order and dropping nothing (citations are already validated by the parser).
+func citedEvidenceIDs(citations []protocol.EvidenceCitation) []string {
+	ids := make([]string, 0, len(citations))
+	for _, citation := range citations {
+		ids = append(ids, citation.EvidenceID)
+	}
+	return ids
 }
 
 // verifyCompletion runs the control-plane verifier for one completion
@@ -920,9 +933,13 @@ func (l *Loop) handleFinal(
 // attempt is persisted AFTER the external observations complete; no SQLite
 // transaction is open during verification.
 func (l *Loop) verifyCompletion(ctx context.Context, task Task, final *protocol.FinalResponse, evidence *EvidenceSet) verifier.Report {
+	claims := make([]verifier.EvidenceClaim, 0, len(final.Evidence))
+	for _, citation := range final.Evidence {
+		claims = append(claims, verifier.EvidenceClaim{EvidenceID: citation.EvidenceID, Tool: citation.Tool})
+	}
 	input := verifier.Input{
 		TaskID:        task.ID,
-		FinalEvidence: append([]string(nil), final.Evidence...),
+		FinalEvidence: claims,
 		Plan:          l.verifier.Plan(),
 	}
 	if l.state != nil {
@@ -933,6 +950,8 @@ func (l *Loop) verifyCompletion(ctx context.Context, task Task, final *protocol.
 			input.Evidence = snapshot.Evidence
 			input.BaselineGitStatus = snapshot.BaselineGitStatus
 			input.BaselineGitDiff = snapshot.BaselineGitDiff
+			input.BaselineGitStatusTruncated = snapshot.BaselineGitStatusTruncated
+			input.BaselineGitDiffTruncated = snapshot.BaselineGitDiffTruncated
 			if pending, pendingErr := l.state.PendingApprovals(ctx, task.ID); pendingErr == nil {
 				for _, item := range pending {
 					input.PendingApprovals = append(input.PendingApprovals, item.ActionID)

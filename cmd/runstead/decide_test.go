@@ -156,13 +156,15 @@ func TestRunDecideApprovalFlowEndToEnd(t *testing.T) {
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"readme.txt"}}</runstead_action>`,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"write_file","arguments":{"path":"out.txt","content":"created\n","expected_before_hash":"absent"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001","obs-000002"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"},{"evidence_id":"obs-000002","tool":"write_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
+	acceptance := acceptanceFor(t, "out.txt")
 	args := []string{
 		"run", "--task", "Create a file with approval.",
 		"--workspace", workspace,
 		"--scripted", script,
+		"--acceptance", acceptance,
 		"--state-dir", stateDir,
 		"--min-start-interval", "1ms",
 		"--log-level", "error",
@@ -199,13 +201,14 @@ func TestRunDecideApprovalFlowEndToEnd(t *testing.T) {
 	// A normal resume re-proposes the approved write and completes.
 	resumeScript := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"write_file","arguments":{"path":"out.txt","content":"created\n","expected_before_hash":"absent"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"created","evidence":["obs-000001","obs-000002"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"created","evidence":[{"evidence_id":"obs-000001","tool":"read_file"},{"evidence_id":"obs-000002","tool":"write_file"}]}</runstead_final>`,
 	)
 	var resumeOut, resumeErr strings.Builder
 	resumeCode := run(context.Background(), []string{
 		"resume", taskID,
 		"--state-dir", stateDir,
 		"--scripted", resumeScript,
+		"--acceptance", acceptance,
 		"--log-level", "error",
 	}, &resumeOut, &resumeErr)
 	if resumeCode != exitSuccess {
@@ -233,10 +236,12 @@ func TestRunDecideRejectedFlowEndToEnd(t *testing.T) {
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"write_file","arguments":{"path":"out.txt","content":"x\n","expected_before_hash":"absent"}}</runstead_action>`,
 	)
 	stateDir := t.TempDir()
+	acceptance := acceptanceFor(t, "readme.txt")
 	args := []string{
 		"run", "--task", "Create a file with approval.",
 		"--workspace", workspace,
 		"--scripted", script,
+		"--acceptance", acceptance,
 		"--state-dir", stateDir,
 		"--min-start-interval", "1ms",
 		"--log-level", "error",
@@ -257,13 +262,14 @@ func TestRunDecideRejectedFlowEndToEnd(t *testing.T) {
 	// executes.
 	resumeScript := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"write_file","arguments":{"path":"out.txt","content":"x\n","expected_before_hash":"absent"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	var resumeOut, resumeErr strings.Builder
 	resumeCode := run(context.Background(), []string{
 		"resume", taskID,
 		"--state-dir", stateDir,
 		"--scripted", resumeScript,
+		"--acceptance", acceptance,
 		"--log-level", "error",
 	}, &resumeOut, &resumeErr)
 	if resumeCode != exitSuccess {
@@ -309,7 +315,7 @@ func TestRunPendingApprovalBlocksCompleted(t *testing.T) {
 	// final on the seeded read evidence: the pending approval must block
 	// completion.
 	resumeScript := writeScript(t,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	var resumeOut, resumeErr strings.Builder
 	resumeCode := run(context.Background(), []string{

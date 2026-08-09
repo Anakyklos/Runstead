@@ -41,8 +41,18 @@ Evidence is **persisted observation data** produced by the runtime:
 - the operator acceptance plan.
 
 The model cannot create evidence by asserting something. A final response's
-cited evidence IDs must exist in the task's persisted evidence; a fabricated,
-foreign or type-incompatible ID is rejected.
+cited evidence is **typed**: each citation is `{"evidence_id": "...",
+"tool": "..."}` and the model must declare the tool that produced the
+evidence it cites. A fabricated, foreign or type-incompatible ID is rejected:
+a `read_file` observation can never be cited as `run_recipe` evidence.
+
+Completion is **fail closed without acceptance criteria**. A `status="complete"`
+proposal is refused `blocked` when no operator acceptance plan with at least
+one check exists for the task: without a task-specific acceptance criterion, a
+completion proposal can never be proven against the task objective. The task
+stays durably resumable, and the operator attaches a plan at resume with
+`--acceptance` (an operator-owned act, persisted with the task; the model can
+never attach or modify acceptance criteria).
 
 ## Acceptance checks
 
@@ -80,11 +90,21 @@ task, with or without an operator plan:
 
 - `evidence_grounded`: every cited evidence ID exists in the task's persisted
   evidence;
+- `evidence_claims_typed`: every cited evidence's declared tool matches the
+  persisted tool of the evidence row;
 - `no_uncertain_attempts`: no interrupted/uncertain/human-review attempt;
 - `no_pending_approvals`: no operator approval is still pending;
 - `writes_reconciled`: every persisted write evidence matches the current
   filesystem (created files exist, hashes match);
-- `git_observed`: real Git status/diff captured, with change attribution.
+- `git_observed`: real Git status/diff captured, with change attribution and
+  an explicit limitation when the task-start baseline was truncated;
+- `acceptance_criteria_required`: an operator acceptance plan with at least one
+  check exists; without one, completion is refused `blocked` (fail closed).
+
+The verifier report is bounded: `Limits.MaxChecks` caps the checks evaluated
+in one attempt (an oversized plan is refused `blocked` with
+`check_budget_exceeded`, never partially proven), and `Limits.MaxObservedChars`
+truncates every expected/observed/reason description with an explicit marker.
 
 ## Completion gate
 
@@ -112,8 +132,8 @@ continuation; there is no hidden retry loop inside the verifier.
 - `uncertain`: an authoritative effect is uncertain (interrupted attempt,
   human-review-required state) — completion is refused until reconciled;
 - `blocked`: a control-plane dependency cannot be satisfied by the model (a
-  pending operator approval at completion time, or a check that cannot be
-  evaluated).
+  pending operator approval at completion time, a check that cannot be
+  evaluated, or a missing operator acceptance plan).
 
 Both stop the run with `OutcomeVerificationBlocked`; the task is **not**
 finalized and stays durably resumable so the operator can reconcile or decide
@@ -149,8 +169,9 @@ imports no process-execution packages).
 
 Changed files are derived from **real Git observation**, never from the model
 response. At task start the runtime captures a bounded Git baseline
-(`workspace_baselines`); at verification time it captures the current state
-and attributes changes:
+(`workspace_baselines`, including the truncation flags of the bounded
+baseline); at verification time it captures the current state and attributes
+changes:
 
 - `pre_existing`: files already changed when the task started (the baseline),
   never silently attributed to the task;
@@ -159,14 +180,21 @@ and attributes changes:
 
 Git attribution is a "where practical" observation: a non-Git workspace does
 not block completion, but the limitation is recorded in the report and shown
-in inspect.
+in inspect. When the task-start baseline was itself truncated, the limitation
+is recorded explicitly (`baseline_truncated`) because pre-existing changes
+outside the truncated baseline window may be attributed as during-task; the
+flags are persisted with the baseline (migration 0009) so the limitation
+survives restart.
 
 ## Persistence
 
-Verification is part of the authoritative task history (migration 0008):
+Verification is part of the authoritative task history (migrations 0008-0009):
 
-- `acceptance_plans`: the persisted operator plan (spec + digest);
-- `workspace_baselines`: the bounded Git baseline captured at task start;
+- `acceptance_plans`: the persisted operator plan (spec + digest). A task run
+  without a plan has no row; the operator may attach one at resume (the
+  operator-owned continuation of the fail-closed completion gate);
+- `workspace_baselines`: the bounded Git baseline captured at task start with
+  its truncation flags (migration 0009);
 - `verification_attempts`: one control-plane verification run (decision,
   bounded report, summary) with its journal event (`verification_recorded`);
 - `verification_checks`: per-check results, individually inspectable.
@@ -188,6 +216,8 @@ evidence ids and typed reason.
 - The verifier observes the filesystem and git through the same seams as the
   tools; it does not add kernel-level guarantees.
 - Verification checks what the typed checks express. An operator plan that
-  omits a condition cannot be invented by the verifier.
+  omits a condition cannot be invented by the verifier; without any plan,
+  completion is refused (fail closed) until the operator supplies acceptance
+  criteria.
 - A task whose final is `incomplete` ends honestly without a completion
   decision; verification gates only `completed`.

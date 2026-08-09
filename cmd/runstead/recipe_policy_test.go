@@ -12,7 +12,7 @@ func TestRunRejectsRecipePolicyForUnknownRecipe(t *testing.T) {
 	workspace := t.TempDir()
 	recipes := writeRecipesFile(t, echoRecipes())
 	script := writeScript(t,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	var out, errOut strings.Builder
 	code := run(context.Background(), []string{

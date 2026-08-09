@@ -134,8 +134,10 @@ func (s *Store) AcceptancePlan(ctx context.Context, taskID string) (specJSON []b
 }
 
 // SaveWorkspaceBaseline persists the bounded real git status/diff observed at
-// task start with its journal event atomically.
-func (s *Store) SaveWorkspaceBaseline(ctx context.Context, taskID, gitStatus, gitDiff string) error {
+// task start with its journal event atomically. The truncation flags record
+// that the bounded baseline observations were truncated, so verification can
+// surface the limitation explicitly (issue #11 review).
+func (s *Store) SaveWorkspaceBaseline(ctx context.Context, taskID, gitStatus, gitDiff string, statusTruncated, diffTruncated bool) error {
 	now := s.now()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -143,16 +145,21 @@ func (s *Store) SaveWorkspaceBaseline(ctx context.Context, taskID, gitStatus, gi
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO workspace_baselines (task_id, git_status_json, git_diff_json, created_at)
-		 VALUES (?, ?, ?, ?)
+		`INSERT INTO workspace_baselines (task_id, git_status_json, git_diff_json, git_status_truncated, git_diff_truncated, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (task_id) DO UPDATE SET git_status_json = excluded.git_status_json,
-		   git_diff_json = excluded.git_diff_json, created_at = excluded.created_at`,
-		taskID, Redact(gitStatus), Redact(gitDiff), now); err != nil {
+		   git_diff_json = excluded.git_diff_json,
+		   git_status_truncated = excluded.git_status_truncated,
+		   git_diff_truncated = excluded.git_diff_truncated,
+		   created_at = excluded.created_at`,
+		taskID, Redact(gitStatus), Redact(gitDiff), boolInt(statusTruncated), boolInt(diffTruncated), now); err != nil {
 		return fmt.Errorf("insert workspace baseline: %w", err)
 	}
 	if err := appendEvent(ctx, tx, taskID, "workspace_baseline_saved", map[string]any{
-		"git_status_bytes": len(gitStatus),
-		"git_diff_bytes":   len(gitDiff),
+		"git_status_bytes":     len(gitStatus),
+		"git_diff_bytes":       len(gitDiff),
+		"git_status_truncated": statusTruncated,
+		"git_diff_truncated":   diffTruncated,
 	}, now); err != nil {
 		return err
 	}
@@ -162,18 +169,21 @@ func (s *Store) SaveWorkspaceBaseline(ctx context.Context, taskID, gitStatus, gi
 	return nil
 }
 
-// WorkspaceBaseline returns the persisted git status/diff baseline of one
-// task. The third result reports whether a baseline exists.
-func (s *Store) WorkspaceBaseline(ctx context.Context, taskID string) (gitStatus, gitDiff string, ok bool, err error) {
+// WorkspaceBaseline returns the persisted git status/diff baseline of one task
+// and its truncation flags. The third result reports whether a baseline
+// exists.
+func (s *Store) WorkspaceBaseline(ctx context.Context, taskID string) (gitStatus, gitDiff string, statusTruncated, diffTruncated bool, ok bool, err error) {
+	var statusFlag, diffFlag int
 	err = s.db.QueryRowContext(ctx,
-		`SELECT git_status_json, git_diff_json FROM workspace_baselines WHERE task_id = ?`, taskID).Scan(&gitStatus, &gitDiff)
+		`SELECT git_status_json, git_diff_json, git_status_truncated, git_diff_truncated FROM workspace_baselines WHERE task_id = ?`, taskID).
+		Scan(&gitStatus, &gitDiff, &statusFlag, &diffFlag)
 	if err == sql.ErrNoRows {
-		return "", "", false, nil
+		return "", "", false, false, false, nil
 	}
 	if err != nil {
-		return "", "", false, fmt.Errorf("load workspace baseline: %w", err)
+		return "", "", false, false, false, fmt.Errorf("load workspace baseline: %w", err)
 	}
-	return gitStatus, gitDiff, true, nil
+	return gitStatus, gitDiff, statusFlag != 0, diffFlag != 0, true, nil
 }
 
 // SaveVerificationAttempt persists one verification attempt (projection:

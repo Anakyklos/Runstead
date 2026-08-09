@@ -33,7 +33,7 @@ func TestRunAcceptanceRejectsMissingFile(t *testing.T) {
 	acceptance := writeAcceptanceFile(t, `{"version":1,"checks":[{"id":"artifact","type":"file_exists","path":"result.txt"}]}`)
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"readme.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
 	var out, errOut strings.Builder
@@ -73,7 +73,7 @@ func TestRunAcceptancePassesWhenFileCreated(t *testing.T) {
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"readme.txt"}}</runstead_action>`,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"write_file","arguments":{"path":"result.txt","content":"ok\n","expected_before_hash":"absent"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"created","evidence":["obs-000001","obs-000002"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"created","evidence":[{"evidence_id":"obs-000001","tool":"read_file"},{"evidence_id":"obs-000002","tool":"write_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
 	var out, errOut strings.Builder
@@ -128,7 +128,7 @@ func TestResumeRejectsAcceptancePlanDrift(t *testing.T) {
 	store.Close()
 
 	script := writeScript(t,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	// A divergent plan is rejected before any recovery side effect.
 	planB := writeAcceptanceFile(t, `{"version":1,"checks":[{"id":"a","type":"file_exists","path":"b.txt"}]}`)
@@ -145,5 +145,85 @@ func TestResumeRejectsAcceptancePlanDrift(t *testing.T) {
 	}
 	if !strings.Contains(resumeErr.String(), "acceptance plan") {
 		t.Fatalf("resume diagnostic = %q, want a plan drift diagnostic", resumeErr.String())
+	}
+}
+
+// TestResumeAttachesAcceptancePlanToPlanlessTask proves the operator-owned
+// continuation path of the fail-closed completion gate (issue #11 review): a
+// task run without an acceptance plan can never complete (verification
+// blocked), and the operator attaches a plan at resume with --acceptance. The
+// plan is persisted with the task, so the same plan is authoritative from
+// then on.
+func TestResumeAttachesAcceptancePlanToPlanlessTask(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "readme.txt"), []byte("info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"readme.txt"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
+	)
+	stateDir := t.TempDir()
+	var out, errOut strings.Builder
+	code := run(context.Background(), []string{
+		"run", "--task", "Inspect the workspace.",
+		"--workspace", workspace,
+		"--scripted", script,
+		"--state-dir", stateDir,
+		"--min-start-interval", "1ms",
+		"--log-level", "error",
+	}, &out, &errOut)
+	if code == exitSuccess {
+		t.Fatalf("run must not complete without an acceptance plan\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "outcome: verification_blocked") {
+		t.Fatalf("run output must show verification_blocked:\n%s", out.String())
+	}
+	taskID := taskIDFromOutput(t, errOut.String())
+	rendered := inspectRendered(t, stateDir, taskID)
+	if !strings.Contains(rendered, "check=acceptance_criteria_required type=structural status=blocked") {
+		t.Fatalf("inspect must show the blocked acceptance criteria check:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "Status: completed") {
+		t.Fatalf("task must not be completed:\n%s", rendered)
+	}
+
+	// The operator attaches the acceptance plan at resume; the resumed run
+	// completes under it.
+	acceptance := acceptanceFor(t, "readme.txt")
+	resumeScript := writeScript(t,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
+	)
+	var resumeOut, resumeErr strings.Builder
+	resumeCode := run(context.Background(), []string{
+		"resume", taskID,
+		"--state-dir", stateDir,
+		"--scripted", resumeScript,
+		"--acceptance", acceptance,
+		"--log-level", "error",
+	}, &resumeOut, &resumeErr)
+	if resumeCode != exitSuccess {
+		t.Fatalf("resume exit = %d, want 0\nstderr:\n%s", resumeCode, resumeErr.String())
+	}
+	if !strings.Contains(resumeOut.String(), "outcome: completed") {
+		t.Fatalf("resume must complete under the attached plan:\n%s", resumeOut.String())
+	}
+	// The attached plan is persisted: a second resume without the flag loads
+	// it from state and stays consistent.
+	store, err := state.Open(state.Options{Path: filepath.Join(stateDir, state.DefaultDBFile)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, digest, ok, err := store.AcceptancePlan(context.Background(), taskID)
+	store.Close()
+	if err != nil || !ok {
+		t.Fatalf("AcceptancePlan() = ok %v, err %v", ok, err)
+	}
+	plan, err := verifier.ParsePlan(spec)
+	if err != nil {
+		t.Fatalf("persisted attached plan must parse: %v", err)
+	}
+	if plan.Digest() != digest || plan.Digest() == "" {
+		t.Fatalf("attached plan digest mismatch: %q vs %q", plan.Digest(), digest)
 	}
 }

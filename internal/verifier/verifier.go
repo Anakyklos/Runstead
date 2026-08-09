@@ -92,6 +92,11 @@ type GitObservation struct {
 	// DuringTask are the files changed during the task: present now but not
 	// in the baseline, or in the baseline with a different status now.
 	DuringTask []ChangedFile `json:"during_task,omitempty"`
+	// BaselineTruncated reports that the bounded git baseline captured at task
+	// start was truncated, so pre-existing changes outside the truncated
+	// baseline window may be attributed as during_task. The limitation is
+	// recorded explicitly, never silently ignored (issue #11 review).
+	BaselineTruncated bool `json:"baseline_truncated,omitempty"`
 }
 
 // Report is the structured verification report of one verification attempt.
@@ -131,16 +136,23 @@ type Report struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// CitedEvidence is one evidence ID cited by the final response, resolved
-// against persisted evidence.
+// CitedEvidence is one evidence citation of the final response, resolved
+// against persisted evidence. The citation declares the tool the model claims
+// produced the evidence; the verifier checks that claim against the persisted
+// tool (issue #11 review: cited evidence must match the claimed type).
 type CitedEvidence struct {
 	// EvidenceID is the cited identifier.
 	EvidenceID string `json:"evidence_id"`
-	// Tool is the tool that produced the evidence.
-	Tool string `json:"tool"`
+	// ClaimedTool is the tool the final response claims produced the evidence.
+	ClaimedTool string `json:"claimed_tool"`
+	// Tool is the persisted tool of the evidence row (empty when missing).
+	Tool string `json:"tool,omitempty"`
 	// Exists reports whether the identifier exists in the task's persisted
 	// evidence.
 	Exists bool `json:"exists"`
+	// ToolMatches reports whether the claimed tool equals the persisted tool
+	// (only meaningful when Exists).
+	ToolMatches bool `json:"tool_matches"`
 }
 
 // AttemptRef is one authoritative attempt that blocks completion.
@@ -168,14 +180,27 @@ type WriteReconciled struct {
 	EvidenceID string `json:"evidence_id,omitempty"`
 }
 
+// EvidenceClaim is one typed evidence citation from the final response: the
+// model declares the tool that produced the evidence it cites. Model prose
+// never enters it; the verifier resolves the claim against persisted evidence
+// (existence and tool type).
+type EvidenceClaim struct {
+	// EvidenceID is the cited identifier.
+	EvidenceID string
+	// Tool is the tool the final response claims produced the evidence.
+	Tool string
+}
+
 // Input is the authoritative, bounded input of one verification attempt. It
 // is built by the agent loop from persisted task history and the final
 // response; model prose never enters it.
 type Input struct {
 	// TaskID is the verified task.
 	TaskID string
-	// FinalEvidence are the evidence IDs cited by the final response.
-	FinalEvidence []string
+	// FinalEvidence are the typed evidence citations of the final response:
+	// every cited id must exist AND its claimed tool must match the persisted
+	// tool (issue #11).
+	FinalEvidence []EvidenceClaim
 	// Actions are the persisted logical actions of the task.
 	Actions []state.RecoveryAction
 	// ToolAttempts are the persisted concrete tool attempts of the task.
@@ -191,6 +216,13 @@ type Input struct {
 	BaselineGitStatus string
 	// BaselineGitDiff is the bounded `git diff` captured at task start.
 	BaselineGitDiff string
+	// BaselineGitStatusTruncated / BaselineGitDiffTruncated report that the
+	// bounded git baseline observations were truncated at task start. The
+	// verifier records the limitation so pre-existing changes outside the
+	// truncated baseline window are never silently attributed as during_task
+	// (issue #11 review).
+	BaselineGitStatusTruncated bool
+	BaselineGitDiffTruncated   bool
 	// Now is the deterministic verification time (RFC 3339 UTC text).
 	Now string
 }
@@ -239,13 +271,27 @@ func DefaultLimits() Limits {
 }
 
 // New constructs a verifier. A nil observer fails every check closed. A nil
-// plan behaves as an empty plan (structural checks still run).
+// plan means no operator acceptance criteria exist: completion is refused
+// blocked (fail closed, issue #11 review), because without task-specific
+// acceptance checks the model's completion proposal cannot be proven against
+// the task objective.
 func New(observer Observer, plan *Plan) *Verifier {
-	return &Verifier{observer: observer, plan: plan, limits: DefaultLimits()}
+	limits := DefaultLimits()
+	if limits.MaxChecks <= 0 {
+		limits.MaxChecks = 256
+	}
+	if limits.MaxChangedFiles <= 0 {
+		limits.MaxChangedFiles = 512
+	}
+	if limits.MaxObservedChars <= 0 {
+		limits.MaxObservedChars = 512
+	}
+	return &Verifier{observer: observer, plan: plan, limits: limits}
 }
 
 // WithPlan returns a copy of the verifier with the operator plan replaced
-// (used by resume when the persisted plan is loaded from state).
+// (used by resume when the persisted plan is loaded from state). A nil plan
+// means no operator acceptance criteria: completion is refused blocked.
 func (v *Verifier) WithPlan(plan *Plan) *Verifier {
 	if v == nil {
 		return New(nil, plan)
@@ -255,7 +301,9 @@ func (v *Verifier) WithPlan(plan *Plan) *Verifier {
 	return &copy
 }
 
-// Plan returns the operator acceptance plan (nil for an empty plan).
+// Plan returns the operator acceptance plan (nil when none is configured).
+// Without a plan, completion is refused blocked: no task-specific acceptance
+// criterion exists (issue #11 review).
 func (v *Verifier) Plan() *Plan {
 	if v == nil {
 		return nil

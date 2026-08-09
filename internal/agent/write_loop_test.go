@@ -17,6 +17,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
+	"github.com/RenyEnnos/Runstead/internal/verifier"
 )
 
 // writeHarness wires the real store and a policy into the loop, mirroring the
@@ -72,12 +73,26 @@ func newWriteHarness(t *testing.T, workspace string, writeConfig policy.Config, 
 
 func (h *writeHarness) loop(t *testing.T, limits agent.Limits) *agent.Loop {
 	t.Helper()
-	return h.loopWith(t, limits, nil)
+	return h.loopWithPlan(t, limits, nil, nil)
+}
+
+// loopWithPlan builds a loop with an explicit operator acceptance plan.
+// Without a plan the verifier refuses completion blocked (fail closed, issue
+// #11 review), so write tests that expect completed must supply acceptance
+// criteria.
+func (h *writeHarness) loopWithPlan(t *testing.T, limits agent.Limits, plan *verifier.Plan, recovery *agent.RecoverySeed) *agent.Loop {
+	t.Helper()
+	return h.loopWithConfig(t, limits, plan, recovery)
 }
 
 // loopWith builds a loop with an optional recovery seed, mirroring a resumed
 // run that continues the same durable task without replaying completed effects.
 func (h *writeHarness) loopWith(t *testing.T, limits agent.Limits, recovery *agent.RecoverySeed) *agent.Loop {
+	t.Helper()
+	return h.loopWithConfig(t, limits, nil, recovery)
+}
+
+func (h *writeHarness) loopWithConfig(t *testing.T, limits agent.Limits, plan *verifier.Plan, recovery *agent.RecoverySeed) *agent.Loop {
 	t.Helper()
 	loop, err := agent.NewLoop(agent.Config{
 		Runner:   h.executor,
@@ -88,6 +103,7 @@ func (h *writeHarness) loopWith(t *testing.T, limits agent.Limits, recovery *age
 		State:    h.store,
 		Policy:   h.policy,
 		Recovery: recovery,
+		Verifier: verifier.New(h.registry, plan),
 	})
 	if err != nil {
 		t.Fatalf("agent.NewLoop() error = %v", err)
@@ -132,9 +148,9 @@ func TestWriteLoopAllowedWriteExecutesWithEvidenceAndGitDiff(t *testing.T) {
 	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
 		actionResponse("read_file", `{"path":"a.txt"}`),
 		actionResponse("write_file", `{"path":"a.txt","content":"new\n","expected_before_hash":"`+before+`"}`),
-		finalResponse("complete", "Updated the file.", "obs-000001", "obs-000002"),
+		finalResponse("complete", "Updated the file.", finalEvidence("obs-000001", "read_file"), finalEvidence("obs-000002", "write_file")),
 	)
-	loop := h.loop(t, agent.Limits{})
+	loop := h.loopWithPlan(t, agent.Limits{}, existsPlan("a.txt"), nil)
 	result := loop.Run(context.Background(), testTask("task-write-ok"))
 
 	if result.Outcome != agent.OutcomeCompleted {
@@ -174,9 +190,9 @@ func TestWriteLoopDeniedWriteDoesNotExecute(t *testing.T) {
 	h := newWriteHarness(t, workspace, denyAllPolicy(), nil,
 		actionResponse("read_file", `{"path":"readme.txt"}`),
 		actionResponse("write_file", `{"path":"out.txt","content":"x\n","expected_before_hash":"absent"}`),
-		finalResponse("complete", "done", "obs-000001"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "read_file")),
 	)
-	loop := h.loop(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3})
+	loop := h.loopWithPlan(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3}, existsPlan("readme.txt"), nil)
 	result := loop.Run(context.Background(), testTask("task-write-denied"))
 
 	if result.Outcome != agent.OutcomeCompleted {
@@ -263,7 +279,7 @@ func TestWriteLoopApprovalNormalFlow(t *testing.T) {
 	h := newWriteHarness(t, workspace, policy.DefaultConfig(), nil,
 		actionResponse("read_file", `{"path":"readme.txt"}`),
 		actionResponse("write_file", `{"path":"out.txt","content":"created\n","expected_before_hash":"absent"}`),
-		finalResponse("complete", "done", "obs-000001", "obs-000002"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "read_file"), finalEvidence("obs-000002", "write_file")),
 	)
 	taskID := "task-write-approved"
 	ctx := context.Background()
@@ -300,7 +316,7 @@ func TestWriteLoopApprovalNormalFlow(t *testing.T) {
 	// new action id), the persisted approval unlocks it, and the run completes.
 	secondProvider := &scriptedProvider{clock: h.clock, pace: time.Millisecond, responses: []provider.Response{
 		actionResponse("write_file", `{"path":"out.txt","content":"created\n","expected_before_hash":"absent"}`),
-		finalResponse("complete", "done", "obs-000002"),
+		finalResponse("complete", "done", finalEvidence("obs-000002", "write_file")),
 	}}
 	executor2, err := agent.NewExecutor(h.governor, secondProvider, nil)
 	if err != nil {
@@ -315,6 +331,7 @@ func TestWriteLoopApprovalNormalFlow(t *testing.T) {
 		State:    h.store,
 		Policy:   h.policy,
 		Recovery: &agent.RecoverySeed{Turns: 2, Attempts: 2},
+		Verifier: verifier.New(h.registry, existsPlan("out.txt")),
 	})
 	if err != nil {
 		t.Fatalf("agent.NewLoop() error = %v", err)
@@ -346,7 +363,7 @@ func TestWriteLoopApprovalRejectedNeverExecutes(t *testing.T) {
 	h := newWriteHarness(t, workspace, policy.DefaultConfig(), nil,
 		actionResponse("read_file", `{"path":"readme.txt"}`),
 		actionResponse("write_file", `{"path":"out.txt","content":"x\n","expected_before_hash":"absent"}`),
-		finalResponse("complete", "done", "obs-000001"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "read_file")),
 	)
 	taskID := "task-write-rejected"
 	ctx := context.Background()
@@ -368,7 +385,7 @@ func TestWriteLoopApprovalRejectedNeverExecutes(t *testing.T) {
 	secondProvider := &scriptedProvider{clock: h.clock, pace: time.Millisecond, responses: []provider.Response{
 		actionResponse("read_file", `{"path":"readme.txt"}`),
 		actionResponse("write_file", `{"path":"out.txt","content":"x\n","expected_before_hash":"absent"}`),
-		finalResponse("complete", "done", "obs-000002"),
+		finalResponse("complete", "done", finalEvidence("obs-000002", "read_file")),
 	}}
 	executor2, err := agent.NewExecutor(h.governor, secondProvider, nil)
 	if err != nil {
@@ -383,6 +400,7 @@ func TestWriteLoopApprovalRejectedNeverExecutes(t *testing.T) {
 		State:    h.store,
 		Policy:   h.policy,
 		Recovery: &agent.RecoverySeed{Turns: 2, Attempts: 2},
+		Verifier: verifier.New(h.registry, existsPlan("readme.txt")),
 	})
 	if err != nil {
 		t.Fatalf("agent.NewLoop() error = %v", err)
@@ -425,7 +443,7 @@ func TestWriteLoopPendingApprovalBlocksCompleted(t *testing.T) {
 	// fresh evidence id.
 	secondProvider := &scriptedProvider{clock: h.clock, pace: time.Millisecond, responses: []provider.Response{
 		actionResponse("read_file", `{"path":"readme.txt"}`),
-		finalResponse("complete", "done", "obs-000002"),
+		finalResponse("complete", "done", finalEvidence("obs-000002", "read_file")),
 	}}
 	executor, err := agent.NewExecutor(h.governor, secondProvider, nil)
 	if err != nil {
@@ -440,6 +458,7 @@ func TestWriteLoopPendingApprovalBlocksCompleted(t *testing.T) {
 		State:    h.store,
 		Policy:   h.policy,
 		Recovery: &agent.RecoverySeed{Turns: 2, Attempts: 2},
+		Verifier: verifier.New(h.registry, existsPlan("readme.txt")),
 	})
 	if err != nil {
 		t.Fatalf("agent.NewLoop() error = %v", err)
@@ -474,7 +493,7 @@ func TestWriteLoopModelProseCannotApprove(t *testing.T) {
 	h := newWriteHarness(t, workspace, policy.DefaultConfig(), nil,
 		actionResponse("read_file", `{"path":"readme.txt"}`),
 		provider.Response{Text: proseResponse},
-		finalResponse("complete", "done", "obs-000001"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "read_file")),
 	)
 	loop := h.loop(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3})
 	result := loop.Run(context.Background(), testTask("task-write-prose"))
@@ -502,9 +521,9 @@ func TestWriteLoopStaleWriteFailsClosed(t *testing.T) {
 	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
 		actionResponse("read_file", `{"path":"a.txt"}`),
 		actionResponse("write_file", `{"path":"a.txt","content":"v3\n","expected_before_hash":"`+staleHash+`"}`),
-		finalResponse("complete", "done", "obs-000001"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "read_file")),
 	)
-	loop := h.loop(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3})
+	loop := h.loopWithPlan(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3}, existsPlan("a.txt"), nil)
 	result := loop.Run(context.Background(), testTask("task-write-stale"))
 
 	if result.Outcome != agent.OutcomeCompleted {
@@ -532,9 +551,9 @@ func TestWriteLoopRepeatedIdenticalWriteIsDistinctFromNoop(t *testing.T) {
 	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
 		actionResponse("write_file", `{"path":"a.txt","content":"same\n","expected_before_hash":"`+before+`"}`),
 		actionResponse("write_file", `{"path":"a.txt","content":"same\n","expected_before_hash":"`+before+`"}`),
-		finalResponse("complete", "done", "obs-000001"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "write_file")),
 	)
-	loop := h.loop(t, agent.Limits{MaxRepeatedActions: 3, MaxCorrections: 3, MaxSteps: 10})
+	loop := h.loopWithPlan(t, agent.Limits{MaxRepeatedActions: 3, MaxCorrections: 3, MaxSteps: 10}, existsPlan("a.txt"), nil)
 	result := loop.Run(context.Background(), testTask("task-write-repeat"))
 
 	if result.Outcome != agent.OutcomeCompleted {
@@ -564,9 +583,9 @@ func TestWriteLoopFreshWriteAfterLegitimateStateChange(t *testing.T) {
 	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
 		actionResponse("write_file", `{"path":"a.txt","content":"v2\n","expected_before_hash":"`+hashV1+`"}`),
 		actionResponse("write_file", `{"path":"a.txt","content":"v2\n","expected_before_hash":"`+hashV2+`"}`),
-		finalResponse("complete", "done", "obs-000001", "obs-000002"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "write_file"), finalEvidence("obs-000002", "write_file")),
 	)
-	loop := h.loop(t, agent.Limits{MaxRepeatedActions: 3, MaxCorrections: 3, MaxSteps: 10})
+	loop := h.loopWithPlan(t, agent.Limits{MaxRepeatedActions: 3, MaxCorrections: 3, MaxSteps: 10}, existsPlan("a.txt"), nil)
 	result := loop.Run(context.Background(), testTask("task-write-fresh"))
 
 	if result.Outcome != agent.OutcomeCompleted {
@@ -591,9 +610,9 @@ func TestWriteLoopApplyPatchExecutes(t *testing.T) {
 	patch := "--- a.txt\n+++ a.txt\n@@ -1,2 +1,2 @@\n line1\n-line2\n+line2-edited\n"
 	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
 		actionResponse("apply_patch", `{"path":"a.txt","patch":"`+jsonEscape(patch)+`","expected_before_hash":"`+before+`"}`),
-		finalResponse("complete", "done", "obs-000001"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "apply_patch")),
 	)
-	loop := h.loop(t, agent.Limits{})
+	loop := h.loopWithPlan(t, agent.Limits{}, existsPlan("a.txt"), nil)
 	result := loop.Run(context.Background(), testTask("task-patch-ok"))
 
 	if result.Outcome != agent.OutcomeCompleted {

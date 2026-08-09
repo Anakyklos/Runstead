@@ -46,6 +46,53 @@ func planDigest(plan *verifier.Plan) string {
 	return plan.Digest()
 }
 
+// Issue #11 review blocker E2E: the objective requires creating a file; the
+// model only reads an existing file and proposes complete. Without an operator
+// acceptance plan, completion is refused blocked and the task can never reach
+// completed. The task stays durably resumable so the operator can attach a
+// plan at resume.
+func TestLoopVerificationWithoutAcceptancePlanNeverCompletes(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "readme.txt"), []byte("info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
+		actionResponse("read_file", `{"path":"readme.txt"}`),
+		finalResponse("complete", "Created result.txt.", finalEvidence("obs-000001", "read_file")),
+	)
+	loop := verifierLoop(t, h, nil, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3}, nil)
+	result := loop.Run(context.Background(), agent.Task{ID: "task-verify-noplan", Prompt: "Create result.txt."})
+	if result.Outcome == agent.OutcomeCompleted {
+		t.Fatalf("task must never complete without an acceptance plan: %+v", result)
+	}
+	if result.Outcome != agent.OutcomeVerificationBlocked {
+		t.Fatalf("outcome = %s, want verification_blocked", result.Outcome)
+	}
+	status, _ := h.store.TaskStatus(context.Background(), "task-verify-noplan")
+	if status == "completed" {
+		t.Fatal("task status must not be completed")
+	}
+	if status != "running" {
+		t.Fatalf("task status = %q, want running (durably resumable so the operator can attach a plan)", status)
+	}
+	attempts, err := h.store.VerificationAttempts(context.Background(), "task-verify-noplan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 1 || attempts[0].Decision != "blocked" {
+		t.Fatalf("attempts = %+v, want one blocked", attempts)
+	}
+	var planCheck bool
+	for _, check := range attempts[0].Checks {
+		if check.CheckID == "acceptance_criteria_required" && check.Status == "blocked" && check.Reason == "acceptance_plan_missing" {
+			planCheck = true
+		}
+	}
+	if !planCheck {
+		t.Fatalf("blocked attempt must carry the acceptance criteria check: %+v", attempts[0].Checks)
+	}
+}
+
 // Scenario 13: a failed verification is presented as a structured observation
 // and the loop continues; after a real correction the next verification passes
 // (scenario 14).
@@ -62,9 +109,9 @@ func TestLoopVerificationFailedThenCorrectedPasses(t *testing.T) {
 	// Turn 3: model proposes complete again -> verification passes.
 	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
 		actionResponse("read_file", `{"path":"readme.txt"}`),
-		finalResponse("complete", "Done.", "obs-000001"),
+		finalResponse("complete", "Done.", finalEvidence("obs-000001", "read_file")),
 		actionResponse("write_file", `{"path":"answer.txt","content":"42\n","expected_before_hash":"absent"}`),
-		finalResponse("complete", "Done.", "obs-000001", "obs-000002"),
+		finalResponse("complete", "Done.", finalEvidence("obs-000001", "read_file"), finalEvidence("obs-000002", "write_file")),
 	)
 	loop := verifierLoop(t, h, plan, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3}, nil)
 	result := loop.Run(context.Background(), testTask("task-verify-correct"))
@@ -105,7 +152,7 @@ func TestLoopVerificationClaimedFileMissingNeverCompletes(t *testing.T) {
 	// The model keeps proposing complete; the file never appears.
 	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
 		actionResponse("read_file", `{"path":"readme.txt"}`),
-		finalResponse("complete", "Created the file.", "obs-000001"),
+		finalResponse("complete", "Created the file.", finalEvidence("obs-000001", "read_file")),
 	)
 	loop := verifierLoop(t, h, plan, agent.Limits{MaxSteps: 2, MaxCorrections: 3, MaxRepeatedActions: 3}, nil)
 	result := loop.Run(context.Background(), testTask("task-verify-missing"))
@@ -127,7 +174,7 @@ func TestLoopVerificationUncertainAttemptBlocks(t *testing.T) {
 	}
 	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
 		actionResponse("read_file", `{"path":"readme.txt"}`),
-		finalResponse("complete", "Done.", "obs-000001"),
+		finalResponse("complete", "Done.", finalEvidence("obs-000001", "read_file")),
 	)
 	ctx := context.Background()
 	// Pre-create the task and record an action with a prepared (uncertain)
@@ -174,7 +221,7 @@ func TestLoopVerificationRecipePassCompletes(t *testing.T) {
 		results: []recipe.Result{{Started: true, ExitCode: 0}},
 	},
 		actionResponse("run_recipe", `{"recipe":"test"}`),
-		finalResponse("complete", "tests passed", "obs-000001"),
+		finalResponse("complete", "tests passed", finalEvidence("obs-000001", "run_recipe")),
 	)
 	loop, err := agent.NewLoop(agent.Config{
 		Runner:               h.executor,
@@ -228,7 +275,7 @@ func TestLoopVerificationRecipeFailsContinues(t *testing.T) {
 	},
 		actionResponse("read_file", `{"path":"readme.txt"}`),
 		actionResponse("run_recipe", `{"recipe":"test"}`),
-		finalResponse("complete", "tests passed", "obs-000001", "obs-000002"),
+		finalResponse("complete", "tests passed", finalEvidence("obs-000001", "read_file"), finalEvidence("obs-000002", "run_recipe")),
 	)
 	loop, err := agent.NewLoop(agent.Config{
 		Runner:               h.executor,
@@ -280,7 +327,7 @@ func TestLoopVerificationStateSurvivesResume(t *testing.T) {
 	// Run 1: model proposes complete without the file -> verification failed.
 	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
 		actionResponse("read_file", `{"path":"readme.txt"}`),
-		finalResponse("complete", "Done.", "obs-000001"),
+		finalResponse("complete", "Done.", finalEvidence("obs-000001", "read_file")),
 	)
 	loop := verifierLoop(t, h, plan, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3}, nil)
 	ctx := context.Background()
@@ -301,7 +348,7 @@ func TestLoopVerificationStateSurvivesResume(t *testing.T) {
 	// Run 2 (resumed): the model writes the file and proposes complete again.
 	secondProvider := &scriptedProvider{clock: h.clock, pace: time.Millisecond, responses: []provider.Response{
 		actionResponse("write_file", `{"path":"answer.txt","content":"42\n","expected_before_hash":"absent"}`),
-		finalResponse("complete", "Done.", "obs-000001", "obs-000002"),
+		finalResponse("complete", "Done.", finalEvidence("obs-000001", "read_file"), finalEvidence("obs-000002", "write_file")),
 	}}
 	executor2, err := agent.NewExecutor(h.governor, secondProvider, nil)
 	if err != nil {
@@ -353,7 +400,7 @@ func TestLoopVerificationInspectExplainsDecision(t *testing.T) {
 	}}}
 	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
 		actionResponse("read_file", `{"path":"readme.txt"}`),
-		finalResponse("complete", "Done.", "obs-000001"),
+		finalResponse("complete", "Done.", finalEvidence("obs-000001", "read_file")),
 	)
 	loop := verifierLoop(t, h, plan, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3}, nil)
 	_ = loop.Run(context.Background(), testTask("task-verify-inspect"))

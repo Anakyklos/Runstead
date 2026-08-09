@@ -133,7 +133,7 @@ func TestCrashAfterProviderTX1LeavesDurableIntent(t *testing.T) {
 	workspace := t.TempDir()
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"list_files","arguments":{"path":"."}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"list_files"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
 	code, output := runCrashedRun(t, crashRunArgs(script, workspace, stateDir), "provider_tx1_after")
@@ -171,7 +171,7 @@ func TestCrashBeforeToolTX2LeavesPreparedEffectReturned(t *testing.T) {
 	}
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
 	code, output := runCrashedRun(t, crashRunArgs(script, workspace, stateDir), "tool_tx2_before")

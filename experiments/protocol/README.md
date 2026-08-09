@@ -21,12 +21,15 @@ Multiple or unclosed envelopes are rejected.
 
 ```xml
 <runstead_final>
-{"version":"runstead.protocol.v1","status":"complete","summary":"...","evidence":["..."]}
+{"version":"runstead.protocol.v1","status":"complete","summary":"...","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}
 </runstead_final>
 ```
 
 The action schema uses exactly `version`, `tool` and `arguments`. The final
-schema uses exactly `version`, `status`, `summary` and `evidence`. Only
+schema uses exactly `version`, `status`, `summary` and `evidence`. Every
+evidence entry is a typed citation: the model declares the tool that produced
+the cited observation, and the runtime verifier rejects a fabricated, foreign
+or type-incompatible citation (issue #11). Only
 `read_file` and `list_files` are enabled. Unknown tools, malformed JSON,
 protocol refusals and unsupported execution claims are classified without
 execution. A normalized `tool + arguments` fingerprint identifies repeated

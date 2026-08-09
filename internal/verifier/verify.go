@@ -14,11 +14,14 @@ import (
 // Structural check ids are stable and rendered in inspect. They are not
 // operator-chosen; they exist for every verification attempt.
 const (
-	checkEvidenceGrounded   = "evidence_grounded"
-	checkNoUncertainAttempt = "no_uncertain_attempts"
-	checkNoPendingApproval  = "no_pending_approvals"
-	checkWritesReconciled   = "writes_reconciled"
-	checkGitObserved        = "git_observed"
+	checkEvidenceGrounded    = "evidence_grounded"
+	checkEvidenceClaimsTyped = "evidence_claims_typed"
+	checkNoUncertainAttempt  = "no_uncertain_attempts"
+	checkNoPendingApproval   = "no_pending_approvals"
+	checkWritesReconciled    = "writes_reconciled"
+	checkGitObserved         = "git_observed"
+	checkAcceptanceCriteria  = "acceptance_criteria_required"
+	checkBudgetExceeded      = "check_budget_exceeded"
 )
 
 // Verify evaluates one completion proposal against authoritative state and
@@ -49,6 +52,12 @@ func (v *Verifier) Verify(input Input) Report {
 	var failed []CheckResult
 	var passed []CheckResult
 	appendResult := func(result CheckResult) {
+		// Limits bound the report content: every description is truncated to
+		// MaxObservedChars so a hostile or enormous environment can never blow
+		// up the report (issue #11 review).
+		result.Expected = boundText(v.limits.MaxObservedChars, result.Expected)
+		result.Observed = boundText(v.limits.MaxObservedChars, result.Observed)
+		result.Reason = boundText(v.limits.MaxObservedChars, result.Reason)
 		switch result.Status {
 		case CheckUncertain:
 			uncertain = append(uncertain, result)
@@ -79,6 +88,25 @@ func (v *Verifier) Verify(input Input) Report {
 		grounding.Reason = "evidence_ids_not_found"
 	}
 	appendResult(grounding)
+
+	// 1b. Claimed evidence types: the final response must declare the tool that
+	// produced each evidence it cites, and that claim must match the persisted
+	// tool. A type-incompatible citation is a failed check: a read_file
+	// observation can never support a run_recipe claim (issue #11 review).
+	typing := CheckResult{ID: checkEvidenceClaimsTyped, Type: "structural", Status: CheckPassed}
+	var mismatched []string
+	for _, cited := range report.CitedEvidence {
+		if cited.Exists && !cited.ToolMatches {
+			mismatched = append(mismatched, fmt.Sprintf("%s(claimed=%s,persisted=%s)", cited.EvidenceID, cited.ClaimedTool, cited.Tool))
+		}
+	}
+	if len(mismatched) > 0 {
+		typing.Status = CheckFailed
+		typing.Expected = "every cited evidence's claimed tool matches its persisted tool"
+		typing.Observed = "type mismatch: " + strings.Join(mismatched, ",")
+		typing.Reason = "evidence_type_mismatch"
+	}
+	appendResult(typing)
 
 	// 2. Uncertain/human-review attempts: completion is refused while any
 	// authoritative effect is uncertain.
@@ -136,18 +164,57 @@ func (v *Verifier) Verify(input Input) Report {
 	gitResult := CheckResult{ID: checkGitObserved, Type: "structural", Status: CheckPassed}
 	if !git.Available {
 		gitResult.Observed = "unavailable: " + git.Failure
-		report.Limitations = append(report.Limitations, "git observation unavailable: "+git.Failure)
+		report.Limitations = append(report.Limitations, boundText(v.limits.MaxObservedChars, "git observation unavailable: "+git.Failure))
+	}
+	if git.BaselineTruncated {
+		// The bounded baseline captured at task start was truncated. Pre-existing
+		// changes outside the truncated baseline window can be attributed as
+		// during_task; the limitation is recorded in the report (persisted with
+		// the attempt) and surfaced in inspect, never silently ignored.
+		gitResult.Observed = "baseline truncated at task start; pre-existing changes outside the truncated baseline may be attributed as during_task"
+		report.Limitations = append(report.Limitations, "git baseline truncated at task start; pre-existing changes outside the truncated baseline window may be attributed as during_task")
 	}
 	appendResult(gitResult)
+
+	// 5b. Acceptance criteria fail closed: completion is refused blocked when no
+	// operator acceptance plan with at least one check exists. Without a
+	// task-specific acceptance criterion, a completion proposal can never be
+	// proven against the task objective (issue #11 review). This is a
+	// control-plane dependency the model cannot satisfy; the task stays
+	// durably resumable for the operator to supply a plan.
+	if len(v.planChecks()) == 0 {
+		appendResult(CheckResult{
+			ID: checkAcceptanceCriteria, Type: "structural", Status: CheckBlocked,
+			Expected: "an operator acceptance plan with at least one acceptance check",
+			Observed: "no acceptance plan configured for the task",
+			Reason:   "acceptance_plan_missing",
+		})
+	}
 
 	// 6. Truncation is recorded explicitly; it is never silently ignored. A
 	// check that depends on truncated content fails (see recipe_exit_zero with
 	// require_untruncated), but truncation alone does not fail every check.
 	report.TruncatedEvidence = truncatedRecipeEvidence(input.Evidence)
 
-	// 7. Operator acceptance checks over authoritative state.
+	// 7. Operator acceptance checks over authoritative state. Limits.MaxChecks
+	// caps the checks evaluated in one attempt so an enormous operator plan
+	// can never blow up the report; when the budget is exhausted the overflow
+	// is a blocked control-plane check (completion cannot be proven).
+	budgetExceeded := false
 	for _, check := range v.planChecks() {
+		if len(report.Checks) >= v.limits.MaxChecks {
+			budgetExceeded = true
+			break
+		}
 		appendResult(v.evaluateCheck(check, input))
+	}
+	if budgetExceeded {
+		appendResult(CheckResult{
+			ID: checkBudgetExceeded, Type: "structural", Status: CheckBlocked,
+			Expected: fmt.Sprintf("at most %d checks evaluated per attempt", v.limits.MaxChecks),
+			Observed: "the operator plan has more checks than the attempt budget",
+			Reason:   "check_budget_exceeded",
+		})
 	}
 
 	// Combine: uncertain wins (authoritative), then blocked (control-plane),
@@ -169,21 +236,23 @@ func (v *Verifier) Verify(input Input) Report {
 	return report
 }
 
-// resolveCitedEvidence resolves every cited evidence id against the task's
-// persisted evidence.
+// resolveCitedEvidence resolves every typed evidence citation against the
+// task's persisted evidence: each cited id must exist AND its claimed tool
+// must match the persisted tool (issue #11 review).
 func resolveCitedEvidence(input Input) []CitedEvidence {
 	cited := make([]CitedEvidence, 0, len(input.FinalEvidence))
 	byID := make(map[string]state.RecoveryEvidence, len(input.Evidence))
 	for _, item := range input.Evidence {
 		byID[item.EvidenceID] = item
 	}
-	ids := append([]string(nil), input.FinalEvidence...)
-	sort.Strings(ids)
-	for _, id := range ids {
-		item, ok := byID[id]
-		entry := CitedEvidence{EvidenceID: id, Exists: ok}
+	claims := append([]EvidenceClaim(nil), input.FinalEvidence...)
+	sort.Slice(claims, func(i, j int) bool { return claims[i].EvidenceID < claims[j].EvidenceID })
+	for _, claim := range claims {
+		item, ok := byID[claim.EvidenceID]
+		entry := CitedEvidence{EvidenceID: claim.EvidenceID, ClaimedTool: claim.Tool, Exists: ok}
 		if ok {
 			entry.Tool = item.Tool
+			entry.ToolMatches = item.Tool == claim.Tool
 		}
 		cited = append(cited, entry)
 	}
@@ -268,6 +337,7 @@ func (v *Verifier) observeGit(input Input) *GitObservation {
 		observation.Truncated = true
 	}
 	observation.Available = true
+	observation.BaselineTruncated = input.BaselineGitStatusTruncated || input.BaselineGitDiffTruncated
 
 	baseline := parseGitStatus(input.BaselineGitStatus)
 	current := parseGitStatus(currentStatus)
@@ -458,6 +528,17 @@ func shortHash(value string) string {
 		return value
 	}
 	return value[:12]
+}
+
+// boundText truncates a description to at most limit characters. A truncation
+// marker makes the bound explicit so a bounded report is never confused with
+// a complete one. Limits.MaxObservedChars bounds one expected/observed/reason
+// description (issue #11 review: declared limits must be enforced).
+func boundText(limit int, value string) string {
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "[truncated]"
 }
 
 // recipeEvidenceFor returns every executed recipe evidence for the id. A

@@ -14,6 +14,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/protocol"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/tools"
+	"github.com/RenyEnnos/Runstead/internal/verifier"
 )
 
 // readFileFingerprint computes the real protocol fingerprint for a read_file
@@ -25,8 +26,11 @@ func readFileFingerprint(t *testing.T, path string) string {
 }
 
 // seedBuilder builds a loop from a RecoverySeed with the shared test clock.
+// plan is the operator acceptance plan of the resumed task (nil keeps the
+// fail-closed default: completion refused blocked, issue #11 review).
 type seedBuilder struct {
 	clock *fakeClock
+	plan  *verifier.Plan
 }
 
 func (b seedBuilder) loop(t *testing.T, client provider.Client, seed *agent.RecoverySeed, workspace string) *agent.Loop {
@@ -53,6 +57,7 @@ func (b seedBuilder) loop(t *testing.T, client provider.Client, seed *agent.Reco
 	loop, err := agent.NewLoop(agent.Config{
 		Runner: executor, Registry: registry, Limits: agent.Limits{}, Clock: b.clock,
 		Recovery: seed,
+		Verifier: verifier.New(registry, b.plan),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +111,7 @@ func TestLoopResumeConsumesCommittedObservationWithoutReExecution(t *testing.T) 
 		pace:  time.Millisecond,
 		responses: []provider.Response{
 			actionResponse("read_file", `{"path":"a.txt"}`),
-			finalResponse("complete", "Inspected.", "obs-000001"),
+			finalResponse("complete", "Inspected.", finalEvidence("obs-000001", "read_file")),
 		},
 	}
 	seed := &agent.RecoverySeed{
@@ -116,7 +121,7 @@ func TestLoopResumeConsumesCommittedObservationWithoutReExecution(t *testing.T) 
 		Guard:    map[string]string{readFileFingerprint(t, "a.txt"): "sig-alpha"},
 		Context:  "Recovered task summary.\nObjective: inspect.\nAvailable evidence: obs-000001\n",
 	}
-	loop := seedBuilder{clock: clock}.loop(t, client, seed, workspace)
+	loop := seedBuilder{clock: clock, plan: existsPlan("a.txt")}.loop(t, client, seed, workspace)
 
 	result := loop.Run(context.Background(), testTask("task-1"))
 	if result.Outcome != agent.OutcomeCompleted {
@@ -144,7 +149,7 @@ func TestLoopResumeWorkspaceChangeAllowsFreshObservation(t *testing.T) {
 		pace:  time.Millisecond,
 		responses: []provider.Response{
 			actionResponse("read_file", `{"path":"a.txt"}`),
-			finalResponse("complete", "Fresh.", "obs-000002"),
+			finalResponse("complete", "Fresh.", finalEvidence("obs-000002", "read_file")),
 		},
 	}
 	// The historical action ran under a different workspace signature (alpha);
@@ -156,7 +161,7 @@ func TestLoopResumeWorkspaceChangeAllowsFreshObservation(t *testing.T) {
 		Guard:    map[string]string{readFileFingerprint(t, "a.txt"): "sig-alpha"},
 		Context:  "Recovered task summary.\nObjective: inspect.\nAvailable evidence: obs-000001\n",
 	}
-	loop := seedBuilder{clock: clock}.loop(t, client, seed, workspace)
+	loop := seedBuilder{clock: clock, plan: existsPlan("a.txt")}.loop(t, client, seed, workspace)
 
 	result := loop.Run(context.Background(), testTask("task-1"))
 	if result.Outcome != agent.OutcomeCompleted {
@@ -177,7 +182,7 @@ func TestLoopResumeContinuesCounters(t *testing.T) {
 	client := &scriptedProvider{
 		clock:     clock,
 		pace:      time.Millisecond,
-		responses: []provider.Response{finalResponse("complete", "too late", "obs-000001")},
+		responses: []provider.Response{finalResponse("complete", "too late", finalEvidence("obs-000001", "read_file"))},
 	}
 	seed := &agent.RecoverySeed{
 		Turns:    1,
@@ -223,11 +228,12 @@ func TestLoopResumeContinuesCounters(t *testing.T) {
 // conversation, not the old one.
 func TestLoopResumeContextReachesNewConversation(t *testing.T) {
 	workspace := t.TempDir()
+	writeFixture(t, workspace, "a.txt", "alpha\n")
 	clock := newFakeClock()
 	client := &scriptedProvider{
 		clock:     clock,
 		pace:      time.Millisecond,
-		responses: []provider.Response{finalResponse("complete", "done", "obs-000001")},
+		responses: []provider.Response{finalResponse("complete", "done", finalEvidence("obs-000001", "read_file"))},
 	}
 	seed := &agent.RecoverySeed{
 		Turns:    1,
@@ -235,7 +241,7 @@ func TestLoopResumeContextReachesNewConversation(t *testing.T) {
 		Evidence: []tools.Observation{observation(t, "obs-000001", "read_file", "alpha\n")},
 		Context:  "RecoveryMarker-CONTINUE-FROM-HERE\nObjective: inspect the workspace.\n",
 	}
-	loop := seedBuilder{clock: clock}.loop(t, client, seed, workspace)
+	loop := seedBuilder{clock: clock, plan: existsPlan("a.txt")}.loop(t, client, seed, workspace)
 	result := loop.Run(context.Background(), testTask("task-1"))
 	if result.Outcome != agent.OutcomeCompleted {
 		t.Fatalf("outcome = %q, want completed", result.Outcome)
@@ -267,7 +273,7 @@ func TestLoopResumeEvidenceSequenceContinues(t *testing.T) {
 		pace:  time.Millisecond,
 		responses: []provider.Response{
 			actionResponse("read_file", `{"path":"a.txt"}`),
-			finalResponse("complete", "Fresh.", "obs-000002"),
+			finalResponse("complete", "Fresh.", finalEvidence("obs-000002", "read_file")),
 		},
 	}
 	// Persisted evidence obs-000001 exists; the resumed registry must continue
@@ -293,6 +299,7 @@ func TestLoopResumeEvidenceSequenceContinues(t *testing.T) {
 	}
 	loop, err := agent.NewLoop(agent.Config{
 		Runner: executor, Registry: registry, Limits: agent.Limits{}, Clock: clock, Recovery: seed,
+		Verifier: verifier.New(registry, existsPlan("a.txt")),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -326,11 +333,11 @@ func TestLoopResumeUsesRegistryWorkspace(t *testing.T) {
 		pace:  time.Millisecond,
 		responses: []provider.Response{
 			actionResponse("read_file", `{"path":"a.txt"}`),
-			finalResponse("complete", "Read.", "obs-000001"),
+			finalResponse("complete", "Read.", finalEvidence("obs-000001", "read_file")),
 		},
 	}
 	seed := &agent.RecoverySeed{Context: "Recovered task summary.\nObjective: inspect.\n"}
-	loop := seedBuilder{clock: clock}.loop(t, client, seed, workspace)
+	loop := seedBuilder{clock: clock, plan: existsPlan("a.txt")}.loop(t, client, seed, workspace)
 	result := loop.Run(context.Background(), testTask("task-1"))
 	if result.Outcome != agent.OutcomeCompleted {
 		t.Fatalf("outcome = %q, want completed\nreason: %s", result.Outcome, result.StopReason)

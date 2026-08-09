@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,7 +158,7 @@ func TestResumeCompletedTaskIsNotResumable(t *testing.T) {
 	}
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
 	var out, errOut bytes.Buffer
@@ -165,6 +166,7 @@ func TestResumeCompletedTaskIsNotResumable(t *testing.T) {
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
+		"--acceptance", acceptanceFor(t, "a.txt"),
 		"--min-start-interval", "1ms",
 		"--log-level", "error",
 	}), &out, &errOut)
@@ -198,6 +200,22 @@ func TestCanceledRunReturnsInterruptedCode(t *testing.T) {
 	}
 }
 
+// acceptanceFor writes an operator acceptance plan requiring the file to
+// exist and returns its path. Tests that expect a task to complete must supply
+// acceptance criteria: without a plan the verifier refuses completion blocked
+// (issue #11 review).
+func acceptanceFor(t *testing.T, path string) string {
+	t.Helper()
+	return writeAcceptanceFile(t, fmt.Sprintf(`{"version":1,"checks":[{"id":"artifact","type":"file_exists","path":%q}]}`, path))
+}
+
+// acceptanceRecipeFor writes an operator acceptance plan requiring the recipe
+// to exit zero and returns its path.
+func acceptanceRecipeFor(t *testing.T, recipeID string) string {
+	t.Helper()
+	return writeAcceptanceFile(t, fmt.Sprintf(`{"version":1,"checks":[{"id":"recipe-ok","type":"recipe_exit_zero","recipe":%q}]}`, recipeID))
+}
+
 func writeScript(t *testing.T, responses ...string) string {
 	t.Helper()
 	var builder strings.Builder
@@ -226,7 +244,7 @@ func TestRunScriptedCompletesGroundedTask(t *testing.T) {
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"list_files","arguments":{"path":"."}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"Inspected the workspace.","evidence":["obs-000001","obs-000002"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"Inspected the workspace.","evidence":[{"evidence_id":"obs-000001","tool":"read_file"},{"evidence_id":"obs-000002","tool":"list_files"}]}</runstead_final>`,
 	)
 	var out, errOut bytes.Buffer
 
@@ -234,6 +252,7 @@ func TestRunScriptedCompletesGroundedTask(t *testing.T) {
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
+		"--acceptance", acceptanceFor(t, "a.txt"),
 		"--min-start-interval", "1ms",
 		"--log-level", "error",
 	}), &out, &errOut)
@@ -265,7 +284,7 @@ func TestRunScriptedFabricatedEvidenceExitCode(t *testing.T) {
 	}
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"Fabricated.","evidence":["obs-999999"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"Fabricated.","evidence":[{"evidence_id":"obs-999999","tool":"read_file"}]}</runstead_final>`,
 	)
 	var out, errOut bytes.Buffer
 
@@ -401,7 +420,7 @@ func TestRunScriptedTimeBudgetExitCode(t *testing.T) {
 	// A 1ns time budget is already elapsed before the first turn, so the loop
 	// stops deterministically with time_budget_exhausted before any provider
 	// attempt or tool execution.
-	script := writeScript(t, `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"too late","evidence":["obs-000001"]}</runstead_final>`)
+	script := writeScript(t, `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"too late","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`)
 	var out, errOut bytes.Buffer
 
 	code := run(context.Background(), withStateDir(t, []string{
@@ -431,7 +450,7 @@ func TestRunScriptedFinalIncompleteExitCode(t *testing.T) {
 	}
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"incomplete","summary":"I could not answer fully.","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"incomplete","summary":"I could not answer fully.","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	var out, errOut bytes.Buffer
 

@@ -178,7 +178,10 @@ func ParsePlan(data []byte) (*Plan, error) {
 
 // EmptyPlan returns a plan with no acceptance checks. Verification still runs
 // the structural completion checks (evidence grounding, uncertain effects,
-// pending approvals, write/filesystem reconciliation).
+// pending approvals, write/filesystem reconciliation), but because no
+// task-specific acceptance criterion exists, completion is refused blocked
+// (fail closed, issue #11 review): a completion proposal without operator
+// acceptance criteria cannot be proven against the task objective.
 func EmptyPlan() *Plan {
 	return &Plan{Version: PlanVersion}
 }

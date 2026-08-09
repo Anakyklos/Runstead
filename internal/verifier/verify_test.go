@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/RenyEnnos/Runstead/internal/recipe"
@@ -101,14 +103,16 @@ func TestVerifyRejectsClaimedFileThatDoesNotExist(t *testing.T) {
 	}
 }
 
-// Scenario 2: the model cites an evidence ID that does not exist.
+// Scenario 2: the model cites an evidence ID that does not exist. Without an
+// operator acceptance plan the task can never complete anyway (fail closed),
+// but the fabricated citation is still a failed grounding check.
 func TestVerifyRejectsFabricatedEvidenceID(t *testing.T) {
 	report := mustReport(t, &fakeObserver{}, Input{
-		TaskID: "t2", FinalEvidence: []string{"obs-999999"},
+		TaskID: "t2", FinalEvidence: []EvidenceClaim{{EvidenceID: "obs-999999", Tool: "read_file"}},
 		Evidence: []state.RecoveryEvidence{readEvidence(t, "obs-000001")},
 	})
-	if report.Decision != DecisionFailed {
-		t.Fatalf("decision = %s, want failed", report.Decision)
+	if report.Decision != DecisionBlocked {
+		t.Fatalf("decision = %s, want blocked (no acceptance plan fails closed)", report.Decision)
 	}
 	check := findCheck(report, checkEvidenceGrounded)
 	if check.Status != CheckFailed || check.Reason != "evidence_ids_not_found" {
@@ -116,20 +120,159 @@ func TestVerifyRejectsFabricatedEvidenceID(t *testing.T) {
 	}
 }
 
-// Scenario 3: evidence exists but is type-incompatible with the claim (a
-// recipe claim backed only by a read observation).
+// Scenario 2b (issue #11 review blocker): the final response cites a real
+// evidence id but with a WRONG claimed tool. A read_file observation is cited
+// as if it were run_recipe evidence; the type mismatch is a failed check and
+// the evidence cannot support the claim.
 func TestVerifyRejectsTypeIncompatibleEvidence(t *testing.T) {
 	plan := planWithChecks(Check{ID: "tests-pass", Type: CheckRecipeExitZero, Recipe: "test"})
 	report := mustReport(t, &fakeObserver{}, Input{
-		TaskID: "t3", Plan: plan,
-		Evidence: []state.RecoveryEvidence{readEvidence(t, "obs-000001")},
+		TaskID: "t2b", Plan: plan,
+		FinalEvidence: []EvidenceClaim{{EvidenceID: "obs-000001", Tool: tools.ToolRunRecipe}},
+		Evidence:      []state.RecoveryEvidence{readEvidence(t, "obs-000001")},
 	})
 	if report.Decision != DecisionFailed {
 		t.Fatalf("decision = %s, want failed", report.Decision)
 	}
+	typing := findCheck(report, checkEvidenceClaimsTyped)
+	if typing.Status != CheckFailed || typing.Reason != "evidence_type_mismatch" {
+		t.Fatalf("typing check = %+v", typing)
+	}
+	if len(report.CitedEvidence) != 1 {
+		t.Fatalf("cited evidence = %+v", report.CitedEvidence)
+	}
+	if !report.CitedEvidence[0].Exists || report.CitedEvidence[0].ToolMatches {
+		t.Fatalf("cited evidence must exist but mismatch the claimed tool: %+v", report.CitedEvidence[0])
+	}
+	// The recipe check also cannot be satisfied: the persisted evidence is a
+	// read observation, not an executed recipe.
 	check := findCheck(report, "tests-pass")
 	if check.Status != CheckFailed || check.Reason != "recipe_evidence_missing" {
 		t.Fatalf("tests-pass check = %+v", check)
+	}
+}
+
+// Scenario 2c: a citation with the correct claimed tool is accepted.
+func TestVerifyAcceptsTypeCompatibleEvidence(t *testing.T) {
+	plan := planWithChecks(Check{ID: "artifact", Type: CheckFileExists, Path: "a.txt"})
+	observer := &fakeObserver{files: map[string]string{"a.txt": "alpha\n"}}
+	report := mustReport(t, observer, Input{
+		TaskID: "t2c", Plan: plan,
+		FinalEvidence: []EvidenceClaim{{EvidenceID: "obs-000001", Tool: tools.ToolReadFile}},
+		Evidence:      []state.RecoveryEvidence{readEvidence(t, "obs-000001")},
+	})
+	if report.Decision != DecisionPassed {
+		t.Fatalf("decision = %s, want passed: %+v", report.Decision, report.Checks)
+	}
+	if findCheck(report, checkEvidenceClaimsTyped).Status != CheckPassed {
+		t.Fatalf("typing check must pass: %+v", findCheck(report, checkEvidenceClaimsTyped))
+	}
+}
+
+// Issue #11 review blocker: without an operator acceptance plan, completion is
+// refused blocked even when every structural check passes. A completion
+// proposal without task-specific acceptance criteria can never be proven
+// against the task objective.
+func TestVerifyWithoutAcceptancePlanBlocksCompletion(t *testing.T) {
+	report := mustReport(t, &fakeObserver{files: map[string]string{"result.txt": "42\n"}}, Input{
+		TaskID: "t-noplan",
+		Evidence: []state.RecoveryEvidence{
+			writeEvidence(t, "obs-000001", "result.txt", hashOf("42\n"), "created"),
+		},
+	})
+	if report.Decision != DecisionBlocked {
+		t.Fatalf("decision = %s, want blocked without an acceptance plan", report.Decision)
+	}
+	check := findCheck(report, checkAcceptanceCriteria)
+	if check.Status != CheckBlocked || check.Reason != "acceptance_plan_missing" {
+		t.Fatalf("acceptance criteria check = %+v", check)
+	}
+	if findCheck(report, checkWritesReconciled).Status != CheckPassed {
+		t.Fatalf("structural checks still pass: %+v", report.Checks)
+	}
+}
+
+// An explicit plan with zero checks is the same fail-closed state: no
+// task-specific acceptance criterion exists.
+func TestVerifyEmptyAcceptancePlanBlocksCompletion(t *testing.T) {
+	report := mustReport(t, &fakeObserver{}, Input{
+		TaskID: "t-emptyplan", Plan: EmptyPlan(),
+	})
+	if report.Decision != DecisionBlocked {
+		t.Fatalf("decision = %s, want blocked", report.Decision)
+	}
+	if findCheck(report, checkAcceptanceCriteria).Reason != "acceptance_plan_missing" {
+		t.Fatalf("acceptance criteria check = %+v", findCheck(report, checkAcceptanceCriteria))
+	}
+}
+
+// Limits.MaxChecks is enforced: a plan with more checks than the attempt
+// budget is refused blocked with check_budget_exceeded, never partially
+// proven.
+func TestVerifyMaxChecksBudgetExceededBlocks(t *testing.T) {
+	plan := &Plan{Version: PlanVersion}
+	for index := 0; index < DefaultLimits().MaxChecks+8; index++ {
+		plan.Checks = append(plan.Checks, Check{
+			ID: fmt.Sprintf("c-%04d", index), Type: CheckFileExists, Path: fmt.Sprintf("f-%04d.txt", index),
+		})
+	}
+	observer := &fakeObserver{}
+	report := mustReport(t, observer, Input{TaskID: "t-budget", Plan: plan})
+	if report.Decision != DecisionBlocked {
+		t.Fatalf("decision = %s, want blocked (check budget exceeded)", report.Decision)
+	}
+	if findCheck(report, checkBudgetExceeded).Status != CheckBlocked {
+		t.Fatalf("budget check = %+v", findCheck(report, checkBudgetExceeded))
+	}
+	if len(report.Checks) > DefaultLimits().MaxChecks+2 {
+		t.Fatalf("report must stay bounded: %d checks", len(report.Checks))
+	}
+}
+
+// Limits.MaxObservedChars is enforced: a description longer than the bound is
+// truncated with an explicit marker, never persisted in full.
+func TestVerifyBoundedDescriptions(t *testing.T) {
+	longFailure := strings.Repeat("x", DefaultLimits().MaxObservedChars*2)
+	observer := &fakeObserver{gitErr: errors.New(longFailure)}
+	report := mustReport(t, observer, Input{TaskID: "t-bounds"})
+	check := findCheck(report, checkGitObserved)
+	if len(check.Observed) > DefaultLimits().MaxObservedChars+len("[truncated]") {
+		t.Fatalf("observed description must be bounded, got %d chars", len(check.Observed))
+	}
+	if !strings.Contains(check.Observed, "[truncated]") {
+		t.Fatalf("truncation must be explicit: %q", check.Observed)
+	}
+	for _, limitation := range report.Limitations {
+		if len(limitation) > DefaultLimits().MaxObservedChars+len("[truncated]") {
+			t.Fatalf("limitation must be bounded: %d chars", len(limitation))
+		}
+	}
+}
+
+// A truncated git baseline is recorded explicitly: the report carries the flag
+// and the limitation so pre-existing changes outside the truncated window are
+// never silently attributed as during_task (issue #11 review).
+func TestVerifyBaselineTruncationRecorded(t *testing.T) {
+	observer := &fakeObserver{gitStatus: "?? a.txt\n"}
+	report := mustReport(t, observer, Input{
+		TaskID:                     "t-baseline-trunc",
+		Plan:                       planWithChecks(Check{ID: "a", Type: CheckFileExists, Path: "a.txt"}),
+		BaselineGitStatusTruncated: true,
+	})
+	if report.Git == nil || !report.Git.Available {
+		t.Fatalf("git = %+v", report.Git)
+	}
+	if !report.Git.BaselineTruncated {
+		t.Fatalf("baseline truncation must be recorded: %+v", report.Git)
+	}
+	found := false
+	for _, limitation := range report.Limitations {
+		if strings.Contains(limitation, "baseline truncated") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("baseline truncation limitation must be visible: %+v", report.Limitations)
 	}
 }
 
@@ -218,7 +361,9 @@ func TestVerifyTruncationRecordedButExitZeroStillValid(t *testing.T) {
 }
 
 // Scenario 8: the requested change was only partially implemented: the
-// persisted write evidence does not match the current filesystem.
+// persisted write evidence does not match the current filesystem. The task
+// also has no acceptance plan, so the run would additionally be refused
+// blocked; the failed write reconciliation is still reported.
 func TestVerifyPartialImplementationFails(t *testing.T) {
 	report := mustReport(t, &fakeObserver{files: map[string]string{"src/main.go": "partial\n"}}, Input{
 		TaskID: "t8",
@@ -226,8 +371,8 @@ func TestVerifyPartialImplementationFails(t *testing.T) {
 			writeEvidence(t, "obs-000001", "src/main.go", hashOf("complete\n"), "modified"),
 		},
 	})
-	if report.Decision != DecisionFailed {
-		t.Fatalf("decision = %s, want failed", report.Decision)
+	if report.Decision != DecisionBlocked {
+		t.Fatalf("decision = %s, want blocked (no acceptance plan fails closed)", report.Decision)
 	}
 	check := findCheck(report, checkWritesReconciled)
 	if check.Status != CheckFailed || check.Reason != "write_evidence_does_not_match_filesystem" {

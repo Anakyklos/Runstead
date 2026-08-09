@@ -257,8 +257,12 @@ lives in `internal/tools` and stays out of this package. A schema-valid action
 can still be rejected as `unknown_tool` or `invalid_arguments`; only an
 accepted action is executable. Final responses
 contain only `version`, `status` (`complete` or `incomplete`), `summary` and
-non-empty string `evidence`. An accepted final response is not a tool execution
-and does not by itself establish task completion.
+non-empty `evidence`, where every evidence entry is a typed citation
+`{"evidence_id": "...", "tool": "..."}` declaring the tool that produced the
+cited observation. An accepted final response is not a tool execution and does
+not by itself establish task completion: the cited IDs must exist in the
+task's persisted evidence AND match their declared tool, or the verifier
+rejects the final (issue #11).
 
 Failures expose stable codes: `missing_envelope`, `protocol_refusal`,
 `unsupported_execution_claim`, `multiple_envelopes`, `unclosed_envelope`,
@@ -386,8 +390,10 @@ contract: observations are appended under a distinct `observation` transcript
 role with the #6 `untrusted` marker and never become system instructions,
 permissions, policy or approval. A `runstead_final` is syntax only; `completed`
 is accepted only when every cited evidence ID was produced by a successful
-observation in the current run. Fabricated IDs produce `final_not_grounded`, and
-an `incomplete` final is a grounded terminal `final_incomplete`.
+observation in the current run, the declared tool of each citation matches the
+persisted evidence row (issue #11), and the control-plane verifier passes.
+Fabricated IDs produce `final_not_grounded`, and an `incomplete` final is a
+grounded terminal `final_incomplete`.
 
 ### Safety invariants
 
