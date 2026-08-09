@@ -335,6 +335,9 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 		}
 	}
 
+	builder.WriteString("\nGit observation:\n")
+	renderGitObservation(&builder, verificationAttempts)
+
 	builder.WriteString("\nGovernor state:\n")
 	if governor == nil {
 		builder.WriteString("  (none recorded)\n")
@@ -715,4 +718,79 @@ func boundedRender(value string) string {
 		return value
 	}
 	return value[:maxInspectLine] + "...(truncated)"
+}
+
+// renderGitObservation renders the bounded real git observation captured by
+// the latest control-plane verification report (issue #12 final evidence):
+// whether git was available, the pre-existing vs during-task changed files,
+// and the explicit baseline-truncation limitation. The report is persisted
+// verifier JSON; state renders it without importing the verifier package.
+func renderGitObservation(builder *strings.Builder, attempts []VerificationAttemptRow) {
+	if len(attempts) == 0 {
+		builder.WriteString("  (no verification attempt)\n")
+		return
+	}
+	latest := attempts[len(attempts)-1]
+	var report struct {
+		Git *struct {
+			CurrentStatus     string `json:"current_status"`
+			Available         bool   `json:"available"`
+			Failure           string `json:"failure,omitempty"`
+			BaselineTruncated bool   `json:"baseline_truncated,omitempty"`
+			PreExisting       []struct {
+				Path   string `json:"path"`
+				Status string `json:"status,omitempty"`
+			} `json:"pre_existing,omitempty"`
+			DuringTask []struct {
+				Path   string `json:"path"`
+				Status string `json:"status,omitempty"`
+			} `json:"during_task,omitempty"`
+		} `json:"git,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(latest.ReportJSON), &report); err != nil || report.Git == nil {
+		builder.WriteString("  (unavailable)\n")
+		return
+	}
+	git := report.Git
+	if !git.Available {
+		failure := git.Failure
+		if failure == "" {
+			failure = "git observation unavailable"
+		}
+		fmt.Fprintf(builder, "  unavailable: %s\n", boundedRender(failure))
+		return
+	}
+	builder.WriteString("  available: yes\n")
+	if git.CurrentStatus != "" {
+		fmt.Fprintf(builder, "  status: %s\n", boundedRender(singleLine(git.CurrentStatus)))
+	}
+	builder.WriteString("  pre-existing changes: " + renderChangedFiles(git.PreExisting) + "\n")
+	builder.WriteString("  during-task changes: " + renderChangedFiles(git.DuringTask) + "\n")
+	if git.BaselineTruncated {
+		builder.WriteString("  limitation: the task-start git baseline was truncated; pre-existing changes outside the truncated baseline window may be attributed as during-task\n")
+	}
+}
+
+func renderChangedFiles(files []struct {
+	Path   string `json:"path"`
+	Status string `json:"status,omitempty"`
+}) string {
+	if len(files) == 0 {
+		return "(none)"
+	}
+	parts := make([]string, 0, len(files))
+	for _, file := range files {
+		if file.Status == "" {
+			parts = append(parts, file.Path)
+		} else {
+			parts = append(parts, file.Path+" ("+file.Status+")")
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// singleLine collapses embedded newlines so a bounded status render stays one
+// line.
+func singleLine(value string) string {
+	return strings.Join(strings.Fields(value), " ")
 }
