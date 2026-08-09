@@ -568,6 +568,21 @@ type Result struct {
 // executable that cannot be found).
 var StartError = errors.New("recipe process could not start")
 
+// processCrashPoint is the deterministic test seam at process boundaries.
+// Production code leaves it nil; subprocess crash tests install it to die
+// right after the process started ("process_started_after"), leaving the
+// durable tool attempt prepared with the effect provably in flight.
+var processCrashPoint func(string)
+
+// SetCrashPoint installs the process crash test seam. Only tests call it.
+func SetCrashPoint(fn func(string)) { processCrashPoint = fn }
+
+func hitProcessCrashPoint(name string) {
+	if processCrashPoint != nil {
+		processCrashPoint(name)
+	}
+}
+
 // Run executes the recipe argv directly in its own process group inside cwd.
 // On timeout or cancellation the whole process group is terminated (SIGTERM
 // then, after a grace period, SIGKILL on Unix). env is the already-built
@@ -596,6 +611,12 @@ func Run(ctx context.Context, r Recipe, cwd string, env []string) Result {
 			Err:     fmt.Errorf("%w: %v", StartError, err),
 		}
 	}
+	// Crash seam right after the process started: the effect is provably in
+	// flight (the process exists in its own group) but no result was captured.
+	// A deterministic death here leaves the durable tool attempt 'prepared'
+	// (TX 1 committed, TX 2 not), and recovery class 4 never re-runs it
+	// blindly (issue #13).
+	hitProcessCrashPoint("process_started_after")
 	pgid := command.Process.Pid
 	done := make(chan error, 1)
 	finished := make(chan struct{})
