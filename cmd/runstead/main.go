@@ -601,6 +601,12 @@ func printResult(out, errOut io.Writer, taskID string, result agent.Result) {
 		if result.Summary != "" {
 			fmt.Fprintf(out, "summary: %s\n", result.Summary)
 		}
+		// The model's own final text is unverified free text, kept explicitly
+		// separate from the verified summary so it can never be mistaken for a
+		// verified completion claim (issue #11 review).
+		if result.Note != "" {
+			fmt.Fprintf(out, "note (unverified): %s\n", result.Note)
+		}
 		for _, id := range result.Evidence {
 			fmt.Fprintf(out, "evidence: %s\n", id)
 		}

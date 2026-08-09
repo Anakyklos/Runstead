@@ -885,8 +885,15 @@ func (l *Loop) handleFinal(
 	emit(TraceLine{Kind: TraceVerification, Status: string(report.Decision), Classification: report.Summary})
 	switch report.Decision {
 	case verifier.DecisionPassed:
+		// The VERIFIED summary comes from the verifier report (acceptance
+		// checks + authoritative evidence), never from model prose. The model's
+		// own final text is kept explicitly separate as an unverified note, so
+		// a claim like "tests passed" without any supporting acceptance check
+		// can never surface as a verified completion summary (issue #11
+		// review).
 		return stop(OutcomeCompleted, "verification passed: "+report.Summary, func(result *Result) {
-			result.Summary = final.Summary
+			result.Summary = report.Summary
+			result.Note = final.Summary
 			result.Evidence = citedEvidenceIDs(final.Evidence)
 			result.Classification = string(report.Decision)
 		}), true

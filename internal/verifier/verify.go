@@ -231,7 +231,26 @@ func (v *Verifier) Verify(input Input) Report {
 		report.Summary = fmt.Sprintf("completion refused: %d check(s) failed", len(failed))
 	default:
 		report.Decision = DecisionPassed
-		report.Summary = "completion verified: all acceptance checks passed"
+		// The verified summary is produced by the verifier from the acceptance
+		// checks, never from model prose (issue #11 review). It names the
+		// operator checks that passed so the completion report is traceable to
+		// acceptance criteria.
+		var checkNames []string
+		for _, check := range passed {
+			if check.Type == "structural" {
+				continue
+			}
+			checkNames = append(checkNames, check.ID)
+		}
+		switch len(checkNames) {
+		case 0:
+			report.Summary = "completion verified: all acceptance checks passed"
+		case 1:
+			report.Summary = "completion verified: acceptance check passed (" + checkNames[0] + ")"
+		default:
+			report.Summary = fmt.Sprintf("completion verified: %d acceptance checks passed (%s)", len(checkNames), strings.Join(checkNames, ","))
+		}
+		report.Summary = boundText(v.limits.MaxObservedChars, report.Summary)
 	}
 	return report
 }

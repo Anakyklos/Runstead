@@ -58,6 +58,7 @@ func BuildSystemContract(registry *tools.Registry) (string, error) {
 	builder.WriteString("- Fabricated, invented, mismatched, or type-incompatible evidence citations are rejected with final_not_grounded or a failed verification.\n")
 	builder.WriteString("- Do not invent observation IDs. Cite only IDs you were actually given.\n")
 	builder.WriteString("- Finish with status \"complete\" is only a PROPOSAL. Runstead independently verifies completion against the real environment, persisted evidence and acceptance checks; your claim alone never decides completion. Without an operator acceptance plan, completion is refused: the operator must define acceptance criteria. A failed verification returns a structured verification observation; correct the real environment and propose again.\n")
+	builder.WriteString("- Your final summary is never verified content: the completed task's summary is produced by the verifier from the acceptance checks, and your own text is surfaced only as an unverified note.\n")
 	builder.WriteString("- Writes require expected_before_hash. read_file reports the current sha256 of a file; pass exactly that value when you propose to change it, or \"absent\" when the file must not exist yet.\n")
 	builder.WriteString("- If the file changed since you observed it, the write fails closed with stale_state and nothing is modified. Never overwrite state you have not verified.\n")
 	builder.WriteString("- Writes execute only inside the configured workspace. Absolute paths, traversal and symlink escapes are rejected.\n")

@@ -277,3 +277,53 @@ func TestRunRejectsTypeIncompatibleEvidenceCitation(t *testing.T) {
 		t.Fatalf("task must complete after the corrected citation:\n%s", rendered)
 	}
 }
+
+// Issue #11 review blocker regression at the CLI level: the acceptance plan
+// contains only file_exists(readme.txt), the model cites a legitimate
+// read_file observation HONESTLY, and the final summary claims "tests passed"
+// with no recipe evidence. The task completes (the acceptance check passes),
+// but the model text must never appear as the verified summary: stdout and
+// inspect carry the verifier-produced summary, and "tests passed" is only a
+// labeled unverified note.
+func TestRunModelTextNeverVerifiedSummary(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "readme.txt"), []byte("info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	acceptance := acceptanceFor(t, "readme.txt")
+	script := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"readme.txt"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"tests passed","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
+	)
+	stateDir := t.TempDir()
+	var out, errOut strings.Builder
+	code := run(context.Background(), []string{
+		"run", "--task", "Inspect the workspace.",
+		"--workspace", workspace,
+		"--scripted", script,
+		"--acceptance", acceptance,
+		"--state-dir", stateDir,
+		"--min-start-interval", "1ms",
+		"--log-level", "error",
+	}, &out, &errOut)
+	if code != exitSuccess {
+		t.Fatalf("run exit = %d, want 0\nstderr:\n%s", code, errOut.String())
+	}
+	if strings.Contains(out.String(), "summary: tests passed") {
+		t.Fatalf("the model claim must never be the verified summary:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "summary: completion verified: acceptance check passed (artifact)") {
+		t.Fatalf("stdout must carry the verifier-produced summary:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "note (unverified): tests passed") {
+		t.Fatalf("stdout must carry the model text as a labeled unverified note:\n%s", out.String())
+	}
+	taskID := taskIDFromOutput(t, errOut.String())
+	rendered := inspectRendered(t, stateDir, taskID)
+	if strings.Contains(rendered, "Summary: tests passed") {
+		t.Fatalf("the model claim must never be the persisted task summary:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Summary: completion verified: acceptance check passed (artifact)") {
+		t.Fatalf("inspect must render the verified summary:\n%s", rendered)
+	}
+}

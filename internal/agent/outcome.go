@@ -159,15 +159,26 @@ func (o Outcome) StopReason() string {
 
 // Result is the deterministic outcome of one loop run.
 type Result struct {
-	Outcome        Outcome
-	StopReason     string
-	Turns          int
-	Attempts       int
-	Observations   int
-	Corrections    int
-	Repeated       int
-	MixedProse     int
-	Summary        string
+	Outcome      Outcome
+	StopReason   string
+	Turns        int
+	Attempts     int
+	Observations int
+	Corrections  int
+	Repeated     int
+	MixedProse   int
+	// Summary is the VERIFIED completion summary of a completed task: it is
+	// produced by the control-plane verifier from the acceptance checks and
+	// authoritative evidence, never from model prose (issue #11 review). For
+	// non-completed outcomes it may carry the model's final text where that is
+	// honest (for example an incomplete final).
+	Summary string
+	// Note is the model's own final-response summary, kept EXPLICITLY
+	// SEPARATE from the verified report. It is unverified free text: it never
+	// enters the verifier, is never persisted as the task summary, and is
+	// surfaced only as a labeled note so it can never be mistaken for a
+	// verified completion claim.
+	Note           string
 	Evidence       []string
 	Classification string
 	Err            error

@@ -22,9 +22,13 @@ model proposes completion
 
 The verifier is control plane, not a tool the model controls. Model prose,
 summaries, reasoning, exit code 0 and tool output are never inputs to the
-decision. There is no path in the runtime by which a task is marked completed
-only because the model said so: the state layer independently refuses to
-finalize `completed` without a persisted `passed` verification attempt.
+decision, and model prose is never verified output either: a completed task's
+summary is produced by the verifier from the acceptance checks, and the
+model's final text is at most an unverified note (see "Model text is never
+verified content" below). There is no path in the runtime by which a task is
+marked completed only because the model said so: the state layer
+independently refuses to finalize `completed` without a persisted `passed`
+verification attempt.
 
 ## What constitutes evidence
 
@@ -153,9 +157,23 @@ never silently ignored, but it does not automatically fail every check:
   example "37 specific tests passed") can never be supported by truncated
   evidence.
 
+## Model text is never verified content
+
+Model prose is never a verified statement. A completed task's summary is
+produced by the **verifier** from the acceptance checks and authoritative
+evidence (for example `completion verified: acceptance check passed
+(artifact)`), never from the model's free-text `summary`. The model's own
+final text is surfaced only as an explicitly labeled **unverified note**
+(`note (unverified): ...` in the CLI output) and is never persisted as the
+task summary. A final like `summary: "tests passed"` therefore cannot become
+a verified completion claim: without a `recipe_exit_zero` acceptance check
+(and real executed `recipe.Evidence` backing it), "tests passed" is at most
+an unverified note next to a completion verified by whatever acceptance
+checks actually exist.
+
 ## Recipe and process evidence
 
-A claim like "tests passed" is accepted only when there is real
+A `recipe_exit_zero` acceptance check is satisfied only when there is real
 `recipe.Evidence` from an executed `run_recipe` through the #26 bounded
 process runner and capability policy. The verifier checks the recipe id, the
 concrete execution, the real exit status, terminating signal, timeout and

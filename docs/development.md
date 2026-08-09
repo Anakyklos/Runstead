@@ -311,9 +311,11 @@ runstead run \
 Each turn must contain exactly one `runstead.protocol.v1` envelope; the final
 envelope must cite observation IDs (`obs-000001`, ...) that the run actually
 produced. Scripted responses therefore reference the deterministic IDs of the
-tools they execute. The command prints `outcome:`/`summary:`/`evidence:` to
-stdout, a sanitized lifecycle trace to stderr, and exits with the typed outcome
-code.
+tools they execute. The command prints `outcome:`/`reason:`/`summary:`/
+`evidence:` to stdout — the completed task's `summary:` is the
+verifier-produced summary of the acceptance checks, and the model's own final
+text appears only as `note (unverified):` — plus a sanitized lifecycle trace to
+stderr, and exits with the typed outcome code.
 
 Live OmniRoute configuration is accepted but refused before execution: protected
 live use remains blocked until a compatible OmniRoute attempt-receipt producer

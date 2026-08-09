@@ -46,6 +46,72 @@ func planDigest(plan *verifier.Plan) string {
 	return plan.Digest()
 }
 
+// Issue #11 review blocker regression (semantic binding): the acceptance plan
+// contains only file_exists(result.txt), result.txt exists, and the model
+// cites a legitimate read_file observation HONESTLY (correct tool). The final
+// summary claims "tests passed" with no recipe evidence anywhere. The
+// verification passes the acceptance checks, but the model's free text must
+// NEVER surface as the verified completion summary: Result.Summary comes from
+// the verifier report, and "tests passed" is only an unverified note.
+func TestLoopVerificationModelTextNeverVerifiedSummary(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "readme.txt"), []byte("info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "result.txt"), []byte("42\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan := existsPlan("result.txt")
+	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
+		actionResponse("read_file", `{"path":"readme.txt"}`),
+		finalResponse("complete", "tests passed", finalEvidence("obs-000001", "read_file")),
+	)
+	loop := verifierLoop(t, h, plan, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3}, nil)
+	result := loop.Run(context.Background(), testTask("task-verify-no-claim"))
+	if result.Outcome != agent.OutcomeCompleted {
+		t.Fatalf("outcome = %s, reason = %s", result.Outcome, result.StopReason)
+	}
+	// The verified summary is produced by the verifier from the acceptance
+	// check; the model's "tests passed" claim is NOT the summary.
+	if result.Summary != "completion verified: acceptance check passed (artifact)" {
+		t.Fatalf("verified summary = %q, want the verifier-produced summary naming the acceptance check", result.Summary)
+	}
+	if result.Note != "tests passed" {
+		t.Fatalf("note = %q, want the model text kept as an unverified note", result.Note)
+	}
+	// No run_recipe evidence exists anywhere: only the read observation.
+	ctx := context.Background()
+	snapshot, err := h.store.LoadRecoverySnapshot(ctx, "task-verify-no-claim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range snapshot.Evidence {
+		if item.Tool == tools.ToolRunRecipe {
+			t.Fatalf("no recipe evidence may exist: %+v", item)
+		}
+	}
+	attempts, err := h.store.VerificationAttempts(ctx, "task-verify-no-claim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 1 || attempts[0].Decision != "passed" {
+		t.Fatalf("attempts = %+v, want one passed", attempts)
+	}
+	// The persisted task summary (rendered by inspect) is the verified one,
+	// never the model claim.
+	var inspectOut strings.Builder
+	if err := h.store.RenderInspect(ctx, &inspectOut, "task-verify-no-claim"); err != nil {
+		t.Fatal(err)
+	}
+	rendered := inspectOut.String()
+	if strings.Contains(rendered, "Summary: tests passed") {
+		t.Fatalf("the model claim must never be the persisted task summary:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Summary: completion verified: acceptance check passed (artifact)") {
+		t.Fatalf("inspect must render the verified summary:\n%s", rendered)
+	}
+}
+
 // Issue #11 review blocker E2E at the loop level: the final response cites a
 // REAL evidence id but with a WRONG claimed tool (a read_file observation
 // cited as write_file). The verification fails with evidence_claims_typed and
