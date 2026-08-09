@@ -217,8 +217,9 @@ TX 2: persist the observed result (status + citable process evidence);
   blindly re-executed.
 - A completed attempt (including a non-zero exit, a signal, a timeout or a
   cancellation) is terminal verified progress with citable evidence.
-- `exit code 0` is **not** conflated with task completion; #11 decides task
-  completion from the evidence.
+- `exit code 0` is **not** conflated with task completion; the #11 verifier
+  decides task completion from the evidence (see
+  [verification.md](verification.md)).
 
 ## Evidence
 

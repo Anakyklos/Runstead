@@ -633,8 +633,13 @@ func TestResumeTaskNotFoundAndTerminal(t *testing.T) {
 		t.Fatal("Resume() for a missing task must fail")
 	}
 	mustCreate(t, store, fixtureTask)
+	if err := store.SaveVerificationAttempt(context.Background(), state.VerificationAttemptRecord{
+		TaskID: fixtureTask, Decision: "passed", Summary: "test verification", ReportJSON: []byte(`{"decision":"passed"}`),
+	}); err != nil {
+		t.Fatalf("SaveVerificationAttempt() error = %v", err)
+	}
 	if err := store.FinalizeTask(context.Background(), state.TaskFinalize{
-		TaskID: fixtureTask, Outcome: "completed", StopReason: "grounded final accepted", Summary: "done",
+		TaskID: fixtureTask, Outcome: "completed", StopReason: "completion verified by the control plane", Summary: "done",
 	}); err != nil {
 		t.Fatalf("FinalizeTask() error = %v", err)
 	}

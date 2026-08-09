@@ -21,7 +21,7 @@ func TestInspectAfterRunProcessExit(t *testing.T) {
 	}
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"Inspected.","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"Inspected.","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
 	var out, errOut bytes.Buffer
@@ -30,6 +30,7 @@ func TestInspectAfterRunProcessExit(t *testing.T) {
 		"run", "--task", "Inspect the workspace.",
 		"--workspace", workspace,
 		"--scripted", script,
+		"--acceptance", acceptanceFor(t, "a.txt"),
 		"--min-start-interval", "1ms",
 		"--log-level", "error",
 	}), &out, &errOut)

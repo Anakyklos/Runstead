@@ -20,6 +20,54 @@ func (r *Registry) Workspace() string {
 	return r.workspace.root
 }
 
+// ResolveWorkspacePath resolves a relative path with the same canonical
+// security model as every other tool: relative only, no traversal, no symlink
+// escapes. It is the control-plane observer seam for the verifier (issue
+// #11): verification reuses this resolver instead of implementing a second
+// containment logic. The returned relative path is normalized slash form and
+// the canonical path is the absolute resolved path inside the workspace.
+func (r *Registry) ResolveWorkspacePath(input string) (relative, canonical string, failure *Failure) {
+
+	if r == nil {
+		return "", "", newFailure(FailureInvalidArguments)
+	}
+	resolved, failure := r.workspace.resolve(input)
+	if failure != nil {
+		return "", "", failure
+	}
+	return resolved.relative, resolved.canonical, nil
+}
+
+// FileSHA256 returns the sha256 of the COMPLETE file at the relative path,
+// using the canonical resolver. The second result reports whether the file
+// exists. It is the control-plane observer seam for the verifier (issue #11);
+// the verifier never opens paths itself.
+func (r *Registry) FileSHA256(input string) (hash string, present bool, failure error) {
+
+	if r == nil {
+		return "", false, newFailure(FailureInvalidArguments)
+	}
+	// The resolver returns a typed *Failure; keep it typed locally so a nil
+	// failure never becomes a non-nil error interface (typed-nil trap).
+	_, canonical, resolveFailure := r.ResolveWorkspacePath(input)
+
+	if resolveFailure != nil {
+		// The resolver only reports path_not_found after proving the path is
+		// inside the workspace; for verification, absent is a valid
+		// observation, not a failure.
+		if resolveFailure.Code == FailurePathNotFound {
+			return "", false, nil
+		}
+		return "", false, resolveFailure
+	}
+	hash, present, err := hashFile(canonical)
+
+	if err != nil {
+		return "", present, newFailure(FailureReadFailure)
+	}
+	return hash, present, nil
+}
+
 type resolvedPath struct {
 	relative  string
 	canonical string

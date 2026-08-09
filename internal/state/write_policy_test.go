@@ -474,6 +474,7 @@ func TestFinalizeTaskRefusesCompletedWithPendingApproval(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RecordApproval() error = %v", err)
 	}
+	mustPassVerification(t, store, "task-1")
 	if err := store.FinalizeTask(ctx, TaskFinalize{TaskID: "task-1", Outcome: "completed", StopReason: "done"}); err != nil {
 		t.Fatalf("FinalizeTask() after approval error = %v", err)
 	}
@@ -567,6 +568,7 @@ func TestPendingRecipeApprovalUsesRecipeFingerprint(t *testing.T) {
 	if len(pending) != 0 {
 		t.Fatalf("pending = %+v, want the approval to resolve the pending decision", pending)
 	}
+	mustPassVerification(t, store, "task-recipe-pending")
 	if err := store.FinalizeTask(ctx, TaskFinalize{TaskID: "task-recipe-pending", Outcome: "completed", StopReason: "done"}); err != nil {
 		t.Fatalf("FinalizeTask() after recipe approval error = %v", err)
 	}

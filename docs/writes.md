@@ -13,7 +13,8 @@ documented invariants.
 - There is **no generic shell**, **no arbitrary subprocess execution**, no
   build/test command execution, no network tools, no automatic `git commit`,
   `git push`, package publication or deployment. Those belong to later
-  milestones (#26 for process execution, #11 for verification).
+  milestones (#26 for process execution, #11 for verification, now
+  implemented: see [verification.md](verification.md)).
 - Runstead never pretends filesystem writes are atomic with SQLite
   transactions. The durable-execution contract
   (`docs/adr/0001-durable-execution.md`) fixes the two-transaction ordering:

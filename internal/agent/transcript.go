@@ -9,12 +9,13 @@ import (
 )
 
 const (
-	roleSystem      = "system"
-	roleUser        = "user"
-	roleAssistant   = "assistant"
-	roleObservation = "observation"
-	roleCorrection  = "correction"
-	roleRecovery    = "recovery"
+	roleSystem       = "system"
+	roleUser         = "user"
+	roleAssistant    = "assistant"
+	roleObservation  = "observation"
+	roleCorrection   = "correction"
+	roleRecovery     = "recovery"
+	roleVerification = "verification"
 )
 
 type message struct {
@@ -71,6 +72,37 @@ func (t *transcript) observation(observation tools.Observation) {
 		encoded = []byte(`{"success":false,"failure":{"code":"marshal_failure","message":"observation could not be serialized"}}`)
 	}
 	t.append(roleObservation, string(encoded))
+}
+
+// verification appends a bounded, structured control-plane verification
+// result under the verification role (issue #11). It is NOT a protocol
+// correction: the model produced a valid final; the environment did not
+// satisfy completion. The result is bounded to the verifier report limits and
+// contains only typed check results, never raw file contents or model text.
+func (t *transcript) verification(decision, summary string, checks []verificationCheckView) {
+	encoded, err := json.Marshal(struct {
+		Type     string                  `json:"type"`
+		Decision string                  `json:"decision"`
+		Summary  string                  `json:"summary"`
+		Checks   []verificationCheckView `json:"checks"`
+	}{Type: "verification", Decision: decision, Summary: summary, Checks: checks})
+	if err != nil {
+		encoded = []byte(`{"type":"verification","decision":"blocked","summary":"verification result could not be serialized"}`)
+	}
+	t.append(roleVerification, string(encoded))
+}
+
+// verificationCheckView is the bounded per-check view sent to the model. It
+// is structurally separated from tool observations so model text can never
+// influence the verifier: this is a one-way report of control-plane results.
+type verificationCheckView struct {
+	ID       string   `json:"id"`
+	Type     string   `json:"type"`
+	Status   string   `json:"status"`
+	Expected string   `json:"expected,omitempty"`
+	Observed string   `json:"observed,omitempty"`
+	Evidence []string `json:"evidence_ids,omitempty"`
+	Reason   string   `json:"reason,omitempty"`
 }
 
 func (t *transcript) render() string {

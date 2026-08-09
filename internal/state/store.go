@@ -279,11 +279,42 @@ type Persistence interface {
 	// resumable (status running) with the pending action and a
 	// task_approval_required event; no terminal finalize happens.
 	MarkTaskApprovalRequired(ctx context.Context, taskID, actionID, reason string) error
+	// MarkTaskVerificationPaused records a control-plane verification pause:
+	// the task stays durably resumable (status running) with the typed outcome
+	// and a task_verification_paused event; no terminal finalize happens
+	// (issue #11).
+	MarkTaskVerificationPaused(ctx context.Context, taskID, stopReason string) error
 	// PendingApprovals returns the write actions of one task still awaiting an
 	// operator decision (approval_required policy decision, no approval row).
 	PendingApprovals(ctx context.Context, taskID string) ([]PendingApproval, error)
 	// FinalizeTask persists the terminal task outcome, summary and evidence.
 	FinalizeTask(ctx context.Context, record TaskFinalize) error
+	// SaveAcceptancePlan persists the operator acceptance plan of one task
+	// with its journal event (issue #11).
+	SaveAcceptancePlan(ctx context.Context, taskID string, planJSON []byte, digest string) error
+	// AcceptancePlan returns the persisted operator acceptance plan spec JSON
+	// and digest. The third result reports whether a plan exists.
+	AcceptancePlan(ctx context.Context, taskID string) (specJSON []byte, digest string, ok bool, err error)
+	// SaveWorkspaceBaseline persists the bounded real git status/diff observed
+	// at task start with its truncation flags (issue #11 review).
+	SaveWorkspaceBaseline(ctx context.Context, taskID, gitStatus, gitDiff string, statusTruncated, diffTruncated bool) error
+	// WorkspaceBaseline returns the persisted git baseline of one task with its
+	// truncation flags.
+	WorkspaceBaseline(ctx context.Context, taskID string) (gitStatus, gitDiff string, statusTruncated, diffTruncated bool, ok bool, err error)
+	// SaveVerificationAttempt persists one verification attempt and its
+	// journal event atomically (issue #11).
+	SaveVerificationAttempt(ctx context.Context, record VerificationAttemptRecord) error
+	// VerificationAttempts returns the persisted verification attempts of one
+	// task with their per-check results.
+	VerificationAttempts(ctx context.Context, taskID string) ([]VerificationAttemptRow, error)
+	// LatestVerificationDecision returns the decision of the latest
+	// verification attempt of one task. The second result reports whether any
+	// attempt exists.
+	LatestVerificationDecision(ctx context.Context, taskID string) (string, bool, error)
+	// LoadRecoverySnapshot loads the full persisted history one resume or one
+	// verification needs. It returns ErrTaskNotFound when the task row is
+	// absent.
+	LoadRecoverySnapshot(ctx context.Context, taskID string) (*RecoverySnapshot, error)
 }
 
 // TaskRecord is the durable task root.

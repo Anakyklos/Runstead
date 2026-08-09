@@ -41,6 +41,11 @@ const (
 	// approval_required for every recipe.
 	EnvRecipePolicy = "RUNSTEAD_RECIPE_POLICY"
 
+	// EnvAcceptancePlan configures the operator acceptance plan file
+	// (issue #11): a versioned JSON array of typed acceptance checks.
+	// Completion requires every mandatory check to pass.
+	EnvAcceptancePlan = "RUNSTEAD_ACCEPTANCE_PLAN"
+
 	EnvOmniRouteBaseURL           = "OMNIROUTE_BASE_URL"
 	EnvOmniRouteAPIKey            = "OMNIROUTE_API_KEY"
 	EnvOmniRouteModel             = "OMNIROUTE_MODEL"

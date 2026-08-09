@@ -40,11 +40,23 @@ const (
 	StatusIncomplete FinalStatus = "incomplete"
 )
 
+// EvidenceCitation is one typed evidence citation in a final response: the
+// model must declare the tool that produced the evidence it cites. The
+// verifier checks the declared tool against the persisted evidence row; a
+// fabricated, foreign or type-incompatible citation is rejected (issue #11).
+type EvidenceCitation struct {
+	// EvidenceID is the cited obs- identifier.
+	EvidenceID string `json:"evidence_id"`
+	// Tool is the tool the model claims produced the evidence. It must match
+	// the persisted tool of the evidence row.
+	Tool string `json:"tool"`
+}
+
 type FinalResponse struct {
 	Version  Version
 	Status   FinalStatus
 	Summary  string
-	Evidence []string
+	Evidence []EvidenceCitation
 }
 
 type FailureCode string
@@ -347,19 +359,30 @@ func decodeArguments(raw json.RawMessage) (Arguments, error) {
 	return arguments, nil
 }
 
-func decodeEvidence(raw json.RawMessage) ([]string, error) {
+// decodeEvidence decodes the final envelope's evidence array strictly. Every
+// entry must be an object with exactly evidence_id and tool (both non-empty
+// strings); a string, number, missing or unknown field is rejected. The typed
+// citation is the model's claim about the evidence, which the verifier checks
+// against the persisted evidence row (issue #11).
+func decodeEvidence(raw json.RawMessage) ([]EvidenceCitation, error) {
 	var values []json.RawMessage
 	if err := json.Unmarshal(raw, &values); err != nil || len(values) == 0 {
 		return nil, errors.New("evidence must be a non-empty array")
 	}
-	evidence := make([]string, len(values))
+	citations := make([]EvidenceCitation, len(values))
 	for index, value := range values {
-		trimmed := bytes.TrimSpace(value)
-		if len(trimmed) == 0 || trimmed[0] != '"' || json.Unmarshal(value, &evidence[index]) != nil {
-			return nil, errors.New("evidence entries must be strings")
+		decoder := json.NewDecoder(bytes.NewReader(value))
+		decoder.DisallowUnknownFields()
+		var citation EvidenceCitation
+		if err := decoder.Decode(&citation); err != nil {
+			return nil, errors.New("evidence entries must be objects with evidence_id and tool")
 		}
+		if strings.TrimSpace(citation.EvidenceID) == "" || strings.TrimSpace(citation.Tool) == "" {
+			return nil, errors.New("evidence entries require non-empty evidence_id and tool")
+		}
+		citations[index] = citation
 	}
-	return evidence, nil
+	return citations, nil
 }
 
 func rejectDuplicateObjectKeys(raw []byte) error {

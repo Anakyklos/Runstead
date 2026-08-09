@@ -16,6 +16,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/recipe"
 	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
+	"github.com/RenyEnnos/Runstead/internal/verifier"
 )
 
 // recipeHarness wires the real store, a recipe catalog and a fake recipe
@@ -93,6 +94,15 @@ func newRecipeHarness(t *testing.T, workspace string, writeConfig policy.Config,
 
 func (h *recipeHarness) loopWith(t *testing.T, limits agent.Limits, recovery *agent.RecoverySeed) *agent.Loop {
 	t.Helper()
+	return h.loopWithPlan(t, limits, nil, recovery)
+}
+
+// loopWithPlan builds a loop with an explicit operator acceptance plan.
+// Without a plan the verifier refuses completion blocked (fail closed, issue
+// #11 review), so recipe tests that expect completed must supply acceptance
+// criteria.
+func (h *recipeHarness) loopWithPlan(t *testing.T, limits agent.Limits, plan *verifier.Plan, recovery *agent.RecoverySeed) *agent.Loop {
+	t.Helper()
 	loop, err := agent.NewLoop(agent.Config{
 		Runner:   h.executor,
 		Registry: h.registry,
@@ -102,6 +112,7 @@ func (h *recipeHarness) loopWith(t *testing.T, limits agent.Limits, recovery *ag
 		State:    h.store,
 		Policy:   h.policy,
 		Recovery: recovery,
+		Verifier: verifier.New(h.registry, plan),
 	})
 	if err != nil {
 		t.Fatalf("agent.NewLoop() error = %v", err)
@@ -132,9 +143,9 @@ func TestRecipeLoopAllowedExecutesWithEvidence(t *testing.T) {
 	h := newRecipeHarness(t, workspace, allowAllPolicy(), map[string]policy.Mode{"test": policy.ModeAllow},
 		testCatalog(t, testRecipe("test")), nil,
 		actionResponse("run_recipe", `{"recipe":"test"}`),
-		finalResponse("complete", "tests passed", "obs-000001"),
+		finalResponse("complete", "tests passed", finalEvidence("obs-000001", "run_recipe")),
 	)
-	loop := h.loopWith(t, agent.Limits{}, nil)
+	loop := h.loopWithPlan(t, agent.Limits{}, recipePlan("test"), nil)
 	result := loop.Run(context.Background(), testTask("task-recipe-ok"))
 
 	if result.Outcome != agent.OutcomeCompleted {
@@ -171,9 +182,9 @@ func TestRecipeLoopDeniedNeverStarts(t *testing.T) {
 		testCatalog(t, testRecipe("test")), nil,
 		actionResponse("read_file", `{"path":"readme.txt"}`),
 		actionResponse("run_recipe", `{"recipe":"test"}`),
-		finalResponse("complete", "done", "obs-000001"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "read_file")),
 	)
-	loop := h.loopWith(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3}, nil)
+	loop := h.loopWithPlan(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3}, existsPlan("readme.txt"), nil)
 	result := loop.Run(context.Background(), testTask("task-recipe-denied"))
 
 	if result.Outcome != agent.OutcomeCompleted {
@@ -259,7 +270,7 @@ func TestRecipeLoopApprovalNormalFlow(t *testing.T) {
 		testCatalog(t, testRecipe("test")), nil,
 		actionResponse("read_file", `{"path":"readme.txt"}`),
 		actionResponse("run_recipe", `{"recipe":"test"}`),
-		finalResponse("complete", "done", "obs-000001", "obs-000002"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "read_file"), finalEvidence("obs-000002", "run_recipe")),
 	)
 	taskID := "task-recipe-approved"
 	ctx := context.Background()
@@ -285,7 +296,7 @@ func TestRecipeLoopApprovalNormalFlow(t *testing.T) {
 	// Run 2 re-proposes the recipe; the persisted approval unlocks it.
 	secondProvider := &scriptedProvider{clock: h.clock, pace: time.Millisecond, responses: []provider.Response{
 		actionResponse("run_recipe", `{"recipe":"test"}`),
-		finalResponse("complete", "done", "obs-000002"),
+		finalResponse("complete", "done", finalEvidence("obs-000002", "run_recipe")),
 	}}
 	executor2, err := agent.NewExecutor(h.governor, secondProvider, nil)
 	if err != nil {
@@ -300,6 +311,7 @@ func TestRecipeLoopApprovalNormalFlow(t *testing.T) {
 		State:    h.store,
 		Policy:   h.policy,
 		Recovery: &agent.RecoverySeed{Turns: 2, Attempts: 2},
+		Verifier: verifier.New(h.registry, recipePlan("test")),
 	})
 	if err != nil {
 		t.Fatalf("agent.NewLoop() error = %v", err)
@@ -348,7 +360,7 @@ func TestRecipeLoopApprovalInvalidatedByDefinitionChange(t *testing.T) {
 		testCatalog(t, testRecipe("test")), nil,
 		actionResponse("read_file", `{"path":"readme.txt"}`),
 		actionResponse("run_recipe", `{"recipe":"test"}`),
-		finalResponse("complete", "done", "obs-000001", "obs-000002"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "read_file"), finalEvidence("obs-000002", "run_recipe")),
 	)
 	taskID := "task-recipe-definition-change"
 	ctx := context.Background()
@@ -384,7 +396,7 @@ func TestRecipeLoopApprovalInvalidatedByDefinitionChange(t *testing.T) {
 	}
 	secondProvider := &scriptedProvider{clock: h.clock, pace: time.Millisecond, responses: []provider.Response{
 		actionResponse("run_recipe", `{"recipe":"test"}`),
-		finalResponse("complete", "done", "obs-000001"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "read_file")),
 	}}
 	executor2, err := agent.NewExecutor(h.governor, secondProvider, nil)
 	if err != nil {
@@ -399,6 +411,7 @@ func TestRecipeLoopApprovalInvalidatedByDefinitionChange(t *testing.T) {
 		State:    h.store,
 		Policy:   h.policy,
 		Recovery: seededRecovery(2, 2),
+		Verifier: verifier.New(h.registry, recipePlan("test")),
 	})
 	if err != nil {
 		t.Fatalf("agent.NewLoop() error = %v", err)
@@ -421,7 +434,7 @@ func TestRecipeLoopRejectionPersistsAfterResume(t *testing.T) {
 		testCatalog(t, testRecipe("test")), nil,
 		actionResponse("read_file", `{"path":"readme.txt"}`),
 		actionResponse("run_recipe", `{"recipe":"test"}`),
-		finalResponse("complete", "done", "obs-000001"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "read_file")),
 	)
 	taskID := "task-recipe-rejected"
 	ctx := context.Background()
@@ -440,7 +453,7 @@ func TestRecipeLoopRejectionPersistsAfterResume(t *testing.T) {
 	// Run 2 re-proposes the recipe; the persisted rejection denies it.
 	secondProvider := &scriptedProvider{clock: h.clock, pace: time.Millisecond, responses: []provider.Response{
 		actionResponse("run_recipe", `{"recipe":"test"}`),
-		finalResponse("complete", "done", "obs-000001"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "read_file")),
 	}}
 	executor2, err := agent.NewExecutor(h.governor, secondProvider, nil)
 	if err != nil {
@@ -455,6 +468,7 @@ func TestRecipeLoopRejectionPersistsAfterResume(t *testing.T) {
 		State:    h.store,
 		Policy:   h.policy,
 		Recovery: seededRecovery(2, 2),
+		Verifier: verifier.New(h.registry, existsPlan("readme.txt")),
 	})
 	if err != nil {
 		t.Fatalf("agent.NewLoop() error = %v", err)
@@ -491,7 +505,7 @@ func TestRecipeLoopPendingBlocksCompleted(t *testing.T) {
 	// Run 2 goes straight to a grounded final on the seeded read evidence:
 	// the pending recipe approval must block completion.
 	secondProvider := &scriptedProvider{clock: h.clock, pace: time.Millisecond, responses: []provider.Response{
-		finalResponse("complete", "done", "obs-000001"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "read_file")),
 	}}
 	executor2, err := agent.NewExecutor(h.governor, secondProvider, nil)
 	if err != nil {
@@ -506,6 +520,7 @@ func TestRecipeLoopPendingBlocksCompleted(t *testing.T) {
 		State:    h.store,
 		Policy:   h.policy,
 		Recovery: seededRecovery(2, 2),
+		Verifier: verifier.New(h.registry, existsPlan("readme.txt")),
 	})
 	if err != nil {
 		t.Fatalf("agent.NewLoop() error = %v", err)
@@ -538,9 +553,9 @@ func TestRecipeLoopRepeatSemantics(t *testing.T) {
 		actionResponse("run_recipe", `{"recipe":"test"}`),
 		actionResponse("write_file", `{"path":"a.txt","content":"v2\n","expected_before_hash":"`+hashV1+`"}`),
 		actionResponse("run_recipe", `{"recipe":"test"}`),
-		finalResponse("complete", "done", "obs-000001", "obs-000002", "obs-000003"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "run_recipe"), finalEvidence("obs-000002", "write_file"), finalEvidence("obs-000003", "run_recipe")),
 	)
-	loop := h.loopWith(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3}, nil)
+	loop := h.loopWithPlan(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3}, recipePlan("test"), nil)
 	result := loop.Run(context.Background(), testTask("task-recipe-repeat"))
 
 	if result.Outcome != agent.OutcomeCompleted {
@@ -580,9 +595,9 @@ func TestRecipeLoopUnknownRecipeDeniedWithoutStarting(t *testing.T) {
 		testCatalog(t, testRecipe("test")), nil,
 		actionResponse("read_file", `{"path":"readme.txt"}`),
 		actionResponse("run_recipe", `{"recipe":"nope"}`),
-		finalResponse("complete", "done", "obs-000001"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "read_file")),
 	)
-	loop := h.loopWith(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3}, nil)
+	loop := h.loopWithPlan(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3}, existsPlan("readme.txt"), nil)
 	result := loop.Run(context.Background(), testTask("task-recipe-unknown"))
 
 	if result.Outcome != agent.OutcomeCompleted {

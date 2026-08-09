@@ -54,7 +54,7 @@ func TestParseValidAction(t *testing.T) {
 
 func TestParseValidFinal(t *testing.T) {
 	result := Parse(`<runstead_final>
-{"version":"runstead.protocol.v1","status":"incomplete","summary":"still working","evidence":["one observation"]}
+{"version":"runstead.protocol.v1","status":"incomplete","summary":"still working","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}
 </runstead_final>`, fixtureCatalog{})
 
 	if result.Failure != nil || !result.Accepted || result.Executable {
@@ -66,13 +66,13 @@ func TestParseValidFinal(t *testing.T) {
 	if result.Final.Version != Current || result.Final.Status != StatusIncomplete || result.Final.Summary != "still working" {
 		t.Fatalf("final = %#v", result.Final)
 	}
-	if len(result.Final.Evidence) != 1 || result.Final.Evidence[0] != "one observation" {
+	if len(result.Final.Evidence) != 1 || result.Final.Evidence[0].EvidenceID != "obs-000001" || result.Final.Evidence[0].Tool != "read_file" {
 		t.Fatalf("evidence = %#v", result.Final.Evidence)
 	}
 }
 
 func TestEnvelopeMarkersInsideJSONStringsAreContent(t *testing.T) {
-	final := Parse(`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"literal <runstead_action> text","evidence":["literal </runstead_final> text"]}</runstead_final>`, fixtureCatalog{})
+	final := Parse(`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"literal <runstead_action> text","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`, fixtureCatalog{})
 	if final.Failure != nil || !final.Accepted || final.Final == nil {
 		t.Fatalf("final = %#v, want accepted final", final)
 	}
@@ -173,8 +173,8 @@ func TestParseFocusedFailures(t *testing.T) {
 		{"closing_without_opening", `</runstead_action>`, FailureUnclosedEnvelope, KindInvalid},
 		{"opening_without_closing", `<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{}}`, FailureUnclosedEnvelope, KindInvalid},
 		{"multiple_action_envelopes", `<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a"}}</runstead_action><runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"b"}}</runstead_action>`, FailureMultipleEnvelopes, KindInvalid},
-		{"multiple_final_envelopes", `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"a","evidence":["a"]}</runstead_final><runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"b","evidence":["b"]}</runstead_final>`, FailureMultipleEnvelopes, KindInvalid},
-		{"mixed_action_and_final", `<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a"}}</runstead_action><runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["a"]}</runstead_final>`, FailureMultipleEnvelopes, KindInvalid},
+		{"multiple_final_envelopes", `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"a","evidence":[{"evidence_id":"a","tool":"read_file"}]}</runstead_final><runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"b","evidence":[{"evidence_id":"b","tool":"read_file"}]}</runstead_final>`, FailureMultipleEnvelopes, KindInvalid},
+		{"mixed_action_and_final", `<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a"}}</runstead_action><runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"a","tool":"read_file"}]}</runstead_final>`, FailureMultipleEnvelopes, KindInvalid},
 		{"duplicate_action_field", `<runstead_action>{"version":"runstead.protocol.v1","version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a"}}</runstead_action>`, FailureMalformedJSON, KindInvalid},
 		{"duplicate_nested_argument_field", `<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a","options":{"mode":"safe","mode":"unsafe"}}}</runstead_action>`, FailureMalformedJSON, KindInvalid},
 		{"trailing_json_value", `<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a"}} {"extra":true}</runstead_action>`, FailureMalformedJSON, KindInvalid},
@@ -187,10 +187,14 @@ func TestParseFocusedFailures(t *testing.T) {
 		{"unexpected_argument", `<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a","extra":"b"}}</runstead_action>`, FailureInvalidArguments, KindAction},
 		{"invalid_argument_type", `<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":42}}</runstead_action>`, FailureInvalidArguments, KindAction},
 		{"empty_evidence", `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[]}</runstead_final>`, FailureInvalidFinalSchema, KindFinal},
-		{"non_string_evidence", `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[1]}</runstead_final>`, FailureInvalidFinalSchema, KindFinal},
-		{"invalid_final_status", `<runstead_final>{"version":"runstead.protocol.v1","status":"done","summary":"done","evidence":["a"]}</runstead_final>`, FailureInvalidFinalSchema, KindFinal},
+		{"string_evidence", `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`, FailureInvalidFinalSchema, KindFinal},
+		{"non_object_evidence", `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[1]}</runstead_final>`, FailureInvalidFinalSchema, KindFinal},
+		{"evidence_missing_tool", `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001"}]}</runstead_final>`, FailureInvalidFinalSchema, KindFinal},
+		{"evidence_missing_id", `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"tool":"read_file"}]}</runstead_final>`, FailureInvalidFinalSchema, KindFinal},
+		{"evidence_unknown_field", `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file","extra":1}]}</runstead_final>`, FailureInvalidFinalSchema, KindFinal},
+		{"invalid_final_status", `<runstead_final>{"version":"runstead.protocol.v1","status":"done","summary":"done","evidence":[{"evidence_id":"a","tool":"read_file"}]}</runstead_final>`, FailureInvalidFinalSchema, KindFinal},
 		{"unknown_action_field", `<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a"},"extra":true}</runstead_action>`, FailureInvalidActionSchema, KindAction},
-		{"unknown_final_field", `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["a"],"extra":true}</runstead_final>`, FailureInvalidFinalSchema, KindFinal},
+		{"unknown_final_field", `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"a","tool":"read_file"}],"extra":true}</runstead_final>`, FailureInvalidFinalSchema, KindFinal},
 	}
 
 	for _, testCase := range cases {
@@ -350,7 +354,7 @@ func TestCorrectionMessageIsDeterministicAndRejectsNegativeRetries(t *testing.T)
 func FuzzParseDoesNotPanicOrContradict(f *testing.F) {
 	seeds := []string{
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"README.md"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["observed"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 		`<runstead_action>{"version":}</runstead_action>`,
 		`outside prose <runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"README.md"}}</runstead_action>`,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a"}}</runstead_action><runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a"}}</runstead_action>`,

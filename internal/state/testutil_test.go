@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -118,11 +119,33 @@ func mustProviderAttempt(t *testing.T, store *Store, taskID, clientRequestID str
 	}
 }
 
+// mustPassVerification records a passed control-plane verification attempt for
+// the task, satisfying the issue #11 completion gate before a test finalizes
+// as completed.
+func mustPassVerification(t *testing.T, store *Store, taskID string) {
+	t.Helper()
+	report, err := json.Marshal(map[string]any{
+		"task_id": taskID, "decision": "passed", "summary": "test verification passed",
+	})
+	if err != nil {
+		t.Fatalf("marshal verification report: %v", err)
+	}
+	if err := store.SaveVerificationAttempt(context.Background(), VerificationAttemptRecord{
+		TaskID: taskID, Decision: "passed", Summary: "test verification passed", ReportJSON: report,
+		Checks: []VerificationCheckRecord{{
+			CheckID: "evidence_grounded", Type: "structural", Status: "passed",
+		}},
+	}); err != nil {
+		t.Fatalf("SaveVerificationAttempt() error = %v", err)
+	}
+}
+
 // mustFinalize marks the task terminal.
 func mustFinalize(t *testing.T, store *Store, taskID string) {
 	t.Helper()
+	mustPassVerification(t, store, taskID)
 	if err := store.FinalizeTask(context.Background(), TaskFinalize{
-		TaskID: taskID, Outcome: "completed", StopReason: "grounded final accepted",
+		TaskID: taskID, Outcome: "completed", StopReason: "completion verified by the control plane",
 		Summary: "done", Evidence: []string{"obs-000001"},
 		Turns: 2, Attempts: 2, Observations: 1,
 	}); err != nil {

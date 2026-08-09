@@ -94,7 +94,8 @@ Deliverables:
 - file hashes and before/after evidence (implemented: sha256 preconditions,
   `WriteEvidence`);
 - Git status and diff verification (implemented for read observations; the
-  independent verifier milestone is #11);
+  independent verifier milestone #11 is implemented: real git status/diff
+  observation with pre-existing vs during-task attribution);
 - protection against repeated writes and path traversal (implemented:
   stale-state preconditions plus the repeat guard);
 - explicit Docker workspace-mount policy for write-capable runs (pending #15).
@@ -114,10 +115,12 @@ Deliverables:
 
 - test execution with timeout and captured exit status (implemented in #26:
   operator-declared recipes with fixed argv, capability policy, bounded
-  output, process-tree termination and structured process evidence; the
-  completion verifier and the inspect/edit/test/fix loop remain #11/#12);
-- explicit acceptance checks;
-- completion verifier;
+  output, process-tree termination and structured process evidence);
+- explicit acceptance checks (implemented in #11: the operator acceptance
+  plan, typed checks, and the independent completion verifier; the
+  inspect/edit/test/fix loop remains #12);
+- completion verifier (implemented in #11: runtime-decided completion with a
+  persisted verification report and a state-layer completion gate);
 - loop and repetition detection;
 - malformed-action correction policy;
 - failure classification and retry limits;

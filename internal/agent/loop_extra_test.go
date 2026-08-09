@@ -15,6 +15,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/tools"
+	"github.com/RenyEnnos/Runstead/internal/verifier"
 )
 
 func TestLoopCanceledDuringProviderIO(t *testing.T) {
@@ -123,9 +124,9 @@ func TestLoopMixedProseRecordedButNotExecuted(t *testing.T) {
 	writeFixture(t, workspace, "a.txt", "alpha\n")
 	h := newHarness(t, workspace, nil,
 		provider.Response{Text: "Let me check the file first.\n" + actionResponse("read_file", `{"path":"a.txt"}`).Text},
-		finalResponse("complete", "done", "obs-000001"),
+		finalResponse("complete", "done", finalEvidence("obs-000001", "read_file")),
 	)
-	loop := h.loop(t, agent.Limits{})
+	loop := h.loopPlan(t, agent.Limits{}, existsPlan("a.txt"))
 
 	result := loop.Run(context.Background(), testTask("task-1"))
 	if result.Outcome != agent.OutcomeCompleted {
@@ -166,9 +167,9 @@ func TestLoopGitToolsProduceGroundedEvidence(t *testing.T) {
 	h := newHarness(t, workspace, nil,
 		actionResponse("git_status", `{}`),
 		actionResponse("git_diff", `{}`),
-		finalResponse("complete", "The working tree has an uncommitted modification.", "obs-000001", "obs-000002"),
+		finalResponse("complete", "The working tree has an uncommitted modification.", finalEvidence("obs-000001", "git_status"), finalEvidence("obs-000002", "git_diff")),
 	)
-	loop := h.loop(t, agent.Limits{})
+	loop := h.loopPlan(t, agent.Limits{}, existsPlan("tracked.txt"))
 
 	result := loop.Run(context.Background(), testTask("task-1"))
 	if result.Outcome != agent.OutcomeCompleted {
@@ -198,9 +199,9 @@ func TestLoopSearchTextProducesGroundedEvidence(t *testing.T) {
 
 	h := newHarness(t, workspace, nil,
 		actionResponse("search_text", `{"query":"needle","path":"."}`),
-		finalResponse("complete", "Found the needle in the workspace.", "obs-000001"),
+		finalResponse("complete", "Found the needle in the workspace.", finalEvidence("obs-000001", "search_text")),
 	)
-	loop := h.loop(t, agent.Limits{})
+	loop := h.loopPlan(t, agent.Limits{}, existsPlan("a.txt"))
 
 	result := loop.Run(context.Background(), testTask("task-1"))
 	if result.Outcome != agent.OutcomeCompleted {
@@ -323,12 +324,12 @@ func TestLoopConcurrentTasksShareAccountLane(t *testing.T) {
 	clientA := &scriptedProvider{clock: clock, pace: time.Millisecond, shared: tracker, responses: []provider.Response{
 		actionResponse("read_file", `{"path":"a.txt"}`),
 		actionResponse("list_files", `{"path":"."}`),
-		finalResponse("complete", "inspected A", "obs-000001", "obs-000002"),
+		finalResponse("complete", "inspected A", finalEvidence("obs-000001", "read_file"), finalEvidence("obs-000002", "list_files")),
 	}}
 	clientB := &scriptedProvider{clock: clock, pace: time.Millisecond, shared: tracker, responses: []provider.Response{
 		actionResponse("read_file", `{"path":"b.txt"}`),
 		actionResponse("list_files", `{"path":"."}`),
-		finalResponse("complete", "inspected B", "obs-000001", "obs-000002"),
+		finalResponse("complete", "inspected B", finalEvidence("obs-000001", "read_file"), finalEvidence("obs-000002", "list_files")),
 	}}
 	executorA, err := agent.NewExecutor(accountGovernor, clientA, nil)
 	if err != nil {
@@ -346,11 +347,11 @@ func TestLoopConcurrentTasksShareAccountLane(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	loopA, err := agent.NewLoop(agent.Config{Runner: executorA, Registry: registryA, Limits: agent.Limits{}, Clock: clock})
+	loopA, err := agent.NewLoop(agent.Config{Runner: executorA, Registry: registryA, Limits: agent.Limits{}, Clock: clock, Verifier: verifier.New(registryA, existsPlan("a.txt"))})
 	if err != nil {
 		t.Fatal(err)
 	}
-	loopB, err := agent.NewLoop(agent.Config{Runner: executorB, Registry: registryB, Limits: agent.Limits{}, Clock: clock})
+	loopB, err := agent.NewLoop(agent.Config{Runner: executorB, Registry: registryB, Limits: agent.Limits{}, Clock: clock, Verifier: verifier.New(registryB, existsPlan("b.txt"))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,7 +495,7 @@ func TestLoopFinalIncompleteIsTerminal(t *testing.T) {
 	writeFixture(t, workspace, "a.txt", "alpha\n")
 	h := newHarness(t, workspace, nil,
 		actionResponse("read_file", `{"path":"a.txt"}`),
-		finalResponse("incomplete", "I could not answer fully.", "obs-000001"),
+		finalResponse("incomplete", "I could not answer fully.", finalEvidence("obs-000001", "read_file")),
 	)
 	loop := h.loop(t, agent.Limits{})
 

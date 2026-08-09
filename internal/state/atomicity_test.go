@@ -111,8 +111,8 @@ func TestAppendOnlyHistorySurvivesFailure(t *testing.T) {
 	mustFinalize(t, store, "task-1")
 
 	before := taskEventKinds(t, store, "task-1")
-	if len(before) != 3 {
-		t.Fatalf("expected 3 committed events, got %v", before)
+	if len(before) != 4 {
+		t.Fatalf("expected 4 committed events, got %v", before)
 	}
 	// A failing transaction must not truncate the journal.
 	tx, err := store.db.BeginTx(ctx, nil)

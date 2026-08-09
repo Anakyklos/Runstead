@@ -18,11 +18,13 @@ import (
 // composition dies between write intent (TX 1) and the write result (TX 2),
 // and the parent reconciles the interrupted write through `runstead resume`.
 
-func writeCrashRunArgs(scriptPath, workspace, stateDir string) []string {
+func writeCrashRunArgs(t *testing.T, scriptPath, workspace, stateDir string) []string {
+	t.Helper()
 	return []string{
 		"run", "--task", "Modify the workspace.",
 		"--workspace", workspace,
 		"--scripted", scriptPath,
+		"--acceptance", acceptanceFor(t, "a.txt"),
 		"--state-dir", stateDir,
 		"--write-policy", "write_file=allow,apply_patch=allow",
 		"--min-start-interval", "1ms",
@@ -82,10 +84,10 @@ func TestRuntimeCrashBeforeWriteEffectKeepsFileUnchanged(t *testing.T) {
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"write_file","arguments":{"path":"a.txt","content":"new\n","expected_before_hash":"`+before+`"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001","obs-000002"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"},{"evidence_id":"obs-000002","tool":"write_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
-	code, output := runCrashedWriteRun(t, writeCrashRunArgs(script, workspace, stateDir), "write_before_effect")
+	code, output := runCrashedWriteRun(t, writeCrashRunArgs(t, script, workspace, stateDir), "write_before_effect")
 	if code != 42 {
 		t.Fatalf("crash helper exit = %d, want 42\n%s", code, output)
 	}
@@ -106,13 +108,14 @@ func TestRuntimeCrashBeforeWriteEffectKeepsFileUnchanged(t *testing.T) {
 
 	// Resume reconciles the write as never-started and the run completes.
 	resumeScript := writeScript(t,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	var out, errOut strings.Builder
 	resumeCode := run(context.Background(), []string{
 		"resume", taskID,
 		"--state-dir", stateDir,
 		"--scripted", resumeScript,
+		"--acceptance", acceptanceFor(t, "a.txt"),
 		"--write-policy", "write_file=allow,apply_patch=allow",
 		"--log-level", "error",
 	}, &out, &errOut)
@@ -137,10 +140,10 @@ func TestRuntimeCrashAfterWriteEffectReconcilesFromFilesystem(t *testing.T) {
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"write_file","arguments":{"path":"a.txt","content":"new\n","expected_before_hash":"`+before+`"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001","obs-000002"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"},{"evidence_id":"obs-000002","tool":"write_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
-	code, output := runCrashedWriteRun(t, writeCrashRunArgs(script, workspace, stateDir), "write_after_effect")
+	code, output := runCrashedWriteRun(t, writeCrashRunArgs(t, script, workspace, stateDir), "write_after_effect")
 	if code != 42 {
 		t.Fatalf("crash helper exit = %d, want 42\n%s", code, output)
 	}
@@ -164,7 +167,7 @@ func TestRuntimeCrashAfterWriteEffectReconcilesFromFilesystem(t *testing.T) {
 	// Resume reconciles the write as completed from the current filesystem
 	// state, persists the observed evidence, and the run completes citing it.
 	resumeScript := writeScript(t,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001","obs-000002"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"},{"evidence_id":"obs-000002","tool":"write_file"}]}</runstead_final>`,
 	)
 	var out, errOut strings.Builder
 	resumeCode := run(context.Background(), []string{
@@ -234,10 +237,10 @@ func TestRuntimeUnreconcilableWriteStopsWithHumanReview(t *testing.T) {
 	script := writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"write_file","arguments":{"path":"a.txt","content":"new\n","expected_before_hash":"`+before+`"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001","obs-000002"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"},{"evidence_id":"obs-000002","tool":"write_file"}]}</runstead_final>`,
 	)
 	stateDir := t.TempDir()
-	code, output := runCrashedWriteRun(t, writeCrashRunArgs(script, workspace, stateDir), "write_after_effect")
+	code, output := runCrashedWriteRun(t, writeCrashRunArgs(t, script, workspace, stateDir), "write_after_effect")
 	if code != 42 {
 		t.Fatalf("crash helper exit = %d, want 42\n%s", code, output)
 	}
@@ -250,7 +253,7 @@ func TestRuntimeUnreconcilableWriteStopsWithHumanReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	resumeScript := writeScript(t,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":["obs-000001"]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
 	var out, errOut strings.Builder
 	resumeCode := run(context.Background(), []string{

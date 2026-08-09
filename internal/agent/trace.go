@@ -31,6 +31,10 @@ const (
 	TraceCorrection  = "correction"
 	TraceDeviation   = "deviation"
 	TraceStop        = "stop"
+	// TraceVerification is the control-plane verification of one completion
+	// proposal (issue #11). Status is the typed verifier decision (passed,
+	// failed, blocked, uncertain).
+	TraceVerification = "verification"
 
 	// Recovery trace kinds (issue #9): the pre-loop pipeline emits the
 	// interruption, reconciliation and context-reconstruction lines, and the

@@ -23,6 +23,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
 	"github.com/RenyEnnos/Runstead/internal/trace"
+	"github.com/RenyEnnos/Runstead/internal/verifier"
 )
 
 const (
@@ -90,6 +91,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	writePolicy := ""
 	recipesFile := ""
 	recipePolicy := ""
+	acceptanceFile := ""
 	flags.StringVar(&workspace, "workspace", "", "workspace path (default: RUNSTEAD_WORKSPACE or .)")
 	flags.StringVar(&logLevel, "log-level", "", "log level: debug, info, warn or error")
 	flags.StringVar(&task, "task", "", "task prompt (RUNSTEAD_TASK)")
@@ -98,6 +100,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	flags.StringVar(&writePolicy, "write-policy", "", "write tool policy modes, e.g. write_file=allow,apply_patch=approval_required (RUNSTEAD_WRITE_POLICY; default: approval_required for every write tool)")
 	flags.StringVar(&recipesFile, "recipes", "", "operator-controlled recipe catalog file (RUNSTEAD_RECIPES): JSON array of recipes; run_recipe fails closed without it")
 	flags.StringVar(&recipePolicy, "recipe-policy", "", "recipe policy modes, e.g. test=allow,vet=approval_required (RUNSTEAD_RECIPE_POLICY; default: approval_required for every recipe)")
+	flags.StringVar(&acceptanceFile, "acceptance", "", "operator acceptance plan file (RUNSTEAD_ACCEPTANCE_PLAN): versioned JSON of typed acceptance checks; completion requires every check to pass. Without a plan, completion is refused (fail closed)")
 	flags.IntVar(&maxSteps, "max-steps", 0, "maximum model turns (RUNSTEAD_MAX_STEPS, default 24)")
 	flags.IntVar(&maxCorrections, "max-corrections", 0, "protocol correction attempts (RUNSTEAD_MAX_CORRECTIONS, default 2)")
 	flags.IntVar(&maxRepeatedActions, "max-repeated-actions", 0, "repeated-action corrections before stopping (RUNSTEAD_MAX_REPEATED_ACTIONS, default 2)")
@@ -285,17 +288,24 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	}
 	policyConfig := writePolicyConfig
 	policyConfig.RecipeModes = recipePolicyConfig.RecipeModes
+	acceptance, acceptanceDigest, err := resolveAcceptancePlan(acceptanceFile, flagWasSet(flags, "acceptance"))
+	if err != nil {
+		fmt.Fprintf(errOut, "run: %v\n", err)
+		return exitUsage
+	}
 	loop, err := agent.NewLoop(agent.Config{
-		Runner:              executor,
-		Registry:            registry,
-		Limits:              limits,
-		Model:               model,
-		Trace:               cliTraceSink(errOut),
-		State:               store,
-		Policy:              policy.NewStatic(policyConfig, storeApprovals(store)),
-		WritePolicy:         writePolicyConfig.Spec(),
-		RecipePolicy:        recipePolicyConfig.RecipeSpec(recipeIDs(recipes)),
-		RecipeCatalogDigest: recipes.Digest(),
+		Runner:               executor,
+		Registry:             registry,
+		Limits:               limits,
+		Model:                model,
+		Trace:                cliTraceSink(errOut),
+		State:                store,
+		Policy:               policy.NewStatic(policyConfig, storeApprovals(store)),
+		WritePolicy:          writePolicyConfig.Spec(),
+		RecipePolicy:         recipePolicyConfig.RecipeSpec(recipeIDs(recipes)),
+		RecipeCatalogDigest:  recipes.Digest(),
+		Verifier:             verifier.New(registry, acceptance),
+		AcceptancePlanDigest: acceptanceDigest,
 	})
 	if err != nil {
 		fmt.Fprintf(errOut, "run: loop unavailable: %v\n", err)
@@ -386,6 +396,37 @@ func resolveRecipeCatalog(flagValue string, flagSet bool) (*recipe.Catalog, erro
 		return nil, err
 	}
 	return catalog, nil
+}
+
+// resolveAcceptancePlan loads the operator acceptance plan from the
+// --acceptance flag, then RUNSTEAD_ACCEPTANCE_PLAN. A nil plan (no flag and no
+// env) fails closed: the verifier refuses completion blocked, because without
+// task-specific acceptance criteria a completion proposal can never be proven
+// against the task objective (issue #11 review). The operator attaches a plan
+// at resume with --acceptance for tasks that started without one. An explicit
+// but unreadable or invalid plan is an error.
+func resolveAcceptancePlan(flagValue string, flagSet bool) (*verifier.Plan, string, error) {
+	value := ""
+	if flagSet {
+		value = strings.TrimSpace(flagValue)
+		if value == "" {
+			return nil, "", errors.New("acceptance plan file must not be empty")
+		}
+	} else if envValue, ok := os.LookupEnv(config.EnvAcceptancePlan); ok {
+		value = strings.TrimSpace(envValue)
+	}
+	if value == "" {
+		return nil, "", nil
+	}
+	data, err := os.ReadFile(value)
+	if err != nil {
+		return nil, "", fmt.Errorf("read acceptance plan: %w", err)
+	}
+	plan, err := verifier.ParsePlan(data)
+	if err != nil {
+		return nil, "", err
+	}
+	return plan, plan.Digest(), nil
 }
 
 // resolveRecipePolicy resolves the recipe policy modes from the
@@ -560,6 +601,12 @@ func printResult(out, errOut io.Writer, taskID string, result agent.Result) {
 		if result.Summary != "" {
 			fmt.Fprintf(out, "summary: %s\n", result.Summary)
 		}
+		// The model's own final text is unverified free text, kept explicitly
+		// separate from the verified summary so it can never be mistaken for a
+		// verified completion claim (issue #11 review).
+		if result.Note != "" {
+			fmt.Fprintf(out, "note (unverified): %s\n", result.Note)
+		}
 		for _, id := range result.Evidence {
 			fmt.Fprintf(out, "evidence: %s\n", id)
 		}
@@ -567,6 +614,10 @@ func printResult(out, errOut io.Writer, taskID string, result agent.Result) {
 	if result.Outcome == agent.OutcomeApprovalRequired && result.PendingActionID != "" {
 		fmt.Fprintf(out, "pending approval: action %s\n", result.PendingActionID)
 		fmt.Fprintf(out, "runstead decide %s %s approved|rejected\n", taskID, result.PendingActionID)
+	}
+	if result.Outcome == agent.OutcomeVerificationBlocked {
+		fmt.Fprintf(out, "completion refused by the runtime verifier; runstead inspect %s explains the checks\n", taskID)
+		fmt.Fprintf(out, "reconcile the uncertain effect or pending approval, then runstead resume %s\n", taskID)
 	}
 	fmt.Fprintf(errOut, "run: turns=%d attempts=%d observations=%d corrections=%d repeated=%d mixed_prose=%d\n",
 		result.Turns, result.Attempts, result.Observations, result.Corrections, result.Repeated, result.MixedProse)
@@ -892,8 +943,13 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "Runs one bounded agent task: every model turn is admitted by the")
 	fmt.Fprintln(out, "account governor, actions are validated and executed by the tool")
 	fmt.Fprintln(out, "registry (read-only tools plus policy-gated write_file/apply_patch and")
-	fmt.Fprintln(out, "operator-declared process recipes), and a final answer is accepted only")
-	fmt.Fprintln(out, "when grounded in real evidence IDs produced in this run. Writes are")
+	fmt.Fprintln(out, "operator-declared process recipes), and completion is decided only by the")
+	fmt.Fprintln(out, "runtime verifier: a status \"complete\" final is a proposal, never proof.")
+	fmt.Fprintln(out, "The verifier independently observes persisted evidence, the real filesystem,")
+	fmt.Fprintln(out, "git state and the operator acceptance plan (--acceptance FILE); a failed")
+	fmt.Fprintln(out, "verification returns a structured verification observation so execution can")
+	fmt.Fprintln(out, "continue, and completion is refused while any effect is uncertain or an")
+	fmt.Fprintln(out, "approval is pending (issue #11). Writes are")
 	fmt.Fprintln(out, "stale-state protected, stay inside the workspace, and never execute")
 	fmt.Fprintln(out, "without control-plane approval when the policy requires it. Process")
 	fmt.Fprintln(out, "recipes (--recipes FILE) run their fixed operator-declared argv with an")
@@ -920,6 +976,7 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --write-policy SPEC       write tool modes, e.g. write_file=allow,apply_patch=deny (RUNSTEAD_WRITE_POLICY, default approval_required)")
 	fmt.Fprintln(out, "  --recipes FILE            operator-controlled recipe catalog (RUNSTEAD_RECIPES); run_recipe fails closed without it")
 	fmt.Fprintln(out, "  --recipe-policy SPEC      recipe modes, e.g. test=allow,vet=deny (RUNSTEAD_RECIPE_POLICY, default approval_required)")
+	fmt.Fprintln(out, "  --acceptance FILE         operator acceptance plan: versioned JSON of typed checks (RUNSTEAD_ACCEPTANCE_PLAN); completion requires every check to pass and is refused (fail closed) without a plan")
 	fmt.Fprintln(out, "  --log-level LEVEL         debug, info, warn or error (RUNSTEAD_LOG_LEVEL, default info)")
 	fmt.Fprintln(out, "  --max-steps N             maximum model turns (default 24)")
 	fmt.Fprintln(out, "  --max-corrections N       protocol correction attempts (default 2)")

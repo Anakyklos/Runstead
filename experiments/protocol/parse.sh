@@ -207,7 +207,10 @@ else
       (.[0].summary? | type == "string") and
       (.[0].evidence? | type == "array") and
       (.[0].evidence | length > 0) and
-      (.[0].evidence | all(.[]; type == "string")) and
+      (.[0].evidence | all(.[];
+        (type == "object") and
+        (.["evidence_id"]? | type == "string") and
+        (.["tool"]? | type == "string"))) and
       ((.[0] | keys | sort) == ["evidence", "status", "summary", "version"])
     ' "$block_file" >/dev/null 2>&1; then
     jq -cn \

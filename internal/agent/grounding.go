@@ -34,15 +34,23 @@ func (e *EvidenceSet) Count() int {
 }
 
 // Ground checks every cited ID against the collected observations. The
-// evidence type distinction is reserved for later milestones; today an ID is
-// compatible when it was produced by a successful observation in this run.
+// evidence type binding is decided by the control-plane verifier against
+// persisted evidence (issue #11 review); the run-level gate only proves the ID
+// was produced by a successful observation in this run.
 func (e *EvidenceSet) Ground(final protocol.FinalResponse) (grounded bool, missing []string) {
 	if e.observations == nil {
-		return len(final.Evidence) == 0, append([]string(nil), final.Evidence...)
+		if len(final.Evidence) == 0 {
+			return true, nil
+		}
+		missing = make([]string, 0, len(final.Evidence))
+		for _, citation := range final.Evidence {
+			missing = append(missing, citation.EvidenceID)
+		}
+		return false, missing
 	}
-	for _, id := range final.Evidence {
-		if _, ok := e.observations[id]; !ok {
-			missing = append(missing, id)
+	for _, citation := range final.Evidence {
+		if _, ok := e.observations[citation.EvidenceID]; !ok {
+			missing = append(missing, citation.EvidenceID)
 		}
 	}
 	return len(missing) == 0, missing

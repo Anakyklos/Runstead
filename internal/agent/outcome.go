@@ -6,9 +6,12 @@ package agent
 type Outcome string
 
 const (
-	// OutcomeCompleted means the model emitted a grounded final with status
-	// complete: every cited evidence ID was produced by a successful tool
-	// observation in this run.
+	// OutcomeCompleted means the model proposed completion and the runtime
+	// verifier independently confirmed it: every cited evidence ID exists in
+	// the task's persisted evidence, no uncertain effect or pending approval
+	// remains, and every mandatory acceptance check passed against the real
+	// environment. Completion is decided by the runtime, never by the model's
+	// claim alone (issue #11).
 	OutcomeCompleted Outcome = "completed"
 	// OutcomeStepsExhausted means the configured model-turn budget was used
 	// before a terminal final was accepted.
@@ -57,6 +60,14 @@ const (
 	// not a protocol correction: no correction budget is consumed and no
 	// further provider attempt is made to wait for the operator.
 	OutcomeApprovalRequired Outcome = "approval_required"
+	// OutcomeVerificationBlocked means the run paused because completion was
+	// refused by a control-plane verification dependency that is not a
+	// model-correctable failure: an uncertain effect, a pending operator
+	// approval at completion time, or an acceptance check that cannot be
+	// evaluated. The task is NOT finalized: it stays durably resumable so the
+	// operator can reconcile the effect or decide the approval before a
+	// normal `runstead resume` continues.
+	OutcomeVerificationBlocked Outcome = "verification_blocked"
 )
 
 // exitSuccess, exitCanceled and the usage/unavailable codes are shared with the
@@ -101,6 +112,8 @@ func (o Outcome) ExitCode() int {
 		return exitOutcomeBase + 9
 	case OutcomeApprovalRequired:
 		return exitOutcomeBase + 12
+	case OutcomeVerificationBlocked:
+		return exitOutcomeBase + 13
 	default:
 		return exitUnknown
 	}
@@ -110,7 +123,7 @@ func (o Outcome) ExitCode() int {
 func (o Outcome) StopReason() string {
 	switch o {
 	case OutcomeCompleted:
-		return "grounded final accepted"
+		return "completion verified by the control plane"
 	case OutcomeStepsExhausted:
 		return "model-turn budget exhausted"
 	case OutcomeCorrectionsExhausted:
@@ -137,6 +150,8 @@ func (o Outcome) StopReason() string {
 		return "grounded final reported incomplete"
 	case OutcomeApprovalRequired:
 		return "write approval required"
+	case OutcomeVerificationBlocked:
+		return "completion refused by control-plane verification"
 	default:
 		return "unknown terminal outcome"
 	}
@@ -144,15 +159,26 @@ func (o Outcome) StopReason() string {
 
 // Result is the deterministic outcome of one loop run.
 type Result struct {
-	Outcome        Outcome
-	StopReason     string
-	Turns          int
-	Attempts       int
-	Observations   int
-	Corrections    int
-	Repeated       int
-	MixedProse     int
-	Summary        string
+	Outcome      Outcome
+	StopReason   string
+	Turns        int
+	Attempts     int
+	Observations int
+	Corrections  int
+	Repeated     int
+	MixedProse   int
+	// Summary is the VERIFIED completion summary of a completed task: it is
+	// produced by the control-plane verifier from the acceptance checks and
+	// authoritative evidence, never from model prose (issue #11 review). For
+	// non-completed outcomes it may carry the model's final text where that is
+	// honest (for example an incomplete final).
+	Summary string
+	// Note is the model's own final-response summary, kept EXPLICITLY
+	// SEPARATE from the verified report. It is unverified free text: it never
+	// enters the verifier, is never persisted as the task summary, and is
+	// surfaced only as a labeled note so it can never be mistaken for a
+	// verified completion claim.
+	Note           string
 	Evidence       []string
 	Classification string
 	Err            error
