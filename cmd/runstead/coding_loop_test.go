@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/RenyEnnos/Runstead/internal/agent"
 )
 
 // codingLoopFixture is the committed deterministic sample repository of the
@@ -410,4 +412,68 @@ func mustQuote(value string) string {
 		panic(err)
 	}
 	return string(encoded)
+}
+
+// TestCodingLoopConsecutiveFailureFlagStops proves the
+// --max-consecutive-failures flag is wired through the CLI: with a
+// one-failure allowance, two consecutive failing observations stop the run
+// with the typed consecutive_failures_exhausted outcome and exit code.
+func TestCodingLoopConsecutiveFailureFlagStops(t *testing.T) {
+	workspace := t.TempDir()
+	script := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"missing-a.txt"}}</runstead_action>`,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"missing-b.txt"}}</runstead_action>`,
+	)
+	stateDir := t.TempDir()
+	var out, errOut strings.Builder
+	code := run(context.Background(), []string{
+		"run", "--task", "Inspect the workspace.",
+		"--workspace", workspace,
+		"--scripted", script,
+		"--max-consecutive-failures", "1",
+		"--state-dir", stateDir,
+		"--min-start-interval", "1ms",
+		"--log-level", "error",
+	}, &out, &errOut)
+	if code != agent.OutcomeConsecutiveFailuresExhausted.ExitCode() {
+		t.Fatalf("run exit = %d, want %d\nstderr:\n%s", code, agent.OutcomeConsecutiveFailuresExhausted.ExitCode(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "outcome: consecutive_failures_exhausted") {
+		t.Fatalf("run output must show the typed outcome:\n%s", out.String())
+	}
+}
+
+// TestCodingLoopVerificationRetryFlagStops proves the
+// --max-verification-retries flag is wired through the CLI: with a
+// one-retry allowance, two failed completion verifications stop the run with
+// the typed verification_failures_exhausted outcome and exit code.
+func TestCodingLoopVerificationRetryFlagStops(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "readme.txt"), []byte("info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	acceptance := writeAcceptanceFile(t, `{"version":1,"checks":[{"id":"artifact","type":"file_exists","path":"never.txt"}]}`)
+	script := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"readme.txt"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
+	)
+	stateDir := t.TempDir()
+	var out, errOut strings.Builder
+	code := run(context.Background(), []string{
+		"run", "--task", "Create never.txt.",
+		"--workspace", workspace,
+		"--scripted", script,
+		"--acceptance", acceptance,
+		"--max-verification-retries", "1",
+		"--state-dir", stateDir,
+		"--min-start-interval", "1ms",
+		"--log-level", "error",
+	}, &out, &errOut)
+	if code != agent.OutcomeVerificationFailuresExhausted.ExitCode() {
+		t.Fatalf("run exit = %d, want %d\nstderr:\n%s", code, agent.OutcomeVerificationFailuresExhausted.ExitCode(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "outcome: verification_failures_exhausted") {
+		t.Fatalf("run output must show the typed outcome:\n%s", out.String())
+	}
 }
