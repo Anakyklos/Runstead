@@ -149,7 +149,8 @@ used where they apply.
 stateDiagram-v2
     [*] --> planned: runstead run accepted
     planned --> running
-    running --> completed: grounded final accepted
+    running --> completed: runtime verifier passed (issue #11)
+    running --> running: verification failed; structured observation returned
     running --> failed: terminal typed outcome (loop budgets, provider failure)
     running --> canceled: context canceled
     running --> human_review_required: uncertain effect cannot be reconciled

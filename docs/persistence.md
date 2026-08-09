@@ -337,17 +337,20 @@ implemented:
 - there is no automatic reconciliation engine;
 - prepared/uncertain attempts are persisted and flagged, but nothing
   automatically re-executes, reinterprets or reconciles them;
-- delivery-state transport tracking (#38), the verifier (#11) and first-party
-  ChatGPT Web work remain separate milestones; write tools (#10) and the
-  bounded process runner (#26) are implemented (see [writes.md](writes.md) and
-  [process-runner.md](process-runner.md)), including the approval pause (task
+- delivery-state transport tracking (#38) and first-party ChatGPT Web work
+  remain separate milestones; write tools (#10), the bounded process runner
+  (#26) and the independent verifier (#11) are implemented (see
+  [writes.md](writes.md), [process-runner.md](process-runner.md) and
+  [verification.md](verification.md)), including the approval pause (task
   stays resumable with pending approvals derived from
-  `write_policy_decisions` + `approvals`) and the TX 1 evidence
+  `write_policy_decisions` + `approvals`), the TX 1 evidence
   (`tool_attempts.planned_diff_json` migration 0005 for writes,
   `tool_attempts.process_intent_json` migration 0006 for process recipes,
   `actions.recipe_fingerprint` migration 0007 for the digest-bound recipe
   approval identity, and `config_json.recipe_catalog_digest` for the durable
-  catalog digest that resume compares against the re-supplied catalog).
+  catalog digest that resume compares against the re-supplied catalog), and
+  the verification schema (migration 0008: `acceptance_plans`,
+  `workspace_baselines`, `verification_attempts`, `verification_checks`).
 
 The schema keeps a compatible seam for those milestones (for example
 `provider_attempt_receipts` is one-to-many and `recovery_class` is stored on
@@ -548,8 +551,8 @@ with a typed loop outcome.
 ### Scope of #9
 
 Issue #9 implements resume for the current read-only M2 runtime only. It does
-not implement safe write tools (#10), the process runner (#26), the verifier
-(#11), arbitrary shell, first-party ChatGPT Web work, provider routing,
+not implement safe write tools (#10), the process runner (#26), arbitrary
+shell, first-party ChatGPT Web work, provider routing,
 account rotation, automatic fallback, generic Event Sourcing,
 Temporal-style deterministic replay, a broad checkpoint framework, or the
 streaming reconciliation milestone (#42). The reconciliation seam is the

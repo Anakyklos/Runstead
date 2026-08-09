@@ -201,8 +201,12 @@ Implemented package responsibilities are deliberately narrow:
   by #10 to reconcile interrupted writes from observable filesystem state;
 - `internal/trace`: JSON `log/slog` construction and level parsing.
 
-The planned `verifier` package remains absent until it contains real behavior
-(M4). The provider boundary represents one logical completion,
+The `internal/verifier` package implements the #11 control-plane completion
+boundary (see [verification.md](verification.md)): a `status="complete"` final
+is a proposal, the verifier independently observes persisted evidence, the
+real filesystem, real git state and the operator acceptance plan, and the
+state-layer completion gate refuses `completed` without a passed verification
+attempt. The provider boundary represents one logical completion,
 not an unaccounted retry loop. Legacy single-attempt clients must explicitly
 declare amplification disabled. Receipt-aware clients return one authoritative
 receipt per real upstream attempt, and the governor reconciles every receipt.
