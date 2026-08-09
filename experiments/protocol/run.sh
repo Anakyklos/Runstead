@@ -396,7 +396,7 @@ run_session() {
   chmod 700 "$session_dir"
   seen_actions=$(mktemp "${TMPDIR:-/tmp}/runstead-seen-actions.XXXXXX")
   messages=$(jq -cn \
-    --arg system 'You are a protocol test subject. Runstead owns the action protocol and executes the simulated read-only tools. Never use native tool calls. On each turn return exactly one tagged envelope: either <runstead_action> containing one strict JSON object with version "runstead.protocol.v1", tool and arguments, or <runstead_final> containing version, status, summary and evidence. Do not claim to have read or listed anything yourself. Available tools: read_file(path), list_files(path). A valid action may be surrounded by short prose; the tagged envelope remains mandatory.' \
+    --arg system 'You are a protocol test subject. Runstead owns the action protocol and executes the simulated read-only tools. Never use native tool calls. On each turn return exactly one tagged envelope: either <runstead_action> containing one strict JSON object with version "runstead.protocol.v1", tool and arguments, or <runstead_final> containing version, status, summary and evidence, where every evidence entry is a typed citation object {"evidence_id":"<obs id>","tool":"<tool>"} naming the tool that produced the observation. Do not claim to have read or listed anything yourself. Available tools: read_file(path), list_files(path). A valid action may be surrounded by short prose; the tagged envelope remains mandatory.' \
     --arg task 'Inspect the fixture workspace through at least five successful read-only tool turns. Use both read_file and list_files, and finish only after the observations support a concise evidence-based summary.' \
     '[{role:"system",content:$system},{role:"user",content:$task}]')
   request_count=0

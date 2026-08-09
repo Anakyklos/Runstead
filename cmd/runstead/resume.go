@@ -759,7 +759,7 @@ func printResumeHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --write-policy SPEC       write tool modes, e.g. write_file=allow (RUNSTEAD_WRITE_POLICY, default approval_required)")
 	fmt.Fprintln(out, "  --recipes FILE            operator-controlled recipe catalog (RUNSTEAD_RECIPES); re-supplied at resume")
 	fmt.Fprintln(out, "  --recipe-policy SPEC      recipe modes, e.g. test=allow (RUNSTEAD_RECIPE_POLICY; must match the persisted policy)")
-	fmt.Fprintln(out, "  --acceptance FILE         operator acceptance plan (RUNSTEAD_ACCEPTANCE_PLAN; must match the persisted plan; loaded from state when omitted)")
+	fmt.Fprintln(out, "  --acceptance FILE         operator acceptance plan (RUNSTEAD_ACCEPTANCE_PLAN; must match the persisted plan; loaded from state when omitted; may ATTACH a plan to a task that started without one, since completion fails closed without acceptance criteria)")
 	fmt.Fprintln(out, "  --min-start-interval DURATION  account governor pacing override (RUNSTEAD_MIN_START_INTERVAL)")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Exit codes: 0 resumed and finished, 1 task not found, 2 usage, 3 state database unavailable,")

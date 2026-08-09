@@ -970,7 +970,7 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --write-policy SPEC       write tool modes, e.g. write_file=allow,apply_patch=deny (RUNSTEAD_WRITE_POLICY, default approval_required)")
 	fmt.Fprintln(out, "  --recipes FILE            operator-controlled recipe catalog (RUNSTEAD_RECIPES); run_recipe fails closed without it")
 	fmt.Fprintln(out, "  --recipe-policy SPEC      recipe modes, e.g. test=allow,vet=deny (RUNSTEAD_RECIPE_POLICY, default approval_required)")
-	fmt.Fprintln(out, "  --acceptance FILE         operator acceptance plan: versioned JSON of typed checks (RUNSTEAD_ACCEPTANCE_PLAN); completion requires every check to pass")
+	fmt.Fprintln(out, "  --acceptance FILE         operator acceptance plan: versioned JSON of typed checks (RUNSTEAD_ACCEPTANCE_PLAN); completion requires every check to pass and is refused (fail closed) without a plan")
 	fmt.Fprintln(out, "  --log-level LEVEL         debug, info, warn or error (RUNSTEAD_LOG_LEVEL, default info)")
 	fmt.Fprintln(out, "  --max-steps N             maximum model turns (default 24)")
 	fmt.Fprintln(out, "  --max-corrections N       protocol correction attempts (default 2)")
