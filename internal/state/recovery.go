@@ -345,10 +345,13 @@ type RecoveryTask struct {
 
 // RecoveryAction is one logical action with its repeat/loop evidence.
 type RecoveryAction struct {
-	ActionID           string
-	Tool               string
-	ArgumentsJSON      string
-	Fingerprint        string
+	ActionID      string
+	Tool          string
+	ArgumentsJSON string
+	Fingerprint   string
+	// RecipeFingerprint is the digest-bound approval identity of a run_recipe
+	// action (issue #26 review); empty for non-recipe actions.
+	RecipeFingerprint  string
 	Status             string
 	WorkspaceSignature string
 }
@@ -449,7 +452,7 @@ func (s *Store) loadRecoveryTask(ctx context.Context, taskID string) (RecoveryTa
 
 func (s *Store) loadRecoveryActions(ctx context.Context, taskID string) ([]RecoveryAction, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT action_id, tool, arguments_json, fingerprint, status, workspace_signature
+		`SELECT action_id, tool, arguments_json, fingerprint, recipe_fingerprint, status, workspace_signature
 		 FROM actions WHERE task_id = ? ORDER BY action_sequence`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load recovery actions: %w", err)
@@ -458,7 +461,7 @@ func (s *Store) loadRecoveryActions(ctx context.Context, taskID string) ([]Recov
 	var actions []RecoveryAction
 	for rows.Next() {
 		var action RecoveryAction
-		if err := rows.Scan(&action.ActionID, &action.Tool, &action.ArgumentsJSON, &action.Fingerprint, &action.Status, &action.WorkspaceSignature); err != nil {
+		if err := rows.Scan(&action.ActionID, &action.Tool, &action.ArgumentsJSON, &action.Fingerprint, &action.RecipeFingerprint, &action.Status, &action.WorkspaceSignature); err != nil {
 			return nil, fmt.Errorf("scan recovery action: %w", err)
 		}
 		actions = append(actions, action)

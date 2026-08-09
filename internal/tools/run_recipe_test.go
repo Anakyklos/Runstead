@@ -241,7 +241,7 @@ func TestRunRecipeCredentialEnvNotPassed(t *testing.T) {
 	// validation refuses them); the recipe allowlists a benign marker and the
 	// parent carries credential fixtures that must never be inherited.
 	catalog := testCatalog(t, recipe.Recipe{
-		ID: "test", Executable: "go", Capabilities: []recipe.Capability{recipe.CapabilityExecuteRepoCode},
+		ID: "test", Executable: "go", Capabilities: []recipe.Capability{recipe.CapabilityExecuteRepoCode, recipe.CapabilityInheritEnvironment},
 		AllowedEnvironment: []string{"RUNSTEAD_ALLOWED_MARKER"},
 	})
 	registry, err := tools.NewRegistry(tools.Options{Workspace: workspace, Recipes: catalog, RunRecipe: fake.run})

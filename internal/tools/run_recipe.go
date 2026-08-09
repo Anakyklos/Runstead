@@ -74,6 +74,26 @@ func (r *Registry) executeRunRecipe(ctx context.Context, observation Observation
 	return observation
 }
 
+// AnnotateRecipeEvidence fills the execution identities of a successful recipe
+// observation with the REAL control-plane policy decision. The loop calls it
+// after the execution id is allocated and before TX 2: the persisted evidence
+// carries action/execution/evidence ids and the actual policy outcome (for
+// example allowed/approved_by_operator), never a hardcoded placeholder.
+func (r *Registry) AnnotateRecipeEvidence(observation *Observation, actionID, executionID, decision, reason string) {
+	if observation == nil || !observation.Success {
+		return
+	}
+	evidence, ok := observation.Data.(recipe.Evidence)
+	if !ok {
+		return
+	}
+	evidence.ActionID = actionID
+	evidence.ExecutionID = executionID
+	evidence.EvidenceID = observation.ID
+	evidence.Policy = recipe.PolicyDecision{Decision: decision, Reason: reason}
+	observation.Data = evidence
+}
+
 // resolveRecipeWorkingDirectory resolves a recipe's relative working directory
 // to an absolute canonical path inside the workspace. Empty means the
 // workspace root. The parent directory must exist and must resolve inside the

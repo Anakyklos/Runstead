@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -40,6 +41,26 @@ func runProcessHelper(mode string) int {
 		}
 		_ = child.Wait()
 		return 0
+	case "spawn-child-ignore-term":
+		// The parent process spawns a child that ignores SIGTERM (self-exec
+		// with mode "ignore-term"). When the process group receives SIGTERM the
+		// parent dies, but the child must keep running until SIGKILL: this
+		// proves the synchronous tree-termination barrier, because Run() must
+		// not return while the SIGTERM-ignoring child is still alive.
+		child := exec.Command(os.Args[0], "-test.run=TestRecipeRunnerHelper")
+		child.Env = append(os.Environ(), "RUNSTEAD_PROCESS_HELPER_MODE=ignore-term")
+		if err := child.Start(); err != nil {
+			return 1
+		}
+		if path := os.Getenv("RUNSTEAD_PROCESS_CHILD_PID_FILE"); path != "" {
+			_ = os.WriteFile(path, []byte(strconv.Itoa(child.Process.Pid)), 0o600)
+		}
+		_ = child.Wait()
+		return 0
+	case "ignore-term":
+		signal.Ignore(syscall.SIGTERM)
+		time.Sleep(60 * time.Second)
+		return 0
 	case "output":
 		outBytes, _ := strconv.Atoi(os.Getenv("RUNSTEAD_PROCESS_HELPER_OUT"))
 		errBytes, _ := strconv.Atoi(os.Getenv("RUNSTEAD_PROCESS_HELPER_ERR"))
@@ -72,7 +93,7 @@ func runnerRecipe(t *testing.T, id, mode string, allowed ...string) recipe.Recip
 		ID:                 id,
 		Executable:         exe,
 		Argv:               []string{"-test.run=TestRecipeRunnerHelper"},
-		Capabilities:       []recipe.Capability{recipe.CapabilityExecuteRepoCode},
+		Capabilities:       []recipe.Capability{recipe.CapabilityExecuteRepoCode, recipe.CapabilityInheritEnvironment},
 		AllowedEnvironment: env,
 	}
 }
@@ -169,6 +190,45 @@ func TestProcessRunnerTimeoutKillsFullTree(t *testing.T) {
 		t.Fatalf("invalid child pid %q", raw)
 	}
 	waitForDead(t, childPID)
+}
+
+// TestProcessRunnerSynchronousTreeTerminationBarrier is the deterministic
+// regression test for the reviewer blocker: a child that ignores SIGTERM must
+// be dead before Run() returns. The direct process (parent) spawns a child
+// that ignores SIGTERM; when the timeout fires the parent dies on SIGTERM but
+// the child keeps running. Run() must not return until the whole group was
+// SIGKILLed, so immediately after Run() returns the child is already dead.
+func TestProcessRunnerSynchronousTreeTerminationBarrier(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child.pid")
+	r, _ := runnerRecipe(t, "tree", "spawn-child-ignore-term", "RUNSTEAD_PROCESS_CHILD_PID_FILE").Normalize()
+	r.TimeoutNanos = int64(500 * time.Millisecond)
+	parent := envWith(map[string]string{
+		"RUNSTEAD_PROCESS_HELPER_MODE":    "spawn-child-ignore-term",
+		"RUNSTEAD_PROCESS_CHILD_PID_FILE": pidFile,
+	})
+	start := time.Now()
+	result := recipe.Run(context.Background(), r, dir, recipe.BuildEnvironment(parent, r))
+	if !result.Started {
+		t.Fatalf("process must start: %+v", result)
+	}
+	if !result.TimedOut {
+		t.Fatalf("timed_out = false, want true (result %+v)", result)
+	}
+	// The SIGTERM-ignoring child must already be dead the moment Run returns:
+	// the barrier guarantees the whole group was terminated before TX2.
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("child pid file not written: %v", err)
+	}
+	childPID, _ := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if childPID <= 0 {
+		t.Fatalf("invalid child pid %q", raw)
+	}
+	waitForDead(t, childPID)
+	if elapsed := time.Since(start); elapsed < 2*time.Second {
+		t.Fatalf("Run returned after %v, but the SIGTERM->grace->SIGKILL barrier requires >= 2s", elapsed)
+	}
 }
 
 func TestProcessRunnerCancellationKillsFullTree(t *testing.T) {

@@ -16,7 +16,10 @@
 package recipe
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -122,6 +125,50 @@ func (r Recipe) Timeout() time.Duration {
 	return time.Duration(r.TimeoutNanos)
 }
 
+// Digest returns a stable SHA-256 over the EFFECTIVE normalized recipe
+// definition: executable, argv, working directory, declared capabilities,
+// environment allowlist and the relevant timeout/output limits. The recipe id
+// is intentionally excluded (it is the selector; the digest binds the
+// definition). Any change to the effective definition changes the digest,
+// which invalidates prior approvals and is detected as catalog drift on
+// resume. The recipe must be normalized (Catalog normalizes at load).
+func (r Recipe) Digest() string {
+	payload, err := json.Marshal(struct {
+		Executable         string       `json:"executable"`
+		Argv               []string     `json:"argv,omitempty"`
+		WorkingDirectory   string       `json:"working_directory,omitempty"`
+		Capabilities       []Capability `json:"capabilities"`
+		AllowedEnvironment []string     `json:"allowed_environment,omitempty"`
+		TimeoutNanos       int64        `json:"timeout_nanos"`
+		MaxStdoutBytes     int          `json:"max_stdout_bytes"`
+		MaxStderrBytes     int          `json:"max_stderr_bytes"`
+	}{
+		Executable:         r.Executable,
+		Argv:               append([]string(nil), r.Argv...),
+		WorkingDirectory:   r.WorkingDirectory,
+		Capabilities:       append([]Capability(nil), r.Capabilities...),
+		AllowedEnvironment: append([]string(nil), r.AllowedEnvironment...),
+		TimeoutNanos:       int64(r.Timeout()),
+		MaxStdoutBytes:     r.OutputLimits.MaxStdoutBytes,
+		MaxStderrBytes:     r.OutputLimits.MaxStderrBytes,
+	})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+// ApprovalFingerprint is the digest-bound approval identity of one run_recipe
+// proposal: it binds the recipe id to its effective definition digest, so an
+// operator approval for one definition can never authorize a different
+// definition of the same id (capability, argv or environment changes all
+// invalidate prior approvals).
+func ApprovalFingerprint(recipeID, digest string) string {
+	sum := sha256.Sum256([]byte("run_recipe\n" + recipeID + "\n" + digest))
+	return hex.EncodeToString(sum[:])
+}
+
 // Defaults applied to recipes that do not set the corresponding field.
 const (
 	// DefaultTimeout is the default recipe wall-clock timeout.
@@ -196,6 +243,17 @@ func (r Recipe) Normalize() (Recipe, error) {
 	r.Capabilities = normalized
 	seenEnv := make(map[string]bool, len(r.AllowedEnvironment))
 	allowed := make([]string, 0, len(r.AllowedEnvironment))
+	// Inheriting parent environment variables is a declared effect: it is
+	// only allowed when the recipe explicitly declares the
+	// inherit_environment capability. An allowlist without the capability is
+	// refused fail-closed.
+	hasInheritEnv := false
+	for _, capability := range r.Capabilities {
+		if capability == CapabilityInheritEnvironment {
+			hasInheritEnv = true
+			break
+		}
+	}
 	for _, name := range r.AllowedEnvironment {
 		name = strings.TrimSpace(name)
 		if name == "" {
@@ -205,6 +263,9 @@ func (r Recipe) Normalize() (Recipe, error) {
 			// A credential-shaped name is refused even when listed, so an
 			// operator mistake can never leak provider credentials.
 			return Recipe{}, fmt.Errorf("recipe %q: environment variable %q is a protected credential name and cannot be allowed", r.ID, name)
+		}
+		if !hasInheritEnv {
+			return Recipe{}, fmt.Errorf("recipe %q: allowed_environment requires the %q capability to be declared", r.ID, CapabilityInheritEnvironment)
 		}
 		if !seenEnv[name] {
 			seenEnv[name] = true
@@ -239,14 +300,84 @@ func NewCatalog(recipes []Recipe) (*Catalog, error) {
 	return &Catalog{recipes: index}, nil
 }
 
-// ParseCatalog decodes a JSON array of recipes and validates it.
+// ParseCatalog decodes a JSON array of recipes with a strict decoder and
+// validates it. Unknown fields and duplicate object keys are rejected, so a
+// typo can never silently change a recipe definition (consistent with the
+// main protocol parser).
 func ParseCatalog(data []byte) (*Catalog, error) {
+	if err := rejectDuplicateObjectKeys(data); err != nil {
+		return nil, fmt.Errorf("decode recipe catalog: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
 	var recipes []Recipe
-	if err := json.Unmarshal(data, &recipes); err != nil {
+	if err := decoder.Decode(&recipes); err != nil {
 		return nil, fmt.Errorf("decode recipe catalog: %w", err)
 	}
 	return NewCatalog(recipes)
 }
+
+// rejectDuplicateObjectKeys rejects duplicate keys anywhere in the JSON
+// document so a duplicated field can never silently override another.
+func rejectDuplicateObjectKeys(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if err := scanJSONValue(decoder, 0); err != nil {
+		return err
+	}
+	return nil
+}
+
+func scanJSONValue(decoder *json.Decoder, depth int) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	if depth >= maxCatalogJSONDepth {
+		return errors.New("JSON nesting is too deep")
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			key, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			name, ok := key.(string)
+			if !ok {
+				return errors.New("object key is not a string")
+			}
+			if _, exists := seen[name]; exists {
+				return fmt.Errorf("duplicate object key %q", name)
+			}
+			seen[name] = struct{}{}
+			if err := scanJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim('}') {
+			return errors.New("unterminated object")
+		}
+	case '[':
+		for decoder.More() {
+			if err := scanJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim(']') {
+			return errors.New("unterminated array")
+		}
+	}
+	return nil
+}
+
+const maxCatalogJSONDepth = 64
 
 // LoadCatalog reads and parses a recipe catalog file.
 func LoadCatalog(path string) (*Catalog, error) {
@@ -287,6 +418,28 @@ func (c *Catalog) Len() int {
 	return len(c.recipes)
 }
 
+// Digest returns a stable SHA-256 over the whole effective catalog: the
+// sorted "id=definitionDigest" pairs. It is persisted with the task
+// configuration so resume can reject catalog drift fail-closed (a re-supplied
+// catalog whose effective definitions changed can never silently continue a
+// task under a different recipe set). An empty catalog hashes to the empty
+// string.
+func (c *Catalog) Digest() string {
+	if c == nil || len(c.recipes) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(c.recipes))
+	for _, id := range c.IDs() {
+		recipe, ok := c.Get(id)
+		if !ok {
+			continue
+		}
+		lines = append(lines, id+"="+recipe.Digest())
+	}
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return hex.EncodeToString(sum[:])
+}
+
 // credentialNameMarkers are case-insensitive substrings that mark an
 // environment variable name as credential-shaped. They always win over the
 // recipe allowlist so provider credentials and secrets can never reach a
@@ -313,12 +466,21 @@ func isCredentialName(name string) bool {
 // allowlist. The complete parent environment is never inherited: PATH is
 // always passed (so the executable can be resolved), the recipe id marker is
 // always set, and only Recipe.AllowedEnvironment names are copied from the
-// parent, subject to the credential denylist.
+// parent, subject to the credential denylist AND to the recipe declaring the
+// inherit_environment capability (without it, nothing is inherited even when
+// an allowlist is present).
 func BuildEnvironment(parent []string, r Recipe) []string {
 	parentValues := make(map[string]string, len(parent))
 	for _, entry := range parent {
 		if index := strings.IndexByte(entry, '='); index > 0 {
 			parentValues[entry[:index]] = entry[index+1:]
+		}
+	}
+	hasInheritEnv := false
+	for _, capability := range r.Capabilities {
+		if capability == CapabilityInheritEnvironment {
+			hasInheritEnv = true
+			break
 		}
 	}
 	seen := make(map[string]bool)
@@ -336,12 +498,14 @@ func BuildEnvironment(parent []string, r Recipe) []string {
 		add("PATH", "/usr/bin:/bin")
 	}
 	add("RUNSTEAD_RECIPE_ID", r.ID)
-	for _, name := range r.AllowedEnvironment {
-		if isCredentialName(name) {
-			continue
-		}
-		if value, ok := parentValues[name]; ok {
-			add(name, value)
+	if hasInheritEnv {
+		for _, name := range r.AllowedEnvironment {
+			if isCredentialName(name) {
+				continue
+			}
+			if value, ok := parentValues[name]; ok {
+				add(name, value)
+			}
 		}
 	}
 	return env
@@ -430,10 +594,13 @@ func Run(ctx context.Context, r Recipe, cwd string, env []string) Result {
 		close(finished)
 	}()
 
-	// Terminate the whole process group when the (parent or recipe) context
-	// fires, but only while the process is still running. The defer cancel()
-	// in the caller guarantees this goroutine always exits when Run returns.
+	// Tree-termination barrier: the termination routine must complete before
+	// Run returns, so no SIGTERM-ignoring child can outlive the attempt's TX2.
+	// The goroutine signals completion via treeTerminated after the whole
+	// process group was terminated (or after the process finished on its own).
+	treeTerminated := make(chan struct{})
 	go func() {
+		defer close(treeTerminated)
 		select {
 		case <-timeoutCtx.Done():
 			select {
@@ -448,6 +615,10 @@ func Run(ctx context.Context, r Recipe, cwd string, env []string) Result {
 	}()
 
 	waitErr := <-done
+	// Synchronous barrier: only return after the termination routine
+	// completed, so the full process tree is dead (or the process finished on
+	// its own) before the caller persists TX2.
+	<-treeTerminated
 	duration := time.Since(start)
 	timedOut := timeoutCtx.Err() == context.DeadlineExceeded
 	canceled := ctx.Err() != nil

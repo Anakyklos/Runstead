@@ -111,7 +111,10 @@ policy decisions, pending approvals, approvals, process evidence and governor
 state after the run process exits (see [`persistence.md`](persistence.md)).
 `resume` reconciles interrupted attempts from durable state (issues #9/#10/#26)
 and continues under the task's persisted write and recipe policies; divergent
-`--write-policy` / `--recipe-policy` overrides are rejected fail-closed.
+`--write-policy` / `--recipe-policy` overrides are rejected fail-closed, and a
+re-supplied recipe catalog that drifts from the effective catalog the task
+started with is rejected before any recovery side effect (the catalog digest
+is persisted with the task).
 `decide <task-id> <action-id> approved|rejected` is the operator control plane
 that records approvals for actions actually pending approval (writes and
 recipes); model output can never approve an effect.

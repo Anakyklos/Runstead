@@ -286,15 +286,16 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	policyConfig := writePolicyConfig
 	policyConfig.RecipeModes = recipePolicyConfig.RecipeModes
 	loop, err := agent.NewLoop(agent.Config{
-		Runner:       executor,
-		Registry:     registry,
-		Limits:       limits,
-		Model:        model,
-		Trace:        cliTraceSink(errOut),
-		State:        store,
-		Policy:       policy.NewStatic(policyConfig, storeApprovals(store)),
-		WritePolicy:  writePolicyConfig.Spec(),
-		RecipePolicy: recipePolicyConfig.RecipeSpec(recipeIDs(recipes)),
+		Runner:              executor,
+		Registry:            registry,
+		Limits:              limits,
+		Model:               model,
+		Trace:               cliTraceSink(errOut),
+		State:               store,
+		Policy:              policy.NewStatic(policyConfig, storeApprovals(store)),
+		WritePolicy:         writePolicyConfig.Spec(),
+		RecipePolicy:        recipePolicyConfig.RecipeSpec(recipeIDs(recipes)),
+		RecipeCatalogDigest: recipes.Digest(),
 	})
 	if err != nil {
 		fmt.Fprintf(errOut, "run: loop unavailable: %v\n", err)
@@ -787,7 +788,7 @@ func decideCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		}
 	}
 	if !found {
-		fmt.Fprintf(errOut, "decide: action %q of task %q is not pending approval; only write actions awaiting an operator decision can be decided\n", actionID, taskID)
+		fmt.Fprintf(errOut, "decide: action %q of task %q is not pending approval; only write and recipe actions awaiting an operator decision can be decided\n", actionID, taskID)
 		return exitUsage
 	}
 	approvalID, err := store.RecordApproval(ctx, state.Approval{

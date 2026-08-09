@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/RenyEnnos/Runstead/internal/recipe"
 	"github.com/RenyEnnos/Runstead/internal/state"
 )
 
@@ -24,6 +26,19 @@ func writeRecipesFile(t *testing.T, recipes string) string {
 
 func echoRecipes() string {
 	return `[{"id":"test","executable":"/bin/echo","argv":["ok"],"capabilities":["execute_repository_code"]}]`
+}
+
+// seededRecipeConfig builds a seeded task config JSON that includes the
+// persisted digest of the given catalog, so the resume drift check accepts the
+// re-supplied catalog. Real runs persist this digest automatically; the
+// direct-seed tests must mirror it.
+func seededRecipeConfig(t *testing.T, catalogJSON, recipePolicy string) string {
+	t.Helper()
+	catalog, err := recipe.ParseCatalog([]byte(catalogJSON))
+	if err != nil {
+		t.Fatalf("recipe.ParseCatalog() error = %v", err)
+	}
+	return fmt.Sprintf(`{"recipe_policy":%q,"recipe_catalog_digest":%q,"max_steps":24}`, recipePolicy, catalog.Digest())
 }
 
 // TestRunRecipeCLIAllowedFlow proves the full CLI flow for an allowed recipe:
@@ -220,7 +235,7 @@ func TestResumeRecipePolicyDivergenceRejected(t *testing.T) {
 	workspace := t.TempDir()
 	recipes := writeRecipesFile(t, echoRecipes())
 	stateDir := t.TempDir()
-	seedRunningTaskWithConfig(t, stateDir, "task-recipe-policy", workspace, `{"recipe_policy":"test=deny","max_steps":24}`)
+	seedRunningTaskWithConfig(t, stateDir, "task-recipe-policy", workspace, seededRecipeConfig(t, echoRecipes(), "test=deny"))
 
 	var out, errOut bytes.Buffer
 	code := run(context.Background(), []string{
@@ -252,7 +267,7 @@ func TestResumeUsesPersistedDenyRecipePolicy(t *testing.T) {
 	}
 	recipes := writeRecipesFile(t, echoRecipes())
 	stateDir := t.TempDir()
-	seedRunningTaskWithConfig(t, stateDir, "task-recipe-deny", workspace, `{"recipe_policy":"test=deny","max_steps":24}`)
+	seedRunningTaskWithConfig(t, stateDir, "task-recipe-deny", workspace, seededRecipeConfig(t, echoRecipes(), "test=deny"))
 	store, err := state.Open(state.Options{Path: filepath.Join(stateDir, state.DefaultDBFile)})
 	if err != nil {
 		t.Fatal(err)
@@ -278,5 +293,97 @@ func TestResumeUsesPersistedDenyRecipePolicy(t *testing.T) {
 	}
 	if !strings.Contains(resumeOut, "outcome: completed") {
 		t.Fatalf("resume must complete on the grounded read evidence:\n%s", resumeOut)
+	}
+}
+
+// TestResumeRejectsRecipeCatalogDrift proves resume rejects a re-supplied
+// recipe catalog whose effective definitions differ from the catalog the task
+// started with, fail-closed and before any recovery side effect (issue #26
+// review). The digest of the effective catalog is persisted with the task, so
+// a changed executable/argv/capabilities/env/timeout can never silently
+// continue a task under a different recipe set.
+func TestResumeRejectsRecipeCatalogDrift(t *testing.T) {
+	workspace := t.TempDir()
+	recipesA := writeRecipesFile(t, `[{"id":"test","executable":"/bin/echo","argv":["ok"],"capabilities":["execute_repository_code"]}]`)
+	script := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"run_recipe","arguments":{"recipe":"test"}}</runstead_action>`,
+	)
+	stateDir := t.TempDir()
+	var out, errOut strings.Builder
+	code := run(context.Background(), []string{
+		"run", "--task", "Run the tests.",
+		"--workspace", workspace,
+		"--scripted", script,
+		"--recipes", recipesA,
+		"--state-dir", stateDir,
+		"--min-start-interval", "1ms",
+		"--log-level", "error",
+	}, &out, &errOut)
+	if code == exitSuccess {
+		t.Fatalf("run must pause, not complete")
+	}
+	taskID := taskIDFromOutput(t, errOut.String())
+
+	// The re-supplied catalog changes the effective definition (argv).
+	recipesB := writeRecipesFile(t, `[{"id":"test","executable":"/bin/echo","argv":["different"],"capabilities":["execute_repository_code"]}]`)
+	var resumeOut, resumeErr strings.Builder
+	resumeCode := run(context.Background(), []string{
+		"resume", taskID,
+		"--state-dir", stateDir,
+		"--scripted", script,
+		"--recipes", recipesB,
+		"--log-level", "error",
+	}, &resumeOut, &resumeErr)
+	if resumeCode != exitUsage {
+		t.Fatalf("resume exit = %d, want %d (catalog drift)\nstderr:\n%s", resumeCode, exitUsage, resumeErr.String())
+	}
+	if !strings.Contains(resumeErr.String(), "recipe catalog drift") {
+		t.Fatalf("resume diagnostic = %q, want a catalog drift diagnostic", resumeErr.String())
+	}
+	rendered := inspectRendered(t, stateDir, taskID)
+	if !strings.Contains(rendered, "Status: running") {
+		t.Fatalf("task must remain running after the rejected resume:\n%s", rendered)
+	}
+}
+
+// TestResumeRejectsMissingPersistedRecipeCatalog proves a task that started
+// without a recipe catalog cannot silently gain one at resume (fail-closed
+// policy change), and a task that started with a catalog cannot resume
+// without it.
+func TestResumeRejectsMissingPersistedRecipeCatalog(t *testing.T) {
+	workspace := t.TempDir()
+	recipes := writeRecipesFile(t, echoRecipes())
+	stateDir := t.TempDir()
+	seedRunningTaskWithConfig(t, stateDir, "task-no-catalog", workspace, `{"recipe_policy":"","max_steps":24}`)
+
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{
+		"resume", "task-no-catalog",
+		"--state-dir", stateDir,
+		"--recipes", recipes,
+		"--log-level", "error",
+	}, &out, &errOut)
+	if code != exitUsage {
+		t.Fatalf("resume exit = %d, want %d\nstderr:\n%s", code, exitUsage, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "no persisted recipe catalog") {
+		t.Fatalf("resume diagnostic = %q, want a no-persisted-catalog diagnostic", errOut.String())
+	}
+
+	// The reverse direction: a task created with a catalog cannot resume
+	// without it.
+	stateDir2 := t.TempDir()
+	seedRunningTaskWithConfig(t, stateDir2, "task-with-catalog", workspace, seededRecipeConfig(t, echoRecipes(), "test=deny"))
+	var out2, errOut2 bytes.Buffer
+	code = run(context.Background(), []string{
+		"resume", "task-with-catalog",
+		"--state-dir", stateDir2,
+		"--log-level", "error",
+	}, &out2, &errOut2)
+	if code != exitUsage {
+		t.Fatalf("resume exit = %d, want %d\nstderr:\n%s", code, exitUsage, errOut2.String())
+	}
+	if !strings.Contains(errOut2.String(), "requires the same catalog") {
+		t.Fatalf("resume diagnostic = %q, want a missing-catalog diagnostic", errOut2.String())
 	}
 }

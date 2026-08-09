@@ -10,7 +10,7 @@ import (
 func TestCatalogParsesAndNormalizesRecipes(t *testing.T) {
 	catalog, err := recipe.ParseCatalog([]byte(`[
 		{"id":"test","executable":"go","argv":["test","./..."],"capabilities":["execute_repository_code","temporary_files"]},
-		{"id":"vet","executable":"go","argv":["vet","./..."],"working_directory":"sub","timeout_nanos":5000000000,"capabilities":["execute_repository_code"],"allowed_environment":["GOCACHE"]}
+		{"id":"vet","executable":"go","argv":["vet","./..."],"working_directory":"sub","timeout_nanos":5000000000,"capabilities":["execute_repository_code","inherit_environment"],"allowed_environment":["GOCACHE"]}
 	]`))
 	if err != nil {
 		t.Fatalf("ParseCatalog() error = %v", err)
@@ -42,14 +42,14 @@ func TestCatalogParsesAndNormalizesRecipes(t *testing.T) {
 
 func TestCatalogRejectsInvalidRecipes(t *testing.T) {
 	cases := []string{
-		`[{"id":"","executable":"go"}]`,                                                // empty id
-		`[{"id":"x","executable":""}]`,                                                 // empty executable
-		`[{"id":"x","executable":"go","working_directory":"../up"}]`,                   // traversal cwd
-		`[{"id":"x","executable":"go","working_directory":"/abs"}]`,                    // absolute cwd
-		`[{"id":"x","executable":"go","capabilities":["bogus"]}]`,                      // unknown capability
-		`[{"id":"x","executable":"go","output_limits":{"max_stdout_bytes":99999999}}]`, // over cap
-		`[{"id":"x","executable":"go","allowed_environment":["OPENAI_API_KEY"]}]`,      // credential name refused
-		`[{"id":"x","executable":"go"},{"id":"x","executable":"go"}]`,                  // duplicate id
+		`[{"id":"","executable":"go"}]`,                                                                                  // empty id
+		`[{"id":"x","executable":""}]`,                                                                                   // empty executable
+		`[{"id":"x","executable":"go","working_directory":"../up"}]`,                                                     // traversal cwd
+		`[{"id":"x","executable":"go","working_directory":"/abs"}]`,                                                      // absolute cwd
+		`[{"id":"x","executable":"go","capabilities":["bogus"]}]`,                                                        // unknown capability
+		`[{"id":"x","executable":"go","output_limits":{"max_stdout_bytes":99999999}}]`,                                   // over cap
+		`[{"id":"x","executable":"go","capabilities":["inherit_environment"],"allowed_environment":["OPENAI_API_KEY"]}]`, // credential name refused
+		`[{"id":"x","executable":"go"},{"id":"x","executable":"go"}]`,                                                    // duplicate id
 	}
 	for _, raw := range cases {
 		if _, err := recipe.ParseCatalog([]byte(raw)); err == nil {
@@ -74,6 +74,7 @@ func TestBuildEnvironmentAllowlist(t *testing.T) {
 	selected := recipe.Recipe{
 		ID:                 "test",
 		Executable:         "go",
+		Capabilities:       []recipe.Capability{recipe.CapabilityInheritEnvironment},
 		AllowedEnvironment: []string{"GOCACHE", "HOME", "OPENAI_API_KEY", "OMNIROUTE_API_KEY", "AUTHORIZATION", "SESSION_COOKIE", "CHATGPT_ACCESS_TOKEN", "TOKEN", "RUNSTEAD_MARKER"},
 	}
 	env := recipe.BuildEnvironment(parent, selected)
@@ -124,7 +125,7 @@ func TestIsCredentialNameCoversFixtures(t *testing.T) {
 		"SESSION_COOKIE", "CHATGPT_ACCESS_TOKEN", "CLIENT_SECRET", "PASSWORD",
 		"API_KEY", "SESSION_ID",
 	} {
-		env := recipe.BuildEnvironment([]string{name + "=x"}, recipe.Recipe{ID: "x", Executable: "go", AllowedEnvironment: []string{name}})
+		env := recipe.BuildEnvironment([]string{name + "=x"}, recipe.Recipe{ID: "x", Executable: "go", Capabilities: []recipe.Capability{recipe.CapabilityInheritEnvironment}, AllowedEnvironment: []string{name}})
 		for _, entry := range env {
 			if strings.HasPrefix(entry, name+"=") {
 				t.Fatalf("credential fixture %q leaked into child env: %v", name, env)
@@ -143,5 +144,130 @@ func TestRecipeSpecAndParseRoundTrip(t *testing.T) {
 	ids := catalog.IDs()
 	if len(ids) != 1 || ids[0] != "test" {
 		t.Fatalf("ids = %v", ids)
+	}
+}
+
+func TestRecipeDigestStableAndSensitive(t *testing.T) {
+	base := `[{"id":"test","executable":"go","argv":["test","./..."],"capabilities":["execute_repository_code","inherit_environment"],"allowed_environment":["GOCACHE"],"timeout_nanos":5000000000}]`
+	catalogA, err := recipe.ParseCatalog([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogB, err := recipe.ParseCatalog([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipeA, _ := catalogA.Get("test")
+	recipeB, _ := catalogB.Get("test")
+	if recipeA.Digest() != recipeB.Digest() {
+		t.Fatalf("digest must be stable across equal definitions: %s != %s", recipeA.Digest(), recipeB.Digest())
+	}
+	// Any change to the effective definition must change the digest.
+	sensitive := map[string]string{
+		"executable":          `[{"id":"test","executable":"gcc","argv":["test","./..."],"capabilities":["execute_repository_code","inherit_environment"],"allowed_environment":["GOCACHE"],"timeout_nanos":5000000000}]`,
+		"argv":                `[{"id":"test","executable":"go","argv":["vet","./..."],"capabilities":["execute_repository_code","inherit_environment"],"allowed_environment":["GOCACHE"],"timeout_nanos":5000000000}]`,
+		"capabilities":        `[{"id":"test","executable":"go","argv":["test","./..."],"capabilities":["execute_repository_code","temporary_files","inherit_environment"],"allowed_environment":["GOCACHE"],"timeout_nanos":5000000000}]`,
+		"allowed_environment": `[{"id":"test","executable":"go","argv":["test","./..."],"capabilities":["execute_repository_code","inherit_environment"],"allowed_environment":["HOME"],"timeout_nanos":5000000000}]`,
+		"timeout":             `[{"id":"test","executable":"go","argv":["test","./..."],"capabilities":["execute_repository_code","inherit_environment"],"allowed_environment":["GOCACHE"],"timeout_nanos":7000000000}]`,
+	}
+	for name, raw := range sensitive {
+		other, err := recipe.ParseCatalog([]byte(raw))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		otherRecipe, _ := other.Get("test")
+		if otherRecipe.Digest() == recipeA.Digest() {
+			t.Fatalf("digest must change when %s changes", name)
+		}
+	}
+	// The digest must be the same regardless of input key order and spacing
+	// (normalization handles it), but a change in effective definition never is.
+	reordered, err := recipe.ParseCatalog([]byte(`[{"allowed_environment":["GOCACHE"],"timeout_nanos":5000000000,"argv":["test","./..."],"executable":"go","capabilities":["execute_repository_code","inherit_environment"],"id":"test"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reorderedRecipe, _ := reordered.Get("test")
+	if reorderedRecipe.Digest() != recipeA.Digest() {
+		t.Fatal("digest must be canonical across key order")
+	}
+}
+
+func TestApprovalFingerprintBindsRecipeDefinition(t *testing.T) {
+	catalogA, _ := recipe.ParseCatalog([]byte(`[{"id":"test","executable":"go","argv":["test","./..."],"capabilities":["execute_repository_code"]}]`))
+	catalogB, _ := recipe.ParseCatalog([]byte(`[{"id":"test","executable":"gcc","argv":["test","./..."],"capabilities":["execute_repository_code"]}]`))
+	recipeA, _ := catalogA.Get("test")
+	recipeB, _ := catalogB.Get("test")
+	fpA := recipe.ApprovalFingerprint("test", recipeA.Digest())
+	fpB := recipe.ApprovalFingerprint("test", recipeB.Digest())
+	if fpA == fpB {
+		t.Fatal("approval fingerprint must change when the recipe definition changes")
+	}
+	if recipe.ApprovalFingerprint("test", recipeA.Digest()) != fpA {
+		t.Fatal("approval fingerprint must be stable")
+	}
+	if recipe.ApprovalFingerprint("other", recipeA.Digest()) == fpA {
+		t.Fatal("approval fingerprint must bind the recipe id")
+	}
+}
+
+func TestCatalogDigestDetectsDrift(t *testing.T) {
+	catalogA, err := recipe.ParseCatalog([]byte(`[{"id":"test","executable":"go","capabilities":["execute_repository_code"]}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogB, err := recipe.ParseCatalog([]byte(`[{"id":"test","executable":"gcc","capabilities":["execute_repository_code"]}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if catalogA.Digest() == "" {
+		t.Fatal("catalog digest must not be empty")
+	}
+	stable, err := recipe.ParseCatalog([]byte(`[{"id":"test","executable":"go","capabilities":["execute_repository_code"]}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if catalogA.Digest() != stable.Digest() {
+		t.Fatal("catalog digest must be stable")
+	}
+	if catalogA.Digest() == catalogB.Digest() {
+		t.Fatal("catalog digest must change when a recipe definition changes")
+	}
+	var empty *recipe.Catalog
+	if empty.Digest() != "" {
+		t.Fatal("empty catalog digest must be empty")
+	}
+}
+
+func TestCatalogRejectsAllowedEnvWithoutInheritCapability(t *testing.T) {
+	// An environment allowlist is only honored when the recipe declares the
+	// inherit_environment capability; without it the catalog is refused
+	// fail-closed so an operator cannot silently enable env inheritance.
+	_, err := recipe.ParseCatalog([]byte(`[{"id":"x","executable":"go","capabilities":["execute_repository_code"],"allowed_environment":["GOCACHE"]}]`))
+	if err == nil {
+		t.Fatal("allowed_environment without inherit_environment capability must be rejected")
+	}
+}
+
+func TestBuildEnvironmentRequiresInheritCapability(t *testing.T) {
+	parent := []string{"GOCACHE=/cache", "PATH=/usr/bin:/bin"}
+	// Even if a recipe somehow carries an allowlist without the capability
+	// (bypassing catalog validation), BuildEnvironment must not inherit it.
+	selected := recipe.Recipe{ID: "x", Executable: "go", AllowedEnvironment: []string{"GOCACHE"}}
+	env := recipe.BuildEnvironment(parent, selected)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "GOCACHE=") {
+			t.Fatalf("allowed env inherited without inherit_environment capability: %v", env)
+		}
+	}
+}
+
+func TestCatalogRejectsUnknownFieldsAndDuplicateKeys(t *testing.T) {
+	unknown := `[{"id":"x","executable":"go","capabilities":["execute_repository_code"],"bogus_field":true}]`
+	if _, err := recipe.ParseCatalog([]byte(unknown)); err == nil {
+		t.Fatal("unknown catalog field must be rejected")
+	}
+	duplicate := `[{"id":"x","executable":"go","executable":"gcc","capabilities":["execute_repository_code"]}]`
+	if _, err := recipe.ParseCatalog([]byte(duplicate)); err == nil {
+		t.Fatal("duplicate catalog key must be rejected")
 	}
 }

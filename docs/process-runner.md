@@ -48,15 +48,44 @@ process:
   256 KiB each, hard cap 4 MiB per stream). Retention is always bounded in
   memory; the total observed byte counts are recorded even when truncated.
 - `capabilities` is the declared effect set. It is a description, never an
-  authorization; the control-plane policy decides.
+  authorization; the control-plane policy decides. An environment allowlist
+  is only honored when `inherit_environment` is among the declared
+  capabilities; a catalog that lists `allowed_environment` without it is
+  refused fail-closed.
 - `allowed_environment` is the allowlist of parent environment variable
   **names** the recipe may inherit. The complete parent environment is never
   inherited.
 
 The catalog source is the **control plane**: `--recipes FILE` (or
-`RUNSTEAD_RECIPES`), a JSON array read once at startup. Files inside the
-workspace that the agent could modify are never treated as automatic recipe
-authorization. Without a catalog, `run_recipe` fails closed.
+`RUNSTEAD_RECIPES`), a JSON array read once at startup. The catalog is
+**strictly decoded**: unknown fields and duplicate keys are rejected, so a typo
+can never silently change a recipe definition (consistent with the main
+protocol parser). Files inside the workspace that the agent could modify are
+never treated as automatic recipe authorization. Without a catalog,
+`run_recipe` fails closed.
+
+### Effective definition digest
+
+Every recipe has a stable SHA-256 **definition digest** over the effective
+normalized definition: executable, argv, working directory, declared
+capabilities, environment allowlist, timeout and output limits. The recipe id
+is the selector; the digest binds the definition. This digest is the basis of
+three fail-closed guarantees:
+
+1. **Approval identity**: the approval fingerprint of a `run_recipe` proposal
+   is `hash(run_recipe + recipe_id + definition_digest)`. An operator approval
+   for one definition of `test` can never authorize a different definition of
+   the same id; changing argv, capabilities, environment or limits invalidates
+   every prior approval.
+2. **Catalog digest**: the digest of the whole effective catalog (sorted
+   `id=definitionDigest` pairs) is persisted with the task configuration
+   (`config_json.recipe_catalog_digest`). Resume compares the re-supplied
+   catalog against it and rejects any drift fail-closed, before any recovery
+   or execution side effect. A task that started without a catalog cannot
+   silently gain one at resume, and a task that started with a catalog cannot
+   resume without it.
+3. **Process intent**: the digest is persisted with the TX 1 process intent so
+   the attempted definition is auditable even when the catalog changed later.
 
 ### Capabilities
 
@@ -91,8 +120,11 @@ sharing the same `internal/policy` seam:
   reasons before any execution decision.
 - Approvals come exclusively from the operator control plane
   (`runstead decide <task-id> <action-id> approved|rejected`), keyed by the
-  proposal fingerprint. Model prose, reasoning, repository content and tool
-  output can never approve a recipe.
+  **digest-bound proposal fingerprint** (recipe id + effective definition
+  digest). Model prose, reasoning, repository content and tool output can
+  never approve a recipe. Capabilities participate in the authorization
+  boundary because the fingerprint binds the full effective definition: a
+  capability change is a definition change and requires a fresh approval.
 
 ### `approval_required` is a real pause
 
@@ -118,23 +150,28 @@ The effective `recipe=mode` specification is persisted with the task
 configuration (`config_json.recipe_policy`, sanitized, visible in inspect).
 Resume always continues under the persisted recipe policy; a divergent
 `--recipe-policy` override is rejected fail-closed in the pre-flight. The
-recipe catalog is operator input re-supplied at resume time (like
-`--scripted`).
+recipe catalog must be re-supplied at resume time (like `--scripted`) and must
+match the effective catalog the task started with: its digest is persisted
+with the task and any drift is rejected before recovery or execution.
 
 ## Process execution
 
 The runner (`internal/recipe`) executes the argv directly with
 `os/exec.Command(executable, argv...)` and no shell. The child runs in its
 own **process group** (`Setpgid`). On timeout or cancellation the whole group
-is terminated: SIGTERM, then SIGKILL after a short grace period on Unix. A
-deliberately daemonized child that escapes its process group is a documented
-native limitation, not a silent guarantee.
+is terminated: SIGTERM, then SIGKILL after a short grace period on Unix.
+Termination is a **synchronous barrier**: `recipe.Run` does not return until
+the termination routine completed, so no SIGTERM-ignoring child can outlive
+the attempt's TX 2. A deliberately daemonized child that escapes its process
+group is a documented native limitation, not a silent guarantee.
 
 The child environment is built by `recipe.BuildEnvironment`:
 
 - `PATH` is always passed (so the executable can be resolved);
 - `RUNSTEAD_RECIPE_ID=<id>` is always set;
-- only names in `allowed_environment` are copied from the parent;
+- only names in `allowed_environment` are copied from the parent, and only
+  when the recipe declares the `inherit_environment` capability (without it,
+  nothing is inherited even when an allowlist is present);
 - **credential-shaped names are never inherited**, even if listed
   (case-insensitive markers such as `API_KEY`, `TOKEN`, `SECRET`, `PASSWORD`,
   `COOKIE`, `AUTHORIZATION`, `CHATGPT`, `OMNIROUTE`, `SESSION`). Provider
@@ -164,9 +201,11 @@ ordering:
 
 ```text
 TX 1: persist action + attempt intent ('prepared'), recovery class 4, and the
-      bounded process intent (recipe, argv, capabilities, policy decision);
+      bounded process intent (recipe, argv, capabilities, policy decision,
+      definition digest);
       append event; COMMIT
-      → start/run the process OUTSIDE SQLite
+      → start/run the process OUTSIDE SQLite; terminate the full process tree
+      SYNCHRONOUSLY on timeout/cancellation before TX 2
 TX 2: persist the observed result (status + citable process evidence);
       append completion/failure event; COMMIT
 ```
@@ -188,16 +227,18 @@ the verifier (#11):
 
 - recipe id, executable, argv and normalized working directory;
 - declared capabilities;
-- the control-plane policy decision;
+- the control-plane policy decision **as actually decided** (for example
+  `allowed` / `approved_by_operator`), never a hardcoded placeholder;
 - duration, real exit code and terminating signal (negative exit code when
   killed);
 - bounded stdout and stderr with observed/retained byte counts and truncation
   flags;
 - `timed_out` / `canceled` flags;
+- execution and evidence identifiers, annotated before TX 2: `action_id`,
+  `execution_id` and `evidence_id` are always filled on persisted evidence;
 - `network_isolation = "unenforced"` (the native runner does not enforce
   network isolation; a recipe that declares `network` is simply allowed by the
   operator to touch the network);
-- execution and evidence identifiers.
 
 Process output is untrusted data. It never grants permissions, changes policy
 or concludes task completion.

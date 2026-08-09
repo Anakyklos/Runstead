@@ -88,7 +88,10 @@ type Loop struct {
 	policy       policy.Policy
 	writePolicy  string
 	recipePolicy string
-	recovery     *RecoverySeed
+	// recipeCatalogDigest is the persisted digest of the effective recipe
+	// catalog, used to reject catalog drift on resume (issue #26 review).
+	recipeCatalogDigest string
+	recovery            *RecoverySeed
 }
 
 // Config wires one loop instance at the composition root.
@@ -118,6 +121,12 @@ type Config struct {
 	// SAME recipe policy; a divergent override is rejected by the composition
 	// root.
 	RecipePolicy string
+	// RecipeCatalogDigest is the stable digest of the effective recipe catalog
+	// (issue #26 review). It is persisted with the task configuration so resume
+	// can reject catalog drift fail-closed: a re-supplied catalog whose
+	// effective definitions changed can never silently continue the task. Empty
+	// when no catalog is configured.
+	RecipeCatalogDigest string
 	// Recovery is the optional reconstructed state of an interrupted task
 	// (issue #9). A nil value starts a fresh run; a non-nil value resumes the
 	// same durable task from persisted state without replaying historical
@@ -161,18 +170,19 @@ func NewLoop(config Config) (*Loop, error) {
 		traceSink = nopTrace
 	}
 	return &Loop{
-		runner:       config.Runner,
-		registry:     config.Registry,
-		contract:     contract,
-		limits:       limits,
-		clock:        clock,
-		trace:        traceSink,
-		model:        strings.TrimSpace(config.Model),
-		state:        config.State,
-		policy:       config.Policy,
-		writePolicy:  strings.TrimSpace(config.WritePolicy),
-		recipePolicy: strings.TrimSpace(config.RecipePolicy),
-		recovery:     config.Recovery,
+		runner:              config.Runner,
+		registry:            config.Registry,
+		contract:            contract,
+		limits:              limits,
+		clock:               clock,
+		trace:               traceSink,
+		model:               strings.TrimSpace(config.Model),
+		state:               config.State,
+		policy:              config.Policy,
+		writePolicy:         strings.TrimSpace(config.WritePolicy),
+		recipePolicy:        strings.TrimSpace(config.RecipePolicy),
+		recipeCatalogDigest: strings.TrimSpace(config.RecipeCatalogDigest),
+		recovery:            config.Recovery,
 	}, nil
 }
 
@@ -329,21 +339,24 @@ type runState struct {
 
 // configSnapshot renders the meaningful execution configuration as a
 // sanitized JSON snapshot for the durable task row. It contains no secrets:
-// workspace, model, the loop limits, the effective write policy and the
-// effective recipe policy. Both policies are part of the authoritative task
-// configuration: resume continues under the persisted policies and rejects a
-// divergent override (issues #10/#26).
+// workspace, model, the loop limits, the effective write policy, the effective
+// recipe policy and the digest of the effective recipe catalog. Both policies
+// are part of the authoritative task configuration: resume continues under the
+// persisted policies and rejects a divergent override (issues #10/#26). The
+// catalog digest lets resume reject catalog drift fail-closed (issue #26
+// review).
 func (l *Loop) configSnapshot() []byte {
 	encoded, err := json.Marshal(map[string]any{
-		"workspace":            l.registry.Workspace(),
-		"model":                l.model,
-		"write_policy":         l.writePolicy,
-		"recipe_policy":        l.recipePolicy,
-		"max_steps":            l.limits.MaxSteps,
-		"max_corrections":      l.limits.MaxCorrections,
-		"max_repeated_actions": l.limits.MaxRepeatedActions,
-		"time_budget_ns":       int64(l.limits.TimeBudget),
-		"provider_budget":      l.limits.ProviderBudget,
+		"workspace":             l.registry.Workspace(),
+		"model":                 l.model,
+		"write_policy":          l.writePolicy,
+		"recipe_policy":         l.recipePolicy,
+		"recipe_catalog_digest": l.recipeCatalogDigest,
+		"max_steps":             l.limits.MaxSteps,
+		"max_corrections":       l.limits.MaxCorrections,
+		"max_repeated_actions":  l.limits.MaxRepeatedActions,
+		"time_budget_ns":        int64(l.limits.TimeBudget),
+		"provider_budget":       l.limits.ProviderBudget,
 	})
 	if err != nil {
 		return []byte("{}")
@@ -579,6 +592,7 @@ func (l *Loop) handleAction(
 			Tool:               action.Tool,
 			Arguments:          arguments,
 			Fingerprint:        protocol.ActionFingerprint(*action),
+			RecipeFingerprint:  l.recipeApprovalFingerprint(action),
 			WorkspaceSignature: signatureFor(),
 		})
 		if err != nil {
@@ -592,20 +606,22 @@ func (l *Loop) handleAction(
 	// and model prose can never influence it. A denied proposal is rejected
 	// as a logical action and the model receives a correction; an
 	// approval-required proposal stays pending operator approval.
+	var policyOutcome policy.Outcome
 	if l.registry.IsPolicyGated(action.Tool) {
-		outcome, err := l.evaluatePolicy(ctx, task, actionID, action)
+		var err error
+		policyOutcome, err = l.evaluatePolicy(ctx, task, actionID, action)
 		if err != nil {
 			return stop(OutcomePersistenceFailure, fmt.Sprintf("%s: %v", OutcomePersistenceFailure.StopReason(), err), nil), true
 		}
-		switch outcome.Decision {
+		switch policyOutcome.Decision {
 		case policy.Denied:
 			if l.state != nil {
-				if err := l.state.RejectAction(ctx, task.ID, actionID, outcome.Reason); err != nil {
+				if err := l.state.RejectAction(ctx, task.ID, actionID, policyOutcome.Reason); err != nil {
 					return stop(OutcomePersistenceFailure, fmt.Sprintf("%s: %v", OutcomePersistenceFailure.StopReason(), err), nil), true
 				}
 			}
-			emit(TraceLine{Kind: TraceAction, Status: string(outcome.Decision), Tool: action.Tool, Classification: outcome.Reason})
-			return l.policyCorrection(transcript, action.Tool, outcome, run, emit, stop)
+			emit(TraceLine{Kind: TraceAction, Status: string(policyOutcome.Decision), Tool: action.Tool, Classification: policyOutcome.Reason})
+			return l.policyCorrection(transcript, action.Tool, policyOutcome, run, emit, stop)
 		case policy.ApprovalRequired:
 			// Control-plane dependency: the effect must not execute and the run
 			// pauses until the operator records a decision. This is NOT a
@@ -613,7 +629,7 @@ func (l *Loop) handleAction(
 			// further provider attempt is made to wait for the operator, and
 			// the task is not finalized. The action stays pending and the
 			// CLI reports the task/action for `runstead decide`.
-			emit(TraceLine{Kind: TraceAction, Status: string(outcome.Decision), Tool: action.Tool, Classification: outcome.Reason})
+			emit(TraceLine{Kind: TraceAction, Status: string(policyOutcome.Decision), Tool: action.Tool, Classification: policyOutcome.Reason})
 			return stop(OutcomeApprovalRequired, OutcomeApprovalRequired.StopReason(), func(result *Result) {
 				result.PendingActionID = actionID
 			}), true
@@ -688,6 +704,12 @@ func (l *Loop) handleAction(
 	// so the persisted evidence carries action/execution ids.
 	if l.registry.IsWriteTool(action.Tool) {
 		l.registry.AnnotateWriteEvidence(&observation, actionID, executionID)
+	}
+	// For recipes the persisted evidence must carry the REAL control-plane
+	// policy decision (for example allowed/approved_by_operator), never the
+	// hardcoded placeholder the execute path used to build the observation.
+	if l.registry.IsRecipeTool(action.Tool) {
+		l.registry.AnnotateRecipeEvidence(&observation, actionID, executionID, string(policyOutcome.Decision), policyOutcome.Reason)
 	}
 	status := "executed"
 	if !observation.Success {
@@ -800,7 +822,7 @@ func (l *Loop) evaluatePolicy(ctx context.Context, task Task, actionID string, a
 	}
 	if l.registry.IsRecipeTool(action.Tool) {
 		if recipeID, failure := recipeArgument(action); failure == nil {
-			if _, ok := l.registry.Recipe(recipeID); !ok {
+			if selected, ok := l.registry.Recipe(recipeID); !ok {
 				// A recipe outside the configured catalog is meaningless: it
 				// is denied here (and would fail unknown_recipe at execution,
 				// which never happens because policy gates first).
@@ -808,6 +830,11 @@ func (l *Loop) evaluatePolicy(ctx context.Context, task Task, actionID string, a
 				shortCircuit = true
 			} else {
 				request.Recipe = recipeID
+				// Approval identity is bound to the EFFECTIVE recipe
+				// definition digest: an approval for one definition can never
+				// authorize a different definition of the same id (issue #26
+				// review).
+				request.Fingerprint = recipe.ApprovalFingerprint(recipeID, selected.Digest())
 			}
 		}
 	}
@@ -846,6 +873,27 @@ func recipeArgument(action *protocol.Action) (string, *tools.Failure) {
 		return "", tools.InvalidArgumentFailure()
 	}
 	return value, nil
+}
+
+// recipeApprovalFingerprint returns the digest-bound approval identity of a
+// run_recipe proposal, or the empty string when the action is not a known
+// recipe (unknown recipes are denied by the policy gate and never approved).
+// The identity binds the recipe id to its effective definition digest, so an
+// operator approval for one definition can never authorize a different
+// definition of the same id (issue #26 review).
+func (l *Loop) recipeApprovalFingerprint(action *protocol.Action) string {
+	if !l.registry.IsRecipeTool(action.Tool) {
+		return ""
+	}
+	recipeID, failure := recipeArgument(action)
+	if failure != nil {
+		return ""
+	}
+	selected, ok := l.registry.Recipe(recipeID)
+	if !ok {
+		return ""
+	}
+	return recipe.ApprovalFingerprint(recipeID, selected.Digest())
 }
 
 // policyCorrection reports a non-executed policy-gated effect to the model as
@@ -922,6 +970,7 @@ func (l *Loop) buildProcessIntent(action *protocol.Action) ([]byte, error) {
 		TimeoutNanos     int64               `json:"timeout_nanos"`
 		MaxStdoutBytes   int                 `json:"max_stdout_bytes"`
 		MaxStderrBytes   int                 `json:"max_stderr_bytes"`
+		Digest           string              `json:"digest"`
 	}{
 		RecipeID:         selected.ID,
 		Executable:       selected.Executable,
@@ -931,6 +980,7 @@ func (l *Loop) buildProcessIntent(action *protocol.Action) ([]byte, error) {
 		TimeoutNanos:     int64(selected.Timeout()),
 		MaxStdoutBytes:   selected.OutputLimits.MaxStdoutBytes,
 		MaxStderrBytes:   selected.OutputLimits.MaxStderrBytes,
+		Digest:           selected.Digest(),
 	})
 	if err != nil {
 		return nil, err

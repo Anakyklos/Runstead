@@ -251,10 +251,22 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	// configuration, exactly like the write policy: resume uses the persisted
 	// recipe policy by default, and a divergent --recipe-policy override is
 	// rejected fail-closed before any recovery or execution side effect. The
-	// recipe catalog is operator input re-supplied at resume time (like
-	// --scripted); without it, run_recipe proposals fail closed.
+	// recipe catalog must be re-supplied at resume time (like --scripted) and
+	// must match the effective catalog the task started with; a missing or
+	// drifted catalog is rejected below before any recovery or execution side
+	// effect.
 	resumeRecipes, err := resolveRecipeCatalog(recipesFile, recipesFile != "")
 	if err != nil {
+		fmt.Fprintf(errOut, "resume: %v\n", err)
+		return exitUsage
+	}
+	// The recipe catalog is part of the authoritative task configuration: the
+	// task started under one effective catalog, its digest was persisted with
+	// the task, and resume rejects any drift fail-closed. A different catalog
+	// (changed executable/argv/capabilities/env/timeout, added or removed
+	// recipes) can never silently continue a task under a different recipe
+	// set (issue #26 review).
+	if err := resolveResumeRecipeCatalog(preload.Task.ConfigJSON, resumeRecipes); err != nil {
 		fmt.Fprintf(errOut, "resume: %v\n", err)
 		return exitUsage
 	}
@@ -336,16 +348,17 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	policyConfig := resumePolicy
 	policyConfig.RecipeModes = resumeRecipePolicy.RecipeModes
 	loop, err := agent.NewLoop(agent.Config{
-		Runner:       executor,
-		Registry:     registry,
-		Limits:       limits,
-		Model:        plan.Task.Model,
-		Trace:        traceSink,
-		State:        store,
-		Policy:       policy.NewStatic(policyConfig, storeApprovals(store)),
-		WritePolicy:  resumePolicy.Spec(),
-		RecipePolicy: resumeRecipePolicy.RecipeSpec(recipeIDs(resumeRecipes)),
-		Recovery:     plan.Seed,
+		Runner:              executor,
+		Registry:            registry,
+		Limits:              limits,
+		Model:               plan.Task.Model,
+		Trace:               traceSink,
+		State:               store,
+		Policy:              policy.NewStatic(policyConfig, storeApprovals(store)),
+		WritePolicy:         resumePolicy.Spec(),
+		RecipePolicy:        resumeRecipePolicy.RecipeSpec(recipeIDs(resumeRecipes)),
+		RecipeCatalogDigest: resumeRecipes.Digest(),
+		Recovery:            plan.Seed,
 	})
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: loop unavailable: %v\n", err)
@@ -487,6 +500,48 @@ func resolveResumeWritePolicy(configJSON, flagValue string, flagSet bool) (polic
 		}
 	}
 	return persisted, nil
+}
+
+// recipeCatalogDigestFromConfig reads the digest of the effective recipe
+// catalog persisted with the task configuration snapshot. Empty when the task
+// started without a recipe catalog.
+func recipeCatalogDigestFromConfig(configJSON string) string {
+	if strings.TrimSpace(configJSON) == "" || strings.TrimSpace(configJSON) == "{}" {
+		return ""
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal([]byte(configJSON), &snapshot); err != nil {
+		return ""
+	}
+	raw, ok := snapshot["recipe_catalog_digest"]
+	if !ok {
+		return ""
+	}
+	value, _ := raw.(string)
+	return strings.TrimSpace(value)
+}
+
+// resolveResumeRecipeCatalog rejects recipe catalog drift between run and
+// resume fail-closed (issue #26 review). The catalog the task started with is
+// part of the authoritative task configuration: resume requires the same
+// effective catalog (its digest is compared, so any change to a recipe
+// definition, an added recipe or a removed recipe is drift), and a task that
+// started without a catalog cannot silently gain one at resume.
+func resolveResumeRecipeCatalog(configJSON string, catalog *recipe.Catalog) error {
+	persisted := recipeCatalogDigestFromConfig(configJSON)
+	if persisted == "" {
+		if catalog != nil {
+			return errors.New("the task has no persisted recipe catalog; supplying one at resume is a policy change and is rejected")
+		}
+		return nil
+	}
+	if catalog == nil {
+		return errors.New("the task started with a recipe catalog; resume requires the same catalog (--recipes)")
+	}
+	if catalog.Digest() != persisted {
+		return errors.New("recipe catalog drift: the re-supplied catalog differs from the effective catalog the task started with; resume requires the exact same catalog")
+	}
+	return nil
 }
 
 // recipePolicyFromConfig reconstructs the effective recipe policy persisted

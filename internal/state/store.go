@@ -321,6 +321,12 @@ type ActionRecord struct {
 	Arguments []byte
 	// Fingerprint is repeat/loop evidence only.
 	Fingerprint string
+	// RecipeFingerprint is the digest-bound approval identity of a run_recipe
+	// proposal (issue #26 review): it binds the recipe id to the effective
+	// definition digest, so an operator approval for one definition can never
+	// authorize a different definition of the same id. Empty for non-recipe
+	// actions, which use Fingerprint for approval identity.
+	RecipeFingerprint string
 	// WorkspaceSignature is the workspace state marker recorded when the
 	// action was accepted. It is repeat/loop evidence only (issue #9): resume
 	// seeds the repeat guard with it so an identical proposal is rejected only

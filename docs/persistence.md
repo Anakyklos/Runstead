@@ -344,7 +344,10 @@ implemented:
   stays resumable with pending approvals derived from
   `write_policy_decisions` + `approvals`) and the TX 1 evidence
   (`tool_attempts.planned_diff_json` migration 0005 for writes,
-  `tool_attempts.process_intent_json` migration 0006 for process recipes).
+  `tool_attempts.process_intent_json` migration 0006 for process recipes,
+  `actions.recipe_fingerprint` migration 0007 for the digest-bound recipe
+  approval identity, and `config_json.recipe_catalog_digest` for the durable
+  catalog digest that resume compares against the re-supplied catalog).
 
 The schema keeps a compatible seam for those milestones (for example
 `provider_attempt_receipts` is one-to-many and `recovery_class` is stored on

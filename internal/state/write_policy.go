@@ -94,7 +94,8 @@ func (s *Store) RecordApproval(ctx context.Context, record Approval) (string, er
 	defer tx.Rollback()
 	var fingerprint string
 	if err := tx.QueryRowContext(ctx,
-		`SELECT fingerprint FROM actions WHERE task_id = ? AND action_id = ?`,
+		`SELECT CASE WHEN tool = 'run_recipe' AND recipe_fingerprint != '' THEN recipe_fingerprint ELSE fingerprint END
+		 FROM actions WHERE task_id = ? AND action_id = ?`,
 		record.TaskID, record.ActionID).Scan(&fingerprint); err != nil {
 		if err == sql.ErrNoRows {
 			return "", fmt.Errorf("approve action %q for task %q: action not found", record.ActionID, record.TaskID)

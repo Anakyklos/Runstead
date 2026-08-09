@@ -301,6 +301,95 @@ func TestRecipeLoopApprovalNormalFlow(t *testing.T) {
 	if len(h.runner.cwds) != 1 {
 		t.Fatalf("the approved recipe must execute exactly once after resume; cwds = %v", h.runner.cwds)
 	}
+	// The persisted evidence must carry the REAL policy decision (the run was
+	// released by the operator, not by a static policy mode) and the execution
+	// identities, never a hardcoded placeholder (issue #26 review).
+	evidence := mustPersistedRecipeEvidence(t, h.store, taskID, "obs-000002")
+	if evidence.Policy.Decision != "allowed" || evidence.Policy.Reason != "approved_by_operator" {
+		t.Fatalf("persisted policy decision = %+v, want allowed/approved_by_operator", evidence.Policy)
+	}
+	if evidence.ActionID == "" || evidence.ExecutionID == "" || evidence.EvidenceID != "obs-000002" {
+		t.Fatalf("evidence ids must be annotated before TX 2: %+v", evidence)
+	}
+}
+
+// TestRecipeLoopApprovalInvalidatedByDefinitionChange is the deterministic
+// regression test for the digest-bound approval identity (issue #26 review):
+// an operator approval is bound to the EFFECTIVE recipe definition. When the
+// same recipe id is resumed under a different definition (changed argv), the
+// old approval no longer matches and the proposal pauses again instead of
+// executing under a stale authorization.
+func TestRecipeLoopApprovalInvalidatedByDefinitionChange(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "readme.txt"), []byte("info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newRecipeHarness(t, workspace, allowAllPolicy(), map[string]policy.Mode{},
+		testCatalog(t, testRecipe("test")), nil,
+		actionResponse("read_file", `{"path":"readme.txt"}`),
+		actionResponse("run_recipe", `{"recipe":"test"}`),
+		finalResponse("complete", "done", "obs-000001", "obs-000002"),
+	)
+	taskID := "task-recipe-definition-change"
+	ctx := context.Background()
+
+	first := h.loopWith(t, agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3}, nil)
+	result := first.Run(ctx, testTask(taskID))
+	if result.Outcome != agent.OutcomeApprovalRequired {
+		t.Fatalf("run 1 outcome = %s, want approval_required", result.Outcome)
+	}
+	pending, err := h.store.PendingApprovals(ctx, taskID)
+	if err != nil {
+		t.Fatalf("PendingApprovals() error = %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending = %+v", pending)
+	}
+	if _, err := h.store.RecordApproval(ctx, state.Approval{
+		TaskID: taskID, ActionID: pending[0].ActionID, Decision: "approved", Reason: "operator approved", Actor: "operator",
+	}); err != nil {
+		t.Fatalf("RecordApproval() error = %v", err)
+	}
+
+	// Run 2 re-proposes the same recipe id under a DIFFERENT effective
+	// definition (argv changed). The prior approval was bound to the old
+	// definition digest and must not unlock the new one.
+	driftedCatalog := testCatalog(t, recipe.Recipe{
+		ID: "test", Executable: "go", Argv: []string{"vet", "./..."},
+		Capabilities: []recipe.Capability{recipe.CapabilityExecuteRepoCode},
+	})
+	driftedRegistry, err := tools.NewRegistry(tools.Options{Workspace: workspace, Recipes: driftedCatalog, RunRecipe: h.runner.run})
+	if err != nil {
+		t.Fatalf("tools.NewRegistry() error = %v", err)
+	}
+	secondProvider := &scriptedProvider{clock: h.clock, pace: time.Millisecond, responses: []provider.Response{
+		actionResponse("run_recipe", `{"recipe":"test"}`),
+		finalResponse("complete", "done", "obs-000001"),
+	}}
+	executor2, err := agent.NewExecutor(h.governor, secondProvider, nil)
+	if err != nil {
+		t.Fatalf("agent.NewExecutor() error = %v", err)
+	}
+	second, err := agent.NewLoop(agent.Config{
+		Runner:   executor2,
+		Registry: driftedRegistry,
+		Limits:   agent.Limits{MaxSteps: 10, MaxCorrections: 3, MaxRepeatedActions: 3},
+		Clock:    h.clock,
+		Trace:    h.traces.emit,
+		State:    h.store,
+		Policy:   h.policy,
+		Recovery: seededRecovery(2, 2),
+	})
+	if err != nil {
+		t.Fatalf("agent.NewLoop() error = %v", err)
+	}
+	result = second.Run(ctx, testTask(taskID))
+	if result.Outcome != agent.OutcomeApprovalRequired {
+		t.Fatalf("a changed recipe definition must invalidate the prior approval; outcome = %s, reason = %s", result.Outcome, result.StopReason)
+	}
+	if len(h.runner.cwds) != 0 {
+		t.Fatalf("the recipe must never execute under a stale approval; cwds = %v", h.runner.cwds)
+	}
 }
 
 func TestRecipeLoopRejectionPersistsAfterResume(t *testing.T) {
