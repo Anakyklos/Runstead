@@ -5,7 +5,7 @@ import "time"
 // TraceLine is one sanitized lifecycle event. It deliberately excludes
 // prompts, response bodies, credentials, tokens, cookies and account
 // identifiers; only sequence, kind, status, duration, evidence ID,
-// classification and stop reason are carried.
+// classification, stop reason and the real process exit code are carried.
 type TraceLine struct {
 	Sequence         int
 	Kind             string
@@ -17,6 +17,9 @@ type TraceLine struct {
 	Tool             string
 	Code             string
 	RetriesRemaining int
+	// ExitCode preserves the real process exit code of a run_recipe attempt
+	// (negative when the process was terminated by a signal). Zero is unset.
+	ExitCode int
 }
 
 // Trace kinds: one lifecycle line per provider attempt, action, observation,

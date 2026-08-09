@@ -31,6 +31,16 @@ const (
 	// is approval_required for every write tool.
 	EnvWritePolicy = "RUNSTEAD_WRITE_POLICY"
 
+	// EnvRecipes configures the operator-controlled recipe catalog file
+	// (issue #26): a JSON array of recipes. Without it, run_recipe fails
+	// closed.
+	EnvRecipes = "RUNSTEAD_RECIPES"
+
+	// EnvRecipePolicy configures the recipe policy modes (issue #26), for
+	// example "test=allow,vet=approval_required". The default is
+	// approval_required for every recipe.
+	EnvRecipePolicy = "RUNSTEAD_RECIPE_POLICY"
+
 	EnvOmniRouteBaseURL           = "OMNIROUTE_BASE_URL"
 	EnvOmniRouteAPIKey            = "OMNIROUTE_API_KEY"
 	EnvOmniRouteModel             = "OMNIROUTE_MODEL"

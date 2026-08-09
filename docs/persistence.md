@@ -337,12 +337,14 @@ implemented:
 - there is no automatic reconciliation engine;
 - prepared/uncertain attempts are persisted and flagged, but nothing
   automatically re-executes, reinterprets or reconciles them;
-- delivery-state transport tracking (#38), the process runner (#26), the
-  verifier (#11) and first-party ChatGPT Web work remain separate milestones;
-  write tools (#10) are implemented (see [writes.md](writes.md)), including
-  the approval pause (task stays resumable with pending approvals derived from
-  `write_policy_decisions` + `approvals`) and the TX 1 planned-diff evidence
-  (`tool_attempts.planned_diff_json`, migration 0005).
+- delivery-state transport tracking (#38), the verifier (#11) and first-party
+  ChatGPT Web work remain separate milestones; write tools (#10) and the
+  bounded process runner (#26) are implemented (see [writes.md](writes.md) and
+  [process-runner.md](process-runner.md)), including the approval pause (task
+  stays resumable with pending approvals derived from
+  `write_policy_decisions` + `approvals`) and the TX 1 evidence
+  (`tool_attempts.planned_diff_json` migration 0005 for writes,
+  `tool_attempts.process_intent_json` migration 0006 for process recipes).
 
 The schema keeps a compatible seam for those milestones (for example
 `provider_attempt_receipts` is one-to-many and `recovery_class` is stored on

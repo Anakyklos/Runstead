@@ -29,11 +29,11 @@ func (s *Store) PrepareToolAttempt(ctx context.Context, record ToolAttemptPrepar
 	}
 	plannedEffectJSON := marshalPlannedEffect(record.PlannedEffect)
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO tool_attempts (execution_id, task_id, action_id, tool, arguments_json, status, recovery_class, effect_after_hash, planned_diff_json, created_at, prepared_at)
-		 VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?)`,
+		`INSERT INTO tool_attempts (execution_id, task_id, action_id, tool, arguments_json, status, recovery_class, effect_after_hash, planned_diff_json, process_intent_json, created_at, prepared_at)
+		 VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?)`,
 		executionID, record.TaskID, record.ActionID, Redact(record.Tool),
 		string(RedactJSON(record.Arguments)), recoveryClass, record.EffectAfterHash,
-		string(RedactJSON(plannedEffectJSON)), now, now); err != nil {
+		string(RedactJSON(plannedEffectJSON)), string(RedactJSON(record.ProcessIntent)), now, now); err != nil {
 		return "", fmt.Errorf("insert tool attempt: %w", err)
 	}
 	// The first concrete attempt intent moves the logical action from

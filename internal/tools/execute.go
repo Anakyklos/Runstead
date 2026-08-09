@@ -53,6 +53,9 @@ func (r *Registry) Execute(ctx context.Context, action protocol.Action) Observat
 		patch, _ := stringArgumentAllowEmpty(action.Arguments, "patch")
 		expected, _ := stringArgument(action.Arguments, "expected_before_hash")
 		return r.executeApplyPatch(ctx, observation, path, patch, expected)
+	case ToolRunRecipe:
+		recipeID, _ := stringArgument(action.Arguments, "recipe")
+		return r.executeRunRecipe(ctx, observation, recipeID)
 	default:
 		observation.Failure = newFailure(FailureInvalidArguments)
 		return observation
@@ -104,6 +107,10 @@ func normalizedArguments(action protocol.Action) any {
 					}
 				}
 			}
+		}
+	case ToolRunRecipe:
+		if recipeID, failure := stringArgument(action.Arguments, "recipe"); failure == nil {
+			arguments["recipe"] = recipeID
 		}
 	}
 	return arguments

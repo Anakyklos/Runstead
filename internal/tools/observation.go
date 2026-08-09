@@ -26,6 +26,9 @@ const (
 	FailureInvalidPatch     FailureCode = "invalid_patch"
 	FailureWriteFailure     FailureCode = "write_failure"
 	FailureWriteTooLarge    FailureCode = "write_too_large"
+	FailureUnknownRecipe    FailureCode = "unknown_recipe"
+	FailureRecipeStart      FailureCode = "recipe_start_failed"
+	FailureNoRecipes        FailureCode = "no_recipes_configured"
 )
 
 var failureMessages = map[FailureCode]string{
@@ -50,6 +53,9 @@ var failureMessages = map[FailureCode]string{
 	FailureInvalidPatch:     "the patch is malformed or cannot be applied deterministically",
 	FailureWriteFailure:     "the write effect failed",
 	FailureWriteTooLarge:    "the write target exceeds the configured bound",
+	FailureUnknownRecipe:    "the requested recipe is not in the configured catalog",
+	FailureRecipeStart:      "the recipe process could not start",
+	FailureNoRecipes:        "no recipes are configured; run_recipe is unavailable",
 }
 
 type Failure struct {
@@ -59,6 +65,12 @@ type Failure struct {
 
 func newFailure(code FailureCode) *Failure {
 	return &Failure{Code: code, Message: failureMessages[code]}
+}
+
+// InvalidArgumentFailure returns a typed invalid-arguments failure. It is
+// exported for the agent loop's argument decoding.
+func InvalidArgumentFailure() *Failure {
+	return newFailure(FailureInvalidArguments)
 }
 
 func (f Failure) Error() string {

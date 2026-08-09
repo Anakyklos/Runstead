@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/protocol"
+	"github.com/RenyEnnos/Runstead/internal/recipe"
 )
 
 const (
@@ -20,6 +21,7 @@ const (
 	ToolGitDiff    = "git_diff"
 	ToolWriteFile  = "write_file"
 	ToolApplyPatch = "apply_patch"
+	ToolRunRecipe  = "run_recipe"
 )
 
 type Limits struct {
@@ -67,6 +69,11 @@ type CommandResult struct {
 type RGRunner func(context.Context, string, []string, string) CommandResult
 type GitRunner func(context.Context, []string, string) CommandResult
 
+// RecipeRunner executes one operator-declared recipe inside the canonical
+// working directory with the allowlisted environment. It is a seam so tests
+// can inject deterministic runners; the default is recipe.Run.
+type RecipeRunner func(ctx context.Context, r recipe.Recipe, cwd string, env []string) recipe.Result
+
 type Options struct {
 	Workspace string
 	Limits    Limits
@@ -74,6 +81,12 @@ type Options struct {
 	RGPath    string
 	RunRG     RGRunner
 	RunGit    GitRunner
+	// Recipes is the operator-controlled recipe catalog. A nil catalog makes
+	// run_recipe fail closed with no_recipes_configured.
+	Recipes *recipe.Catalog
+	// RunRecipe overrides the recipe process runner (test seam). A nil value
+	// uses recipe.Run.
+	RunRecipe RecipeRunner
 	// NextEvidenceSequence is the highest evidence sequence number already
 	// allocated for this task (from persisted evidence). The next observation
 	// receives NextEvidenceSequence+1, so a resumed process continues the
@@ -88,6 +101,8 @@ type Registry struct {
 	rgPath    string
 	runRG     RGRunner
 	runGit    GitRunner
+	recipes   *recipe.Catalog
+	runRecipe RecipeRunner
 	nextID    atomic.Uint64
 }
 
@@ -129,7 +144,21 @@ func NewRegistry(options Options) (*Registry, error) {
 			})
 		}
 	}
-	registry := &Registry{workspace: workspace, limits: limits, rgPath: rgPath, runRG: runRG, runGit: runGit}
+	runRecipe := options.RunRecipe
+	if runRecipe == nil {
+		runRecipe = func(ctx context.Context, r recipe.Recipe, cwd string, env []string) recipe.Result {
+			return recipe.Run(ctx, r, cwd, env)
+		}
+	}
+	registry := &Registry{
+		workspace: workspace,
+		limits:    limits,
+		rgPath:    rgPath,
+		runRG:     runRG,
+		runGit:    runGit,
+		recipes:   options.Recipes,
+		runRecipe: runRecipe,
+	}
 	if options.NextEvidenceSequence > 0 {
 		registry.nextID.Store(uint64(options.NextEvidenceSequence))
 	}
@@ -181,6 +210,10 @@ func normalizeLimits(limits Limits) (Limits, error) {
 	return limits, nil
 }
 
+// ValidateArguments checks the typed argument shape of one tool proposal. For
+// run_recipe it validates the shape only; recipe existence is enforced at
+// execution with the typed unknown_recipe failure, so the protocol parser
+// accepts the envelope and the attempt records the typed failure.
 func (r *Registry) ValidateArguments(tool string, arguments protocol.Arguments) (bool, error) {
 	if r == nil {
 		return false, nil
@@ -245,10 +278,50 @@ func (r *Registry) ValidateArguments(tool string, arguments protocol.Arguments) 
 				return true, newFailure(FailureInvalidArguments)
 			}
 		}
+	case ToolRunRecipe:
+		if len(arguments) != 1 {
+			return true, newFailure(FailureInvalidArguments)
+		}
+		if _, err := stringArgument(arguments, "recipe"); err != nil {
+			return true, err
+		}
 	default:
 		return false, nil
 	}
 	return true, nil
+}
+
+// RecipeCatalog returns the operator-controlled recipe catalog (possibly nil).
+func (r *Registry) RecipeCatalog() *recipe.Catalog {
+	if r == nil {
+		return nil
+	}
+	return r.recipes
+}
+
+// Recipe returns the recipe with the given id from the configured catalog.
+func (r *Registry) Recipe(id string) (recipe.Recipe, bool) {
+	if r == nil || r.recipes == nil {
+		return recipe.Recipe{}, false
+	}
+	return r.recipes.Get(id)
+}
+
+// IsWriteTool reports whether the tool is a policy-gated write tool.
+func (r *Registry) IsWriteTool(tool string) bool {
+	return tool == ToolWriteFile || tool == ToolApplyPatch
+}
+
+// IsRecipeTool reports whether the tool is the policy-gated process recipe
+// runner.
+func (r *Registry) IsRecipeTool(tool string) bool {
+	return tool == ToolRunRecipe
+}
+
+// IsPolicyGated reports whether the tool is gated by the control-plane policy
+// before execution.
+func (r *Registry) IsPolicyGated(tool string) bool {
+	return r.IsWriteTool(tool) || r.IsRecipeTool(tool)
 }
 
 func stringArgument(arguments protocol.Arguments, name string) (string, *Failure) {

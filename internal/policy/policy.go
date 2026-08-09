@@ -48,14 +48,17 @@ const (
 	ModeApprovalRequired Mode = "approval_required"
 )
 
-// Request is the typed policy input for one write proposal. It is entirely
-// control-plane and persisted state; it never contains model prose.
+// Request is the typed policy input for one write or process-recipe proposal.
+// It is entirely control-plane and persisted state; it never contains model
+// prose.
 type Request struct {
 	TaskID      string
 	ActionID    string
 	Tool        string
 	Fingerprint string
 	Workspace   string
+	// Recipe is the recipe id for run_recipe proposals; empty for write tools.
+	Recipe string
 }
 
 // Outcome is the typed policy result. Reason is a stable typed reason, not
@@ -94,9 +97,13 @@ type Policy interface {
 	Evaluate(ctx context.Context, request Request) Outcome
 }
 
-// Config maps write tools to their policy modes.
+// Config maps write tools and process recipes to their policy modes.
 type Config struct {
+	// Modes maps write tools (write_file, apply_patch) to their modes.
 	Modes map[string]Mode
+	// RecipeModes maps recipe ids (run_recipe proposals) to their modes. A
+	// recipe with no configured mode defaults to approval_required.
+	RecipeModes map[string]Mode
 }
 
 // WriteTools returns the write tool names the policy can govern.
@@ -152,31 +159,96 @@ func DefaultConfig() Config {
 	}}
 }
 
-// Static is the deterministic policy implementation: tool mode plus persisted
-// operator approval lookup.
+// RecipeSpec renders the canonical, sorted recipe=mode specification of the
+// recipe policy, for example "test=allow,vet=approval_required". Recipes
+// without an explicit mode are rendered with the fail-closed default, so the
+// specification is complete and round-trips through ParseRecipePolicy.
+func (c Config) RecipeSpec(recipeIDs []string) string {
+	ids := append([]string(nil), recipeIDs...)
+	sort.Strings(ids)
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, id+"="+string(recipeModeOf(c, id)))
+	}
+	return strings.Join(parts, ",")
+}
+
+// RecipeEqual reports whether two configs assign the same mode to every
+// recipe id. A config that omits a recipe is treated as the fail-closed
+// default (approval_required), never as a permissive gap.
+func RecipeEqual(a, b Config, recipeIDs []string) bool {
+	for _, id := range recipeIDs {
+		if recipeModeOf(a, id) != recipeModeOf(b, id) {
+			return false
+		}
+	}
+	return true
+}
+
+func recipeModeOf(config Config, recipeID string) Mode {
+	if mode, ok := config.RecipeModes[recipeID]; ok {
+		return mode
+	}
+	return ModeApprovalRequired
+}
+
+// Static is the deterministic policy implementation: tool/recipe mode plus
+// persisted operator approval lookup.
 type Static struct {
-	modes     map[string]Mode
-	approvals Approvals
+	modes       map[string]Mode
+	recipeModes map[string]Mode
+	approvals   Approvals
 }
 
 // NewStatic builds a Static policy. A nil approvals store fails closed: any
-// approval-required tool is denied evaluation, never silently allowed.
+// approval-required tool or recipe is denied evaluation, never silently
+// allowed.
 func NewStatic(config Config, approvals Approvals) *Static {
 	modes := make(map[string]Mode, len(config.Modes))
 	for tool, mode := range config.Modes {
 		modes[tool] = mode
 	}
-	return &Static{modes: modes, approvals: approvals}
+	recipeModes := make(map[string]Mode, len(config.RecipeModes))
+	for id, mode := range config.RecipeModes {
+		recipeModes[id] = mode
+	}
+	return &Static{modes: modes, recipeModes: recipeModes, approvals: approvals}
 }
 
-// Evaluate returns the typed policy decision for one write proposal. The
-// decision depends only on the configured mode and persisted approvals; the
-// request carries no model content that could influence it.
+// Evaluate returns the typed policy decision for one write or process-recipe
+// proposal. The decision depends only on the configured mode and persisted
+// approvals; the request carries no model content that could influence it.
 func (p *Static) Evaluate(ctx context.Context, request Request) Outcome {
+	if request.Recipe != "" {
+		return p.evaluateRecipe(ctx, request)
+	}
 	mode, ok := p.modes[request.Tool]
 	if !ok {
 		// Fail closed: an ungoverned write tool never executes.
 		return Outcome{Decision: Denied, Reason: "no_policy_for_tool"}
+	}
+	switch mode {
+	case ModeAllow:
+		return Outcome{Decision: Allowed, Reason: "policy_allow"}
+	case ModeDeny:
+		return Outcome{Decision: Denied, Reason: "policy_deny"}
+	case ModeApprovalRequired:
+		return p.evaluateApproval(ctx, request)
+	default:
+		return Outcome{Decision: Denied, Reason: "unknown_policy_mode"}
+	}
+}
+
+// evaluateRecipe decides one run_recipe proposal. The mode is looked up per
+// recipe id; an unknown or unconfigured recipe is denied (the catalog check
+// happens at execution too, but policy fails closed regardless).
+func (p *Static) evaluateRecipe(ctx context.Context, request Request) Outcome {
+	mode, ok := p.recipeModes[request.Recipe]
+	if !ok {
+		// A recipe with no configured mode defaults to the fail-closed
+		// approval_required; a recipe absent from the catalog is denied here
+		// and at execution.
+		mode = ModeApprovalRequired
 	}
 	switch mode {
 	case ModeAllow:
@@ -229,6 +301,7 @@ func (p *Static) evaluateApproval(ctx context.Context, request Request) Outcome 
 // change the policy.
 func ParseConfig(value string) (Config, error) {
 	config := DefaultConfig()
+	config.RecipeModes = map[string]Mode{}
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return Config{}, fmt.Errorf("write policy must not be empty")
@@ -252,6 +325,45 @@ func ParseConfig(value string) (Config, error) {
 			config.Modes[tool] = Mode(mode)
 		default:
 			return Config{}, fmt.Errorf("invalid write policy mode %q: must be allow, deny or approval_required", mode)
+		}
+	}
+	return config, nil
+}
+
+// ParseRecipePolicy parses a --recipe-policy style value:
+//
+//	test=allow,vet=approval_required,build=deny
+//
+// Modes are allow, deny or approval_required. Recipe ids are accepted
+// verbatim (they are operator-declared identifiers); unknown modes are
+// errors. Recipes not mentioned keep the fail-closed default
+// (approval_required), so a partial specification can never silently widen
+// the policy.
+func ParseRecipePolicy(value string) (Config, error) {
+	config := Config{Modes: map[string]Mode{}, RecipeModes: map[string]Mode{}}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return Config{}, fmt.Errorf("recipe policy must not be empty")
+	}
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		parts := strings.SplitN(item, "=", 2)
+		if len(parts) != 2 {
+			return Config{}, fmt.Errorf("invalid recipe policy %q: expected RECIPE=MODE", item)
+		}
+		id := strings.TrimSpace(parts[0])
+		mode := strings.TrimSpace(parts[1])
+		if id == "" {
+			return Config{}, fmt.Errorf("invalid recipe policy %q: recipe id must not be empty", item)
+		}
+		switch Mode(mode) {
+		case ModeAllow, ModeDeny, ModeApprovalRequired:
+			config.RecipeModes[id] = Mode(mode)
+		default:
+			return Config{}, fmt.Errorf("invalid recipe policy mode %q: must be allow, deny or approval_required", mode)
 		}
 	}
 	return config, nil

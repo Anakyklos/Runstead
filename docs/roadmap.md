@@ -112,7 +112,10 @@ Exit criteria:
 
 Deliverables:
 
-- test execution with timeout and captured exit status;
+- test execution with timeout and captured exit status (implemented in #26:
+  operator-declared recipes with fixed argv, capability policy, bounded
+  output, process-tree termination and structured process evidence; the
+  completion verifier and the inspect/edit/test/fix loop remain #11/#12);
 - explicit acceptance checks;
 - completion verifier;
 - loop and repetition detection;

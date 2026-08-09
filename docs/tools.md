@@ -145,3 +145,23 @@ outside any SQLite transaction, and every successful write returns structured
 `WriteEvidence` (before/after hashes, byte count, change kind, bounded diff).
 See `docs/writes.md` for the complete safety, approval, evidence and
 reconciliation contract.
+
+## Process recipes
+
+`run_recipe` is the policy-gated process-recipe tool: the model selects a
+recipe ID from the operator-controlled catalog and never supplies a command,
+argv or shell string. The recipe declares its executable, fixed argv,
+working directory (inside the workspace), timeout, output limits,
+capabilities and an environment allowlist. The runner executes argv directly
+(no `sh -c`), starts the process in its own process group and terminates the
+full group on timeout or cancellation. The child environment is built from an
+explicit allowlist; provider credential-shaped names are never inherited.
+stdout and stderr are bounded independently with explicit truncation, and the
+observed result becomes structured `recipe.Evidence` (real exit code, signal,
+duration, bounded output, truncation flags, declared capabilities, policy
+decision and `network_isolation = "unenforced"`). `run_recipe` is gated by
+`--recipe-policy` (default `approval_required`), shares the approval pause and
+durable policy semantics of the write tools, and its attempts are recovery
+class 4 (a crashed prepared process attempt stops with
+`human_review_required`, never blindly re-run). See
+`docs/process-runner.md` for the full contract and native limitations.

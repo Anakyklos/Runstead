@@ -272,6 +272,9 @@ type Persistence interface {
 	// RecordWritePolicyDecision persists one typed control-plane decision for
 	// a write proposal (issue #10) with its journal event.
 	RecordWritePolicyDecision(ctx context.Context, record WritePolicyDecision) error
+	// RecordRecipePolicyDecision persists one typed control-plane decision for
+	// a run_recipe proposal (issue #26) with its journal event.
+	RecordRecipePolicyDecision(ctx context.Context, record RecipePolicyDecision) error
 	// MarkTaskApprovalRequired records a control-plane pause: the task stays
 	// resumable (status running) with the pending action and a
 	// task_approval_required event; no terminal finalize happens.
@@ -343,6 +346,12 @@ type ToolAttemptPrepared struct {
 	// to reconciled completed evidence only when the current filesystem state
 	// matches EffectAfterHash. Empty for read-only attempts.
 	PlannedEffect tools.PlannedEffect
+	// ProcessIntent is the bounded, sanitized process intent of a run_recipe
+	// attempt (issue #26): resolved recipe, argv, capabilities and the
+	// control-plane policy decision. It is evidence of intent only; a
+	// prepared process attempt left by a crash is recovery class 4 and is
+	// never blindly re-run. Empty for non-process attempts.
+	ProcessIntent []byte
 }
 
 // ToolAttemptCompleted is the TX 2 result of one concrete tool execution.

@@ -27,12 +27,28 @@ func BuildSystemContract(registry *tools.Registry) (string, error) {
 	for _, spec := range registry.Describe() {
 		kind := "read-only"
 		if !spec.ReadOnly {
-			kind = "policy-gated write"
+			kind = "policy-gated effect"
 		}
 		fmt.Fprintf(&builder, "- %s [%s]: %s\n", spec.Name, kind, spec.Summary)
 		for _, argument := range spec.Arguments {
 			fmt.Fprintf(&builder, "    %s (%s, %s): %s\n", argument.Name, argument.Type, requiredLabel(argument.Required), argument.Note)
 		}
+	}
+	// List only recipes that are actually available in the configured catalog.
+	// The model selects a recipe by ID; it never supplies a command or argv.
+	if catalog := registry.RecipeCatalog(); catalog != nil && catalog.Len() > 0 {
+		builder.WriteString("\nAvailable recipes (run with run_recipe {\"recipe\":\"<id>\"}; the model never supplies commands or argv):\n")
+		for _, id := range catalog.IDs() {
+			if selected, ok := catalog.Get(id); ok {
+				fmt.Fprintf(&builder, "- %s: %s", id, selected.Executable)
+				if len(selected.Argv) > 0 {
+					fmt.Fprintf(&builder, " %s", strings.Join(selected.Argv, " "))
+				}
+				builder.WriteString("\n")
+			}
+		}
+	} else {
+		builder.WriteString("\nNo recipes are configured: run_recipe is unavailable (fails closed).\n")
 	}
 	builder.WriteString("\nRules:\n")
 	builder.WriteString("- Return exactly one envelope per turn. Prose outside the envelope is ignored and never executed.\n")

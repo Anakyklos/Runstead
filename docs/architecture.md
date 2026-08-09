@@ -162,18 +162,19 @@ The provider interface should remain small enough to support deterministic fake 
 ## Main execution loop
 
 Issue #7 implements the bounded agent loop in `internal/agent`; issue #10 adds
-policy-gated write tools to it.
+policy-gated write tools and issue #26 adds policy-gated process recipes to it.
 
 ```text
 task
     ↓
-build deterministic system contract (protocol version + registered tools)
+build deterministic system contract (protocol version + registered tools + recipes)
     ↓
 governed model turn (account-scoped attempt executor)
     ↓
 parse exactly one envelope (runstead.protocol.v1)
     ↓
-action → write tools: control-plane policy gate (allow/deny/approval_required)
+action → policy-gated effects (writes, run_recipe):
+         control-plane policy gate (allow/deny/approval_required)
     ↓   approval_required → PAUSE with approval_required outcome (resumable)
 action → repeat guard → registry validation and execution
     ↓
@@ -193,12 +194,18 @@ untrusted observations in a separate transcript role and never become system
 instructions, permissions, policy or approval. Fingerprints from #5 act only as
 a workspace-aware loop guard, not as permanent idempotency keys: an identical
 observational action may run again after the workspace changes. Write tools
-(`write_file`, `apply_patch`) are gated by the control-plane policy before any
-execution decision; approval comes only from persisted operator records, never
-from model output. An unapproved write pauses the run with the typed
-`approval_required` outcome (a control-plane dependency, not a protocol
-correction): the task stays durably resumable, and `runstead decide` +
-`runstead resume` continues it under the same persisted policy. The loop enforces bounded steps, corrections, repeated
+(`write_file`, `apply_patch`, `run_recipe`) are gated by the control-plane
+policy before any execution decision; approval comes only from persisted
+operator records, never from model output. An unapproved effect pauses the run
+with the typed `approval_required` outcome (a control-plane dependency, not a
+protocol correction): the task stays durably resumable, and `runstead decide`
++ `runstead resume` continues it under the same persisted policy. Process
+recipes (`run_recipe`) select only operator-declared recipes from the
+configured catalog; the model never supplies commands or argv. The recipe
+runner executes argv directly, terminates the full process tree on
+timeout/cancellation, builds an allowlisted child environment (credential
+names never inherited), bounds output per stream and persists structured
+process evidence for #11 (see [`process-runner.md`](process-runner.md)). The loop enforces bounded steps, corrections, repeated
 actions, elapsed task time and provider attempts, and every terminal exit maps
 to a typed outcome with a stable exit code (see
 [`development.md`](development.md)). Durable state (issue #8) persists the

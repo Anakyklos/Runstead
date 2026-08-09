@@ -152,3 +152,47 @@ func (s *Store) Approval(ctx context.Context, taskID, fingerprint string) (Appro
 	}
 	return approval, true, nil
 }
+
+// RecipePolicyDecision is one durable, typed policy decision for a run_recipe
+// proposal.
+type RecipePolicyDecision struct {
+	TaskID   string
+	ActionID string
+	Recipe   string
+	// Decision is the typed policy outcome: allowed, denied or
+	// approval_required.
+	Decision string
+	// Reason is the typed reason for the decision.
+	Reason string
+}
+
+// RecordRecipePolicyDecision persists one recipe policy decision and its
+// journal event atomically. It shares the policy-decisions table with write
+// decisions; the tool column disambiguates run_recipe rows.
+func (s *Store) RecordRecipePolicyDecision(ctx context.Context, record RecipePolicyDecision) error {
+	now := s.now()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin recipe policy decision: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO write_policy_decisions (task_id, action_id, tool, decision, reason, created_at)
+		 VALUES (?, ?, 'run_recipe', ?, ?, ?)`,
+		record.TaskID, Redact(record.ActionID), Redact(record.Decision), Redact(record.Reason), now); err != nil {
+		return fmt.Errorf("insert recipe policy decision: %w", err)
+	}
+	if err := appendEvent(ctx, tx, record.TaskID, "recipe_policy_decision", map[string]any{
+		"action_id": record.ActionID,
+		"recipe":    record.Recipe,
+		"decision":  record.Decision,
+		"reason":    record.Reason,
+	}, now); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit recipe policy decision: %w", err)
+	}
+	hitCrashPoint("recipe_policy_decision_after")
+	return nil
+}
