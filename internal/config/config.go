@@ -26,6 +26,15 @@ const (
 	EnvTimeBudget         = "RUNSTEAD_TIME_BUDGET"
 	EnvProviderBudget     = "RUNSTEAD_PROVIDER_BUDGET"
 
+	// EnvMaxConsecutiveFailures bounds consecutive failing tool/process
+	// observations before the loop stops with consecutive_failures_exhausted
+	// (issue #12).
+	EnvMaxConsecutiveFailures = "RUNSTEAD_MAX_CONSECUTIVE_FAILURES"
+	// EnvMaxVerificationRetries bounds consecutive failed verification
+	// attempts before the loop stops with verification_failures_exhausted
+	// (issue #12).
+	EnvMaxVerificationRetries = "RUNSTEAD_MAX_VERIFICATION_RETRIES"
+
 	// EnvWritePolicy configures the write-tool policy modes (issue #10), for
 	// example "write_file=allow,apply_patch=approval_required". The default
 	// is approval_required for every write tool.

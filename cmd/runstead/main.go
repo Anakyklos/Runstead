@@ -77,6 +77,8 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	maxSteps := 0
 	maxCorrections := 0
 	maxRepeatedActions := 0
+	maxConsecutiveFailures := 0
+	maxVerificationRetries := 0
 	timeBudget := ""
 	providerBudget := 0
 	minStartInterval := ""
@@ -104,6 +106,8 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	flags.IntVar(&maxSteps, "max-steps", 0, "maximum model turns (RUNSTEAD_MAX_STEPS, default 24)")
 	flags.IntVar(&maxCorrections, "max-corrections", 0, "protocol correction attempts (RUNSTEAD_MAX_CORRECTIONS, default 2)")
 	flags.IntVar(&maxRepeatedActions, "max-repeated-actions", 0, "repeated-action corrections before stopping (RUNSTEAD_MAX_REPEATED_ACTIONS, default 2)")
+	flags.IntVar(&maxConsecutiveFailures, "max-consecutive-failures", 0, "consecutive failing tool/process observations before stopping (RUNSTEAD_MAX_CONSECUTIVE_FAILURES, default 5)")
+	flags.IntVar(&maxVerificationRetries, "max-verification-retries", 0, "consecutive failed completion verifications before stopping (RUNSTEAD_MAX_VERIFICATION_RETRIES, default 3)")
 	flags.StringVar(&timeBudget, "time-budget", "", "elapsed task time budget (RUNSTEAD_TIME_BUDGET, default 10m)")
 	flags.IntVar(&providerBudget, "provider-budget", 0, "governed provider attempts per task (RUNSTEAD_PROVIDER_BUDGET, default 80)")
 	flags.StringVar(&minStartInterval, "min-start-interval", "", "account governor start-to-start pacing (RUNSTEAD_MIN_START_INTERVAL, default 5s)")
@@ -176,7 +180,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return agent.OutcomeCanceled.ExitCode()
 	}
 
-	limits, err := resolveLimits(flags, maxSteps, maxCorrections, maxRepeatedActions, timeBudget, providerBudget)
+	limits, err := resolveLimits(flags, maxSteps, maxCorrections, maxRepeatedActions, maxConsecutiveFailures, maxVerificationRetries, timeBudget, providerBudget)
 	if err != nil {
 		fmt.Fprintf(errOut, "run: %v\n", err)
 		return exitUsage
@@ -473,7 +477,7 @@ func recipeIDs(catalog *recipe.Catalog) []string {
 	return catalog.IDs()
 }
 
-func resolveLimits(flags *flag.FlagSet, maxSteps, maxCorrections, maxRepeatedActions int, timeBudget string, providerBudget int) (agent.Limits, error) {
+func resolveLimits(flags *flag.FlagSet, maxSteps, maxCorrections, maxRepeatedActions, maxConsecutiveFailures, maxVerificationRetries int, timeBudget string, providerBudget int) (agent.Limits, error) {
 	limits := agent.DefaultLimits()
 	parsePositiveInt := func(name, value string) (int, error) {
 		parsed, err := strconv.Atoi(strings.TrimSpace(value))
@@ -532,6 +536,30 @@ func resolveLimits(flags *flag.FlagSet, maxSteps, maxCorrections, maxRepeatedAct
 			return agent.Limits{}, err
 		}
 		limits.MaxRepeatedActions = parsed
+	}
+	if flagWasSet(flags, "max-consecutive-failures") {
+		if maxConsecutiveFailures <= 0 {
+			return agent.Limits{}, fmt.Errorf("max-consecutive-failures must be positive")
+		}
+		limits.MaxConsecutiveFailures = maxConsecutiveFailures
+	} else if value, ok := os.LookupEnv(config.EnvMaxConsecutiveFailures); ok {
+		parsed, err := parsePositiveInt(config.EnvMaxConsecutiveFailures, value)
+		if err != nil {
+			return agent.Limits{}, err
+		}
+		limits.MaxConsecutiveFailures = parsed
+	}
+	if flagWasSet(flags, "max-verification-retries") {
+		if maxVerificationRetries <= 0 {
+			return agent.Limits{}, fmt.Errorf("max-verification-retries must be positive")
+		}
+		limits.MaxVerificationRetries = maxVerificationRetries
+	} else if value, ok := os.LookupEnv(config.EnvMaxVerificationRetries); ok {
+		parsed, err := parsePositiveInt(config.EnvMaxVerificationRetries, value)
+		if err != nil {
+			return agent.Limits{}, err
+		}
+		limits.MaxVerificationRetries = parsed
 	}
 	if flagWasSet(flags, "time-budget") {
 		parsed, err := parseDuration("time-budget", timeBudget)
@@ -981,6 +1009,8 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --max-steps N             maximum model turns (default 24)")
 	fmt.Fprintln(out, "  --max-corrections N       protocol correction attempts (default 2)")
 	fmt.Fprintln(out, "  --max-repeated-actions N  repeated-action corrections before stopping (default 2)")
+	fmt.Fprintln(out, "  --max-consecutive-failures N  consecutive failing tool/process observations before stopping with a typed reason (default 5)")
+	fmt.Fprintln(out, "  --max-verification-retries N  consecutive failed completion verifications before stopping with a typed reason (default 3)")
 	fmt.Fprintln(out, "  --time-budget DURATION    elapsed task time budget (default 10m)")
 	fmt.Fprintln(out, "  --provider-budget N       governed provider attempts per task (default 80)")
 	fmt.Fprintln(out, "  --min-start-interval DURATION  account governor pacing (default 5s)")

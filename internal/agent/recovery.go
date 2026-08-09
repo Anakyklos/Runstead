@@ -16,6 +16,16 @@ type RecoverySeed struct {
 	// actions so the repeated-action budget continues.
 	Repeated int
 
+	// ConsecutiveFailures seeds the #12 consecutive tool/process failure
+	// guard from the trailing failing observations persisted before the
+	// interruption, so a resumed run continues the same guard instead of
+	// silently resetting it.
+	ConsecutiveFailures int
+	// VerificationRetries seeds the #12 repeated-verification-failure guard
+	// from the trailing failed verification attempts persisted before the
+	// interruption.
+	VerificationRetries int
+
 	// Evidence seeds the grounding set from persisted citable observations
 	// (tool_results). A final that cites a historical evidence ID is grounded
 	// without re-executing the completed observation.

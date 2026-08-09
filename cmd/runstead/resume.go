@@ -730,6 +730,15 @@ func limitsFromConfig(configJSON string) (agent.Limits, error) {
 	if value, ok := nonNegativeField("max_repeated_actions"); ok {
 		limits.MaxRepeatedActions = value
 	}
+	// The #12 failure guard limits are part of the persisted loop budgets:
+	// resume continues under the same consecutive-failure and verification-
+	// retry allowances the task started with.
+	if value, ok := intField("max_consecutive_failures"); ok {
+		limits.MaxConsecutiveFailures = value
+	}
+	if value, ok := intField("max_verification_retries"); ok {
+		limits.MaxVerificationRetries = value
+	}
 	if value, ok := intField("provider_budget"); ok {
 		limits.ProviderBudget = value
 	}
