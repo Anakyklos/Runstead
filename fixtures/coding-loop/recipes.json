@@ -1,0 +1,12 @@
+[
+  {
+    "id": "test",
+    "executable": "go",
+    "argv": ["test", "./..."],
+    "working_directory": "app",
+    "timeout_nanos": 120000000000,
+    "output_limits": {"max_stdout_bytes": 262144, "max_stderr_bytes": 262144},
+    "capabilities": ["execute_repository_code", "temporary_files", "inherit_environment"],
+    "allowed_environment": ["GOCACHE", "GOMODCACHE", "GOFLAGS", "GOPATH", "HOME"]
+  }
+]
