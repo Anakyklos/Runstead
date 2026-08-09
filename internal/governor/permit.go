@@ -131,7 +131,7 @@ func (p *Permit) start(receiptAware bool) error {
 			state.retries++
 		}
 		g.ledger.add(now, p.request.TaskID)
-		if g.telemetry.available != nil {
+		if g.telemetry.available != nil && g.remainingSignalApplies() {
 			value := *g.telemetry.available
 			if value > 0 {
 				value--
@@ -145,6 +145,7 @@ func (p *Permit) start(receiptAware bool) error {
 			ModelPool:        g.config.ModelPool,
 			Model:            g.config.Model,
 			AllowanceProfile: g.config.AllowanceProfile,
+			AllowanceKind:    g.config.AllowanceKind,
 			TaskID:           p.request.TaskID,
 			ClientRequestID:  p.request.ClientRequestID,
 			AttemptSequence:  p.attemptSequence,
@@ -212,6 +213,7 @@ func (p *Permit) CancelAfterStart() FinishResult {
 		ModelPool:        g.config.ModelPool,
 		Model:            g.config.Model,
 		AllowanceProfile: g.config.AllowanceProfile,
+		AllowanceKind:    g.config.AllowanceKind,
 		TaskID:           p.request.TaskID,
 		ClientRequestID:  p.request.ClientRequestID,
 		AttemptSequence:  p.attemptSequence,
@@ -253,6 +255,7 @@ func (p *Permit) Finish(outcome Outcome) FinishResult {
 		ModelPool:        g.config.ModelPool,
 		Model:            g.config.Model,
 		AllowanceProfile: g.config.AllowanceProfile,
+		AllowanceKind:    g.config.AllowanceKind,
 		TaskID:           p.request.TaskID,
 		ClientRequestID:  p.request.ClientRequestID,
 		AttemptSequence:  p.attemptSequence,
@@ -354,7 +357,7 @@ func (p *Permit) FinishWithAttemptReceipts(outcome Outcome, set *provider.Attemp
 		if receipt.Sequence > 1 {
 			g.nextAttempt++
 		}
-		if g.telemetry.available != nil {
+		if g.telemetry.available != nil && g.remainingSignalApplies() {
 			value := *g.telemetry.available
 			if value > 0 {
 				value--
@@ -368,6 +371,7 @@ func (p *Permit) FinishWithAttemptReceipts(outcome Outcome, set *provider.Attemp
 			ModelPool:             g.config.ModelPool,
 			Model:                 receipt.Model,
 			AllowanceProfile:      g.config.AllowanceProfile,
+			AllowanceKind:         g.config.AllowanceKind,
 			TaskID:                p.request.TaskID,
 			ClientRequestID:       p.request.ClientRequestID,
 			AttemptSequence:       receipt.Sequence,
@@ -441,6 +445,7 @@ func (p *Permit) FinishWithAttemptReceipts(outcome Outcome, set *provider.Attemp
 		ModelPool:        g.config.ModelPool,
 		Model:            g.config.Model,
 		AllowanceProfile: g.config.AllowanceProfile,
+		AllowanceKind:    g.config.AllowanceKind,
 		TaskID:           p.request.TaskID,
 		ClientRequestID:  p.request.ClientRequestID,
 		AttemptSequence:  p.attemptSequence,
@@ -486,7 +491,7 @@ func (p *Permit) finishReceiptFailureLocked(err error, debitPossibleAttempt bool
 			debitAt = now
 		}
 		g.ledger.add(debitAt, p.request.TaskID)
-		if g.telemetry.available != nil {
+		if g.telemetry.available != nil && g.remainingSignalApplies() {
 			value := *g.telemetry.available
 			if value > 0 {
 				value--
@@ -502,6 +507,7 @@ func (p *Permit) finishReceiptFailureLocked(err error, debitPossibleAttempt bool
 			ModelPool:        g.config.ModelPool,
 			Model:            g.config.Model,
 			AllowanceProfile: g.config.AllowanceProfile,
+			AllowanceKind:    g.config.AllowanceKind,
 			TaskID:           p.request.TaskID,
 			ClientRequestID:  p.request.ClientRequestID,
 			AttemptSequence:  p.attemptSequence,
@@ -521,6 +527,7 @@ func (p *Permit) finishReceiptFailureLocked(err error, debitPossibleAttempt bool
 		ModelPool:        g.config.ModelPool,
 		Model:            g.config.Model,
 		AllowanceProfile: g.config.AllowanceProfile,
+		AllowanceKind:    g.config.AllowanceKind,
 		TaskID:           p.request.TaskID,
 		ClientRequestID:  p.request.ClientRequestID,
 		AttemptSequence:  p.attemptSequence,

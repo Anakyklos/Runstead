@@ -957,3 +957,78 @@ func TestResumeCrashDuringRecoveryLeavesConsistentState(t *testing.T) {
 		t.Fatal("the already-reconciled attempt must not be reconciled twice")
 	}
 }
+
+// Issue #58: resume reconstructs the allowance policy from the persisted
+// profile/kind instead of always assuming the published-quota Instant policy,
+// and fails closed when the persisted policy contradicts the reconstruction.
+func TestResumeReconstructsUnlimitedTextPolicyFromPersistedState(t *testing.T) {
+	persisted := governor.PersistedState{
+		AccountPolicyID:  "runstead-cli",
+		ProviderID:       "scripted",
+		ModelPool:        "instant",
+		Model:            "scripted",
+		AllowanceProfile: governor.ProfileLunaUnlimitedText,
+		AllowanceKind:    governor.AllowanceKindUnlimitedText,
+		NextAttempt:      3,
+		Circuit:          governor.CircuitSnapshot{State: governor.CircuitClosed},
+		Ceilings:         governor.BudgetCeilings{TaskBudget: 80, RetryBudget: 2},
+		TaskStates:       []governor.TaskStateRecord{{TaskID: "task-1", Attempts: 2, LastTouched: time.Now().UTC()}},
+	}
+	accountConfig, err := resolveResumeGovernorConfig(&persisted, "", false)
+	if err != nil {
+		t.Fatalf("resolveResumeGovernorConfig() error = %v", err)
+	}
+	if accountConfig.AllowanceProfile != governor.ProfileLunaUnlimitedText || accountConfig.AllowanceKind != governor.AllowanceKindUnlimitedText {
+		t.Fatalf("reconstructed policy = profile %q kind %q, want luna unlimited", accountConfig.AllowanceProfile, accountConfig.AllowanceKind)
+	}
+	if accountConfig.Rolling3h != 0 || accountConfig.ManualReserve != 0 {
+		t.Fatalf("reconstructed unlimited policy fabricated numeric allowance state: %#v", accountConfig)
+	}
+	if accountConfig.MaxInFlight != 1 || accountConfig.TaskBudget != 80 || accountConfig.RetryBudget != 2 || accountConfig.QueueCapacity != 16 {
+		t.Fatalf("reconstructed unlimited policy dropped local workload controls: %#v", accountConfig)
+	}
+}
+
+func TestResumeReconstructsUnknownPolicyFromPersistedState(t *testing.T) {
+	persisted := governor.PersistedState{
+		AllowanceProfile: governor.ProfileUnknown,
+		AllowanceKind:    governor.AllowanceKindUnknown,
+		Circuit:          governor.CircuitSnapshot{State: governor.CircuitClosed},
+		Ceilings:         governor.BudgetCeilings{TaskBudget: 80, RetryBudget: 2},
+	}
+	accountConfig, err := resolveResumeGovernorConfig(&persisted, "", false)
+	if err != nil {
+		t.Fatalf("resolveResumeGovernorConfig() error = %v", err)
+	}
+	if accountConfig.AllowanceKind != governor.AllowanceKindUnknown || accountConfig.Rolling3h != 0 {
+		t.Fatalf("reconstructed unknown policy = %#v", accountConfig)
+	}
+}
+
+func TestResumeFailsClosedOnFabricatedCeilingsForNonNumericAllowance(t *testing.T) {
+	persisted := governor.PersistedState{
+		AllowanceProfile: governor.ProfileLunaUnlimitedText,
+		AllowanceKind:    governor.AllowanceKindUnlimitedText,
+		Circuit:          governor.CircuitSnapshot{State: governor.CircuitClosed},
+		Ceilings: governor.BudgetCeilings{
+			Rolling3h: 140, Rolling1h: 80, Rolling10m: 25, TaskBudget: 80, RetryBudget: 2,
+		},
+	}
+	if _, err := resolveResumeGovernorConfig(&persisted, "", false); err == nil {
+		t.Fatal("resolveResumeGovernorConfig() accepted fabricated rolling ceilings on an unlimited-text policy")
+	}
+}
+
+func TestResumeFailsClosedOnIncompatiblePersistedReserve(t *testing.T) {
+	persisted := governor.PersistedState{
+		AllowanceProfile: governor.ProfileInstant,
+		AllowanceKind:    governor.AllowanceKindPublishedQuota,
+		Circuit:          governor.CircuitSnapshot{State: governor.CircuitClosed},
+		Ceilings: governor.BudgetCeilings{
+			Rolling3h: 140, Rolling1h: 80, Rolling10m: 25, TaskBudget: 80, RetryBudget: 2, ManualReserve: 5,
+		},
+	}
+	if _, err := resolveResumeGovernorConfig(&persisted, "", false); err == nil {
+		t.Fatal("resolveResumeGovernorConfig() accepted a persisted reserve that contradicts the reconstructed policy")
+	}
+}

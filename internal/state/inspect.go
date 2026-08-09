@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/RenyEnnos/Runstead/internal/governor"
 )
 
 // ErrTaskNotFound is returned by RenderInspect when the task row is absent.
@@ -137,7 +139,7 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 	if err != nil {
 		return err
 	}
-	governor, err := s.loadInspectGovernor(ctx, taskID)
+	governorState, err := s.loadInspectGovernor(ctx, taskID)
 	if err != nil {
 		return err
 	}
@@ -339,23 +341,36 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 	renderGitObservation(&builder, verificationAttempts)
 
 	builder.WriteString("\nGovernor state:\n")
-	if governor == nil {
+	if governorState == nil {
 		builder.WriteString("  (none recorded)\n")
 	} else {
-		fmt.Fprintf(&builder, "  account=%s provider=%s model_pool=%s\n", governor.AccountPolicyID, governor.ProviderID, governor.ModelPool)
-		fmt.Fprintf(&builder, "  rolling usage: 10m=%d/%d 1h=%d/%d 3h=%d/%d\n",
-			governor.Rolling10m, governor.Rolling10mCeiling, governor.Rolling1h, governor.Rolling1hCeiling, governor.Rolling3h, governor.Rolling3hCeiling)
-		fmt.Fprintf(&builder, "  task attempts: %d/%d\n", governor.TaskUsed, governor.TaskCeiling)
-		if governor.CooldownUntil != "" {
-			fmt.Fprintf(&builder, "  cooldown until: %s\n", governor.CooldownUntil)
+		fmt.Fprintf(&builder, "  account=%s provider=%s model_pool=%s\n", governorState.AccountPolicyID, governorState.ProviderID, governorState.ModelPool)
+		fmt.Fprintf(&builder, "  upstream allowance: %s profile=%s\n", governorState.AllowanceKind, governorState.AllowanceProfile)
+		switch governorState.AllowanceKind {
+		case governor.AllowanceKindUnlimitedText:
+			builder.WriteString("  no published numeric rolling quota (explicitly configured unlimited text)\n")
+		case governor.AllowanceKindUnknown:
+			builder.WriteString("  no published numeric rolling quota (no evidence; never becomes unlimited from success)\n")
+		default:
+			fmt.Fprintf(&builder, "  rolling usage: 10m=%d/%d 1h=%d/%d 3h=%d/%d\n",
+				governorState.Rolling10m, governorState.Rolling10mCeiling, governorState.Rolling1h, governorState.Rolling1hCeiling, governorState.Rolling3h, governorState.Rolling3hCeiling)
+			fmt.Fprintf(&builder, "  task attempts: %d/%d\n", governorState.TaskUsed, governorState.TaskCeiling)
+			if governorState.ManualReserve > 0 {
+				fmt.Fprintf(&builder, "  manual reserve: %d (%d remaining)\n", governorState.ManualReserve, governorState.ManualReserveRemaining)
+			}
+		}
+		fmt.Fprintf(&builder, "  local workload ceilings: task=%d retry=%d\n", governorState.TaskCeiling, governorState.RetryCeiling)
+		builder.WriteString("  serialized lane, start-to-start pacing, queue/fairness, cooldown and circuit breakers remain active for every allowance kind\n")
+		if governorState.CooldownUntil != "" {
+			fmt.Fprintf(&builder, "  cooldown until: %s\n", governorState.CooldownUntil)
 		} else {
 			builder.WriteString("  cooldown until: none\n")
 		}
-		fmt.Fprintf(&builder, "  circuit: %s\n", governor.CircuitState)
-		if governor.CircuitReason != "" {
-			fmt.Fprintf(&builder, "  circuit reason: %s\n", governor.CircuitReason)
+		fmt.Fprintf(&builder, "  circuit: %s\n", governorState.CircuitState)
+		if governorState.CircuitReason != "" {
+			fmt.Fprintf(&builder, "  circuit reason: %s\n", governorState.CircuitReason)
 		}
-		if governor.TelemetryUnsafe {
+		if governorState.TelemetryUnsafe {
 			builder.WriteString("  telemetry: unsafe (conservative accounting is active)\n")
 		}
 	}
@@ -590,40 +605,55 @@ func (s *Store) loadInspectApprovals(ctx context.Context, taskID string) ([]insp
 }
 
 type inspectGovernor struct {
-	AccountPolicyID   string
-	ProviderID        string
-	ModelPool         string
-	Rolling3h         int
-	Rolling1h         int
-	Rolling10m        int
-	Rolling3hCeiling  int
-	Rolling1hCeiling  int
-	Rolling10mCeiling int
-	TaskUsed          int
-	TaskCeiling       int
-	CooldownUntil     string
-	CircuitState      string
-	CircuitReason     string
-	TelemetryUnsafe   bool
+	AccountPolicyID        string
+	ProviderID             string
+	ModelPool              string
+	AllowanceProfile       string
+	AllowanceKind          governor.AllowanceKind
+	Rolling3h              int
+	Rolling1h              int
+	Rolling10m             int
+	Rolling3hCeiling       int
+	Rolling1hCeiling       int
+	Rolling10mCeiling      int
+	TaskUsed               int
+	TaskCeiling            int
+	RetryCeiling           int
+	ManualReserve          int
+	ManualReserveRemaining int
+	CooldownUntil          string
+	CircuitState           string
+	CircuitReason          string
+	TelemetryUnsafe        bool
 }
 
 func (s *Store) loadInspectGovernor(ctx context.Context, taskID string) (*inspectGovernor, error) {
-	var governor inspectGovernor
-	var cooldown string
+	var info inspectGovernor
+	var cooldown, allowanceProfile string
+	var telemetryAvailable sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT account_policy_id, provider_id, model_pool, cooldown_until, circuit_state, circuit_reason, telemetry_unsafe,
-		        rolling_3h_ceiling, rolling_1h_ceiling, rolling_10m_ceiling, task_budget_ceiling
+		`SELECT account_policy_id, provider_id, model_pool, allowance_profile, cooldown_until, circuit_state,
+		        circuit_reason, telemetry_unsafe, telemetry_available,
+		        rolling_3h_ceiling, rolling_1h_ceiling, rolling_10m_ceiling, task_budget_ceiling,
+		        retry_budget_ceiling, manual_reserve_ceiling
 		 FROM governor_state WHERE id = 1`).Scan(
-		&governor.AccountPolicyID, &governor.ProviderID, &governor.ModelPool, &cooldown,
-		&governor.CircuitState, &governor.CircuitReason, &governor.TelemetryUnsafe,
-		&governor.Rolling3hCeiling, &governor.Rolling1hCeiling, &governor.Rolling10mCeiling, &governor.TaskCeiling)
+		&info.AccountPolicyID, &info.ProviderID, &info.ModelPool, &allowanceProfile, &cooldown,
+		&info.CircuitState, &info.CircuitReason, &info.TelemetryUnsafe, &telemetryAvailable,
+		&info.Rolling3hCeiling, &info.Rolling1hCeiling, &info.Rolling10mCeiling, &info.TaskCeiling,
+		&info.RetryCeiling, &info.ManualReserve)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("load governor state: %w", err)
 	}
-	governor.CooldownUntil = cooldown
+	info.AllowanceProfile = allowanceProfile
+	info.AllowanceKind = governor.AllowanceKindForProfile(governor.AllowanceProfile(allowanceProfile))
+	info.CooldownUntil = cooldown
+	info.ManualReserveRemaining = info.ManualReserve
+	if telemetryAvailable.Valid && int(telemetryAvailable.Int64) < info.ManualReserveRemaining {
+		info.ManualReserveRemaining = int(telemetryAvailable.Int64)
+	}
 	now := s.clock.Now()
 	var ledgerRaw sql.NullString
 	if err := s.db.QueryRowContext(ctx,
@@ -636,22 +666,22 @@ func (s *Store) loadInspectGovernor(ctx context.Context, taskID string) (*inspec
 			continue
 		}
 		if now.Sub(at) <= 3*time.Hour {
-			governor.Rolling3h++
+			info.Rolling3h++
 		}
 		if now.Sub(at) <= time.Hour {
-			governor.Rolling1h++
+			info.Rolling1h++
 		}
 		if now.Sub(at) <= 10*time.Minute {
-			governor.Rolling10m++
+			info.Rolling10m++
 		}
 	}
 	// The inspected task's own attempt usage, not the number of tasks the
 	// governor has retained.
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT attempts FROM governor_task_states WHERE task_id = ?`, taskID).Scan(&governor.TaskUsed); err != nil && err != sql.ErrNoRows {
+		`SELECT attempts FROM governor_task_states WHERE task_id = ?`, taskID).Scan(&info.TaskUsed); err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("load governor task usage: %w", err)
 	}
-	return &governor, nil
+	return &info, nil
 }
 
 // renderConfig parses the sanitized configuration snapshot into stable lines.

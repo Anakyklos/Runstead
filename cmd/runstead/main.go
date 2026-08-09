@@ -82,6 +82,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	timeBudget := ""
 	providerBudget := 0
 	minStartInterval := ""
+	allowanceProfile := ""
 	omniBaseURL := ""
 	omniManagementBaseURL := ""
 	omniAPIKey := ""
@@ -111,6 +112,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	flags.StringVar(&timeBudget, "time-budget", "", "elapsed task time budget (RUNSTEAD_TIME_BUDGET, default 10m)")
 	flags.IntVar(&providerBudget, "provider-budget", 0, "governed provider attempts per task (RUNSTEAD_PROVIDER_BUDGET, default 80)")
 	flags.StringVar(&minStartInterval, "min-start-interval", "", "account governor start-to-start pacing (RUNSTEAD_MIN_START_INTERVAL, default 5s)")
+	flags.StringVar(&allowanceProfile, "allowance-profile", "", "explicit account allowance profile: plus_go_instant (default), luna_unlimited_text or unknown (RUNSTEAD_ALLOWANCE_PROFILE)")
 	flags.StringVar(&omniBaseURL, "omniroute-base-url", "", "OmniRoute base URL (OMNIROUTE_BASE_URL)")
 	flags.StringVar(&omniManagementBaseURL, "omniroute-management-base-url", "", "OmniRoute management URL (OMNIROUTE_MANAGEMENT_BASE_URL)")
 	flags.StringVar(&omniAPIKey, "omniroute-api-key", "", "OmniRoute API key (OMNIROUTE_API_KEY)")
@@ -206,7 +208,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return exitUnavailable
 	}
 
-	accountConfig, err := resolveGovernorConfig(scriptedSet, cfg, minStartInterval, flagWasSet(flags, "min-start-interval"))
+	accountConfig, err := resolveGovernorConfig(scriptedSet, cfg, minStartInterval, flagWasSet(flags, "min-start-interval"), allowanceProfile, flagWasSet(flags, "allowance-profile"))
 	if err != nil {
 		fmt.Fprintf(errOut, "run: %v\n", err)
 		return exitUsage
@@ -589,7 +591,14 @@ func resolveLimits(flags *flag.FlagSet, maxSteps, maxCorrections, maxRepeatedAct
 	return limits, nil
 }
 
-func resolveGovernorConfig(scripted bool, cfg config.Config, minStartInterval string, intervalSet bool) (governor.Config, error) {
+// resolveGovernorConfig builds the account governor policy for `run`. The
+// allowance profile is explicit operator configuration (issue #58): it is
+// never inferred from model naming or from request success. The default is
+// the historical PlusGoInstant published-quota profile. Reasoning is not
+// selectable here because it requires explicit rolling ceilings that the CLI
+// does not expose; an operator needing it must configure the governor
+// directly.
+func resolveGovernorConfig(scripted bool, cfg config.Config, minStartInterval string, intervalSet bool, allowanceProfile string, profileSet bool) (governor.Config, error) {
 	providerID := "scripted"
 	model := "scripted"
 	safety := provider.SafeRouteSafety()
@@ -601,7 +610,23 @@ func resolveGovernorConfig(scripted bool, cfg config.Config, minStartInterval st
 		model = cfg.OmniRoute.Model
 		safety = cfg.OmniRoute.RouteSafety
 	}
-	accountConfig := governor.DefaultInstantConfig("runstead-cli", providerID, "instant", safety)
+	if !profileSet {
+		allowanceProfile = os.Getenv(config.EnvAllowanceProfile)
+		profileSet = strings.TrimSpace(allowanceProfile) != ""
+	}
+	var accountConfig governor.Config
+	switch strings.TrimSpace(allowanceProfile) {
+	case "", string(governor.ProfileInstant):
+		accountConfig = governor.DefaultInstantConfig("runstead-cli", providerID, "instant", safety)
+	case string(governor.ProfileLunaUnlimitedText):
+		accountConfig = governor.DefaultLunaUnlimitedTextConfig("runstead-cli", providerID, "instant", safety)
+	case string(governor.ProfileUnknown):
+		accountConfig = governor.DefaultUnknownConfig("runstead-cli", providerID, "instant", safety)
+	case string(governor.ProfileReasoning):
+		return governor.Config{}, fmt.Errorf("allowance profile %q requires explicit rolling ceilings that the CLI does not expose", governor.ProfileReasoning)
+	default:
+		return governor.Config{}, fmt.Errorf("unsupported allowance profile %q", allowanceProfile)
+	}
 	accountConfig.Model = model
 	if intervalSet {
 		interval, err := time.ParseDuration(strings.TrimSpace(minStartInterval))
@@ -1014,6 +1039,7 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --time-budget DURATION    elapsed task time budget (default 10m)")
 	fmt.Fprintln(out, "  --provider-budget N       governed provider attempts per task (default 80)")
 	fmt.Fprintln(out, "  --min-start-interval DURATION  account governor pacing (default 5s)")
+	fmt.Fprintln(out, "  --allowance-profile PROFILE  explicit account allowance profile: plus_go_instant (default), luna_unlimited_text or unknown (RUNSTEAD_ALLOWANCE_PROFILE)")
 	fmt.Fprintln(out, "  --omniroute-base-url URL             base URL (OMNIROUTE_BASE_URL)")
 	fmt.Fprintln(out, "  --omniroute-management-base-url URL  management URL (OMNIROUTE_MANAGEMENT_BASE_URL)")
 	fmt.Fprintln(out, "  --omniroute-api-key KEY              API key (OMNIROUTE_API_KEY)")

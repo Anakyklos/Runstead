@@ -26,6 +26,52 @@ protection has priority over task latency.
   account policy.
 - A **model pool** is the configured allowance bucket, such as Plus/Go Instant
   or a separate reasoning pool.
+- An **allowance kind** (#58) is the typed upstream allowance semantic:
+  `published_quota`, `unlimited_text` or `unknown`. It answers "does the
+  upstream surface publish a numeric text allowance?" and is independent from
+  Runstead-local workload controls, which are always active.
+- A **profile** is the historical allowance identifier (`plus_go_instant`,
+  `reasoning`, `unknown`, `luna_unlimited_text`) that maps to exactly one
+  allowance kind and is what the durable projection stores.
+
+## Two independent layers
+
+The governor separates two concerns that must never be conflated:
+
+1. **Upstream allowance policy**: optional numeric rolling quotas and a
+   profile-specific manual reserve, applied only when the upstream publishes
+   or exposes a numeric text allowance (`published_quota`).
+2. **Account-safety/workload policy**: always-active serialization
+   (`max_in_flight = 1`), start-to-start pacing, per-task attempt budgets,
+   retry budgets, bounded queue/fairness, cooldown handling, rate/capacity
+   handling, circuit breakers, authentication/challenge/security fail-closed
+   behavior, authoritative attempt-receipt accounting, hidden-amplification
+   protection and durable governor state.
+
+A model advertised as unlimited text may omit the first layer; it never omits
+the second. A numeric allowance is not account safety, and "unlimited" is not
+"ungoverned".
+
+## Allowance kinds
+
+| Kind | Meaning | Numeric rolling quota | Manual reserve |
+| --- | --- | --- | --- |
+| `published_quota` | Upstream publishes/exposes a numeric text allowance | Enforced (must be positive, 10m < 1h < 3h) | Profile-specific; never consumed automatically |
+| `unlimited_text` | Explicitly configured (or observed through trustworthy evidence) unlimited text | Absent; fabricating one fails validation | Absent; configuring one fails validation |
+| `unknown` | No evidence either way | Absent; fabricating one fails validation | Absent; configuring one fails validation |
+
+`plus_go_instant` and `reasoning` are `published_quota` profiles.
+`luna_unlimited_text` is the explicit unlimited-text profile.
+`unknown` is the no-evidence profile and must never silently become unlimited
+because requests keep succeeding: admission stays governed by the local
+workload layer, and success never upgrades the allowance semantic.
+
+The allowance kind is derived from the persisted profile on restore, so legacy
+projections survive without a schema migration. Changing the allowance kind
+between runs never resets the durable rolling ledger, task attempts, retry
+accounting, circuit state, cooldown state, receipt-replay protection or
+safety/unsafe telemetry state: the configured policy is authoritative for
+admission, and the durable accounting carries over unchanged.
 
 ## Profiles and budgets
 
@@ -37,25 +83,71 @@ per task, queue capacity 16, a five-second minimum start-to-start interval and
 one request in flight. These are Runstead ceilings, not limits approved or
 guaranteed by OpenAI.
 
-`Reasoning` and `Unknown` profiles do not inherit the Instant numbers. They
-require explicit local rolling ceilings and an explicit manual reserve, keep a
-separate model-pool ledger, and can use remaining/reset telemetry when it is
-available. Successful recent calls never raise a local hard ceiling. The
-manual reserve is tracked separately from automated consumption and is only
-spent when the configured policy explicitly changes it.
+`Reasoning` is a separate `published_quota` profile: it requires explicit
+local rolling ceilings and an explicit manual reserve, keeps a separate
+model-pool ledger, and can use remaining/reset telemetry when it is available.
+Successful recent calls never raise a local hard ceiling. The manual reserve
+is tracked separately from automated consumption and is only spent when the
+configured policy explicitly changes it.
+
+`LunaUnlimitedText` is the explicit unlimited-text profile (#58). It has no
+invented 160/3h rolling quota and no inherited 20-message manual reserve.
+"Unlimited text" means no known numeric upstream text-message quota; it never
+means unlimited Runstead execution, and it does not make ChatGPT Web an
+API-equivalent service. The profile becomes active only through explicit
+operator configuration (`--allowance-profile luna_unlimited_text` or
+`RUNSTEAD_ALLOWANCE_PROFILE`) or trustworthy observed/configured evidence as
+required by #58. Model naming alone is never evidence: a model called
+"unlimited" or "Luna" does not activate the profile, and no account is probed
+to discover limits. Live rollout verification is an opt-in manual procedure
+(see below) that never intentionally drives the account into a restriction.
+
+`Unknown` is the no-evidence profile. It carries no numeric allowance and no
+reserve; local workload controls remain fully active, and observed
+rate/capacity/cooldown/reset telemetry still constrains admission. Repeated
+successful calls never promote Unknown to unlimited or fabricate a quota.
 
 Rolling ledgers use event timestamps and expire events relative to the current
 time; they are not clock-aligned buckets. Local ceilings remain effective when
 telemetry is absent or fails. Telemetry may reduce admission, but cannot make
 it more permissive without an explicit configuration change.
 
-For automated admission, the allowance headroom is the strictest known
-constraint after preserving the reserve:
+For automated admission under a `published_quota` allowance, the headroom is
+the strictest known constraint after preserving the reserve:
 `min(local allowance remaining, trusted upstream remaining - manual_reserve)`.
 The Instant local ceiling of 140 already represents the automated portion of
 the published 160-message family, so the reserve is not subtracted a second
 time from that rolling ledger. The 10-minute and 1-hour burst guards remain
-independent local windows.
+independent local windows. Under `unlimited_text` and `unknown` no reserve is
+subtracted, because there is no shared numeric allowance for a reserve to
+protect; an observed remaining counter is a restriction-only signal where it
+applies (`published_quota` and `unknown`) and is deliberately not a
+text-allowance signal under `unlimited_text`, while `Retry-After`, cooldown,
+rate-limited, capacity-exhausted and explicit-reset signals remain
+authoritative under every kind.
+
+## Opt-in live observation procedure
+
+The announced Luna unlimited-text rollout is an upstream product transition
+whose operational behavior must be measured, not assumed. Activating
+`luna_unlimited_text` is opt-in and requires the operator to first collect
+sanitized evidence that distinguishes:
+
+- Luna actually being the model used by the configured ChatGPT Web route;
+- plain text turns from file/image/tool-backed turns;
+- absence of the old fixed text-message allowance for the account/plan under
+  test;
+- rate/capacity or temporary restriction signals that still occur under
+  "unlimited" text;
+- whether remaining/reset telemetry disappears, changes shape or remains
+  useful;
+- whether Free and Go behave differently despite sharing the announcement.
+
+This procedure is manual and disabled by default. It must never probe limits
+by intentionally driving the account until a restriction occurs, and it must
+never be automated into a calibration loop. If the upstream behavior cannot be
+identified reliably, keep the profile `unknown` or explicitly configured and
+fail closed rather than guessing.
 
 ## Governor flow
 
@@ -156,6 +248,18 @@ times take precedence over local jittered backoff. Without authoritative
 guidance, the recorded backoff sequence is 15s, 30s, 60s and 120s with
 injectable jitter whose baseline is a floor; selecting a backoff never performs
 a retry.
+
+Missing numeric remaining counters on an unlimited-text profile are never
+interpreted as infinite positive telemetry: they are simply not a numeric text
+allowance signal. Where the dashboard still exposes a remaining counter under
+unlimited text, it is tracked for observability but does not gate text
+admission; under `published_quota` and `unknown` an observed remaining counter
+can only restrict admission, never expand it. Malformed or unavailable
+telemetry still returns an unhealthy source signal and fails closed exactly as
+before. A product allowance (including an advertised "unlimited" one) is never
+an API authorization: it does not permit bypassing provider safeguards and
+does not remove provider-risk or terms considerations, and Runstead does not
+use ChatGPT Web as a resale or general public API.
 
 The circuit has explicit `closed`, `open_until` and
 `human_review_required` states. Authentication denial, HTTP 403 equivalents,

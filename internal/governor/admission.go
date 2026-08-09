@@ -329,8 +329,11 @@ func (g *Governor) checkLocked(now time.Time, request AttemptRequest) admissionC
 		}
 		return admissionCheck{code: AdmissionUpstreamAllowanceExhausted}
 	}
-	if g.telemetry.available != nil {
-		available := *g.telemetry.available - g.config.ManualReserve
+	if g.telemetry.available != nil && g.remainingSignalApplies() {
+		available := *g.telemetry.available
+		if g.manualReserveApplies() {
+			available -= g.config.ManualReserve
+		}
 		if available <= 0 {
 			if g.telemetry.resetAt.After(now) {
 				return admissionCheck{code: AdmissionUpstreamAllowanceExhausted, until: g.telemetry.resetAt, delayed: true}
@@ -345,14 +348,16 @@ func (g *Governor) checkLocked(now time.Time, request AttemptRequest) admissionC
 	if request.Retry && state.retries >= g.config.RetryBudget {
 		return admissionCheck{code: AdmissionRetryBudgetExhausted}
 	}
-	if next := g.ledger.next(now, 3*time.Hour, g.config.Rolling3h); !next.IsZero() {
-		return admissionCheck{code: AdmissionRollingBudgetExhausted, until: next, delayed: true}
-	}
-	if next := g.ledger.next(now, time.Hour, g.config.Rolling1h); !next.IsZero() {
-		return admissionCheck{code: AdmissionRollingBudgetExhausted, until: next, delayed: true}
-	}
-	if next := g.ledger.next(now, 10*time.Minute, g.config.Rolling10m); !next.IsZero() {
-		return admissionCheck{code: AdmissionRollingBudgetExhausted, until: next, delayed: true}
+	if g.rollingBudgetsApply() {
+		if next := g.ledger.next(now, 3*time.Hour, g.config.Rolling3h); !next.IsZero() {
+			return admissionCheck{code: AdmissionRollingBudgetExhausted, until: next, delayed: true}
+		}
+		if next := g.ledger.next(now, time.Hour, g.config.Rolling1h); !next.IsZero() {
+			return admissionCheck{code: AdmissionRollingBudgetExhausted, until: next, delayed: true}
+		}
+		if next := g.ledger.next(now, 10*time.Minute, g.config.Rolling10m); !next.IsZero() {
+			return admissionCheck{code: AdmissionRollingBudgetExhausted, until: next, delayed: true}
+		}
 	}
 	if !g.lastStart.IsZero() {
 		next := g.lastStart.Add(g.config.MinimumStartInterval)
@@ -361,6 +366,35 @@ func (g *Governor) checkLocked(now time.Time, request AttemptRequest) admissionC
 		}
 	}
 	return admissionCheck{}
+}
+
+// numericAllowanceApplies reports whether the active allowance policy carries
+// a published numeric rolling quota (#58). Rolling admission checks and the
+// manual reserve are only meaningful for that kind.
+func (g *Governor) numericAllowanceApplies() bool {
+	return g.config.AllowanceKind == AllowanceKindPublishedQuota
+}
+
+// rollingBudgetsApply is the admission gate for the numeric rolling windows:
+// they execute only when a published numeric allowance is applicable.
+func (g *Governor) rollingBudgetsApply() bool {
+	return g.numericAllowanceApplies()
+}
+
+// manualReserveApplies reports whether a manual reserve is subtracted from
+// observed upstream remaining. The reserve protects a shared numeric
+// allowance; it is never fabricated for unlimited-text or unknown policies.
+func (g *Governor) manualReserveApplies() bool {
+	return g.numericAllowanceApplies()
+}
+
+// remainingSignalApplies reports whether an observed upstream remaining
+// counter is a text-allowance signal. Under unlimited text the counter is not
+// a numeric text allowance signal, so it never gates admission; it is still
+// tracked for observability. For published-quota and unknown policies an
+// observed remaining counter can only restrict admission, never expand it.
+func (g *Governor) remainingSignalApplies() bool {
+	return g.config.AllowanceKind != AllowanceKindUnlimitedText
 }
 
 func (g *Governor) nextAvailableLocked(now time.Time) time.Time {

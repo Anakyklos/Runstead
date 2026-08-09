@@ -15,21 +15,86 @@ import (
 type AllowanceProfile string
 
 const (
-	AllowanceProfileInstant   AllowanceProfile = "plus_go_instant"
-	AllowanceProfileReasoning AllowanceProfile = "reasoning"
-	AllowanceProfileUnknown   AllowanceProfile = "unknown"
+	AllowanceProfileInstant           AllowanceProfile = "plus_go_instant"
+	AllowanceProfileReasoning         AllowanceProfile = "reasoning"
+	AllowanceProfileUnknown           AllowanceProfile = "unknown"
+	AllowanceProfileLunaUnlimitedText AllowanceProfile = "luna_unlimited_text"
 	// Short aliases keep call sites readable without introducing another type.
-	ProfileInstant   = AllowanceProfileInstant
-	ProfileReasoning = AllowanceProfileReasoning
-	ProfileUnknown   = AllowanceProfileUnknown
+	ProfileInstant           = AllowanceProfileInstant
+	ProfileReasoning         = AllowanceProfileReasoning
+	ProfileUnknown           = AllowanceProfileUnknown
+	ProfileLunaUnlimitedText = AllowanceProfileLunaUnlimitedText
 )
 
+// AllowanceKind is the typed upstream allowance semantic (#58). It answers
+// "does the configured/observed upstream surface publish a numeric text
+// allowance?" independently of the historical profile identifier and of
+// Runstead-local workload ceilings (task budgets, pacing, circuits, cooldown),
+// which remain active for every kind.
+type AllowanceKind string
+
+const (
+	// AllowanceKindPublishedQuota means the upstream publishes or exposes a
+	// numeric rolling text allowance. Rolling ceilings and a manual reserve
+	// are meaningful and enforced.
+	AllowanceKindPublishedQuota AllowanceKind = "published_quota"
+	// AllowanceKindUnlimitedText means the account/plan is explicitly
+	// configured (or observed through trustworthy evidence) as unlimited
+	// text. There is no fabricated numeric rolling quota and no shared
+	// numeric allowance to protect with a manual reserve. Runstead-local
+	// workload controls and fail-closed security behavior remain active.
+	AllowanceKindUnlimitedText AllowanceKind = "unlimited_text"
+	// AllowanceKindUnknown means there is no evidence either way: no numeric
+	// allowance and no confirmed unlimited contract. Unknown must never
+	// silently become unlimited because requests keep succeeding; admission
+	// stays governed by the local workload controls.
+	AllowanceKindUnknown AllowanceKind = "unknown"
+)
+
+// AllowanceKindForProfile maps the historical profile identifier to its typed
+// allowance semantic. The mapping is fixed so a persisted profile survives
+// restarts and legacy rows without a schema migration.
+func AllowanceKindForProfile(profile AllowanceProfile) AllowanceKind {
+	switch profile {
+	case AllowanceProfileInstant, AllowanceProfileReasoning:
+		return AllowanceKindPublishedQuota
+	case AllowanceProfileLunaUnlimitedText:
+		return AllowanceKindUnlimitedText
+	case AllowanceProfileUnknown:
+		return AllowanceKindUnknown
+	default:
+		return ""
+	}
+}
+
+func (k AllowanceKind) Valid() bool {
+	switch k {
+	case AllowanceKindPublishedQuota, AllowanceKindUnlimitedText, AllowanceKindUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// EffectiveAllowanceKind returns the explicit kind when configured and the
+// profile-derived kind otherwise. It is only meaningful after Validate.
+func (c Config) EffectiveAllowanceKind() AllowanceKind {
+	if c.AllowanceKind.Valid() {
+		return c.AllowanceKind
+	}
+	return AllowanceKindForProfile(c.AllowanceProfile)
+}
+
 type Config struct {
-	AccountPolicyID        string
-	ProviderID             string
-	ModelPool              string
-	Model                  string
-	AllowanceProfile       AllowanceProfile
+	AccountPolicyID  string
+	ProviderID       string
+	ModelPool        string
+	Model            string
+	AllowanceProfile AllowanceProfile
+	// AllowanceKind is the typed upstream allowance semantic (#58). When
+	// empty, Validate derives it from AllowanceProfile. When set, it must
+	// match the profile-derived kind.
+	AllowanceKind          AllowanceKind
 	Rolling3h              int
 	ManualReserve          int
 	Rolling1h              int
@@ -57,6 +122,7 @@ func DefaultInstantConfig(accountPolicyID, providerID, modelPool string, safety 
 		ProviderID:            providerID,
 		ModelPool:             modelPool,
 		AllowanceProfile:      AllowanceProfileInstant,
+		AllowanceKind:         AllowanceKindPublishedQuota,
 		Rolling3h:             140,
 		ManualReserve:         20,
 		Rolling1h:             80,
@@ -76,6 +142,39 @@ func DefaultInstantConfig(accountPolicyID, providerID, modelPool string, safety 
 	}
 }
 
+// DefaultLunaUnlimitedTextConfig is the explicit unlimited-text allowance
+// policy (#58). It carries no fabricated numeric rolling quota and no manual
+// reserve: unlimited text means no known numeric upstream text-message quota,
+// never ungoverned Runstead execution. All local workload controls (serial
+// lane, pacing, task/retry budgets, queue/fairness, cooldown, circuits,
+// fail-closed security and attempt receipts) stay exactly as strict as the
+// Instant policy.
+func DefaultLunaUnlimitedTextConfig(accountPolicyID, providerID, modelPool string, safety provider.RouteSafety) Config {
+	config := DefaultInstantConfig(accountPolicyID, providerID, modelPool, safety)
+	config.AllowanceProfile = AllowanceProfileLunaUnlimitedText
+	config.AllowanceKind = AllowanceKindUnlimitedText
+	config.Rolling3h = 0
+	config.Rolling1h = 0
+	config.Rolling10m = 0
+	config.ManualReserve = 0
+	return config
+}
+
+// DefaultUnknownConfig is the no-evidence allowance policy (#58): no numeric
+// allowance is published or configured, and no unlimited contract is claimed.
+// Repeated successful calls never upgrade Unknown to unlimited or to a
+// fabricated quota; the local workload controls remain fully active.
+func DefaultUnknownConfig(accountPolicyID, providerID, modelPool string, safety provider.RouteSafety) Config {
+	config := DefaultInstantConfig(accountPolicyID, providerID, modelPool, safety)
+	config.AllowanceProfile = AllowanceProfileUnknown
+	config.AllowanceKind = AllowanceKindUnknown
+	config.Rolling3h = 0
+	config.Rolling1h = 0
+	config.Rolling10m = 0
+	config.ManualReserve = 0
+	return config
+}
+
 func (c Config) Validate() error {
 	for name, value := range map[string]string{
 		"account policy identifier": c.AccountPolicyID,
@@ -87,18 +186,45 @@ func (c Config) Validate() error {
 		}
 	}
 	switch c.AllowanceProfile {
-	case AllowanceProfileInstant, AllowanceProfileReasoning, AllowanceProfileUnknown:
+	case AllowanceProfileInstant, AllowanceProfileReasoning, AllowanceProfileUnknown, AllowanceProfileLunaUnlimitedText:
 	default:
 		return fmt.Errorf("unsupported allowance profile %q", c.AllowanceProfile)
 	}
-	if c.Rolling3h <= 0 || c.Rolling1h <= 0 || c.Rolling10m <= 0 {
-		return errors.New("rolling ceilings must be positive")
+	kind := c.AllowanceKind
+	if kind == "" {
+		kind = AllowanceKindForProfile(c.AllowanceProfile)
+	} else if !kind.Valid() {
+		return fmt.Errorf("unsupported allowance kind %q", c.AllowanceKind)
+	} else if AllowanceKindForProfile(c.AllowanceProfile) != kind {
+		return fmt.Errorf("allowance kind %q does not match profile %q", c.AllowanceKind, c.AllowanceProfile)
 	}
-	if c.Rolling10m >= c.Rolling1h || c.Rolling1h >= c.Rolling3h {
-		return errors.New("rolling windows require 10m < 1h < 3h ceilings")
-	}
-	if c.ManualReserve < 0 || c.ManualReserve >= c.Rolling3h {
-		return errors.New("manual reserve must be non-negative and below the 3h ceiling")
+	switch kind {
+	case AllowanceKindPublishedQuota:
+		if c.Rolling3h <= 0 || c.Rolling1h <= 0 || c.Rolling10m <= 0 {
+			return errors.New("published-quota allowances require positive rolling ceilings")
+		}
+		if c.Rolling10m >= c.Rolling1h || c.Rolling1h >= c.Rolling3h {
+			return errors.New("rolling windows require 10m < 1h < 3h ceilings")
+		}
+		if c.ManualReserve < 0 || c.ManualReserve >= c.Rolling3h {
+			return errors.New("manual reserve must be non-negative and below the 3h ceiling")
+		}
+	case AllowanceKindUnlimitedText:
+		if c.Rolling3h != 0 || c.Rolling1h != 0 || c.Rolling10m != 0 {
+			return errors.New("unlimited-text allowances must not fabricate numeric rolling ceilings")
+		}
+		if c.ManualReserve != 0 {
+			return errors.New("unlimited-text allowances have no shared numeric allowance to protect with a manual reserve")
+		}
+	case AllowanceKindUnknown:
+		if c.Rolling3h != 0 || c.Rolling1h != 0 || c.Rolling10m != 0 {
+			return errors.New("unknown allowances must not fabricate numeric rolling ceilings without evidence")
+		}
+		if c.ManualReserve != 0 {
+			return errors.New("unknown allowances have no shared numeric allowance to protect with a manual reserve")
+		}
+	default:
+		return fmt.Errorf("unsupported allowance kind %q", kind)
 	}
 	if c.TaskBudget <= 0 || c.RetryBudget < 0 || c.QueueCapacity <= 0 || c.FairnessQuantum <= 0 {
 		return errors.New("task, queue and fairness budgets are invalid")
@@ -343,6 +469,7 @@ type Event struct {
 	ModelPool             string
 	Model                 string
 	AllowanceProfile      AllowanceProfile
+	AllowanceKind         AllowanceKind
 	TaskID                string
 	ClientRequestID       string
 	AttemptSequence       int
@@ -383,6 +510,7 @@ type Snapshot struct {
 	ModelPool          string
 	Model              string
 	AllowanceProfile   AllowanceProfile
+	AllowanceKind      AllowanceKind
 	InFlight           bool
 	QueueLength        int
 	NextAttempt        int
