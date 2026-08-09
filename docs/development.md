@@ -368,13 +368,21 @@ Every loop exit is a typed `agent.Outcome` with one stable process exit code:
 | `final_not_grounded` | 27 |
 | `provider_failure` | 28 |
 | `final_incomplete` | 29 |
+| `persistence_failure` | 31 |
+| `approval_required` | 32 |
+| `verification_blocked` | 33 |
+| `consecutive_failures_exhausted` | 34 |
+| `verification_failures_exhausted` | 35 |
 | `canceled` | 130 |
 
 The mapping is centralized in `agent.Outcome.ExitCode`. `canceled` follows the
 shell convention; the remaining outcomes start at 20 so CLI usage errors (2) and
 unavailable paths (3) stay distinct. Provider failures preserve the concrete
 governor classification (`rate_or_capacity`, `authentication_denied`, ...) in
-the stop reason.
+the stop reason. The #12 guard outcomes (`consecutive_failures_exhausted`,
+`verification_failures_exhausted`) stop loops that keep producing distinct
+failing observations or repeated premature completion proposals with a typed
+reason; each counted failure already consumed a normal model/tool turn.
 
 ### Trace
 
