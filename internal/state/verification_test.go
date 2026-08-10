@@ -329,7 +329,7 @@ func TestRenderFinalShowsAuthoritativeProjection(t *testing.T) {
 		"verifier: passed",
 		"check=tests-pass type=recipe_exit_zero status=passed",
 		"obs-000001 tool=run_recipe",
-		"recipe=test evidence=obs-000001 exit=0",
+		"recipe=test exit=0 evidence=obs-000001",
 		"during-task changes: app/calc.go ( M)",
 		"Git diff (bounded):",
 	} {

@@ -688,8 +688,8 @@ func renderProcessEvidence(builder *strings.Builder, items []inspectProcessEvide
 		return
 	}
 	for _, item := range items {
-		fmt.Fprintf(builder, "  %s execution=%s recipe=%s evidence=%s exit=%d truncated=stdout:%t/stderr:%t",
-			item.CreatedAt, item.ExecutionID, item.RecipeID, item.EvidenceID, item.ExitCode,
+		fmt.Fprintf(builder, "  %s execution=%s recipe=%s exit=%d evidence=%s truncated=stdout:%t/stderr:%t",
+			item.CreatedAt, item.ExecutionID, item.RecipeID, item.ExitCode, item.EvidenceID,
 			item.StdoutTruncated, item.StderrTruncated)
 		if item.Signal != "" {
 			fmt.Fprintf(builder, " signal=%s", item.Signal)
