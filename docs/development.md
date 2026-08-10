@@ -79,7 +79,9 @@ Only the target repository selected for a run should be mounted. Do not mount th
 
 The project-owned `Dockerfile.dev` is the reproducible development image. It
 uses Go `1.22.2`, installs Git, curl, jq, ripgrep, SQLite CLI, CA certificates,
-Bash and GCC, and runs as the non-root `runstead` user.
+Bash and GCC, and runs as the non-root `runstead` user. The Compose service also
+enables Docker's minimal init process so orphaned subprocesses are reaped while
+keeping the same non-root, capability-drop and namespace restrictions.
 
 On Linux, build with the host IDs so files created in the `/workspace` bind mount
 remain owned by the host user:
