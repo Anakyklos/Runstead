@@ -405,7 +405,9 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	logger.InfoContext(ctx, "resume continued", "task_id", taskID, "provider", "scripted", "workspace", workspacePath)
 	fmt.Fprintf(errOut, "resume: task %s continuing\n", taskID)
 	result := loop.Run(ctx, agent.Task{ID: taskID, Prompt: ""})
-	printResult(out, errOut, taskID, result)
+	if err := printFinalRuntimeResult(ctx, out, errOut, store, taskID, result, "resume"); err != nil {
+		return exitUnavailable
+	}
 	return result.Outcome.ExitCode()
 }
 

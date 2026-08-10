@@ -322,7 +322,9 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	logger.InfoContext(ctx, "run started", "task_id", taskID, "provider", "scripted", "workspace", cfg.Workspace)
 	fmt.Fprintf(errOut, "task: %s\n", taskID)
 	result := loop.Run(ctx, agent.Task{ID: taskID, Prompt: taskPrompt})
-	printResult(out, errOut, taskID, result)
+	if err := printFinalRuntimeResult(ctx, out, errOut, store, taskID, result, "run"); err != nil {
+		return exitUnavailable
+	}
 	return result.Outcome.ExitCode()
 }
 
@@ -677,6 +679,22 @@ func printResult(out, errOut io.Writer, taskID string, result agent.Result) {
 	if result.Classification != "" {
 		fmt.Fprintf(errOut, "run: classification=%s\n", result.Classification)
 	}
+}
+
+// printFinalRuntimeResult keeps the typed loop result and the model note
+// separate from the completion projection. The latter is loaded from durable
+// state only after a completed outcome and independently validates the
+// persisted task/verifier state before rendering.
+func printFinalRuntimeResult(ctx context.Context, out, errOut io.Writer, store *state.Store, taskID string, result agent.Result, command string) error {
+	printResult(out, errOut, taskID, result)
+	if result.Outcome != agent.OutcomeCompleted {
+		return nil
+	}
+	if err := store.RenderFinal(ctx, out, taskID); err != nil {
+		fmt.Fprintf(errOut, "%s: verified final output unavailable: %v\n", command, err)
+		return err
+	}
+	return nil
 }
 
 func cliTraceSink(errOut io.Writer) agent.TraceSink {
