@@ -1,0 +1,76 @@
+FROM golang:1.22.2-bookworm
+
+ARG RUNSTEAD_UID=1000
+ARG RUNSTEAD_GID=1000
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      bash \
+      ca-certificates \
+      curl \
+      gcc \
+      git \
+      jq \
+      passwd \
+      ripgrep \
+      sqlite3; \
+    rm -rf /var/lib/apt/lists/*; \
+    case "$RUNSTEAD_UID" in \
+      ''|*[!0-9]*) echo 'RUNSTEAD_UID must be a positive integer' >&2; exit 1 ;; \
+    esac; \
+    case "$RUNSTEAD_GID" in \
+      ''|*[!0-9]*) echo 'RUNSTEAD_GID must be a positive integer' >&2; exit 1 ;; \
+    esac; \
+    if [ "$RUNSTEAD_UID" -eq 0 ] || [ "$RUNSTEAD_GID" -eq 0 ]; then \
+      echo 'RUNSTEAD_UID and RUNSTEAD_GID must be non-zero' >&2; \
+      exit 1; \
+    fi; \
+    if getent passwd runstead >/dev/null; then \
+      existing_uid="$(getent passwd runstead | cut -d: -f3)"; \
+      existing_gid="$(getent passwd runstead | cut -d: -f4)"; \
+      if [ "$existing_uid" != "$RUNSTEAD_UID" ] || [ "$existing_gid" != "$RUNSTEAD_GID" ]; then \
+        echo "runstead already exists with UID:GID $existing_uid:$existing_gid" >&2; \
+        exit 1; \
+      fi; \
+      runstead_group=runstead; \
+    else \
+      if getent passwd "$RUNSTEAD_UID" >/dev/null; then \
+        echo "requested UID $RUNSTEAD_UID is already used by another image user" >&2; \
+        exit 1; \
+      fi; \
+      if getent group runstead >/dev/null; then \
+        existing_group_gid="$(getent group runstead | cut -d: -f3)"; \
+        if [ "$existing_group_gid" != "$RUNSTEAD_GID" ]; then \
+          echo "runstead group already exists with GID $existing_group_gid" >&2; \
+          exit 1; \
+        fi; \
+        runstead_group=runstead; \
+      elif getent group "$RUNSTEAD_GID" >/dev/null; then \
+        runstead_group="$(getent group "$RUNSTEAD_GID" | cut -d: -f1)"; \
+      else \
+        groupadd --gid "$RUNSTEAD_GID" runstead; \
+        runstead_group=runstead; \
+      fi; \
+      useradd \
+        --uid "$RUNSTEAD_UID" \
+        --gid "$runstead_group" \
+        --create-home \
+        --shell /bin/bash \
+        runstead; \
+    fi; \
+    install -d -o "$RUNSTEAD_UID" -g "$RUNSTEAD_GID" \
+      /workspace \
+      /target \
+      /go/pkg/mod \
+      /home/runstead/.cache/go-build \
+      /home/runstead/.local/share/runstead
+
+ENV HOME=/home/runstead \
+    GOMODCACHE=/go/pkg/mod \
+    GOCACHE=/home/runstead/.cache/go-build \
+    RUNSTEAD_STATE_DIR=/home/runstead/.local/share/runstead
+
+WORKDIR /workspace
+USER runstead
+CMD ["bash"]
