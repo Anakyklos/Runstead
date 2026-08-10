@@ -282,6 +282,11 @@ func loadContractManifest(fsys fs.FS) (contractManifest, error) {
 			return contractManifest{}, fmt.Errorf("management endpoint %q: %w", endpoint, err)
 		}
 	}
+	for endpoint := range contractManagementEndpoints {
+		if _, ok := manifest.ManagementDefaults[endpoint]; !ok {
+			return contractManifest{}, fmt.Errorf("management endpoint %q is missing from manifest defaults", endpoint)
+		}
+	}
 
 	manifestKinds := make(map[ErrorKind]struct{}, len(manifest.ErrorKindInventory))
 	scenariosByName := make(map[string]contractScenario, len(manifest.Scenarios))
@@ -652,6 +657,17 @@ func TestContractManifestRejectsUnknownScenarioReference(t *testing.T) {
 	}`)
 	if _, err := loadContractManifest(os.DirFS(dir)); err == nil {
 		t.Fatal("loadContractManifest() accepted an unknown scenario reference")
+	}
+}
+
+func TestContractManifestRejectsMissingManagementDefault(t *testing.T) {
+	dir := t.TempDir()
+	copyEmbeddedContractFixtures(t, dir)
+	manifest := mustReadContractFixture("manifest.json")
+	manifest = strings.Replace(manifest, "    \"providers\": \"management/providers-safe.json\"\n", "", 1)
+	writeManifest(t, dir, manifest)
+	if _, err := loadContractManifest(os.DirFS(dir)); err == nil {
+		t.Fatal("loadContractManifest() accepted a manifest with missing management defaults")
 	}
 }
 

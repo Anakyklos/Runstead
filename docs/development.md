@@ -134,8 +134,9 @@ request counts in `manifest.json`. Transport-only phenomena such as timeout,
 redirect, connection reset and oversized streams are declared in the manifest;
 they must not be represented by invented response bodies.
 
-Fixtures must contain no credentials, cookies, prompts, emails, personal
-identifiers or captured session values. The Go hygiene test rejects
+Fixtures must contain no credentials, cookies, real prompts, emails, personal
+identifiers or captured session values. Synthetic prompts used by manifest
+scenarios are not account data. The Go hygiene test rejects
 credential-shaped fields and values while allowing semantic codes such as
 `token_expired`. Run `go test ./...` after changing the corpus; the manifest
 inventory test also requires every current adapter `ErrorKind` to be accounted
