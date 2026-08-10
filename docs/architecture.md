@@ -93,7 +93,8 @@ Key consequences for this architecture:
   happens above the executor. (Auxiliary image/handoff recovery paths exist
   upstream but are irrelevant to Runstead's text-only path.) The delivery
   states (`not_sent` / `sent_confirmed` / `sent_unconfirmed` /
-  `response_started` / `completed`) remain the correct unit for idempotency.
+  `response_started` / `completed`) remain the correct transport-evidence unit
+  for replay safety; they do not create an upstream idempotency guarantee.
 - **Usage from this path is estimated** (`ceil(len/4)`), not real.
 - **Rejected practices:** TLS impersonation, browser-fingerprint mimicry in
   Sentinel prekeys, page-load warmup, hard-coded frontend build values without

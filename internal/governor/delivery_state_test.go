@@ -55,6 +55,23 @@ func TestExecuteClassifierCannotFabricateDeliveryState(t *testing.T) {
 	}
 }
 
+func TestAuthoritativeFakeConfirmationCanProduceSentConfirmed(t *testing.T) {
+	accountGovernor, _, _ := instantGovernor(t)
+	client := provider.NewFake(provider.Response{
+		Text:     "response",
+		Metadata: provider.ResponseMetadata{DeliveryState: provider.DeliverySentConfirmed},
+	})
+	result := accountGovernor.Execute(context.Background(), policy.AttemptRequest{
+		TaskID: "task-1", ClientRequestID: "request-1",
+	}, client, nil)
+	if result.Response.Metadata.DeliveryState != provider.DeliverySentConfirmed {
+		t.Fatalf("metadata delivery state = %v, want sent_confirmed", result.Response.Metadata.DeliveryState)
+	}
+	if result.Completion.DeliveryState != provider.DeliverySentConfirmed || result.Completion.Outcome != policy.OutcomeSuccess {
+		t.Fatalf("sent-confirmed completion = %#v, want successful authoritative evidence", result.Completion)
+	}
+}
+
 func TestUnobservedDeliveryRemainsUnobservedButIsConservative(t *testing.T) {
 	governor, _, _ := instantGovernor(t)
 	client := provider.NewFake(provider.Response{Text: "response"})
@@ -177,5 +194,45 @@ func TestDeliveryStateDoesNotSubstituteForMissingReceipts(t *testing.T) {
 	}
 	if !governor.Snapshot().Telemetry.Unsafe {
 		t.Fatal("missing receipt did not keep conservative telemetry unsafe")
+	}
+}
+
+func TestReceiptAwareMissingAndMalformedRemainFailClosed(t *testing.T) {
+	tests := []struct {
+		name   string
+		client func(*fakeClock) deliveryReceiptClient
+	}{
+		{name: "missing", client: func(_ *fakeClock) deliveryReceiptClient {
+			return deliveryReceiptClient{response: provider.Response{
+				Text:     "complete body",
+				Metadata: provider.ResponseMetadata{DeliveryState: provider.DeliveryCompleted},
+			}}
+		}},
+		{name: "malformed", client: func(clock *fakeClock) deliveryReceiptClient {
+			set := receiptSet(clock.Now(), 1)
+			set.Finalized = false
+			return deliveryReceiptClient{response: provider.Response{
+				Text: "complete body",
+				Metadata: provider.ResponseMetadata{
+					DeliveryState:   provider.DeliveryCompleted,
+					AttemptReceipts: &set,
+				},
+			}}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			accountGovernor, clock := receiptGovernor(t, &eventSink{})
+			result := accountGovernor.Execute(context.Background(), policy.AttemptRequest{
+				TaskID: "task-1", ClientRequestID: "request-1", ModelPool: "model",
+				ProviderRequest: provider.Request{Model: "concrete-model"},
+			}, tt.client(clock), nil)
+			if result.Completion.Err == nil || result.Completion.Outcome != policy.OutcomeUncertainReached || result.Completion.RetryEligible {
+				t.Fatalf("%s receipt result = %#v, want conservative no-retry failure", tt.name, result.Completion)
+			}
+			if !accountGovernor.Snapshot().Telemetry.Unsafe {
+				t.Fatalf("%s receipt did not mark telemetry unsafe", tt.name)
+			}
+		})
 	}
 }

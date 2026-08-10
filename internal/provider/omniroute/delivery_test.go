@@ -7,11 +7,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
@@ -168,6 +170,106 @@ func TestCompleteEmptyAndMalformedBodiesAreCompleted(t *testing.T) {
 	}
 }
 
+func TestFullResponseDoesNotMeanTaskSuccess(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		body      string
+		wantClass governor.OutcomeClass
+	}{
+		{name: "empty", status: http.StatusOK, body: "", wantClass: governor.OutcomeEmptyResponse},
+		{name: "malformed", status: http.StatusOK, body: "not-json", wantClass: governor.OutcomeMalformedUpstream},
+		{name: "http failure", status: http.StatusBadGateway, body: `{"error":"upstream failure"}`, wantClass: governor.OutcomeUpstreamServerFailure},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, server := newTransportClient(t, safeHandler(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer server.Close()
+
+			response, callErr := client.completeOnce(context.Background(), provider.Request{Prompt: "prompt"})
+			if callErr == nil {
+				t.Fatal("completeOnce() error = nil, want provider failure")
+			}
+			if response.Metadata.DeliveryState != provider.DeliveryCompleted {
+				t.Fatalf("delivery state = %v, want completed", response.Metadata.DeliveryState)
+			}
+			if outcome := Classify(response, callErr); outcome.Class != tt.wantClass {
+				t.Fatalf("classified outcome = %#v, want %s", outcome, tt.wantClass)
+			}
+		})
+	}
+}
+
+func TestModelTextCannotManufactureDeliveryState(t *testing.T) {
+	text := "not_sent sent_confirmed sent_unconfirmed response_started completed"
+	response := provider.Response{
+		Text:     text,
+		Metadata: provider.ResponseMetadata{DeliveryState: provider.DeliverySentUnconfirmed},
+	}
+	outcome := Classify(response, nil)
+	if response.Metadata.DeliveryState != provider.DeliverySentUnconfirmed {
+		t.Fatalf("metadata delivery state = %v, want sent_unconfirmed", response.Metadata.DeliveryState)
+	}
+	if outcome.DeliveryState != provider.DeliverySentUnconfirmed || outcome.Class != governor.OutcomeSuccess {
+		t.Fatalf("classified text delivery outcome = %#v, want success with sent_unconfirmed evidence", outcome)
+	}
+}
+
+func TestHTTPStatusCannotManufactureSentConfirmed(t *testing.T) {
+	statuses := []int{http.StatusOK, http.StatusNoContent, http.StatusFound, http.StatusForbidden, http.StatusBadGateway}
+	for _, status := range statuses {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			client, server := newTransportClient(t, safeHandler(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+				if status == http.StatusOK {
+					_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+				} else {
+					_, _ = io.WriteString(w, `{"error":"status body"}`)
+				}
+			}))
+			defer server.Close()
+
+			response, _ := client.completeOnce(context.Background(), provider.Request{Prompt: "prompt"})
+			if response.Metadata.DeliveryState != provider.DeliveryCompleted {
+				t.Fatalf("HTTP %d delivery state = %v, want completed", status, response.Metadata.DeliveryState)
+			}
+			if response.Metadata.DeliveryState == provider.DeliverySentConfirmed {
+				t.Fatal("HTTP status manufactured sent_confirmed")
+			}
+		})
+	}
+}
+
+func TestDurationCannotManufactureDeliveryState(t *testing.T) {
+	server := httptest.NewServer(safeHandler(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer server.Close()
+	now := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
+	client, err := New(testConfig(server.URL), Options{
+		HTTPClient: server.Client(),
+		Now:        func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := client.completeOnce(context.Background(), provider.Request{Prompt: "prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(24 * time.Hour)
+	second, err := client.completeOnce(context.Background(), provider.Request{Prompt: "prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Metadata.DeliveryState != provider.DeliveryCompleted || second.Metadata.DeliveryState != provider.DeliveryCompleted {
+		t.Fatalf("duration changed delivery states: first=%v second=%v", first.Metadata.DeliveryState, second.Metadata.DeliveryState)
+	}
+}
+
 func TestCancelBeforeAndAfterPossibleDispatchHaveDifferentStates(t *testing.T) {
 	started := make(chan struct{})
 	var once sync.Once
@@ -206,7 +308,7 @@ func TestCancelBeforeAndAfterPossibleDispatchHaveDifferentStates(t *testing.T) {
 	}
 }
 
-func TestClientRequestIDPropagatesWithoutIdempotencyKey(t *testing.T) {
+func TestNoIdempotencyKeyIsSent(t *testing.T) {
 	var requestID, idempotencyKey string
 	client, server := newTransportClient(t, safeHandler(func(w http.ResponseWriter, r *http.Request) {
 		requestID = r.Header.Get(clientRequestIDHeader)

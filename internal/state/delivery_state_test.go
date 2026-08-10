@@ -84,6 +84,9 @@ func TestProviderDeliveryStateIsRenderedAndLoadedForRecovery(t *testing.T) {
 	mustProviderAttemptPreparedOnly(t, store, "task-1", "request-2", 2)
 
 	output := renderForTest(t, store, "task-1")
+	if second := renderForTest(t, store, "task-1"); second != output {
+		t.Fatal("inspect output changed between identical renders")
+	}
 	if !strings.Contains(output, "delivery_state=completed") {
 		t.Fatalf("inspect output missing completed delivery state:\n%s", output)
 	}
