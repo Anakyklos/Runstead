@@ -156,7 +156,7 @@ func TestInspectRendersProcessAttempts(t *testing.T) {
 		t.Fatalf("RenderInspect() error = %v", err)
 	}
 	rendered := builder.String()
-	if !strings.Contains(rendered, "Process attempts:") || !strings.Contains(rendered, "recipe=test") || !strings.Contains(rendered, "exit=4") || !strings.Contains(rendered, "signal=killed") || !strings.Contains(rendered, "network_isolation=unenforced") {
+	if !strings.Contains(rendered, "Process attempts:") || !strings.Contains(rendered, "recipe=test evidence=obs-000001") || !strings.Contains(rendered, "exit=4") || !strings.Contains(rendered, "signal=killed") || !strings.Contains(rendered, "truncated=stdout:true/stderr:false") || !strings.Contains(rendered, "network_isolation=unenforced") {
 		t.Fatalf("inspect must render process evidence:\n%s", rendered)
 	}
 }

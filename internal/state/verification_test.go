@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/RenyEnnos/Runstead/internal/tools"
 )
 
 // TestSaveVerificationAttemptPersistsProjectionAndChecks proves one
@@ -196,5 +198,143 @@ func TestRenderInspectShowsVerification(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "reason: file_not_found") {
 		t.Fatalf("inspect missing typed reason:\n%s", rendered)
+	}
+}
+
+func TestRenderInspectShowsPersistedGitDiff(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	mustTask(t, store, "task-1")
+
+	report := []byte(`{"task_id":"task-1","decision":"passed","summary":"completion verified","git":{"available":true,"current_status":" M app/calc.go\n","current_diff":"diff --git a/app/calc.go b/app/calc.go\n+fixed\n","truncated":false,"pre_existing":[],"during_task":[{"path":"app/calc.go","status":" M"}]}}`)
+	if err := store.SaveVerificationAttempt(ctx, VerificationAttemptRecord{
+		TaskID: "task-1", Decision: "passed", Summary: "completion verified", ReportJSON: report,
+		Checks: []VerificationCheckRecord{{CheckID: "fix-hash", Type: "file_hash", Status: "passed"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	if err := store.RenderInspect(ctx, &out, "task-1"); err != nil {
+		t.Fatal(err)
+	}
+	rendered := out.String()
+	for _, want := range []string{
+		"Git diff (bounded):",
+		"+fixed",
+		"diff truncated: false",
+		"during-task changes: app/calc.go ( M)",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("inspect missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestRenderFinalRequiresCompletedPassedTask(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	mustTask(t, store, "task-running")
+	var runningOut strings.Builder
+	if err := store.RenderFinal(ctx, &runningOut, "task-running"); err == nil {
+		t.Fatal("RenderFinal() must refuse a running task")
+	}
+	if strings.Contains(runningOut.String(), "Verified runtime result:") {
+		t.Fatalf("running task must not render a verified result:\n%s", runningOut.String())
+	}
+
+	mustTask(t, store, "task-failed")
+	if err := store.FinalizeTask(ctx, TaskFinalize{TaskID: "task-failed", Outcome: "provider_failure", StopReason: "provider failed"}); err != nil {
+		t.Fatal(err)
+	}
+	var failedOut strings.Builder
+	if err := store.RenderFinal(ctx, &failedOut, "task-failed"); err == nil {
+		t.Fatal("RenderFinal() must refuse a failed task")
+	}
+	if strings.Contains(failedOut.String(), "Verified runtime result:") {
+		t.Fatalf("failed task must not render a verified result:\n%s", failedOut.String())
+	}
+
+	mustTask(t, store, "task-blocked")
+	if err := store.SaveVerificationAttempt(ctx, VerificationAttemptRecord{
+		TaskID: "task-blocked", Decision: "blocked", Summary: "completion refused", ReportJSON: []byte(`{"decision":"blocked"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTaskVerificationPaused(ctx, "task-blocked", "acceptance plan missing"); err != nil {
+		t.Fatal(err)
+	}
+	var blockedOut strings.Builder
+	if err := store.RenderFinal(ctx, &blockedOut, "task-blocked"); err == nil {
+		t.Fatal("RenderFinal() must refuse a blocked task")
+	}
+	if strings.Contains(blockedOut.String(), "Verified runtime result:") {
+		t.Fatalf("blocked task must not render a verified result:\n%s", blockedOut.String())
+	}
+}
+
+func TestRenderFinalShowsAuthoritativeProjection(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	mustTask(t, store, "task-1")
+
+	actionID, err := store.RecordAction(ctx, ActionRecord{
+		TaskID: "task-1", Tool: "run_recipe", Arguments: []byte(`{"recipe":"test"}`), Fingerprint: "recipe-fingerprint",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionID, err := store.PrepareToolAttempt(ctx, ToolAttemptPrepared{
+		TaskID: "task-1", ActionID: actionID, Tool: "run_recipe", Arguments: []byte(`{"recipe":"test"}`), RecoveryClass: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation := tools.Observation{
+		ID: "obs-000001", Tool: "run_recipe", Success: true,
+		Data: map[string]any{
+			"recipe_id": "test", "exit_code": 0, "stdout_truncated": false, "stderr_truncated": false,
+			"network_isolation": "unenforced",
+		},
+		Metadata: tools.Metadata{Source: "run_recipe", Untrusted: true, ExitCode: 0},
+	}
+	if err := store.CompleteToolAttempt(ctx, ToolAttemptCompleted{
+		TaskID: "task-1", ExecutionID: executionID, Status: "completed", EvidenceID: observation.ID,
+		DurationNanos: 1000, Observation: observation,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	report := []byte(`{"task_id":"task-1","decision":"passed","summary":"completion verified: acceptance check passed (tests-pass)","git":{"available":true,"current_status":" M app/calc.go\n","current_diff":"diff --git a/app/calc.go b/app/calc.go\n+fixed\n","truncated":false,"pre_existing":[],"during_task":[{"path":"app/calc.go","status":" M"}]}}`)
+	if err := store.SaveVerificationAttempt(ctx, VerificationAttemptRecord{
+		TaskID: "task-1", Decision: "passed", Summary: "completion verified: acceptance check passed (tests-pass)", ReportJSON: report,
+		Checks: []VerificationCheckRecord{{CheckID: "tests-pass", Type: "recipe_exit_zero", Status: "passed", Evidence: []string{"obs-000001"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinalizeTask(ctx, TaskFinalize{TaskID: "task-1", Outcome: "completed", StopReason: "verification passed", Summary: "completion verified: acceptance check passed (tests-pass)", Evidence: []string{"obs-000001"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	if err := store.RenderFinal(ctx, &out, "task-1"); err != nil {
+		t.Fatalf("RenderFinal() error = %v", err)
+	}
+	rendered := out.String()
+	for _, want := range []string{
+		"Verified runtime result:",
+		"status: completed",
+		"outcome: completed",
+		"verifier: passed",
+		"check=tests-pass type=recipe_exit_zero status=passed",
+		"obs-000001 tool=run_recipe",
+		"recipe=test evidence=obs-000001 exit=0",
+		"during-task changes: app/calc.go ( M)",
+		"Git diff (bounded):",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("final output missing %q:\n%s", want, rendered)
+		}
 	}
 }
