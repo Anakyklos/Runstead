@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/RenyEnnos/Runstead/internal/governor"
+	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
 // providerAttemptStatus maps a classified governor outcome to the persisted
@@ -18,6 +19,35 @@ func providerAttemptStatus(outcome governor.OutcomeClass, uncertain bool) string
 		return "completed"
 	}
 	return "failed"
+}
+
+// persistedDeliveryState keeps invalid/zero observations unobserved on disk.
+// Runtime classification may use a conservative effective state, but the
+// durable projection must retain only the raw transport evidence.
+func persistedDeliveryState(state provider.DeliveryState) string {
+	if !state.Valid() {
+		return ""
+	}
+	return state.String()
+}
+
+func parsePersistedDeliveryState(raw string) (provider.DeliveryState, error) {
+	switch raw {
+	case "":
+		return 0, nil
+	case "not_sent":
+		return provider.DeliveryNotSent, nil
+	case "sent_confirmed":
+		return provider.DeliverySentConfirmed, nil
+	case "sent_unconfirmed":
+		return provider.DeliverySentUnconfirmed, nil
+	case "response_started":
+		return provider.DeliveryResponseStarted, nil
+	case "completed":
+		return provider.DeliveryCompleted, nil
+	default:
+		return 0, fmt.Errorf("invalid persisted provider delivery state %q", raw)
+	}
 }
 
 // RecordProviderPrepared implements governor.Persistence (TX 1): the provider
@@ -36,8 +66,8 @@ func (s *Store) RecordProviderPrepared(ctx context.Context, record governor.Prov
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO provider_attempts
-		 (execution_id, task_id, client_request_id, provider, model_pool, model, attempt_sequence, receipt_aware, status, created_at, prepared_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?)`,
+			 (execution_id, task_id, client_request_id, provider, model_pool, model, attempt_sequence, receipt_aware, delivery_state, status, created_at, prepared_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 'prepared', ?, ?)`,
 		executionID, record.TaskID, record.ClientRequestID, record.ProviderID, record.ModelPool, record.Model,
 		record.AttemptSequence, boolInt(record.ReceiptAware), now, formatTime(record.StartedAt)); err != nil {
 		return fmt.Errorf("insert provider attempt: %w", err)
@@ -81,11 +111,11 @@ func (s *Store) RecordProviderFinished(ctx context.Context, record governor.Prov
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE provider_attempts
-		 SET status = ?, outcome = ?, upstream_reached = ?, uncertain = ?, attempt_debited = ?,
-		     selected_backoff_ns = ?, error_class = ?, completed_at = ?
-		 WHERE task_id = ? AND client_request_id = ? AND status = 'prepared'`,
+			 SET status = ?, outcome = ?, upstream_reached = ?, uncertain = ?, attempt_debited = ?,
+			     selected_backoff_ns = ?, error_class = ?, delivery_state = ?, completed_at = ?
+			 WHERE task_id = ? AND client_request_id = ? AND status = 'prepared'`,
 		status, record.Outcome, boolInt(record.UpstreamReached), boolInt(record.Uncertain),
-		record.AttemptDebited, int64(record.SelectedBackoff), receiptError, now,
+		record.AttemptDebited, int64(record.SelectedBackoff), receiptError, persistedDeliveryState(record.DeliveryState), now,
 		record.TaskID, record.ClientRequestID); err != nil {
 		return fmt.Errorf("finish provider attempt: %w", err)
 	}
@@ -116,6 +146,7 @@ func (s *Store) RecordProviderFinished(ctx context.Context, record governor.Prov
 		"outcome":           record.Outcome,
 		"upstream_reached":  record.UpstreamReached,
 		"uncertain":         record.Uncertain,
+		"delivery_state":    record.DeliveryState.String(),
 		"attempt_debited":   record.AttemptDebited,
 		"selected_backoff":  int64(record.SelectedBackoff),
 		"receipts":          len(record.Receipts),
