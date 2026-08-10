@@ -18,92 +18,6 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
-// The proposed singleAttemptContract is intentionally present in this
-// fixture so tests prove it cannot authorize production execution.
-const safeResilienceResponse = `{
-  "requestQueue": {"concurrentRequests": 1, "minTimeBetweenRequestsMs": 0, "maxWaitMs": 15000, "maxQueueDepth": 0},
-  "singleAttemptContract": {
-    "version": 1,
-    "guaranteed": true,
-    "internalRetries": false,
-    "credentialRefreshRetry": false,
-    "cooldownReplay": false,
-    "accountPooling": false,
-    "automaticFallback": false
-  },
-  "connectionCooldown": {
-    "oauth": {"baseCooldownMs": 0, "useUpstreamRetryHints": false, "useUpstream429BreakerHints": false, "maxBackoffSteps": 0},
-    "apikey": {"baseCooldownMs": 0, "useUpstreamRetryHints": false, "useUpstream429BreakerHints": false, "maxBackoffSteps": 0}
-  },
-  "providerBreaker": {
-    "oauth": {"failureThreshold": 1, "degradationThreshold": 0, "resetTimeoutMs": 1000},
-    "apikey": {"failureThreshold": 1, "degradationThreshold": 0, "resetTimeoutMs": 1000}
-  },
-  "waitForCooldown": {"enabled": false, "maxRetries": 0, "maxRetryWaitSec": 0},
-  "comboCooldownWait": {"enabled": false, "maxAttempts": 0, "maxWaitMs": 0},
-  "quotaShareConcurrencyLimit": {"enabled": false},
-  "providerCooldown": {"enabled": false, "minRetryCooldownMs": 0, "maxRetryCooldownMs": 0},
-  "legacy": {"requestRetry": 0, "maxRetryIntervalSec": 0}
-}`
-
-func testConfig(baseURL string) Config {
-	return Config{
-		BaseURL:          baseURL + "/v1",
-		APIKey:           "secret-api-key",
-		Model:            "chatgpt-web/model",
-		Timeout:          time.Second,
-		MaxRequestBytes:  1 << 20,
-		MaxResponseBytes: 1 << 20,
-		RouteSafety:      provider.SafeRouteSafety(),
-	}
-}
-
-func newTransportClient(t *testing.T, handler http.Handler) (*Client, *httptest.Server) {
-	t.Helper()
-	server := httptest.NewServer(handler)
-	client, err := New(testConfig(server.URL), Options{HTTPClient: server.Client()})
-	if err != nil {
-		server.Close()
-		t.Fatal(err)
-	}
-	return client, server
-}
-
-func safeHandler(chat http.HandlerFunc) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/resilience", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, safeResilienceResponse)
-	})
-	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"wildcardAliases":[],"modelAliases":{},"globalFallbackModel":""}`)
-	})
-	mux.HandleFunc("/api/models/alias", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"aliases":{}}`)
-	})
-	mux.HandleFunc("/api/settings/model-aliases", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"builtIn":{},"custom":{},"all":{}}`)
-	})
-	mux.HandleFunc("/api/fallback/chains", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `[]`)
-	})
-	mux.HandleFunc("/api/combos", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"combos":[],"total":0}`)
-	})
-	mux.HandleFunc("/api/model-combo-mappings", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"mappings":[],"total":0}`)
-	})
-	mux.HandleFunc("/api/providers", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"connections":[{"id":"account-1","provider":"chatgpt-web","isActive":true,"defaultModel":"model"}],"total":1}`)
-	})
-	mux.HandleFunc("/v1/chat/completions", chat)
-	return mux
-}
-
 func TestCompleteTransportSendsOneMinimalNonStreamingRequestAndPreservesModelText(t *testing.T) {
 	var posts atomic.Int32
 	var gotAuthorization string
@@ -136,7 +50,7 @@ func TestCompleteTransportSendsOneMinimalNonStreamingRequestAndPreservesModelTex
 	if posts.Load() != 1 {
 		t.Fatalf("chat POSTs = %d, want 1", posts.Load())
 	}
-	if gotAuthorization != "Bearer secret-api-key" {
+	if gotAuthorization != "Bearer fixture-api-key" {
 		t.Fatalf("Authorization = %q", gotAuthorization)
 	}
 	if gotNoCache != "true" {
@@ -280,7 +194,7 @@ func TestCompleteTransportClassifiesHTTPFailuresWithoutRetry(t *testing.T) {
 			if posts.Load() != 1 {
 				t.Fatalf("chat POSTs = %d, want exactly one", posts.Load())
 			}
-			if strings.Contains(err.Error(), "secret-api-key") {
+			if strings.Contains(err.Error(), "fixture-api-key") {
 				t.Fatalf("error leaked API key: %v", err)
 			}
 		})
