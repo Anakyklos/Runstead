@@ -153,6 +153,22 @@ never happened, and completes with the corrective trajectory.
 
 ## Final evidence report
 
+When `runstead run` or `runstead resume` reaches a durably verified
+`completed` outcome, the normal stdout now includes a bounded `Verified runtime
+result:` projection. It is reconstructed from persisted task state, real tool
+and process evidence, the independent verifier report and the verifier's real
+Git observation. It includes the final outcome and verifier decision, relevant
+acceptance checks, actual evidence IDs, pre-existing versus during-task files,
+the bounded Git diff and every persisted recipe result, including earlier
+non-zero exits and the later zero exit.
+
+The model's final text remains a separate `note (unverified)` value. A model
+claim cannot create evidence, change Git attribution or turn a process result
+into a verified success. `runstead inspect <task-id>` remains the historical,
+detailed view of the complete task journal, actions, attempts, policies,
+verification attempts and governor state; the normal completion projection is
+the concise evidence surface for checking the conclusion immediately.
+
 `runstead inspect <task-id>` renders, from the persisted verification report:
 
 - which acceptance checks passed (check id, type, status, expected,
