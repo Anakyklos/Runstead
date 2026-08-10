@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -117,17 +118,18 @@ func newContractMockServer(t *testing.T, config contractMockConfig) *contractMoc
 }
 
 func safeContractManagementResponses() map[string]contractMockResponse {
-	return map[string]contractMockResponse{
-		"resilience":             {status: http.StatusOK, body: []byte(mustReadContractFixture("management/resilience-safe.json"))},
-		"rate_limits":            {status: http.StatusOK, body: []byte(mustReadContractFixture("management/rate-limits-safe.json"))},
-		"settings":               {status: http.StatusOK, body: []byte(mustReadContractFixture("management/settings-safe.json"))},
-		"model_aliases":          {status: http.StatusOK, body: []byte(mustReadContractFixture("management/model-aliases-safe.json"))},
-		"settings_model_aliases": {status: http.StatusOK, body: []byte(mustReadContractFixture("management/settings-model-aliases-safe.json"))},
-		"fallback_chains":        {status: http.StatusOK, body: []byte(mustReadContractFixture("management/fallback-chains-safe.json"))},
-		"combos":                 {status: http.StatusOK, body: []byte(mustReadContractFixture("management/combos-safe.json"))},
-		"model_combo_mappings":   {status: http.StatusOK, body: []byte(mustReadContractFixture("management/model-combo-mappings-safe.json"))},
-		"providers":              {status: http.StatusOK, body: []byte(mustReadContractFixture("management/providers-safe.json"))},
+	manifest, err := loadContractManifest(contractFixtureFS())
+	if err != nil {
+		panic(fmt.Sprintf("load contract management defaults: %v", err))
 	}
+	responses := make(map[string]contractMockResponse, len(manifest.ManagementDefaults))
+	for endpoint, fixture := range manifest.ManagementDefaults {
+		responses[endpoint] = contractMockResponse{
+			status: http.StatusOK,
+			body:   []byte(mustReadContractFixture(fixture)),
+		}
+	}
+	return responses
 }
 
 func (s *contractMockServer) URL() string { return s.server.URL }

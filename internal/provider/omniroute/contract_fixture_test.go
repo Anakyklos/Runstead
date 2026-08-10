@@ -84,17 +84,21 @@ type contractRequestSpec struct {
 }
 
 type contractExpectation struct {
-	ErrorKind           string         `json:"error_kind"`
-	OutcomeClass        string         `json:"outcome_class,omitempty"`
-	DeliveryState       string         `json:"delivery_state,omitempty"`
-	UpstreamReached     *bool          `json:"upstream_reached,omitempty"`
-	RetryAfterSeconds   int            `json:"retry_after_seconds,omitempty"`
-	ResetAt             string         `json:"reset_at,omitempty"`
-	ResponseText        string         `json:"response_text,omitempty"`
-	RequestID           string         `json:"request_id,omitempty"`
-	SessionIDHash       string         `json:"session_id_hash,omitempty"`
-	RequestCounts       map[string]int `json:"request_counts,omitempty"`
-	AttemptReceiptCount int            `json:"attempt_receipt_count,omitempty"`
+	ErrorKind            string         `json:"error_kind"`
+	OutcomeClass         string         `json:"outcome_class,omitempty"`
+	DeliveryState        string         `json:"delivery_state,omitempty"`
+	UpstreamReached      *bool          `json:"upstream_reached,omitempty"`
+	RetryAfterSeconds    int            `json:"retry_after_seconds,omitempty"`
+	ResetAt              string         `json:"reset_at,omitempty"`
+	ErrorRetryAfter      int            `json:"error_retry_after_seconds,omitempty"`
+	ErrorResetAt         string         `json:"error_reset_at,omitempty"`
+	ClassifiedRetryAfter int            `json:"classified_retry_after_seconds,omitempty"`
+	ClassifiedResetAt    string         `json:"classified_reset_at,omitempty"`
+	ResponseText         string         `json:"response_text,omitempty"`
+	RequestID            string         `json:"request_id,omitempty"`
+	SessionIDHash        string         `json:"session_id_hash,omitempty"`
+	RequestCounts        map[string]int `json:"request_counts,omitempty"`
+	AttemptReceiptCount  int            `json:"attempt_receipt_count,omitempty"`
 }
 
 const contractSchemaVersion = 1
@@ -520,6 +524,36 @@ func runContractScenario(t *testing.T, manifest contractManifest, scenario contr
 		if scenario.Expected.UpstreamReached != nil && outcome.UpstreamReached != *scenario.Expected.UpstreamReached {
 			t.Fatalf("Classify() upstream reached = %t, want %t", outcome.UpstreamReached, *scenario.Expected.UpstreamReached)
 		}
+		if scenario.Expected.ErrorRetryAfter != 0 || scenario.Expected.ErrorResetAt != "" {
+			var providerErr *Error
+			if !errors.As(err, &providerErr) {
+				t.Fatalf("expected typed Error for retry/reset assertions, got %T %v", err, err)
+			}
+			if scenario.Expected.ErrorRetryAfter != 0 && providerErr.RetryAfter != time.Duration(scenario.Expected.ErrorRetryAfter)*time.Second {
+				t.Fatalf("typed Error RetryAfter = %s, want %ds", providerErr.RetryAfter, scenario.Expected.ErrorRetryAfter)
+			}
+			if scenario.Expected.ErrorResetAt != "" {
+				resetAt, parseErr := time.Parse(time.RFC3339, scenario.Expected.ErrorResetAt)
+				if parseErr != nil {
+					t.Fatalf("manifest error_reset_at is invalid: %v", parseErr)
+				}
+				if !providerErr.ResetAt.Equal(resetAt) {
+					t.Fatalf("typed Error ResetAt = %s, want %s", providerErr.ResetAt, resetAt)
+				}
+			}
+		}
+		if scenario.Expected.ClassifiedRetryAfter != 0 && outcome.RetryAfter != time.Duration(scenario.Expected.ClassifiedRetryAfter)*time.Second {
+			t.Fatalf("Classify() RetryAfter = %s, want %ds", outcome.RetryAfter, scenario.Expected.ClassifiedRetryAfter)
+		}
+		if scenario.Expected.ClassifiedResetAt != "" {
+			resetAt, parseErr := time.Parse(time.RFC3339, scenario.Expected.ClassifiedResetAt)
+			if parseErr != nil {
+				t.Fatalf("manifest classified_reset_at is invalid: %v", parseErr)
+			}
+			if !outcome.ResetAt.Equal(resetAt) {
+				t.Fatalf("Classify() ResetAt = %s, want %s", outcome.ResetAt, resetAt)
+			}
+		}
 		if scenario.Expected.DeliveryState != "" && response.Metadata.DeliveryState.String() != scenario.Expected.DeliveryState {
 			t.Fatalf("delivery state = %q, want %q", response.Metadata.DeliveryState, scenario.Expected.DeliveryState)
 		}
@@ -615,7 +649,7 @@ func TestContractFixtureHygieneRejectsSecretShapedValues(t *testing.T) {
 
 func TestContractFixtureHygieneAllowsSemanticTokenSignals(t *testing.T) {
 	dir := t.TempDir()
-	writeFixtureFile(t, dir, "responses/safe.json", `{"error":{"code":"token_expired"},"request_id":"opaque-request-001","session":"synthetic-session-001"}`)
+	writeFixtureFile(t, dir, "responses/safe.json", `{"error":{"code":"token_expired"},"classifier_code":"invalid_api_key","configuration_profile":"apikey","request_id":"opaque-request-001","session":"synthetic-session-001"}`)
 	if err := scanFixtureHygiene(os.DirFS(dir)); err != nil {
 		t.Fatalf("scanFixtureHygiene() rejected synthetic semantic signals: %v", err)
 	}

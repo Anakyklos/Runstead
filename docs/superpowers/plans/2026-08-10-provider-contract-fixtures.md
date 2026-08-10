@@ -146,11 +146,11 @@ Commit: `git add internal/provider/omniroute/contract_fixture_test.go internal/p
 
 - [ ] **Step 1: Add a concise note explaining the corpus location, manifest scenario format, how to add a fixture, and the hygiene rules.** Preserve the native/Docker development workflow established by #15 and do not add a second CI pipeline.
 
-- [ ] **Step 2: Run a deterministic source/data inspection.**
+- [ ] **Step 2: Run the deterministic Go hygiene gate and an optional semantic-aware source inspection.**
 
-Run: `find internal/provider/omniroute/testdata/contract -type f -print0 | xargs -0 grep -nE 'Authorization|Bearer |Set-Cookie|Cookie|api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?token|@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' || true`
+Run: `go test -count=1 ./internal/provider/omniroute -run TestContractFixtureHygiene`
 
-Expected: no matches in committed fixture data. Semantic `token_expired` remains allowed and is checked by the Go hygiene test rather than a blanket grep.
+Expected: PASS. The Go scanner is authoritative and permits semantic values such as `token_expired`, `invalid_api_key` and `apikey` while rejecting credential-shaped fields/values. A raw grep may report those semantic allowlisted strings and is not the CI gate.
 
 - [ ] **Step 3: Commit documentation if changed.**
 

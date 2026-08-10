@@ -136,9 +136,10 @@ they must not be represented by invented response bodies.
 
 Fixtures must contain no credentials, cookies, real prompts, emails, personal
 identifiers or captured session values. Synthetic prompts used by manifest
-scenarios are not account data. The Go hygiene test rejects
-credential-shaped fields and values while allowing semantic codes such as
-`token_expired`. Run `go test ./...` after changing the corpus; the manifest
+scenarios are not account data. The Go hygiene test rejects credential-shaped
+fields and values while allowing semantic classifier/configuration names such
+as `token_expired`, `invalid_api_key` and `apikey`. Run `go test ./...` after
+changing the corpus; the manifest
 inventory test also requires every current adapter `ErrorKind` to be accounted
 for. The corpus is test-only and does not enable live OmniRoute execution.
 

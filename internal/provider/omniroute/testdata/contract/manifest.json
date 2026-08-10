@@ -73,7 +73,7 @@
       "name": "rate_capacity_retry_hint",
       "operation": "complete_once",
       "response": {"status": 429, "body_file": "responses/rate-capacity.json", "headers": {"Retry-After":"7", "X-RateLimit-Reset":"1786392600"}},
-      "expected": {"error_kind":"rate_or_capacity", "outcome_class":"rate_or_capacity", "delivery_state":"completed", "upstream_reached":true, "retry_after_seconds":7, "reset_at":"2026-08-10T20:10:00Z", "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+      "expected": {"error_kind":"rate_or_capacity", "outcome_class":"rate_or_capacity", "delivery_state":"completed", "upstream_reached":true, "retry_after_seconds":7, "reset_at":"2026-08-10T20:10:00Z", "error_retry_after_seconds":7, "error_reset_at":"2026-08-10T20:10:00Z", "classified_retry_after_seconds":7, "classified_reset_at":"2026-08-10T20:10:00Z", "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
     },
     {
       "name": "login_challenge",
