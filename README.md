@@ -112,7 +112,7 @@ failure matrix are documented in
 
 ## Development environment
 
-A Docker-based development environment is recommended to keep Go, `jq`, test utilities, caches and later transport-specific native dependencies out of the host system.
+An optional Docker-based development environment keeps Go, `jq`, test utilities, caches and later transport-specific native dependencies out of the host system.
 
 Docker is an optional development and test boundary, not the product architecture and not a complete sandbox. Source repositories mounted with write access remain modifiable by the container.
 
