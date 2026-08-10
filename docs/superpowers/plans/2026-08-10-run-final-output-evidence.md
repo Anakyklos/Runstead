@@ -34,7 +34,7 @@
 Add a test in `internal/state/process_test.go` that persists a `run_recipe` observation with `EvidenceID: "obs-000001"`, `recipe_id: "test"`, `exit_code: 0`, and both truncation flags false. Persist a passed verification whose report JSON contains an available Git observation with `current_diff: "diff --git a/app/calc.go b/app/calc.go\n+fixed\n"`, `truncated: false`, and during-task `app/calc.go`. Assert `RenderInspect` contains:
 
 ```go
-if !strings.Contains(rendered, "recipe=test evidence=obs-000001 exit=0") {
+if !strings.Contains(rendered, "recipe=test exit=0 evidence=obs-000001") {
     t.Fatalf("inspect must show the process evidence id:\n%s", rendered)
 }
 if !strings.Contains(rendered, "truncated=stdout:false/stderr:false") {
@@ -158,7 +158,7 @@ Move the current loader calls from `RenderInspect` into `loadInspectProjection`,
 Change `inspectProcessEvidence` to include `EvidenceID string`. Change its query to select `r.evidence_id`, scan it, and keep the existing bounded JSON field extraction. Render every process line with all status metadata explicitly:
 
 ```go
-fmt.Fprintf(&builder, "  %s execution=%s recipe=%s evidence=%s exit=%d truncated=stdout:%t/stderr:%t", ...)
+fmt.Fprintf(&builder, "  %s execution=%s recipe=%s exit=%d evidence=%s truncated=stdout:%t/stderr:%t", ...)
 ```
 
 Append `signal=`, `timed_out=yes`, `canceled=yes`, `duration=`, and `network_isolation=` only when applicable, preserving existing sanitized behavior.
@@ -265,9 +265,9 @@ for _, want := range []string{
     "verifier: passed",
     "during-task changes: app/calc.go",
     "Git diff (bounded):",
-    "recipe=test evidence=obs-000002 exit=1",
-    "recipe=test evidence=obs-000005 exit=1",
-    "recipe=test evidence=obs-000008 exit=0",
+    "recipe=test exit=1 evidence=obs-000002",
+    "recipe=test exit=1 evidence=obs-000005",
+    "recipe=test exit=0 evidence=obs-000008",
     "truncated=stdout:false/stderr:false",
 } {
     if !strings.Contains(out.String(), want) {

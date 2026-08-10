@@ -1,6 +1,6 @@
 # Run Final Output Evidence Design
 
-**Date:** 2026-08-10  
+**Date:** 2026-08-10
 **Issue:** #12 acceptance item: `Final output cites actual evidence identifiers, changed files, diff and process results.`
 
 ## Goal
