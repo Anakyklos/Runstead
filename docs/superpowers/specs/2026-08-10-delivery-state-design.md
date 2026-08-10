@@ -1,8 +1,8 @@
 # Issue #38 design: provider delivery state and end-to-end replay safety
 
-**Date:** 2026-08-10  
-**Branch:** `feat/issue-38-delivery-state`  
-**Baseline:** `origin/main` at `16e253f`  
+**Date:** 2026-08-10
+**Branch:** `feat/issue-38-delivery-state`
+**Baseline:** `origin/main` at `16e253f`
 **Status:** approved design, implementation plan follows
 
 ## Goal
