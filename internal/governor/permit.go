@@ -260,6 +260,7 @@ func (p *Permit) Finish(outcome Outcome) FinishResult {
 		ClientRequestID:  p.request.ClientRequestID,
 		AttemptSequence:  p.attemptSequence,
 		Outcome:          result.Outcome,
+		DeliveryState:    result.DeliveryState,
 		CooldownUntil:    g.cooldownUntil,
 		SelectedBackoff:  result.SelectedBackoff,
 		CircuitTo:        result.Circuit.State,
@@ -308,7 +309,7 @@ func (p *Permit) FinishWithAttemptReceipts(outcome Outcome, set *provider.Attemp
 		validationErr = provider.ValidateAttemptReceiptSet(*set, expected)
 	}
 	if validationErr != nil {
-		return p.finishReceiptFailureLocked(validationErr, !errors.Is(validationErr, ErrAttemptReceiptReplayed))
+		return p.finishReceiptFailureLocked(validationErr, !errors.Is(validationErr, ErrAttemptReceiptReplayed), outcome.DeliveryState)
 	}
 	// Reconcile structural receipt authority before applying the M1 policy so
 	// a violating producer cannot hide observed debits.
@@ -335,10 +336,10 @@ func (p *Permit) FinishWithAttemptReceipts(outcome Outcome, set *provider.Attemp
 		policyErr = ErrAttemptReceiptReplayed
 	}
 	if policyErr != nil && len(newReceipts) == 0 {
-		return p.finishReceiptFailureLocked(policyErr, false)
+		return p.finishReceiptFailureLocked(policyErr, false, outcome.DeliveryState)
 	}
 	if len(newReceipts) == 0 {
-		return p.finishReceiptFailureLocked(ErrAttemptReceiptReplayed, false)
+		return p.finishReceiptFailureLocked(ErrAttemptReceiptReplayed, false, outcome.DeliveryState)
 	}
 	before := g.budgetLocked(now, p.request.TaskID)
 	state := g.taskLocked(p.request.TaskID)
@@ -384,7 +385,7 @@ func (p *Permit) FinishWithAttemptReceipts(outcome Outcome, set *provider.Attemp
 		})
 		receiptOutcomes[index] = Outcome{Class: receiptOutcome(receipt.Outcome), UpstreamReached: receipt.UpstreamReached}
 	}
-	if outcome.Class == OutcomeCancelledBeforeUpstream {
+	if outcome.Class == OutcomeCancelledBeforeUpstream && effectiveDeliveryState(outcome.DeliveryState) != provider.DeliveryNotSent {
 		outcome.Class = OutcomeUncertainReached
 	}
 	result := FinishResult{}
@@ -422,6 +423,7 @@ func (p *Permit) FinishWithAttemptReceipts(outcome Outcome, set *provider.Attemp
 	result.AttemptDebited = len(newReceipts)
 	result.SelectedBackoff = selectedBackoff
 	result.Circuit = g.circuitSnapshotLocked()
+	result.DeliveryState = outcome.DeliveryState
 	result.RetryEligible = isRecoverableOutcome(result.Outcome) && state.retries < g.config.RetryBudget && g.circuit.state == CircuitClosed
 	if policyErr != nil {
 		g.telemetry.unsafe = true
@@ -450,6 +452,7 @@ func (p *Permit) FinishWithAttemptReceipts(outcome Outcome, set *provider.Attemp
 		ClientRequestID:  p.request.ClientRequestID,
 		AttemptSequence:  p.attemptSequence,
 		Outcome:          result.Outcome,
+		DeliveryState:    result.DeliveryState,
 		CooldownUntil:    g.cooldownUntil,
 		SelectedBackoff:  result.SelectedBackoff,
 		CircuitTo:        result.Circuit.State,
@@ -473,13 +476,13 @@ func normalizeReceiptProtectionTime(remote, localStart, localNow time.Time) time
 	return remote
 }
 
-func (p *Permit) finishReceiptFailureLocked(err error, debitPossibleAttempt bool) FinishResult {
+func (p *Permit) finishReceiptFailureLocked(err error, debitPossibleAttempt bool, deliveryState provider.DeliveryState) FinishResult {
 	g := p.governor
 	p.completed = true
 	g.telemetry.unsafe = true
 	now := g.clock.Now()
 	before := g.budgetLocked(now, p.request.TaskID)
-	result := FinishResult{Outcome: OutcomeUncertainReached, Err: err, Circuit: g.circuitSnapshotLocked()}
+	result := FinishResult{Outcome: OutcomeUncertainReached, Err: err, Circuit: g.circuitSnapshotLocked(), DeliveryState: deliveryState}
 	if debitPossibleAttempt {
 		state := g.taskLocked(p.request.TaskID)
 		state.attempts++
@@ -513,6 +516,7 @@ func (p *Permit) finishReceiptFailureLocked(err error, debitPossibleAttempt bool
 			AttemptSequence:  p.attemptSequence,
 			Outcome:          OutcomeUncertainReached,
 			UpstreamReached:  true,
+			DeliveryState:    deliveryState,
 			TelemetryHealthy: p.telemetryHealthy,
 		})
 	}
@@ -532,6 +536,7 @@ func (p *Permit) finishReceiptFailureLocked(err error, debitPossibleAttempt bool
 		ClientRequestID:  p.request.ClientRequestID,
 		AttemptSequence:  p.attemptSequence,
 		Outcome:          result.Outcome,
+		DeliveryState:    result.DeliveryState,
 		BudgetsBefore:    before,
 		BudgetsAfter:     g.budgetLocked(now, p.request.TaskID),
 		Telemetry:        g.telemetrySummaryLocked(),

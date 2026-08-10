@@ -50,6 +50,7 @@ type ProviderFinished struct {
 	Outcome         OutcomeClass
 	UpstreamReached bool
 	Uncertain       bool
+	DeliveryState   provider.DeliveryState
 	AttemptDebited  int
 	SelectedBackoff time.Duration
 	Circuit         CircuitSnapshot
