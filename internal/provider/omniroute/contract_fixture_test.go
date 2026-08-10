@@ -17,7 +17,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -93,7 +92,7 @@ type contractExpectation struct {
 	ResetAt             string         `json:"reset_at,omitempty"`
 	ResponseText        string         `json:"response_text,omitempty"`
 	RequestID           string         `json:"request_id,omitempty"`
-	SessionIDHashed     bool           `json:"session_id_hashed,omitempty"`
+	SessionIDHash       string         `json:"session_id_hash,omitempty"`
 	RequestCounts       map[string]int `json:"request_counts,omitempty"`
 	AttemptReceiptCount int            `json:"attempt_receipt_count,omitempty"`
 }
@@ -386,15 +385,6 @@ func errorKindsFromSource() (map[ErrorKind]struct{}, error) {
 	return kinds, nil
 }
 
-func sortedErrorKinds(kinds map[ErrorKind]struct{}) []ErrorKind {
-	result := make([]ErrorKind, 0, len(kinds))
-	for kind := range kinds {
-		result = append(result, kind)
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
-	return result
-}
-
 func TestContractCorpusScenarios(t *testing.T) {
 	manifest, err := loadContractManifest(contractFixtureFS())
 	if err != nil {
@@ -408,7 +398,7 @@ func TestContractCorpusScenarios(t *testing.T) {
 	}
 }
 
-func runContractScenario(t *testing.T, _ contractManifest, scenario contractScenario) {
+func runContractScenario(t *testing.T, manifest contractManifest, scenario contractScenario) {
 	t.Helper()
 	started := time.Now()
 	now := time.Date(2026, time.August, 10, 20, 0, 0, 0, time.UTC)
@@ -426,6 +416,10 @@ func runContractScenario(t *testing.T, _ contractManifest, scenario contractScen
 			responseSpec.receipt = []byte(mustReadContractFixture(scenario.Response.ReceiptFile))
 		}
 	}
+	managementDefaults := make(map[string]contractMockResponse, len(manifest.ManagementDefaults))
+	for endpoint, fixture := range manifest.ManagementDefaults {
+		managementDefaults[endpoint] = contractMockResponse{status: http.StatusOK, body: []byte(mustReadContractFixture(fixture))}
+	}
 	management := make(map[string]contractMockResponse, len(scenario.Management))
 	for endpoint, fixture := range scenario.Management {
 		management[endpoint] = contractMockResponse{status: http.StatusOK, body: []byte(mustReadContractFixture(fixture))}
@@ -439,7 +433,11 @@ func runContractScenario(t *testing.T, _ contractManifest, scenario contractScen
 		baseURL = "http://contract.invalid"
 		options.Transport = contractDialTransport(scenario.Transport.Kind, &roundTrips)
 	} else {
-		server = newContractMockServer(t, contractMockConfig{completion: responseSpec, management: management})
+		server = newContractMockServer(t, contractMockConfig{
+			completion:         responseSpec,
+			management:         management,
+			managementDefaults: managementDefaults,
+		})
 		defer server.Close()
 		baseURL = server.URL()
 		options.HTTPClient = server.Client()
@@ -500,8 +498,14 @@ func runContractScenario(t *testing.T, _ contractManifest, scenario contractScen
 	}
 
 	assertContractError(t, scenario.Expected.ErrorKind, err)
-	if scenario.Operation == "preflight" && scenario.Expected.ErrorKind == string(ErrorUnsafeRoute) && client.RouteSafety().Validate() == nil {
-		t.Fatalf("RouteSafety after unsafe preflight = %#v, want fail-closed unknown state", client.RouteSafety())
+	if scenario.Operation == "preflight" && scenario.Expected.ErrorKind == string(ErrorUnsafeRoute) {
+		if client.RouteSafety().Validate() == nil {
+			t.Fatalf("RouteSafety after unsafe preflight = %#v, want fail-closed unknown state", client.RouteSafety())
+		}
+		_, completeErr := client.Complete(ctx, provider.Request{Prompt: "synthetic protected completion"})
+		if !errors.Is(completeErr, provider.ErrUnsafeRoute) {
+			t.Fatalf("Complete() after unsafe preflight = %v, want fail-closed unsafe route", completeErr)
+		}
 	}
 	if scenario.Operation == "complete_once" || scenario.Operation == "complete" {
 		outcome := Classify(response, err)
@@ -520,8 +524,8 @@ func runContractScenario(t *testing.T, _ contractManifest, scenario contractScen
 		if scenario.Expected.RequestID != "" && response.Metadata.RequestID != scenario.Expected.RequestID {
 			t.Fatalf("RequestID = %q, want %q", response.Metadata.RequestID, scenario.Expected.RequestID)
 		}
-		if scenario.Expected.SessionIDHashed && !strings.HasPrefix(response.Metadata.SessionID, "sha256:") {
-			t.Fatalf("SessionID = %q, want sanitized hash", response.Metadata.SessionID)
+		if scenario.Expected.SessionIDHash != "" && response.Metadata.SessionID != scenario.Expected.SessionIDHash {
+			t.Fatalf("SessionID = %q, want exact sanitized hash %q", response.Metadata.SessionID, scenario.Expected.SessionIDHash)
 		}
 		if scenario.Expected.RetryAfterSeconds != 0 && response.Metadata.RetryAfter != time.Duration(scenario.Expected.RetryAfterSeconds)*time.Second {
 			t.Fatalf("RetryAfter = %s, want %ds", response.Metadata.RetryAfter, scenario.Expected.RetryAfterSeconds)
@@ -554,6 +558,9 @@ func runContractScenario(t *testing.T, _ contractManifest, scenario contractScen
 			if private != "" && strings.Contains(errText, private) {
 				t.Fatalf("error leaked private test input %q: %v", private, err)
 			}
+		}
+		if responseSpec.body != nil && len(responseSpec.body) > 0 && strings.Contains(errText, string(responseSpec.body)) {
+			t.Fatalf("error leaked synthetic response fixture body: %v", err)
 		}
 	}
 

@@ -29,9 +29,10 @@ type contractMockResponse struct {
 }
 
 type contractMockConfig struct {
-	completion        contractMockResponse
-	management        map[string]contractMockResponse
-	completionHandler http.HandlerFunc
+	completion         contractMockResponse
+	management         map[string]contractMockResponse
+	managementDefaults map[string]contractMockResponse
+	completionHandler  http.HandlerFunc
 }
 
 type contractMockCounts struct {
@@ -97,7 +98,10 @@ func safeHandler(chat http.HandlerFunc) http.Handler {
 
 func newContractMockServer(t *testing.T, config contractMockConfig) *contractMockServer {
 	t.Helper()
-	management := safeContractManagementResponses()
+	management := config.managementDefaults
+	if management == nil {
+		management = safeContractManagementResponses()
+	}
 	for endpoint, response := range config.management {
 		management[endpoint] = response
 	}

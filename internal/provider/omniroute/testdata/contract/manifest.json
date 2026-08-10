@@ -12,10 +12,10 @@
     "providers": "management/providers-safe.json"
   },
   "error_kind_inventory": [
-    {"kind":"transport","categories":["transport"],"scenarios":["transport_error"]},
+    {"kind":"transport","categories":["transport"],"scenarios":["transport_error","connection_close_after_dispatch"]},
     {"kind":"timeout","categories":["http_body_header","transport"],"scenarios":["timeout_http_status","timeout_context"]},
     {"kind":"cancelled","categories":["transport","pre_request"],"scenarios":["cancelled_before_request"]},
-    {"kind":"authentication_expired","categories":["http_body_header"],"scenarios":["authentication_expired"]},
+    {"kind":"authentication_expired","categories":["http_body_header"],"scenarios":["authentication_expired","authentication_expired_plain_text"]},
     {"kind":"authentication_denied","categories":["http_body_header"],"scenarios":["authentication_denied"]},
     {"kind":"http_403","categories":["http_body_header"],"scenarios":["http_403"]},
     {"kind":"rate_or_capacity","categories":["http_body_header"],"scenarios":["rate_capacity_retry_hint"]},
@@ -27,7 +27,7 @@
     {"kind":"connection_reset","categories":["http_body_header","transport"],"scenarios":["connection_reset_body","connection_reset_transport"]},
     {"kind":"empty_response","categories":["http_body_header"],"scenarios":["empty_response_body","empty_response_content"]},
     {"kind":"malformed_json","categories":["http_body_header"],"scenarios":["malformed_json"]},
-    {"kind":"invalid_envelope","categories":["http_body_header"],"scenarios":["invalid_response_envelope"]},
+    {"kind":"invalid_envelope","categories":["http_body_header"],"scenarios":["invalid_response_envelope","invalid_envelope_empty_object","invalid_envelope_missing_content"]},
     {"kind":"upstream_server_failure","categories":["http_body_header"],"scenarios":["upstream_server_failure"]},
     {"kind":"http_status","categories":["http_body_header"],"scenarios":["completion_redirect"]},
     {"kind":"response_too_large","categories":["http_body_header","transport"],"scenarios":["oversized_response"]},
@@ -41,14 +41,20 @@
     {
       "name": "success_normal",
       "operation": "complete_once",
-      "response": {"status": 200, "body_file": "responses/success.json", "headers": {"Content-Type":"application/json", "X-Request-Id":"contract-request-001", "X-OmniRoute-Session-Id":"synthetic-session-001"}},
+      "response": {"status": 200, "body_file": "responses/success.json", "headers": {"Content-Type":"application/json", "X-Request-Id":"synthetic/request-id-001", "X-OmniRoute-Session-Id":"synthetic-session-001"}},
       "request": {"prompt":"synthetic prompt for contract test"},
-      "expected": {"error_kind":"", "outcome_class":"success", "delivery_state":"completed", "upstream_reached":true, "response_text":"synthetic completion response", "request_id":"contract-request-001", "session_id_hashed":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+      "expected": {"error_kind":"", "outcome_class":"success", "delivery_state":"completed", "upstream_reached":true, "response_text":"synthetic completion response", "request_id":"sha256:0c78f36040ed6160", "session_id_hash":"sha256:e26c539068a85ef6", "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
     },
     {
       "name": "authentication_expired",
       "operation": "complete_once",
       "response": {"status": 401, "body_file": "responses/auth-expired.json"},
+      "expected": {"error_kind":"authentication_expired", "outcome_class":"authentication_expired", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "authentication_expired_plain_text",
+      "operation": "complete_once",
+      "response": {"status": 401, "body_file": "responses/auth-expired-plain.txt"},
       "expected": {"error_kind":"authentication_expired", "outcome_class":"authentication_expired", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
     },
     {
@@ -106,6 +112,13 @@
       "expected": {"error_kind":"connection_reset", "outcome_class":"connection_reset", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
     },
     {
+      "name": "connection_close_after_dispatch",
+      "operation": "complete_once",
+      "transport": {"kind":"close_connection"},
+      "response": {"status": 200, "body_file": "responses/success.json"},
+      "expected": {"error_kind":"transport", "outcome_class":"uncertain_reached", "delivery_state":"sent_unconfirmed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
       "name": "connection_reset_transport",
       "operation": "complete_once",
       "transport": {"kind":"connection_reset"},
@@ -159,6 +172,18 @@
       "name": "invalid_response_envelope",
       "operation": "complete_once",
       "response": {"status": 200, "body_file": "responses/invalid-envelope.json"},
+      "expected": {"error_kind":"invalid_envelope", "outcome_class":"malformed_upstream_response", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "invalid_envelope_empty_object",
+      "operation": "complete_once",
+      "response": {"status": 200, "body_file": "responses/invalid-envelope-empty-object.json"},
+      "expected": {"error_kind":"invalid_envelope", "outcome_class":"malformed_upstream_response", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "invalid_envelope_missing_content",
+      "operation": "complete_once",
+      "response": {"status": 200, "body_file": "responses/invalid-envelope-missing-content.json"},
       "expected": {"error_kind":"invalid_envelope", "outcome_class":"malformed_upstream_response", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
     },
     {
