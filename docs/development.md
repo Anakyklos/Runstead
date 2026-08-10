@@ -124,6 +124,23 @@ The historical `experiments/protocol/Dockerfile` remains available for the M0
 experiment's historical reproduction, but it is not the primary development
 interface.
 
+## OmniRoute contract fixtures
+
+The offline provider-boundary corpus lives in
+`internal/provider/omniroute/testdata/contract/`. Add a scenario by adding a
+synthetic body under `responses/`, `management/` or `receipts/`, then registering
+its operation, transport behavior, expected `ErrorKind`, normalized outcome and
+request counts in `manifest.json`. Transport-only phenomena such as timeout,
+redirect, connection reset and oversized streams are declared in the manifest;
+they must not be represented by invented response bodies.
+
+Fixtures must contain no credentials, cookies, prompts, emails, personal
+identifiers or captured session values. The Go hygiene test rejects
+credential-shaped fields and values while allowing semantic codes such as
+`token_expired`. Run `go test ./...` after changing the corpus; the manifest
+inventory test also requires every current adapter `ErrorKind` to be accounted
+for. The corpus is test-only and does not enable live OmniRoute execution.
+
 ### Target repository
 
 No target repository is mounted by default. Select one absolute host path and
