@@ -39,8 +39,9 @@ go test -race ./...
 bash experiments/protocol/test.sh
 ```
 
-The commands above are the same checks used by CI. The M0 offline replay also
-works natively:
+The formatting, test, vet, build and protocol checks above are the checks run by
+CI. The local workflow also includes the race detector, which is an additional
+check beyond the current CI workflow. The M0 offline replay also works natively:
 
 ```bash
 bash experiments/protocol/run.sh --offline --sessions 4
@@ -78,10 +79,11 @@ Only the target repository selected for a run should be mounted. Do not mount th
 ## Docker workflow
 
 The project-owned `Dockerfile.dev` is the reproducible development image. It
-uses Go `1.22.2`, installs Git, curl, pinned jq `1.7.1`, ripgrep, SQLite CLI, CA
-certificates, Bash and GCC, and runs as the non-root `runstead` user. The Compose service also
-enables Docker's minimal init process so orphaned subprocesses are reaped while
-keeping the same non-root, capability-drop and namespace restrictions.
+uses Go `1.22.2`, installs Git, curl, pinned jq `1.8.2`, ripgrep, SQLite CLI, CA
+certificates, Bash and GCC, and runs as the non-root `runstead` user. The Compose
+service also enables Docker's minimal init process so orphaned subprocesses are
+reaped while keeping the same non-root, capability-drop and namespace
+restrictions.
 
 On Linux, build with the host IDs so files created in the `/workspace` bind mount
 remain owned by the host user:
