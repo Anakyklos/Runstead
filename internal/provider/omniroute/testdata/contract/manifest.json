@@ -1,0 +1,258 @@
+{
+  "schema_version": 1,
+  "management_defaults": {
+    "resilience": "management/resilience-safe.json",
+    "rate_limits": "management/rate-limits-safe.json",
+    "settings": "management/settings-safe.json",
+    "model_aliases": "management/model-aliases-safe.json",
+    "settings_model_aliases": "management/settings-model-aliases-safe.json",
+    "fallback_chains": "management/fallback-chains-safe.json",
+    "combos": "management/combos-safe.json",
+    "model_combo_mappings": "management/model-combo-mappings-safe.json",
+    "providers": "management/providers-safe.json"
+  },
+  "error_kind_inventory": [
+    {"kind":"transport","categories":["transport"],"scenarios":["transport_error"]},
+    {"kind":"timeout","categories":["http_body_header","transport"],"scenarios":["timeout_http_status","timeout_context"]},
+    {"kind":"cancelled","categories":["transport","pre_request"],"scenarios":["cancelled_before_request"]},
+    {"kind":"authentication_expired","categories":["http_body_header"],"scenarios":["authentication_expired"]},
+    {"kind":"authentication_denied","categories":["http_body_header"],"scenarios":["authentication_denied"]},
+    {"kind":"http_403","categories":["http_body_header"],"scenarios":["http_403"]},
+    {"kind":"rate_or_capacity","categories":["http_body_header"],"scenarios":["rate_capacity_retry_hint"]},
+    {"kind":"login_challenge","categories":["http_body_header"],"scenarios":["login_challenge"]},
+    {"kind":"captcha","categories":["http_body_header"],"scenarios":["captcha"]},
+    {"kind":"suspicious_activity","categories":["http_body_header"],"scenarios":["suspicious_activity"]},
+    {"kind":"account_warning","categories":["http_body_header"],"scenarios":["account_warning"]},
+    {"kind":"feature_restriction","categories":["http_body_header"],"scenarios":["feature_restriction"]},
+    {"kind":"connection_reset","categories":["http_body_header","transport"],"scenarios":["connection_reset_body","connection_reset_transport"]},
+    {"kind":"empty_response","categories":["http_body_header"],"scenarios":["empty_response_body","empty_response_content"]},
+    {"kind":"malformed_json","categories":["http_body_header"],"scenarios":["malformed_json"]},
+    {"kind":"invalid_envelope","categories":["http_body_header"],"scenarios":["invalid_response_envelope"]},
+    {"kind":"upstream_server_failure","categories":["http_body_header"],"scenarios":["upstream_server_failure"]},
+    {"kind":"http_status","categories":["http_body_header"],"scenarios":["completion_redirect"]},
+    {"kind":"response_too_large","categories":["http_body_header","transport"],"scenarios":["oversized_response"]},
+    {"kind":"request_too_large","categories":["pre_request"],"scenarios":["oversized_request"]},
+    {"kind":"unsafe_route","categories":["pre_request","route_safety_management"],"scenarios":["complete_blocked_without_receipts","management_evidence_safe_fail_closed_until_receipts","management_evidence_missing","management_evidence_ambiguous","management_evidence_incompatible","gateway_contract_drift_management_shape"]},
+    {"kind":"telemetry","categories":["route_safety_management"],"scenarios":["management_telemetry_malformed"]},
+    {"kind":"attempt_receipts_missing","categories":["attempt_receipts"],"scenarios":["attempt_receipts_missing"]},
+    {"kind":"attempt_receipts_invalid","categories":["pre_request","attempt_receipts"],"scenarios":["attempt_receipts_invalid"]}
+  ],
+  "scenarios": [
+    {
+      "name": "success_normal",
+      "operation": "complete_once",
+      "response": {"status": 200, "body_file": "responses/success.json", "headers": {"Content-Type":"application/json", "X-Request-Id":"contract-request-001", "X-OmniRoute-Session-Id":"synthetic-session-001"}},
+      "request": {"prompt":"synthetic prompt for contract test"},
+      "expected": {"error_kind":"", "outcome_class":"success", "delivery_state":"completed", "upstream_reached":true, "response_text":"synthetic completion response", "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "authentication_expired",
+      "operation": "complete_once",
+      "response": {"status": 401, "body_file": "responses/auth-expired.json"},
+      "expected": {"error_kind":"authentication_expired", "outcome_class":"authentication_expired", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "authentication_denied",
+      "operation": "complete_once",
+      "response": {"status": 401, "body_file": "responses/auth-denied.json"},
+      "expected": {"error_kind":"authentication_denied", "outcome_class":"authentication_denied", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "http_403",
+      "operation": "complete_once",
+      "response": {"status": 403, "body_file": "responses/http-403.json"},
+      "expected": {"error_kind":"http_403", "outcome_class":"http_403", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "rate_capacity_retry_hint",
+      "operation": "complete_once",
+      "response": {"status": 429, "body_file": "responses/rate-capacity.json", "headers": {"Retry-After":"7", "X-RateLimit-Reset":"1786392600"}},
+      "expected": {"error_kind":"rate_or_capacity", "outcome_class":"rate_or_capacity", "delivery_state":"completed", "upstream_reached":true, "retry_after_seconds":7, "reset_at":"2026-08-10T20:10:00Z", "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "login_challenge",
+      "operation": "complete_once",
+      "response": {"status": 401, "body_file": "responses/login-challenge.json"},
+      "expected": {"error_kind":"login_challenge", "outcome_class":"login_challenge", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "captcha",
+      "operation": "complete_once",
+      "response": {"status": 403, "body_file": "responses/captcha.json"},
+      "expected": {"error_kind":"captcha", "outcome_class":"captcha", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "suspicious_activity",
+      "operation": "complete_once",
+      "response": {"status": 403, "body_file": "responses/suspicious-activity.json"},
+      "expected": {"error_kind":"suspicious_activity", "outcome_class":"suspicious_activity", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "account_warning",
+      "operation": "complete_once",
+      "response": {"status": 403, "body_file": "responses/account-warning.json"},
+      "expected": {"error_kind":"account_warning", "outcome_class":"account_warning", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "feature_restriction",
+      "operation": "complete_once",
+      "response": {"status": 400, "body_file": "responses/feature-restriction.json"},
+      "expected": {"error_kind":"feature_restriction", "outcome_class":"feature_restriction", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "connection_reset_body",
+      "operation": "complete_once",
+      "response": {"status": 502, "body_file": "responses/connection-reset.json"},
+      "expected": {"error_kind":"connection_reset", "outcome_class":"connection_reset", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "connection_reset_transport",
+      "operation": "complete_once",
+      "transport": {"kind":"connection_reset"},
+      "expected": {"error_kind":"connection_reset", "outcome_class":"connection_reset", "delivery_state":"sent_unconfirmed", "upstream_reached":true, "request_counts":{"total":0,"chat_posts":0,"management_gets":0,"redirect_replays":0,"round_trips":1}}
+    },
+    {
+      "name": "transport_error",
+      "operation": "complete_once",
+      "transport": {"kind":"dial_error"},
+      "expected": {"error_kind":"transport", "outcome_class":"uncertain_reached", "delivery_state":"sent_unconfirmed", "upstream_reached":true, "request_counts":{"total":0,"chat_posts":0,"management_gets":0,"redirect_replays":0,"round_trips":1}}
+    },
+    {
+      "name": "timeout_http_status",
+      "operation": "complete_once",
+      "response": {"status": 408, "body_file": "responses/timeout.json"},
+      "expected": {"error_kind":"timeout", "outcome_class":"timeout", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "timeout_context",
+      "operation": "complete_once",
+      "transport": {"kind":"delay", "delay_ms":100},
+      "config": {"timeout_ms":15},
+      "response": {"status": 200, "body_file": "responses/success.json"},
+      "expected": {"error_kind":"timeout", "outcome_class":"timeout", "delivery_state":"sent_unconfirmed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "cancelled_before_request",
+      "operation": "complete_once",
+      "transport": {"kind":"cancelled"},
+      "expected": {"error_kind":"cancelled", "outcome_class":"cancelled_before_upstream", "delivery_state":"not_sent", "upstream_reached":false, "request_counts":{"total":0,"chat_posts":0,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "empty_response_body",
+      "operation": "complete_once",
+      "response": {"status": 200, "body_file": "responses/empty-body.json"},
+      "expected": {"error_kind":"empty_response", "outcome_class":"empty_response", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "empty_response_content",
+      "operation": "complete_once",
+      "response": {"status": 200, "body_file": "responses/empty-content.json"},
+      "expected": {"error_kind":"empty_response", "outcome_class":"empty_response", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "malformed_json",
+      "operation": "complete_once",
+      "response": {"status": 200, "body_file": "responses/malformed.json"},
+      "expected": {"error_kind":"malformed_json", "outcome_class":"malformed_upstream_response", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "invalid_response_envelope",
+      "operation": "complete_once",
+      "response": {"status": 200, "body_file": "responses/invalid-envelope.json"},
+      "expected": {"error_kind":"invalid_envelope", "outcome_class":"malformed_upstream_response", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "upstream_server_failure",
+      "operation": "complete_once",
+      "response": {"status": 502, "body_file": "responses/upstream-failure.json"},
+      "expected": {"error_kind":"upstream_server_failure", "outcome_class":"upstream_server_failure", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "completion_redirect",
+      "operation": "complete_once",
+      "transport": {"kind":"redirect", "location":"/v1/chat/completions-replayed"},
+      "response": {"status": 307, "body_file": "responses/http-status.json", "headers": {"Location":"/v1/chat/completions-replayed"}},
+      "expected": {"error_kind":"http_status", "outcome_class":"uncertain_reached", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "oversized_response",
+      "operation": "complete_once",
+      "transport": {"kind":"oversized_response", "bytes":4096},
+      "config": {"max_response_bytes":512},
+      "response": {"status": 200},
+      "expected": {"error_kind":"response_too_large", "outcome_class":"uncertain_reached", "delivery_state":"response_started", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "oversized_request",
+      "operation": "complete_once",
+      "config": {"max_request_bytes":1},
+      "response": {"status": 200, "body_file":"responses/success.json"},
+      "expected": {"error_kind":"request_too_large", "outcome_class":"uncertain_reached", "delivery_state":"not_sent", "upstream_reached":false, "request_counts":{"total":0,"chat_posts":0,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "complete_blocked_without_receipts",
+      "operation": "complete",
+      "config": {"attempt_receipts":false},
+      "expected": {"error_kind":"unsafe_route", "request_counts":{"total":0,"chat_posts":0,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "management_evidence_safe_fail_closed_until_receipts",
+      "operation": "preflight",
+      "expected": {"error_kind":"unsafe_route", "request_counts":{"total":8,"chat_posts":0,"management_gets":8,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "management_evidence_missing",
+      "operation": "preflight",
+      "management": {"resilience":"management/resilience-missing.json"},
+      "expected": {"error_kind":"unsafe_route", "request_counts":{"total":8,"chat_posts":0,"management_gets":8,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "management_evidence_ambiguous",
+      "operation": "preflight",
+      "management": {"providers":"management/providers-ambiguous.json"},
+      "expected": {"error_kind":"unsafe_route", "request_counts":{"total":8,"chat_posts":0,"management_gets":8,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "management_evidence_incompatible",
+      "operation": "preflight",
+      "management": {"providers":"management/providers-incompatible.json"},
+      "expected": {"error_kind":"unsafe_route", "request_counts":{"total":8,"chat_posts":0,"management_gets":8,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "gateway_contract_drift_management_shape",
+      "operation": "preflight",
+      "management": {"settings":"management/settings-shape-drift.json"},
+      "expected": {"error_kind":"unsafe_route", "request_counts":{"total":8,"chat_posts":0,"management_gets":8,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "management_telemetry_malformed",
+      "operation": "snapshot",
+      "management": {"rate_limits":"management/rate-limits-malformed.json"},
+      "expected": {"error_kind":"telemetry", "request_counts":{"total":1,"chat_posts":0,"management_gets":1,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "attempt_receipts_valid",
+      "operation": "complete",
+      "config": {"attempt_receipts":true},
+      "request": {"prompt":"synthetic receipt prompt", "client_request_id":"contract-request-001"},
+      "response": {"status":200, "body_file":"responses/receipt-success.json", "receipt_file":"receipts/valid.json"},
+      "expected": {"error_kind":"", "outcome_class":"success", "delivery_state":"completed", "upstream_reached":true, "response_text":"synthetic receipt response", "attempt_receipt_count":1, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "attempt_receipts_missing",
+      "operation": "complete",
+      "config": {"attempt_receipts":true},
+      "request": {"prompt":"synthetic missing receipt prompt", "client_request_id":"contract-request-001"},
+      "response": {"status":200, "body_file":"responses/receipt-success.json"},
+      "expected": {"error_kind":"attempt_receipts_missing", "outcome_class":"uncertain_reached", "delivery_state":"completed", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    },
+    {
+      "name": "attempt_receipts_invalid",
+      "operation": "complete",
+      "config": {"attempt_receipts":true},
+      "request": {"prompt":"synthetic invalid receipt prompt", "client_request_id":"contract-request-001"},
+      "response": {"status":200, "body_file":"responses/receipt-success.json", "receipt_file":"receipts/invalid-version.json"},
+      "expected": {"error_kind":"attempt_receipts_invalid", "outcome_class":"uncertain_reached", "delivery_state":"response_started", "upstream_reached":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+    }
+  ]
+}

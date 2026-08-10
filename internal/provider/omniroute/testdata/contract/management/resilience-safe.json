@@ -1,0 +1,11 @@
+{
+  "requestQueue": {"concurrentRequests": 1, "minTimeBetweenRequestsMs": 0, "maxWaitMs": 15000, "maxQueueDepth": 0},
+  "singleAttemptContract": {"version": 1, "guaranteed": true, "internalRetries": false, "credentialRefreshRetry": false, "cooldownReplay": false, "accountPooling": false, "automaticFallback": false},
+  "connectionCooldown": {"oauth": {"baseCooldownMs": 0, "useUpstreamRetryHints": false, "useUpstream429BreakerHints": false, "maxBackoffSteps": 0}, "apikey": {"baseCooldownMs": 0, "useUpstreamRetryHints": false, "useUpstream429BreakerHints": false, "maxBackoffSteps": 0}},
+  "providerBreaker": {"oauth": {"failureThreshold": 1, "degradationThreshold": 0, "resetTimeoutMs": 1000}, "apikey": {"failureThreshold": 1, "degradationThreshold": 0, "resetTimeoutMs": 1000}},
+  "waitForCooldown": {"enabled": false, "maxRetries": 0, "maxRetryWaitSec": 0},
+  "comboCooldownWait": {"enabled": false, "maxAttempts": 0, "maxWaitMs": 0},
+  "quotaShareConcurrencyLimit": {"enabled": false},
+  "providerCooldown": {"enabled": false, "minRetryCooldownMs": 0, "maxRetryCooldownMs": 0},
+  "legacy": {"requestRetry": 0, "maxRetryIntervalSec": 0}
+}
