@@ -164,6 +164,23 @@ func TestCodingLoopDeterministicScenarioEndToEnd(t *testing.T) {
 	if !strings.Contains(out.String(), "note (unverified): Fixed the calculator.") {
 		t.Fatalf("the model text must be surfaced as an unverified note:\n%s", out.String())
 	}
+	for _, want := range []string{
+		"Verified runtime result:",
+		"status: completed",
+		"outcome: completed",
+		"verifier: passed",
+		"check=tests-pass type=recipe_exit_zero status=passed",
+		"during-task changes: app/calc.go ( M)",
+		"Git diff (bounded):",
+		"recipe=test exit=1 evidence=obs-000002",
+		"recipe=test exit=1 evidence=obs-000005",
+		"recipe=test exit=0 evidence=obs-000008",
+		"truncated=stdout:false/stderr:false",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("normal run output missing authoritative %q:\n%s", want, out.String())
+		}
+	}
 
 	// The real workspace holds the corrected implementation (real safe write).
 	content, err := os.ReadFile(filepath.Join(workspace, "app", "calc.go"))
@@ -344,6 +361,20 @@ func TestCodingLoopResumeAfterInterruptionContinues(t *testing.T) {
 	if !strings.Contains(resumeOut, "outcome: completed") {
 		t.Fatalf("resume must complete:\n%s", resumeOut)
 	}
+	for _, want := range []string{
+		"Verified runtime result:",
+		"status: completed",
+		"outcome: completed",
+		"verifier: passed",
+		"recipe=test exit=1 evidence=obs-000002",
+		"recipe=test exit=1 evidence=obs-000004",
+		"recipe=test exit=0 evidence=obs-000007",
+		"during-task changes: app/calc.go ( M)",
+	} {
+		if !strings.Contains(resumeOut, want) {
+			t.Fatalf("resume output missing authoritative %q:\n%s", want, resumeOut)
+		}
+	}
 	// The final workspace state is the corrected implementation.
 	content, err := os.ReadFile(filepath.Join(workspace, "app", "calc.go"))
 	if err != nil {
@@ -475,5 +506,8 @@ func TestCodingLoopVerificationRetryFlagStops(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "outcome: verification_failures_exhausted") {
 		t.Fatalf("run output must show the typed outcome:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "Verified runtime result:") {
+		t.Fatalf("failed verification must not receive a completed report:\n%s", out.String())
 	}
 }
