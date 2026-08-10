@@ -2,14 +2,17 @@ package omniroute
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,7 +20,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
 // The embedded corpus is deliberately test-only. It cannot be reached by
@@ -267,6 +274,10 @@ func loadContractManifest(fsys fs.FS) (contractManifest, error) {
 	}
 
 	manifestKinds := make(map[ErrorKind]struct{}, len(manifest.ErrorKindInventory))
+	scenariosByName := make(map[string]contractScenario, len(manifest.Scenarios))
+	for _, scenario := range manifest.Scenarios {
+		scenariosByName[scenario.Name] = scenario
+	}
 	for index, entry := range manifest.ErrorKindInventory {
 		kind := ErrorKind(strings.TrimSpace(entry.Kind))
 		if kind == "" {
@@ -282,8 +293,12 @@ func loadContractManifest(fsys fs.FS) (contractManifest, error) {
 			}
 		}
 		for _, scenarioName := range entry.Scenarios {
-			if _, ok := seenScenarios[scenarioName]; !ok {
+			scenario, ok := scenariosByName[scenarioName]
+			if !ok {
 				return contractManifest{}, fmt.Errorf("inventory error kind %q references unknown scenario %q", kind, scenarioName)
+			}
+			if scenario.Expected.ErrorKind != string(kind) {
+				return contractManifest{}, fmt.Errorf("inventory error kind %q references scenario %q with expected kind %q", kind, scenarioName, scenario.Expected.ErrorKind)
 			}
 		}
 	}
@@ -371,6 +386,195 @@ func sortedErrorKinds(kinds map[ErrorKind]struct{}) []ErrorKind {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
 	return result
+}
+
+func TestContractCorpusScenarios(t *testing.T) {
+	manifest, err := loadContractManifest(contractFixtureFS())
+	if err != nil {
+		t.Fatalf("loadContractManifest() error = %v", err)
+	}
+	for _, scenario := range manifest.Scenarios {
+		scenario := scenario
+		t.Run(scenario.Name, func(t *testing.T) {
+			runContractScenario(t, manifest, scenario)
+		})
+	}
+}
+
+func runContractScenario(t *testing.T, _ contractManifest, scenario contractScenario) {
+	t.Helper()
+	started := time.Now()
+	now := time.Date(2026, time.August, 10, 20, 0, 0, 0, time.UTC)
+	responseSpec := contractMockResponse{transport: scenario.Transport}
+	if scenario.Response != nil {
+		responseSpec.status = scenario.Response.Status
+		responseSpec.headers = make(http.Header, len(scenario.Response.Headers))
+		for key, value := range scenario.Response.Headers {
+			responseSpec.headers.Set(key, value)
+		}
+		if scenario.Response.BodyFile != "" {
+			responseSpec.body = []byte(mustReadContractFixture(scenario.Response.BodyFile))
+		}
+		if scenario.Response.ReceiptFile != "" {
+			responseSpec.receipt = []byte(mustReadContractFixture(scenario.Response.ReceiptFile))
+		}
+	}
+	management := make(map[string]contractMockResponse, len(scenario.Management))
+	for endpoint, fixture := range scenario.Management {
+		management[endpoint] = contractMockResponse{status: http.StatusOK, body: []byte(mustReadContractFixture(fixture))}
+	}
+
+	var server *contractMockServer
+	var roundTrips atomic.Int32
+	var options Options
+	var baseURL string
+	if scenario.Transport.Kind == "dial_error" || scenario.Transport.Kind == "connection_reset" {
+		baseURL = "http://contract.invalid"
+		options.Transport = contractDialTransport(scenario.Transport.Kind, &roundTrips)
+	} else {
+		server = newContractMockServer(t, contractMockConfig{completion: responseSpec, management: management})
+		defer server.Close()
+		baseURL = server.URL()
+		options.HTTPClient = server.Client()
+	}
+	options.Now = func() time.Time { return now }
+
+	config := testConfig(baseURL)
+	if scenario.Config.MaxRequestBytes != 0 {
+		config.MaxRequestBytes = scenario.Config.MaxRequestBytes
+	}
+	if scenario.Config.MaxResponseBytes != 0 {
+		config.MaxResponseBytes = scenario.Config.MaxResponseBytes
+	}
+	if scenario.Config.TimeoutMS != 0 {
+		config.Timeout = time.Duration(scenario.Config.TimeoutMS) * time.Millisecond
+	}
+	if scenario.Config.AttemptReceipts {
+		config.EnableAttemptReceipts = true
+		config.Provider = "chatgpt-web"
+		config.AccountLaneHash = "lane-hash-synthetic-001"
+		config.RouteSafety = provider.ReceiptRouteSafety()
+	}
+	client, err := New(config, options)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	request := provider.Request{
+		Prompt:          scenario.Request.Prompt,
+		Model:           scenario.Request.Model,
+		ClientRequestID: scenario.Request.ClientRequestID,
+	}
+	if request.Prompt == "" {
+		request.Prompt = "synthetic boundary prompt"
+	}
+	if scenario.Config.AttemptReceipts && request.ClientRequestID == "" {
+		request.ClientRequestID = "contract-request-001"
+	}
+	ctx := context.Background()
+	if scenario.Transport.Kind == "cancelled" {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		cancel()
+	}
+
+	var response provider.Response
+	switch scenario.Operation {
+	case "complete_once":
+		response, err = client.completeOnce(ctx, request)
+	case "complete":
+		response, err = client.Complete(ctx, request)
+	case "preflight":
+		err = client.Preflight(ctx)
+	case "snapshot":
+		_, err = client.Snapshot(ctx)
+	default:
+		t.Fatalf("unsupported operation %q", scenario.Operation)
+	}
+
+	assertContractError(t, scenario.Expected.ErrorKind, err)
+	if scenario.Operation == "complete_once" || scenario.Operation == "complete" {
+		outcome := Classify(response, err)
+		if scenario.Expected.OutcomeClass != "" && string(outcome.Class) != scenario.Expected.OutcomeClass {
+			t.Fatalf("Classify() class = %q, want %q (response=%#v err=%v)", outcome.Class, scenario.Expected.OutcomeClass, response, err)
+		}
+		if scenario.Expected.UpstreamReached != nil && outcome.UpstreamReached != *scenario.Expected.UpstreamReached {
+			t.Fatalf("Classify() upstream reached = %t, want %t", outcome.UpstreamReached, *scenario.Expected.UpstreamReached)
+		}
+		if scenario.Expected.DeliveryState != "" && response.Metadata.DeliveryState.String() != scenario.Expected.DeliveryState {
+			t.Fatalf("delivery state = %q, want %q", response.Metadata.DeliveryState, scenario.Expected.DeliveryState)
+		}
+		if scenario.Expected.ResponseText != "" && response.Text != scenario.Expected.ResponseText {
+			t.Fatalf("response text = %q, want %q", response.Text, scenario.Expected.ResponseText)
+		}
+		if scenario.Expected.RetryAfterSeconds != 0 && response.Metadata.RetryAfter != time.Duration(scenario.Expected.RetryAfterSeconds)*time.Second {
+			t.Fatalf("RetryAfter = %s, want %ds", response.Metadata.RetryAfter, scenario.Expected.RetryAfterSeconds)
+		}
+		if scenario.Expected.ResetAt != "" {
+			resetAt, parseErr := time.Parse(time.RFC3339, scenario.Expected.ResetAt)
+			if parseErr != nil {
+				t.Fatalf("manifest reset_at is invalid: %v", parseErr)
+			}
+			if !response.Metadata.ResetAt.Equal(resetAt) {
+				t.Fatalf("ResetAt = %s, want %s", response.Metadata.ResetAt, resetAt)
+			}
+		}
+		if scenario.Expected.AttemptReceiptCount != 0 {
+			if response.Metadata.AttemptReceipts == nil || len(response.Metadata.AttemptReceipts.Receipts) != scenario.Expected.AttemptReceiptCount {
+				t.Fatalf("attempt receipts = %#v, want %d", response.Metadata.AttemptReceipts, scenario.Expected.AttemptReceiptCount)
+			}
+		}
+		metadataText := fmt.Sprintf("%#v", response.Metadata)
+		if strings.Contains(metadataText, "Bearer ") || strings.Contains(metadataText, config.APIKey) {
+			t.Fatalf("response metadata leaked credential material: %s", metadataText)
+		}
+		if response.Metadata.SessionID == "synthetic-session-001" {
+			t.Fatal("raw synthetic session identifier was not hashed")
+		}
+	}
+	if err != nil {
+		errText := err.Error()
+		for _, private := range []string{config.APIKey, request.Prompt} {
+			if private != "" && strings.Contains(errText, private) {
+				t.Fatalf("error leaked private test input %q: %v", private, err)
+			}
+		}
+	}
+
+	counts := map[string]int{"round_trips": int(roundTrips.Load())}
+	if server != nil {
+		for key, value := range server.Counts() {
+			counts[key] = value
+		}
+	}
+	for key, want := range scenario.Expected.RequestCounts {
+		if got := counts[key]; got != want {
+			t.Fatalf("request count %q = %d, want %d (all=%#v)", key, got, want, counts)
+		}
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("scenario exceeded bounded test duration: %s", elapsed)
+	}
+}
+
+func assertContractError(t *testing.T, wantKind string, err error) {
+	t.Helper()
+	if wantKind == "" {
+		if err != nil {
+			t.Fatalf("unexpected contract error: %v", err)
+		}
+		return
+	}
+	if err == nil {
+		t.Fatalf("expected contract error kind %q, got nil", wantKind)
+	}
+	var providerErr *Error
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("error %T %v is not an OmniRoute Error", err, err)
+	}
+	if string(providerErr.Kind) != wantKind {
+		t.Fatalf("error kind = %q, want %q", providerErr.Kind, wantKind)
+	}
 }
 
 func TestContractFixtureHygieneRejectsSecretShapedValues(t *testing.T) {

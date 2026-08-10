@@ -1,6 +1,7 @@
 package omniroute
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -39,11 +41,20 @@ type contractMockCounts struct {
 	redirectReplays atomic.Int32
 }
 
+type contractRequestRecord struct {
+	Method  string
+	Path    string
+	Headers http.Header
+	Body    []byte
+}
+
 type contractMock struct {
 	completion        contractMockResponse
 	management        map[string]contractMockResponse
 	completionHandler http.HandlerFunc
 	counts            contractMockCounts
+	mu                sync.Mutex
+	requests          []contractRequestRecord
 }
 
 type contractMockServer struct {
@@ -130,7 +141,40 @@ func (s *contractMockServer) Counts() map[string]int {
 	}
 }
 
+func (s *contractMockServer) Requests() []contractRequestRecord {
+	s.mock.mu.Lock()
+	defer s.mock.mu.Unlock()
+	requests := make([]contractRequestRecord, len(s.mock.requests))
+	for index, request := range s.mock.requests {
+		requests[index] = contractRequestRecord{
+			Method:  request.Method,
+			Path:    request.Path,
+			Headers: request.Headers.Clone(),
+			Body:    append([]byte(nil), request.Body...),
+		}
+	}
+	return requests
+}
+
+func (m *contractMock) recordRequest(r *http.Request) {
+	var body []byte
+	if r.Body != nil {
+		body, _ = io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		r.Body = io.NopCloser(bytes.NewReader(body))
+	}
+	m.mu.Lock()
+	m.requests = append(m.requests, contractRequestRecord{
+		Method:  r.Method,
+		Path:    r.URL.Path,
+		Headers: r.Header.Clone(),
+		Body:    append([]byte(nil), body...),
+	})
+	m.mu.Unlock()
+}
+
 func (m *contractMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	m.recordRequest(r)
 	m.counts.total.Add(1)
 	if r.URL.Path == "/v1/chat/completions" {
 		if r.Method != http.MethodPost {
@@ -155,7 +199,7 @@ func (m *contractMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != path {
 			continue
 		}
-		if endpoint == "resilience" && r.Method != http.MethodGet {
+		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
@@ -255,5 +299,9 @@ func TestContractMockCountsRedirectWithoutReplay(t *testing.T) {
 	counts := server.Counts()
 	if counts["chat_posts"] != 1 || counts["redirect_replays"] != 0 {
 		t.Fatalf("redirect request counts = %#v, want one POST and no replay", counts)
+	}
+	requests := server.Requests()
+	if len(requests) != 1 || requests[0].Method != http.MethodPost || requests[0].Path != "/v1/chat/completions" {
+		t.Fatalf("recorded requests = %#v, want one completion POST", requests)
 	}
 }

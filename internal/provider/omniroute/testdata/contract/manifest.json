@@ -228,7 +228,7 @@
       "name": "management_telemetry_malformed",
       "operation": "snapshot",
       "management": {"rate_limits":"management/rate-limits-malformed.json"},
-      "expected": {"error_kind":"telemetry", "request_counts":{"total":1,"chat_posts":0,"management_gets":1,"redirect_replays":0,"round_trips":0}}
+      "expected": {"error_kind":"telemetry", "request_counts":{"total":2,"chat_posts":0,"management_gets":2,"redirect_replays":0,"round_trips":0}}
     },
     {
       "name": "attempt_receipts_valid",
