@@ -1,0 +1,87 @@
+FROM golang:1.22.2-bookworm@sha256:d0902bacefdde1cf45528c098d14e55d78c107def8a22d148eabd71582d7a99f
+
+ARG RUNSTEAD_UID=1000
+ARG RUNSTEAD_GID=1000
+ARG TARGETARCH=amd64
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      bash \
+      ca-certificates \
+      curl \
+      gcc \
+      git \
+      passwd \
+      ripgrep \
+      sqlite3; \
+    jq_version=1.8.2; \
+    case "$TARGETARCH" in \
+      amd64) jq_sha256=b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f ;; \
+      arm64) jq_sha256=8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309 ;; \
+      *) echo "unsupported TARGETARCH for pinned jq binary: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl --fail --silent --show-error --location --retry 3 \
+      "https://github.com/jqlang/jq/releases/download/jq-$jq_version/jq-linux-$TARGETARCH" \
+      --output /usr/local/bin/jq; \
+    printf '%s  %s\n' "$jq_sha256" /usr/local/bin/jq | sha256sum --check --status; \
+    chmod 0755 /usr/local/bin/jq; \
+    rm -rf /var/lib/apt/lists/*; \
+    case "$RUNSTEAD_UID" in \
+      ''|*[!0-9]*) echo 'RUNSTEAD_UID must be a positive integer' >&2; exit 1 ;; \
+    esac; \
+    case "$RUNSTEAD_GID" in \
+      ''|*[!0-9]*) echo 'RUNSTEAD_GID must be a positive integer' >&2; exit 1 ;; \
+    esac; \
+    if [ "$RUNSTEAD_UID" -eq 0 ] || [ "$RUNSTEAD_GID" -eq 0 ]; then \
+      echo 'RUNSTEAD_UID and RUNSTEAD_GID must be non-zero' >&2; \
+      exit 1; \
+    fi; \
+    if getent passwd runstead >/dev/null; then \
+      existing_uid="$(getent passwd runstead | cut -d: -f3)"; \
+      existing_gid="$(getent passwd runstead | cut -d: -f4)"; \
+      if [ "$existing_uid" != "$RUNSTEAD_UID" ] || [ "$existing_gid" != "$RUNSTEAD_GID" ]; then \
+        echo "runstead already exists with UID:GID $existing_uid:$existing_gid" >&2; \
+        exit 1; \
+      fi; \
+      runstead_group=runstead; \
+    else \
+      if getent passwd "$RUNSTEAD_UID" >/dev/null; then \
+        echo "requested UID $RUNSTEAD_UID is already used by another image user" >&2; \
+        exit 1; \
+      fi; \
+      if getent group runstead >/dev/null; then \
+        existing_group_gid="$(getent group runstead | cut -d: -f3)"; \
+        if [ "$existing_group_gid" != "$RUNSTEAD_GID" ]; then \
+          echo "runstead group already exists with GID $existing_group_gid" >&2; \
+          exit 1; \
+        fi; \
+        runstead_group=runstead; \
+      elif getent group "$RUNSTEAD_GID" >/dev/null; then \
+        runstead_group="$(getent group "$RUNSTEAD_GID" | cut -d: -f1)"; \
+      else \
+        groupadd --gid "$RUNSTEAD_GID" runstead; \
+        runstead_group=runstead; \
+      fi; \
+      useradd \
+        --uid "$RUNSTEAD_UID" \
+        --gid "$runstead_group" \
+        --create-home \
+        --shell /bin/bash \
+        runstead; \
+    fi; \
+    install -d -o "$RUNSTEAD_UID" -g "$RUNSTEAD_GID" \
+      /workspace \
+      /target \
+      /go/pkg/mod \
+      /home/runstead/.cache/go-build \
+      /home/runstead/.local/share/runstead
+
+ENV HOME=/home/runstead \
+    GOMODCACHE=/go/pkg/mod \
+    GOCACHE=/home/runstead/.cache/go-build \
+    RUNSTEAD_STATE_DIR=/home/runstead/.local/share/runstead
+
+WORKDIR /workspace
+USER runstead
+CMD ["bash"]

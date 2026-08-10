@@ -1,0 +1,9 @@
+.git
+.gitignore
+.env
+.env.*
+**/.env
+**/.env.*
+.omx/
+scratch/
+experiments/protocol/results/

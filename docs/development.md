@@ -21,6 +21,32 @@ Docker is not a complete security sandbox for an agent that edits host code.
 
 A bind-mounted writable repository can be modified or deleted by processes inside the container. The mount is the intentionally granted boundary. Docker reduces dependency pollution and limits unmounted host access; it does not make mounted data safe from the agent.
 
+Docker is optional. It does not replace Runstead's policy, effect, governor or
+verifier controls, and it is not a production runtime requirement or runtime
+architecture boundary.
+
+## Native workflow is authoritative
+
+Docker is optional. The native Go workflow remains the reference path and does
+not require Docker:
+
+```bash
+test -z "$(gofmt -l .)"
+go test ./...
+go vet ./...
+go build ./cmd/runstead
+go test -race ./...
+bash experiments/protocol/test.sh
+```
+
+The formatting, test, vet, build and protocol checks above are the checks run by
+CI. The local workflow also includes the race detector, which is an additional
+check beyond the current CI workflow. The M0 offline replay also works natively:
+
+```bash
+bash experiments/protocol/run.sh --offline --sessions 4
+```
+
 ## Required development layout
 
 The initial environment should contain one primary development service with:
@@ -49,6 +75,115 @@ selected target repo  ──bind mount──> /target
 ```
 
 Only the target repository selected for a run should be mounted. Do not mount the user's home directory, filesystem root or broad parent folders for convenience.
+
+## Docker workflow
+
+The project-owned `Dockerfile.dev` is the reproducible development image. It
+uses Go `1.22.2`, installs Git, curl, pinned jq `1.8.2`, ripgrep, SQLite CLI, CA
+certificates, Bash and GCC, and runs as the non-root `runstead` user. The Compose
+service also enables Docker's minimal init process so orphaned subprocesses are
+reaped while keeping the same non-root, capability-drop and namespace
+restrictions.
+
+On Linux, build with the host IDs so files created in the `/workspace` bind mount
+remain owned by the host user:
+
+```bash
+export RUNSTEAD_UID="$(id -u)"
+export RUNSTEAD_GID="$(id -g)"
+docker compose build
+```
+
+If those variables are omitted, the image uses the `1000:1000` defaults. Rebuild
+the image after changing the host IDs. The build fails rather than silently
+reusing a conflicting UID; an existing compatible group ID is reused.
+
+Open a development shell with:
+
+```bash
+docker compose run --rm dev bash
+```
+
+Run the native checks through Compose with:
+
+```bash
+docker compose run --rm dev go test ./...
+docker compose run --rm dev go test -race ./...
+docker compose run --rm dev go vet ./...
+docker compose run --rm dev go build ./cmd/runstead
+```
+
+Run the M0 protocol checks through the primary development service with:
+
+```bash
+docker compose run --rm dev bash experiments/protocol/test.sh
+docker compose run --rm dev bash experiments/protocol/run.sh --offline --sessions 4
+```
+
+The historical `experiments/protocol/Dockerfile` remains available for the M0
+experiment's historical reproduction, but it is not the primary development
+interface.
+
+### Target repository
+
+No target repository is mounted by default. Select one absolute host path and
+add only that path for a run:
+
+```bash
+RUNSTEAD_TARGET="$(realpath ../selected-target)"
+docker compose run --rm \
+  --volume "$RUNSTEAD_TARGET:/target" \
+  dev bash
+```
+
+Use `:ro` in the volume specification when the target only needs to be read.
+Do not replace this with a mount of `$HOME`, `/`, or a broad parent directory.
+
+### Development state and caches
+
+The Compose service keeps `GOMODCACHE` at `/go/pkg/mod`, `GOCACHE` at
+`/home/runstead/.cache/go-build` and `RUNSTEAD_STATE_DIR` at
+`/home/runstead/.local/share/runstead`. Each path is backed by a named volume.
+The Runstead state volume survives `docker compose down` and container removal.
+
+To remove containers while preserving caches and state:
+
+```bash
+docker compose down
+```
+
+To recreate the image without deleting development data:
+
+```bash
+docker compose build --no-cache
+```
+
+To reset the image, caches and Runstead development state deliberately:
+
+```bash
+docker compose down --volumes
+docker compose build --no-cache
+```
+
+`docker compose down --volumes` deletes the named development state and cache
+volumes.
+
+### Runtime credentials
+
+Offline tests require no credentials. For a live M0 attempt, the variables must
+already be populated at runtime by the operator or a secret manager:
+
+```bash
+: "${OMNIROUTE_BASE_URL:?set OMNIROUTE_BASE_URL at runtime}"
+: "${OMNIROUTE_API_KEY:?set OMNIROUTE_API_KEY at runtime}"
+: "${OMNIROUTE_MODEL:?set OMNIROUTE_MODEL at runtime}"
+docker compose run --rm dev bash experiments/protocol/run.sh --live
+```
+
+Compose only passes through those existing environment values. Do not put a key
+in this document, a Dockerfile, an image build argument, a Compose default, a
+fixture, a command argument, or a committed `.env` file. Avoid shell tracing
+while running live mode.
 
 ## Credentials
 
