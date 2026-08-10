@@ -43,7 +43,7 @@ The commands above are the same checks used by CI. The M0 offline replay also
 works natively:
 
 ```bash
-bash experiments/protocol/run.sh --offline
+bash experiments/protocol/run.sh --offline --sessions 4
 ```
 
 ## Required development layout
@@ -78,8 +78,8 @@ Only the target repository selected for a run should be mounted. Do not mount th
 ## Docker workflow
 
 The project-owned `Dockerfile.dev` is the reproducible development image. It
-uses Go `1.22.2`, installs Git, curl, jq, ripgrep, SQLite CLI, CA certificates,
-Bash and GCC, and runs as the non-root `runstead` user. The Compose service also
+uses Go `1.22.2`, installs Git, curl, pinned jq `1.7.1`, ripgrep, SQLite CLI, CA
+certificates, Bash and GCC, and runs as the non-root `runstead` user. The Compose service also
 enables Docker's minimal init process so orphaned subprocesses are reaped while
 keeping the same non-root, capability-drop and namespace restrictions.
 
@@ -115,7 +115,7 @@ Run the M0 protocol checks through the primary development service with:
 
 ```bash
 docker compose run --rm dev bash experiments/protocol/test.sh
-docker compose run --rm dev bash experiments/protocol/run.sh --offline
+docker compose run --rm dev bash experiments/protocol/run.sh --offline --sessions 4
 ```
 
 The historical `experiments/protocol/Dockerfile` remains available for the M0

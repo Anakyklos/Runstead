@@ -2,6 +2,7 @@ FROM golang:1.22.2-bookworm
 
 ARG RUNSTEAD_UID=1000
 ARG RUNSTEAD_GID=1000
+ARG TARGETARCH=amd64
 
 RUN set -eux; \
     apt-get update; \
@@ -11,10 +12,20 @@ RUN set -eux; \
       curl \
       gcc \
       git \
-      jq \
       passwd \
       ripgrep \
       sqlite3; \
+    jq_version=1.7.1; \
+    case "$TARGETARCH" in \
+      amd64) jq_sha256=5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5 ;; \
+      arm64) jq_sha256=4dd2d8a0661df0b22f1bb9a1f9830f06b6f3b8f7d91211a1ef5d7c4f06a8b4a5 ;; \
+      *) echo "unsupported TARGETARCH for pinned jq binary: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl --fail --silent --show-error --location --retry 3 \
+      "https://github.com/jqlang/jq/releases/download/jq-$jq_version/jq-linux-$TARGETARCH" \
+      --output /usr/local/bin/jq; \
+    printf '%s  %s\n' "$jq_sha256" /usr/local/bin/jq | sha256sum --check --status; \
+    chmod 0755 /usr/local/bin/jq; \
     rm -rf /var/lib/apt/lists/*; \
     case "$RUNSTEAD_UID" in \
       ''|*[!0-9]*) echo 'RUNSTEAD_UID must be a positive integer' >&2; exit 1 ;; \
