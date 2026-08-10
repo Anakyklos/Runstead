@@ -17,6 +17,11 @@ import (
 // ErrTaskNotFound is returned by RenderInspect when the task row is absent.
 var ErrTaskNotFound = errors.New("task not found")
 
+// ErrFinalProjectionUnavailable is returned when a task does not have a
+// durable completed state backed by a passed verifier attempt. The CLI must
+// never render a verified completion projection for any other state.
+var ErrFinalProjectionUnavailable = errors.New("verified final projection unavailable")
+
 type inspectTask struct {
 	TaskID      string
 	Objective   string
@@ -91,58 +96,45 @@ type inspectReceipt struct {
 	UpstreamReached  bool
 }
 
+// inspectProjection is the shared durable view used by both the historical
+// inspect renderer and the completion-only final renderer. Every field is
+// loaded from the same persisted projections and reports; no renderer derives
+// authority from model output.
+type inspectProjection struct {
+	task                 inspectTask
+	events               []eventRow
+	actions              []inspectAction
+	toolAttempts         []inspectToolAttempt
+	providerAttempts     []inspectProviderAttempt
+	receipts             []inspectReceipt
+	writeDecisions       []inspectWritePolicyDecision
+	approvals            []inspectApproval
+	pending              []PendingApproval
+	processEvidence      []inspectProcessEvidence
+	verificationAttempts []VerificationAttemptRow
+	governorState        *inspectGovernor
+}
+
 // RenderInspect writes a stable, human-readable reconstruction of one task.
 // It never dumps raw SQLite rows: the output is fixed-section, ordered and
 // sanitized, and every identifier shown comes from the persisted projection.
 func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string) error {
-	task, err := s.loadInspectTask(ctx, taskID)
+	projection, err := s.loadInspectProjection(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	events, err := s.loadEvents(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	actions, err := s.loadInspectActions(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	toolAttempts, err := s.loadInspectToolAttempts(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	providerAttempts, err := s.loadInspectProviderAttempts(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	receipts, err := s.loadInspectReceipts(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	writeDecisions, err := s.loadInspectWritePolicyDecisions(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	approvals, err := s.loadInspectApprovals(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	pending, err := s.PendingApprovals(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	processEvidence, err := s.loadInspectProcessEvidence(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	verificationAttempts, err := s.VerificationAttempts(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	governorState, err := s.loadInspectGovernor(ctx, taskID)
-	if err != nil {
-		return err
-	}
+	task := projection.task
+	events := projection.events
+	actions := projection.actions
+	toolAttempts := projection.toolAttempts
+	providerAttempts := projection.providerAttempts
+	receipts := projection.receipts
+	writeDecisions := projection.writeDecisions
+	approvals := projection.approvals
+	pending := projection.pending
+	processEvidence := projection.processEvidence
+	verificationAttempts := projection.verificationAttempts
+	governorState := projection.governorState
 
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "Task: %s\n", task.TaskID)
@@ -291,28 +283,7 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 	}
 
 	builder.WriteString("\nProcess attempts:\n")
-	if len(processEvidence) == 0 {
-		builder.WriteString("  (none)\n")
-	}
-	for _, item := range processEvidence {
-		fmt.Fprintf(&builder, "  %s execution=%s recipe=%s exit=%d", item.CreatedAt, item.ExecutionID, item.RecipeID, item.ExitCode)
-		if item.Signal != "" {
-			fmt.Fprintf(&builder, " signal=%s", item.Signal)
-		}
-		if item.DurationNanos > 0 {
-			fmt.Fprintf(&builder, " duration=%dns", item.DurationNanos)
-		}
-		if item.TimedOut {
-			builder.WriteString(" timed_out=yes")
-		}
-		if item.Canceled {
-			builder.WriteString(" canceled=yes")
-		}
-		if item.StdoutTruncated || item.StderrTruncated {
-			fmt.Fprintf(&builder, " truncated=stdout:%t/stderr:%t", item.StdoutTruncated, item.StderrTruncated)
-		}
-		fmt.Fprintf(&builder, " network_isolation=%s\n", item.NetworkIsolation)
-	}
+	renderProcessEvidence(&builder, processEvidence)
 
 	builder.WriteString("\nVerification:\n")
 	if len(verificationAttempts) == 0 {
@@ -385,6 +356,142 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 		return fmt.Errorf("write inspect output: %w", err)
 	}
 	return nil
+}
+
+// RenderFinal writes the bounded verified-runtime projection of a completed
+// task. It refuses to render a completion report unless the durable task row
+// and the latest persisted verifier attempt agree that completion passed.
+func (s *Store) RenderFinal(ctx context.Context, out io.Writer, taskID string) error {
+	projection, err := s.loadInspectProjection(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if projection.task.Status != "completed" || projection.task.Outcome != "completed" {
+		return fmt.Errorf("%w: task status=%s outcome=%s", ErrFinalProjectionUnavailable, projection.task.Status, projection.task.Outcome)
+	}
+	if len(projection.verificationAttempts) == 0 {
+		return fmt.Errorf("%w: no verification attempt", ErrFinalProjectionUnavailable)
+	}
+	latest := projection.verificationAttempts[len(projection.verificationAttempts)-1]
+	if latest.Decision != "passed" {
+		return fmt.Errorf("%w: latest verification decision=%s", ErrFinalProjectionUnavailable, latest.Decision)
+	}
+
+	var builder strings.Builder
+	builder.WriteString("Verified runtime result:\n")
+	fmt.Fprintf(&builder, "  task: %s\n", projection.task.TaskID)
+	fmt.Fprintf(&builder, "  status: %s\n", projection.task.Status)
+	fmt.Fprintf(&builder, "  outcome: %s\n", projection.task.Outcome)
+	fmt.Fprintf(&builder, "  verifier: %s\n", latest.Decision)
+	fmt.Fprintf(&builder, "  summary: %s\n", boundedRender(latest.Summary))
+
+	builder.WriteString("  acceptance checks:\n")
+	if len(latest.Checks) == 0 {
+		builder.WriteString("    (none)\n")
+	}
+	for _, check := range latest.Checks {
+		fmt.Fprintf(&builder, "    check=%s type=%s status=%s\n", check.CheckID, check.Type, check.Status)
+		if check.Expected != "" {
+			fmt.Fprintf(&builder, "      expected: %s\n", boundedRender(check.Expected))
+		}
+		if check.Observed != "" {
+			fmt.Fprintf(&builder, "      observed: %s\n", boundedRender(check.Observed))
+		}
+		if len(check.Evidence) > 0 {
+			fmt.Fprintf(&builder, "      evidence: %s\n", strings.Join(check.Evidence, ","))
+		}
+		if check.Reason != "" {
+			fmt.Fprintf(&builder, "      reason: %s\n", boundedRender(check.Reason))
+		}
+	}
+
+	builder.WriteString("  evidence IDs:\n")
+	hasEvidence := false
+	for _, attempt := range projection.toolAttempts {
+		if attempt.EvidenceID == "" {
+			continue
+		}
+		hasEvidence = true
+		fmt.Fprintf(&builder, "    %s tool=%s\n", attempt.EvidenceID, attempt.Tool)
+	}
+	if !hasEvidence {
+		builder.WriteString("    (none)\n")
+	}
+
+	builder.WriteString("  Git observation:\n")
+	renderGitObservation(&builder, projection.verificationAttempts)
+	builder.WriteString("  Process results:\n")
+	renderProcessEvidence(&builder, projection.processEvidence)
+
+	if _, err := io.WriteString(out, builder.String()); err != nil {
+		return fmt.Errorf("write final output: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) loadInspectProjection(ctx context.Context, taskID string) (inspectProjection, error) {
+	task, err := s.loadInspectTask(ctx, taskID)
+	if err != nil {
+		return inspectProjection{}, err
+	}
+	events, err := s.loadEvents(ctx, taskID)
+	if err != nil {
+		return inspectProjection{}, err
+	}
+	actions, err := s.loadInspectActions(ctx, taskID)
+	if err != nil {
+		return inspectProjection{}, err
+	}
+	toolAttempts, err := s.loadInspectToolAttempts(ctx, taskID)
+	if err != nil {
+		return inspectProjection{}, err
+	}
+	providerAttempts, err := s.loadInspectProviderAttempts(ctx, taskID)
+	if err != nil {
+		return inspectProjection{}, err
+	}
+	receipts, err := s.loadInspectReceipts(ctx, taskID)
+	if err != nil {
+		return inspectProjection{}, err
+	}
+	writeDecisions, err := s.loadInspectWritePolicyDecisions(ctx, taskID)
+	if err != nil {
+		return inspectProjection{}, err
+	}
+	approvals, err := s.loadInspectApprovals(ctx, taskID)
+	if err != nil {
+		return inspectProjection{}, err
+	}
+	pending, err := s.PendingApprovals(ctx, taskID)
+	if err != nil {
+		return inspectProjection{}, err
+	}
+	processEvidence, err := s.loadInspectProcessEvidence(ctx, taskID)
+	if err != nil {
+		return inspectProjection{}, err
+	}
+	verificationAttempts, err := s.VerificationAttempts(ctx, taskID)
+	if err != nil {
+		return inspectProjection{}, err
+	}
+	governorState, err := s.loadInspectGovernor(ctx, taskID)
+	if err != nil {
+		return inspectProjection{}, err
+	}
+	return inspectProjection{
+		task:                 task,
+		events:               events,
+		actions:              actions,
+		toolAttempts:         toolAttempts,
+		providerAttempts:     providerAttempts,
+		receipts:             receipts,
+		writeDecisions:       writeDecisions,
+		approvals:            approvals,
+		pending:              pending,
+		processEvidence:      processEvidence,
+		verificationAttempts: verificationAttempts,
+		governorState:        governorState,
+	}, nil
 }
 
 func (s *Store) loadInspectTask(ctx context.Context, taskID string) (inspectTask, error) {
@@ -508,6 +615,7 @@ type inspectApproval struct {
 // persisted evidence.
 type inspectProcessEvidence struct {
 	ExecutionID      string
+	EvidenceID       string
 	RecipeID         string
 	ExitCode         int
 	Signal           string
@@ -526,7 +634,7 @@ type inspectProcessEvidence struct {
 // fields.
 func (s *Store) loadInspectProcessEvidence(ctx context.Context, taskID string) ([]inspectProcessEvidence, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT r.execution_id, r.data_json, r.created_at
+		`SELECT r.execution_id, r.evidence_id, r.data_json, r.created_at
 		 FROM tool_results r JOIN tool_attempts t ON t.execution_id = r.execution_id
 		 WHERE r.task_id = ? AND t.tool = 'run_recipe'
 		 ORDER BY r.created_at, r.evidence_id`, taskID)
@@ -538,7 +646,7 @@ func (s *Store) loadInspectProcessEvidence(ctx context.Context, taskID string) (
 	for rows.Next() {
 		var item inspectProcessEvidence
 		var dataJSON, createdAt string
-		if err := rows.Scan(&item.ExecutionID, &dataJSON, &createdAt); err != nil {
+		if err := rows.Scan(&item.ExecutionID, &item.EvidenceID, &dataJSON, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan process evidence: %w", err)
 		}
 		var evidence struct {
@@ -572,6 +680,31 @@ func (s *Store) loadInspectProcessEvidence(ctx context.Context, taskID string) (
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func renderProcessEvidence(builder *strings.Builder, items []inspectProcessEvidence) {
+	if len(items) == 0 {
+		builder.WriteString("  (none)\n")
+		return
+	}
+	for _, item := range items {
+		fmt.Fprintf(builder, "  %s execution=%s recipe=%s exit=%d evidence=%s truncated=stdout:%t/stderr:%t",
+			item.CreatedAt, item.ExecutionID, item.RecipeID, item.ExitCode, item.EvidenceID,
+			item.StdoutTruncated, item.StderrTruncated)
+		if item.Signal != "" {
+			fmt.Fprintf(builder, " signal=%s", item.Signal)
+		}
+		if item.DurationNanos > 0 {
+			fmt.Fprintf(builder, " duration=%dns", item.DurationNanos)
+		}
+		if item.TimedOut {
+			builder.WriteString(" timed_out=yes")
+		}
+		if item.Canceled {
+			builder.WriteString(" canceled=yes")
+		}
+		fmt.Fprintf(builder, " network_isolation=%s\n", item.NetworkIsolation)
+	}
 }
 
 func (s *Store) loadInspectWritePolicyDecisions(ctx context.Context, taskID string) ([]inspectWritePolicyDecision, error) {
@@ -748,8 +881,9 @@ func shortID(value string) string {
 
 // boundedRender caps one verification description line for human rendering so
 // inspect output stays bounded even when a persisted description is long.
+const maxInspectLine = 200
+
 func boundedRender(value string) string {
-	const maxInspectLine = 200
 	if len(value) <= maxInspectLine {
 		return value
 	}
@@ -770,6 +904,8 @@ func renderGitObservation(builder *strings.Builder, attempts []VerificationAttem
 	var report struct {
 		Git *struct {
 			CurrentStatus     string `json:"current_status"`
+			CurrentDiff       string `json:"current_diff,omitempty"`
+			Truncated         bool   `json:"truncated"`
 			Available         bool   `json:"available"`
 			Failure           string `json:"failure,omitempty"`
 			BaselineTruncated bool   `json:"baseline_truncated,omitempty"`
@@ -802,6 +938,13 @@ func renderGitObservation(builder *strings.Builder, attempts []VerificationAttem
 	}
 	builder.WriteString("  pre-existing changes: " + renderChangedFiles(git.PreExisting) + "\n")
 	builder.WriteString("  during-task changes: " + renderChangedFiles(git.DuringTask) + "\n")
+	diff := singleLine(git.CurrentDiff)
+	if diff == "" {
+		builder.WriteString("  Git diff (bounded): (none)\n")
+	} else {
+		fmt.Fprintf(builder, "  Git diff (bounded): %s\n", boundedRender(diff))
+	}
+	fmt.Fprintf(builder, "  diff truncated: %t\n", git.Truncated || len(diff) > maxInspectLine)
 	if git.BaselineTruncated {
 		builder.WriteString("  limitation: the task-start git baseline was truncated; pre-existing changes outside the truncated baseline window may be attributed as during-task\n")
 	}

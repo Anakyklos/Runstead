@@ -318,6 +318,12 @@ func TestRunModelTextNeverVerifiedSummary(t *testing.T) {
 	if !strings.Contains(out.String(), "note (unverified): tests passed") {
 		t.Fatalf("stdout must carry the model text as a labeled unverified note:\n%s", out.String())
 	}
+	if !strings.Contains(out.String(), "Verified runtime result:") {
+		t.Fatalf("completed output must include the durable verified projection:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "recipe=test evidence=") || strings.Contains(out.String(), "recipe=test exit=") {
+		t.Fatalf("a model claim must not create recipe evidence in the verified projection:\n%s", out.String())
+	}
 	taskID := taskIDFromOutput(t, errOut.String())
 	rendered := inspectRendered(t, stateDir, taskID)
 	if strings.Contains(rendered, "Summary: tests passed") {

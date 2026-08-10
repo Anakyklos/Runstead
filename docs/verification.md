@@ -176,6 +176,22 @@ a verified completion claim: without a `recipe_exit_zero` acceptance check
 an unverified note next to a completion verified by whatever acceptance
 checks actually exist.
 
+## Normal completion output versus inspect
+
+After a task is durably finalized as `completed`, both `runstead run` and
+`runstead resume` print a bounded `Verified runtime result:` projection. This
+projection is loaded from durable task state and the latest persisted verifier
+report, so its outcome, verifier decision, acceptance checks, evidence IDs,
+Git attribution/diff and recipe process results do not come from the model's
+final response. The projection is emitted only when the persisted task outcome
+is `completed` and the latest verifier decision is `passed`.
+
+For failed, blocked, uncertain, approval-paused or incomplete tasks, the CLI
+continues to print only the existing typed outcome and diagnostic evidence; it
+does not present a completed report. `runstead inspect <task-id>` remains the
+historical and detailed view when the operator needs the full event journal,
+all attempts, policy decisions, recovery state or every verification attempt.
+
 ## Recipe and process evidence
 
 A `recipe_exit_zero` acceptance check is satisfied only when there is real

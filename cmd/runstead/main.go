@@ -322,7 +322,9 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	logger.InfoContext(ctx, "run started", "task_id", taskID, "provider", "scripted", "workspace", cfg.Workspace)
 	fmt.Fprintf(errOut, "task: %s\n", taskID)
 	result := loop.Run(ctx, agent.Task{ID: taskID, Prompt: taskPrompt})
-	printResult(out, errOut, taskID, result)
+	if err := printFinalRuntimeResult(ctx, out, errOut, store, taskID, result, "run"); err != nil {
+		return exitUnavailable
+	}
 	return result.Outcome.ExitCode()
 }
 
@@ -679,6 +681,22 @@ func printResult(out, errOut io.Writer, taskID string, result agent.Result) {
 	}
 }
 
+// printFinalRuntimeResult keeps the typed loop result and the model note
+// separate from the completion projection. The latter is loaded from durable
+// state only after a completed outcome and independently validates the
+// persisted task/verifier state before rendering.
+func printFinalRuntimeResult(ctx context.Context, out, errOut io.Writer, store *state.Store, taskID string, result agent.Result, command string) error {
+	printResult(out, errOut, taskID, result)
+	if result.Outcome != agent.OutcomeCompleted {
+		return nil
+	}
+	if err := store.RenderFinal(ctx, out, taskID); err != nil {
+		fmt.Fprintf(errOut, "%s: verified final output unavailable: %v\n", command, err)
+		return err
+	}
+	return nil
+}
+
 func cliTraceSink(errOut io.Writer) agent.TraceSink {
 	return func(line agent.TraceLine) {
 		var builder strings.Builder
@@ -1014,7 +1032,10 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "durably resumable; no correction budget is consumed. The task never")
 	fmt.Fprintln(out, "shells out; durable task, action, attempt, evidence, journal, policy and")
 	fmt.Fprintln(out, "account-protection state is persisted to SQLite (issues #8/#10/#26) and")
-	fmt.Fprintln(out, "can be inspected with 'runstead inspect <task-id>'.")
+	fmt.Fprintln(out, "can be inspected with 'runstead inspect <task-id>'. After a verified completed")
+	fmt.Fprintln(out, "run, stdout also includes a bounded 'Verified runtime result:' projection")
+	fmt.Fprintln(out, "with durable evidence IDs, verifier checks, Git attribution/diff and recipe")
+	fmt.Fprintln(out, "process results; the model's final text remains 'note (unverified)'.")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "The deterministic offline mode replays scripted model responses (JSONL with")
 	fmt.Fprintln(out, "one {\"text\":\"...\"} object per line) through the real governor and tools.")

@@ -405,7 +405,9 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	logger.InfoContext(ctx, "resume continued", "task_id", taskID, "provider", "scripted", "workspace", workspacePath)
 	fmt.Fprintf(errOut, "resume: task %s continuing\n", taskID)
 	result := loop.Run(ctx, agent.Task{ID: taskID, Prompt: ""})
-	printResult(out, errOut, taskID, result)
+	if err := printFinalRuntimeResult(ctx, out, errOut, store, taskID, result, "resume"); err != nil {
+		return exitUnavailable
+	}
 	return result.Outcome.ExitCode()
 }
 
@@ -812,6 +814,9 @@ func printResumeHelp(out io.Writer) {
 	fmt.Fprintln(out, "continuation cannot be decided safely, the task stops with a typed")
 	fmt.Fprintln(out, "human_review_required outcome and structured persisted evidence.")
 	fmt.Fprintln(out, "The task workspace is part of its durable identity and is never overridden.")
+	fmt.Fprintln(out, "When resume reaches a verified completed outcome, stdout also includes the")
+	fmt.Fprintln(out, "bounded Verified runtime result projection; runstead inspect remains the")
+	fmt.Fprintln(out, "historical detailed view and model final text remains unverified.")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Flags:")
 	fmt.Fprintln(out, "  --scripted FILE           scripted responses for a deterministic offline continuation (RUNSTEAD_SCRIPTED_RESPONSES)")
