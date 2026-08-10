@@ -43,7 +43,7 @@
       "operation": "complete_once",
       "response": {"status": 200, "body_file": "responses/success.json", "headers": {"Content-Type":"application/json", "X-Request-Id":"contract-request-001", "X-OmniRoute-Session-Id":"synthetic-session-001"}},
       "request": {"prompt":"synthetic prompt for contract test"},
-      "expected": {"error_kind":"", "outcome_class":"success", "delivery_state":"completed", "upstream_reached":true, "response_text":"synthetic completion response", "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
+      "expected": {"error_kind":"", "outcome_class":"success", "delivery_state":"completed", "upstream_reached":true, "response_text":"synthetic completion response", "request_id":"contract-request-001", "session_id_hashed":true, "request_counts":{"total":1,"chat_posts":1,"management_gets":0,"redirect_replays":0,"round_trips":0}}
     },
     {
       "name": "authentication_expired",

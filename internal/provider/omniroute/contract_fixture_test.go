@@ -92,6 +92,8 @@ type contractExpectation struct {
 	RetryAfterSeconds   int            `json:"retry_after_seconds,omitempty"`
 	ResetAt             string         `json:"reset_at,omitempty"`
 	ResponseText        string         `json:"response_text,omitempty"`
+	RequestID           string         `json:"request_id,omitempty"`
+	SessionIDHashed     bool           `json:"session_id_hashed,omitempty"`
 	RequestCounts       map[string]int `json:"request_counts,omitempty"`
 	AttemptReceiptCount int            `json:"attempt_receipt_count,omitempty"`
 }
@@ -231,6 +233,10 @@ func loadContractManifest(fsys fs.FS) (contractManifest, error) {
 	if manifest.SchemaVersion != contractSchemaVersion {
 		return contractManifest{}, fmt.Errorf("unsupported contract manifest schema version %d", manifest.SchemaVersion)
 	}
+	sourceKinds, err := errorKindsFromSource()
+	if err != nil {
+		return contractManifest{}, err
+	}
 
 	seenScenarios := make(map[string]struct{}, len(manifest.Scenarios))
 	for index, scenario := range manifest.Scenarios {
@@ -246,6 +252,11 @@ func loadContractManifest(fsys fs.FS) (contractManifest, error) {
 		}
 		if _, ok := contractTransports[scenario.Transport.Kind]; !ok {
 			return contractManifest{}, fmt.Errorf("scenario %q has unknown transport %q", scenario.Name, scenario.Transport.Kind)
+		}
+		if expectedKind := ErrorKind(strings.TrimSpace(scenario.Expected.ErrorKind)); expectedKind != "" {
+			if _, ok := sourceKinds[expectedKind]; !ok {
+				return contractManifest{}, fmt.Errorf("scenario %q has unknown expected ErrorKind %q", scenario.Name, expectedKind)
+			}
 		}
 		if scenario.Response != nil {
 			if err := validateFixtureReference(fsys, scenario.Response.BodyFile); err != nil {
@@ -301,10 +312,6 @@ func loadContractManifest(fsys fs.FS) (contractManifest, error) {
 				return contractManifest{}, fmt.Errorf("inventory error kind %q references scenario %q with expected kind %q", kind, scenarioName, scenario.Expected.ErrorKind)
 			}
 		}
-	}
-	sourceKinds, err := errorKindsFromSource()
-	if err != nil {
-		return contractManifest{}, err
 	}
 	for kind := range sourceKinds {
 		if _, ok := manifestKinds[kind]; !ok {
@@ -493,6 +500,9 @@ func runContractScenario(t *testing.T, _ contractManifest, scenario contractScen
 	}
 
 	assertContractError(t, scenario.Expected.ErrorKind, err)
+	if scenario.Operation == "preflight" && scenario.Expected.ErrorKind == string(ErrorUnsafeRoute) && client.RouteSafety().Validate() == nil {
+		t.Fatalf("RouteSafety after unsafe preflight = %#v, want fail-closed unknown state", client.RouteSafety())
+	}
 	if scenario.Operation == "complete_once" || scenario.Operation == "complete" {
 		outcome := Classify(response, err)
 		if scenario.Expected.OutcomeClass != "" && string(outcome.Class) != scenario.Expected.OutcomeClass {
@@ -506,6 +516,12 @@ func runContractScenario(t *testing.T, _ contractManifest, scenario contractScen
 		}
 		if scenario.Expected.ResponseText != "" && response.Text != scenario.Expected.ResponseText {
 			t.Fatalf("response text = %q, want %q", response.Text, scenario.Expected.ResponseText)
+		}
+		if scenario.Expected.RequestID != "" && response.Metadata.RequestID != scenario.Expected.RequestID {
+			t.Fatalf("RequestID = %q, want %q", response.Metadata.RequestID, scenario.Expected.RequestID)
+		}
+		if scenario.Expected.SessionIDHashed && !strings.HasPrefix(response.Metadata.SessionID, "sha256:") {
+			t.Fatalf("SessionID = %q, want sanitized hash", response.Metadata.SessionID)
 		}
 		if scenario.Expected.RetryAfterSeconds != 0 && response.Metadata.RetryAfter != time.Duration(scenario.Expected.RetryAfterSeconds)*time.Second {
 			t.Fatalf("RetryAfter = %s, want %ds", response.Metadata.RetryAfter, scenario.Expected.RetryAfterSeconds)
@@ -629,6 +645,38 @@ func TestContractManifestRejectsUnknownScenarioReference(t *testing.T) {
 	}`)
 	if _, err := loadContractManifest(os.DirFS(dir)); err == nil {
 		t.Fatal("loadContractManifest() accepted an unknown scenario reference")
+	}
+}
+
+func TestContractManifestRejectsUnknownExpectedKind(t *testing.T) {
+	dir := t.TempDir()
+	copyEmbeddedContractFixtures(t, dir)
+	manifest := mustReadContractFixture("manifest.json")
+	manifest = strings.Replace(manifest, `"expected": {"error_kind":"",`, `"expected": {"error_kind":"unknown_kind",`, 1)
+	writeManifest(t, dir, manifest)
+	if _, err := loadContractManifest(os.DirFS(dir)); err == nil {
+		t.Fatal("loadContractManifest() accepted an unknown expected error kind")
+	}
+}
+
+func copyEmbeddedContractFixtures(t *testing.T, root string) {
+	t.Helper()
+	err := fs.WalkDir(contractFixtureFS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		data, err := fs.ReadFile(contractFixtureFS(), path)
+		if err != nil {
+			return err
+		}
+		writeFixtureFile(t, root, path, string(data))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
