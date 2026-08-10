@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/governor"
+	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
 // Recovery persistence (issue #9). Every recovery transition keeps the
@@ -404,6 +405,7 @@ type RecoveryProviderAttempt struct {
 	ClientRequestID string
 	Status          string
 	Outcome         string
+	DeliveryState   provider.DeliveryState
 	UpstreamReached bool
 	Uncertain       bool
 	AttemptDebited  int
@@ -528,8 +530,8 @@ func (s *Store) loadRecoveryToolAttempts(ctx context.Context, taskID string) ([]
 
 func (s *Store) loadRecoveryProviderAttempts(ctx context.Context, taskID string) ([]RecoveryProviderAttempt, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT execution_id, client_request_id, status, outcome, upstream_reached, uncertain, attempt_debited, attempt_sequence, receipt_aware, prepared_at, recovery_reason
-		 FROM provider_attempts WHERE task_id = ? ORDER BY created_at, execution_id`, taskID)
+		`SELECT execution_id, client_request_id, status, outcome, delivery_state, upstream_reached, uncertain, attempt_debited, attempt_sequence, receipt_aware, prepared_at, recovery_reason
+			 FROM provider_attempts WHERE task_id = ? ORDER BY created_at, execution_id`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load recovery provider attempts: %w", err)
 	}
@@ -537,11 +539,15 @@ func (s *Store) loadRecoveryProviderAttempts(ctx context.Context, taskID string)
 	var attempts []RecoveryProviderAttempt
 	for rows.Next() {
 		var attempt RecoveryProviderAttempt
-		var preparedAt string
+		var preparedAt, deliveryState string
 		if err := rows.Scan(&attempt.ExecutionID, &attempt.ClientRequestID, &attempt.Status, &attempt.Outcome,
-			&attempt.UpstreamReached, &attempt.Uncertain, &attempt.AttemptDebited, &attempt.AttemptSequence,
+			&deliveryState, &attempt.UpstreamReached, &attempt.Uncertain, &attempt.AttemptDebited, &attempt.AttemptSequence,
 			&attempt.ReceiptAware, &preparedAt, &attempt.RecoveryReason); err != nil {
 			return nil, fmt.Errorf("scan recovery provider attempt: %w", err)
+		}
+		attempt.DeliveryState, err = parsePersistedDeliveryState(deliveryState)
+		if err != nil {
+			return nil, fmt.Errorf("parse recovery provider delivery state: %w", err)
 		}
 		attempt.PreparedAt = parseTime(preparedAt)
 		attempts = append(attempts, attempt)

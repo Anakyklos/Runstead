@@ -96,9 +96,8 @@ func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client p
 		classifier = defaultOutcome
 	}
 	outcome := classifier(response, callErr)
-	if outcome.Class == OutcomeCancelledBeforeUpstream {
-		outcome.Class = OutcomeUncertainReached
-	}
+	outcome.DeliveryState = response.Metadata.DeliveryState
+	outcome = applyDeliveryEvidence(outcome)
 	var completion FinishResult
 	if receiptAware {
 		completion = admission.Permit.FinishWithAttemptReceipts(outcome, response.Metadata.AttemptReceipts)
@@ -120,6 +119,7 @@ func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client p
 			Outcome:          completion.Outcome,
 			UpstreamReached:  outcome.UpstreamReached,
 			Uncertain:        completion.Outcome == OutcomeUncertainReached,
+			DeliveryState:    response.Metadata.DeliveryState,
 			AttemptDebited:   completion.AttemptDebited,
 			SelectedBackoff:  completion.SelectedBackoff,
 			Circuit:          completion.Circuit,

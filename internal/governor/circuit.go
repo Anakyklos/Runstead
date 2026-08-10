@@ -3,6 +3,8 @@ package governor
 import (
 	"errors"
 	"time"
+
+	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
 func (g *Governor) transitionCircuitLocked(state CircuitState, reason OutcomeClass, openUntil time.Time, _ string) {
@@ -31,7 +33,8 @@ func (g *Governor) recordOutcomeLocked(now time.Time, permit *Permit, outcome Ou
 	if outcome.Class == "" {
 		outcome.Class = OutcomeUncertainReached
 	}
-	if outcome.Class == OutcomeCancelledBeforeUpstream {
+	if outcome.Class == OutcomeCancelledBeforeUpstream &&
+		effectiveDeliveryState(outcome.DeliveryState) != provider.DeliveryNotSent {
 		outcome.Class = OutcomeUncertainReached
 	}
 	selected := time.Duration(0)
@@ -85,6 +88,7 @@ func (g *Governor) recordOutcomeLocked(now time.Time, permit *Permit, outcome Ou
 		SelectedBackoff: selected,
 		AttemptDebited:  1,
 		Circuit:         g.circuitSnapshotLocked(),
+		DeliveryState:   outcome.DeliveryState,
 	}
 	state := g.taskLocked(permit.request.TaskID)
 	recoverable := outcome.Class == OutcomeRateCapacity || outcome.Class == OutcomeConnectionReset || outcome.Class == OutcomeTimeout || outcome.Class == OutcomeEmptyResponse || outcome.Class == OutcomeMalformedUpstream || outcome.Class == OutcomeUpstreamServerFailure

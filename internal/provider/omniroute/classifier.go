@@ -12,34 +12,38 @@ import (
 // Classify maps only sanitized adapter errors and response metadata into the
 // governor's existing account-protection outcome vocabulary.
 func Classify(response provider.Response, err error) governor.Outcome {
+	deliveryState := response.Metadata.DeliveryState
 	reached := response.Metadata.StatusCode != 0 || response.Metadata.Endpoint != ""
+	if deliveryState.Valid() {
+		reached = deliveryState != provider.DeliveryNotSent
+	}
 	if providerErr := new(Error); errors.As(err, &providerErr) {
 		reached = reached || providerErr.UpstreamReached
-		return classifiedError(providerErr, reached)
+		return classifiedError(providerErr, reached, deliveryState)
 	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			if reached {
-				return governor.Outcome{Class: governor.OutcomeUncertainReached, UpstreamReached: true}
+				return governor.Outcome{Class: governor.OutcomeUncertainReached, UpstreamReached: true, DeliveryState: deliveryState}
 			}
-			return governor.Outcome{Class: governor.OutcomeCancelledBeforeUpstream}
+			return governor.Outcome{Class: governor.OutcomeCancelledBeforeUpstream, DeliveryState: deliveryState}
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
-			return governor.Outcome{Class: governor.OutcomeTimeout, UpstreamReached: reached}
+			return governor.Outcome{Class: governor.OutcomeTimeout, UpstreamReached: reached, DeliveryState: deliveryState}
 		}
-		return governor.Outcome{Class: governor.OutcomeUncertainReached, UpstreamReached: reached}
+		return governor.Outcome{Class: governor.OutcomeUncertainReached, UpstreamReached: reached, DeliveryState: deliveryState}
 	}
 	if strings.TrimSpace(response.Text) == "" {
-		return governor.Outcome{Class: governor.OutcomeEmptyResponse, UpstreamReached: reached}
+		return governor.Outcome{Class: governor.OutcomeEmptyResponse, UpstreamReached: reached, DeliveryState: deliveryState}
 	}
-	return governor.Outcome{Class: governor.OutcomeSuccess, UpstreamReached: reached}
+	return governor.Outcome{Class: governor.OutcomeSuccess, UpstreamReached: reached, DeliveryState: deliveryState}
 }
 
-func classifiedError(providerErr *Error, reached bool) governor.Outcome {
+func classifiedError(providerErr *Error, reached bool, deliveryState provider.DeliveryState) governor.Outcome {
 	if providerErr == nil {
-		return governor.Outcome{Class: governor.OutcomeUncertainReached, UpstreamReached: reached}
+		return governor.Outcome{Class: governor.OutcomeUncertainReached, UpstreamReached: reached, DeliveryState: deliveryState}
 	}
-	base := governor.Outcome{RetryAfter: providerErr.RetryAfter, ResetAt: providerErr.ResetAt, UpstreamReached: reached}
+	base := governor.Outcome{RetryAfter: providerErr.RetryAfter, ResetAt: providerErr.ResetAt, UpstreamReached: reached, DeliveryState: deliveryState}
 	switch providerErr.Kind {
 	case ErrorRateCapacity:
 		base.Class = governor.OutcomeRateCapacity

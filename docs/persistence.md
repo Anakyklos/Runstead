@@ -271,6 +271,19 @@ The conservative accounting semantics of #29/#33 are unchanged: an uncertain
 outcome keeps its charge visible, `telemetry.unsafe` is persisted, and a
 restored `uncertain` attempt is never reinterpreted.
 
+### Provider delivery state (#38)
+
+`delivery_state` is transport evidence orthogonal to the provider-attempt
+lifecycle. It does not mean task completion and it never replaces authoritative
+attempt receipts. `sent_unconfirmed` is fail-closed: it is treated as an
+uncertain effect and is not automatically replayed. `client_request_id` is the
+Runstead correlation identity, not a promise that OmniRoute or the upstream
+model honors an idempotency key. A `completed` delivery may still classify as a
+provider failure when the HTTP result, response content or envelope is invalid.
+An empty value means delivery was not observed before TX2 and is never converted
+to a stronger state during recovery. No exactly-once execution guarantee is
+introduced.
+
 ## `runstead inspect <task-id>`
 
 After the original `runstead run` process exits, `runstead inspect <task-id>`
@@ -282,7 +295,8 @@ reopens the database and renders a stable, human-readable reconstruction:
 - the chronological event journal;
 - logical actions (with fingerprint evidence);
 - tool attempts (status, classification, evidence id, duration) and provider
-  attempts (request id, outcome, upstream-reached, debits, receipt errors);
+  attempts (request id, delivery state, outcome, upstream-reached, debits,
+  receipt errors);
 - provider attempt receipts (upstream evidence identity, sequence, outcome,
   trigger);
 - prepared and uncertain states flagged explicitly ("the effect may have
@@ -337,8 +351,8 @@ implemented:
 - there is no automatic reconciliation engine;
 - prepared/uncertain attempts are persisted and flagged, but nothing
   automatically re-executes, reinterprets or reconciles them;
-- delivery-state transport tracking (#38) and first-party ChatGPT Web work
-  remain separate milestones; write tools (#10), the bounded process runner
+- first-party ChatGPT Web work remains a separate milestone; delivery-state
+  transport tracking (#38), write tools (#10), the bounded process runner
   (#26) and the independent verifier (#11) are implemented (see
   [writes.md](writes.md), [process-runner.md](process-runner.md) and
   [verification.md](verification.md)), including the approval pause (task

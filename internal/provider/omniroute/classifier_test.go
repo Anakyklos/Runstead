@@ -65,6 +65,19 @@ func TestClassifyTreatsCancellationAfterAttemptAsUncertain(t *testing.T) {
 	}
 }
 
+func TestClassifyCarriesRawDeliveryState(t *testing.T) {
+	response := provider.Response{
+		Text: "response",
+		Metadata: provider.ResponseMetadata{
+			DeliveryState: provider.DeliverySentUnconfirmed,
+		},
+	}
+	outcome := Classify(response, nil)
+	if outcome.DeliveryState != provider.DeliverySentUnconfirmed {
+		t.Fatalf("delivery state = %v, want sent_unconfirmed", outcome.DeliveryState)
+	}
+}
+
 func TestClassifyValidTextAndEmptyText(t *testing.T) {
 	if got := Classify(provider.Response{Text: " refusal text "}, nil); got.Class != governor.OutcomeSuccess {
 		t.Fatalf("text outcome = %#v, want success", got)

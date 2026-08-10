@@ -9,7 +9,10 @@ import (
 )
 
 func TestFakeReturnsPredefinedResponsesAndRecordsRequests(t *testing.T) {
-	fake := NewFake(Response{Text: "first"}, Response{Text: "second"})
+	fake := NewFake(
+		Response{Text: "first", Metadata: ResponseMetadata{DeliveryState: DeliveryCompleted}},
+		Response{Text: "second", Metadata: ResponseMetadata{DeliveryState: DeliveryCompleted}},
+	)
 	request := Request{Protocol: protocol.Current, Prompt: "inspect"}
 
 	first, err := fake.Complete(context.Background(), request)
@@ -22,6 +25,9 @@ func TestFakeReturnsPredefinedResponsesAndRecordsRequests(t *testing.T) {
 	}
 	if first.Text != "first" || second.Text != "second" {
 		t.Fatalf("responses = %#v, %#v", first, second)
+	}
+	if first.Metadata.DeliveryState != DeliveryCompleted || second.Metadata.DeliveryState != DeliveryCompleted {
+		t.Fatalf("delivery states = %v, %v; want completed", first.Metadata.DeliveryState, second.Metadata.DeliveryState)
 	}
 	if fake.Attempts() != 2 {
 		t.Fatalf("Attempts() = %d, want 2", fake.Attempts())

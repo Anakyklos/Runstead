@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/governor"
+	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
 // ErrTaskNotFound is returned by RenderInspect when the task row is absent.
@@ -71,6 +72,7 @@ type inspectProviderAttempt struct {
 	Model           string
 	Status          string
 	Outcome         string
+	DeliveryState   provider.DeliveryState
 	UpstreamReached bool
 	Uncertain       bool
 	AttemptDebited  int
@@ -227,6 +229,7 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 	}
 	for _, attempt := range providerAttempts {
 		fmt.Fprintf(&builder, "  %s request=%s provider=%s model=%s status=%s\n", attempt.ExecutionID, attempt.ClientRequestID, attempt.Provider, attempt.Model, attempt.Status)
+		fmt.Fprintf(&builder, "    delivery_state=%s\n", attempt.DeliveryState.String())
 		if attempt.Outcome != "" {
 			fmt.Fprintf(&builder, "    outcome=%s upstream_reached=%t\n", attempt.Outcome, attempt.UpstreamReached)
 		}
@@ -551,7 +554,7 @@ func (s *Store) loadInspectToolAttempts(ctx context.Context, taskID string) ([]i
 
 func (s *Store) loadInspectProviderAttempts(ctx context.Context, taskID string) ([]inspectProviderAttempt, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT p.execution_id, p.client_request_id, p.provider, p.model, p.status, p.outcome, p.upstream_reached,
+		`SELECT p.execution_id, p.client_request_id, p.provider, p.model, p.status, p.outcome, p.delivery_state, p.upstream_reached,
 		        p.uncertain, p.attempt_debited, p.selected_backoff_ns, p.error_class, p.recovery_reason,
 		        (SELECT COUNT(*) FROM provider_attempt_receipts r WHERE r.execution_id = p.execution_id),
 		        p.created_at, p.prepared_at, p.completed_at
@@ -563,11 +566,16 @@ func (s *Store) loadInspectProviderAttempts(ctx context.Context, taskID string) 
 	var attempts []inspectProviderAttempt
 	for rows.Next() {
 		var attempt inspectProviderAttempt
+		var deliveryState string
 		if err := rows.Scan(&attempt.ExecutionID, &attempt.ClientRequestID, &attempt.Provider, &attempt.Model, &attempt.Status,
-			&attempt.Outcome, &attempt.UpstreamReached, &attempt.Uncertain, &attempt.AttemptDebited,
+			&attempt.Outcome, &deliveryState, &attempt.UpstreamReached, &attempt.Uncertain, &attempt.AttemptDebited,
 			&attempt.SelectedBackoff, &attempt.ErrorClass, &attempt.RecoveryReason, &attempt.ReceiptCount, &attempt.CreatedAt,
 			&attempt.PreparedAt, &attempt.CompletedAt); err != nil {
 			return nil, fmt.Errorf("scan provider attempt: %w", err)
+		}
+		attempt.DeliveryState, err = parsePersistedDeliveryState(deliveryState)
+		if err != nil {
+			return nil, fmt.Errorf("parse provider attempt delivery state: %w", err)
 		}
 		attempts = append(attempts, attempt)
 	}

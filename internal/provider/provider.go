@@ -150,6 +150,7 @@ type ResponseMetadata struct {
 	ResetAt         time.Time
 	Endpoint        string
 	Model           string
+	DeliveryState   DeliveryState
 	AttemptReceipts *AttemptReceiptSet
 }
 

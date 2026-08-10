@@ -313,7 +313,10 @@ func writeFixture(t *testing.T, root, name, content string) {
 }
 
 func actionResponse(tool string, arguments string) provider.Response {
-	return provider.Response{Text: "<runstead_action>\n{\"version\":\"runstead.protocol.v1\",\"tool\":\"" + tool + "\",\"arguments\":" + arguments + "}\n</runstead_action>"}
+	return provider.Response{
+		Text:     "<runstead_action>\n{\"version\":\"runstead.protocol.v1\",\"tool\":\"" + tool + "\",\"arguments\":" + arguments + "}\n</runstead_action>",
+		Metadata: provider.ResponseMetadata{DeliveryState: provider.DeliveryCompleted},
+	}
 }
 
 // finalCitation is the typed evidence citation of a final response in tests:
@@ -332,7 +335,10 @@ func finalEvidence(id, tool string) finalCitation {
 
 func finalResponse(status, summary string, citations ...finalCitation) provider.Response {
 	encoded, _ := json.Marshal(citations)
-	return provider.Response{Text: "<runstead_final>\n{\"version\":\"runstead.protocol.v1\",\"status\":\"" + status + "\",\"summary\":\"" + summary + "\",\"evidence\":" + string(encoded) + "}\n</runstead_final>"}
+	return provider.Response{
+		Text:     "<runstead_final>\n{\"version\":\"runstead.protocol.v1\",\"status\":\"" + status + "\",\"summary\":\"" + summary + "\",\"evidence\":" + string(encoded) + "}\n</runstead_final>",
+		Metadata: provider.ResponseMetadata{DeliveryState: provider.DeliveryCompleted},
+	}
 }
 
 func testTask(id string) agent.Task {

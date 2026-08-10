@@ -356,6 +356,35 @@ type Outcome struct {
 	RetryAfter      time.Duration
 	ResetAt         time.Time
 	UpstreamReached bool
+	DeliveryState   provider.DeliveryState
+}
+
+func effectiveDeliveryState(state provider.DeliveryState) provider.DeliveryState {
+	if state.Valid() {
+		return state
+	}
+	return provider.DeliverySentUnconfirmed
+}
+
+func deliveryUpstreamReached(state provider.DeliveryState) bool {
+	return effectiveDeliveryState(state) != provider.DeliveryNotSent
+}
+
+func applyDeliveryEvidence(outcome Outcome) Outcome {
+	if !outcome.DeliveryState.Valid() {
+		return outcome
+	}
+	effective := effectiveDeliveryState(outcome.DeliveryState)
+	outcome.UpstreamReached = deliveryUpstreamReached(outcome.DeliveryState)
+	switch effective {
+	case provider.DeliverySentUnconfirmed, provider.DeliveryResponseStarted:
+		outcome.Class = OutcomeUncertainReached
+	case provider.DeliveryNotSent:
+		if outcome.Class == OutcomeCancelledBeforeUpstream {
+			return outcome
+		}
+	}
+	return outcome
 }
 
 type CircuitState string
@@ -485,6 +514,7 @@ type Event struct {
 	AttemptTrigger        provider.AttemptTrigger
 	AttemptReceiptOutcome provider.AttemptOutcome
 	UpstreamReached       bool
+	DeliveryState         provider.DeliveryState
 	Admission             AdmissionCode
 	Reason                AdmissionCode
 	Delay                 time.Duration
@@ -575,6 +605,7 @@ type FinishResult struct {
 	SelectedBackoff time.Duration
 	AttemptDebited  int
 	Circuit         CircuitSnapshot
+	DeliveryState   provider.DeliveryState
 	Err             error
 }
 
@@ -588,11 +619,17 @@ type ExecutionResult struct {
 type OutcomeClassifier func(provider.Response, error) Outcome
 
 func defaultOutcome(response provider.Response, err error) Outcome {
+	if errors.Is(err, context.Canceled) {
+		return Outcome{Class: OutcomeCancelledBeforeUpstream, DeliveryState: response.Metadata.DeliveryState}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return Outcome{Class: OutcomeTimeout, DeliveryState: response.Metadata.DeliveryState}
+	}
 	if err == nil {
 		if strings.TrimSpace(response.Text) == "" {
-			return Outcome{Class: OutcomeEmptyResponse, UpstreamReached: true}
+			return Outcome{Class: OutcomeEmptyResponse, UpstreamReached: true, DeliveryState: response.Metadata.DeliveryState}
 		}
-		return Outcome{Class: OutcomeSuccess, UpstreamReached: true}
+		return Outcome{Class: OutcomeSuccess, UpstreamReached: true, DeliveryState: response.Metadata.DeliveryState}
 	}
-	return Outcome{Class: OutcomeUncertainReached, UpstreamReached: true}
+	return Outcome{Class: OutcomeUncertainReached, UpstreamReached: true, DeliveryState: response.Metadata.DeliveryState}
 }
