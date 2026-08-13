@@ -76,3 +76,14 @@ func unsafeError(cause error) error {
 	}
 	return &Error{Kind: ErrorUnsafeRoute, Cause: errors.Join(provider.ErrUnsafeRoute, cause)}
 }
+
+// gatewayContractUnhealthyError keeps completion callers on the existing
+// fail-closed unsafe_route taxonomy while exposing the distinct typed health
+// sentinel through errors.Is. The health state itself remains available from
+// ContractHealthAware and is never inferred from this completion error.
+func gatewayContractUnhealthyError() error {
+	return &Error{
+		Kind:  ErrorUnsafeRoute,
+		Cause: errors.Join(provider.ErrUnsafeRoute, provider.ErrGatewayContractUnhealthy),
+	}
+}
