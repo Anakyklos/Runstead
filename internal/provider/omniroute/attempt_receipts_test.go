@@ -53,7 +53,6 @@ func TestCompleteConsumesFinalAttemptReceiptHeader(t *testing.T) {
 	client.config.AccountLaneHash = "lane"
 	client.config.Model = "model"
 	client.config.RouteSafety = provider.ReceiptRouteSafety()
-	client.gatewayContractHealth = provider.GatewayContractHealthResult{State: provider.GatewayContractHealthHealthy, ReasonCode: "test_fixture"}
 	client.now = func() time.Time { return now.Add(2 * time.Second) }
 
 	response, err := client.Complete(context.Background(), provider.Request{
@@ -78,7 +77,6 @@ func TestCompleteFailsClosedWithoutAttemptReceiptHeader(t *testing.T) {
 	client.config.Model = "model"
 	client.config.AccountLaneHash = "lane"
 	client.config.RouteSafety = provider.ReceiptRouteSafety()
-	client.gatewayContractHealth = provider.GatewayContractHealthResult{State: provider.GatewayContractHealthHealthy, ReasonCode: "test_fixture"}
 	_, err := client.Complete(context.Background(), provider.Request{Prompt: "prompt", ClientRequestID: "request-1"})
 	var receiptErr *Error
 	if !errors.As(err, &receiptErr) || receiptErr.Kind != ErrorAttemptReceiptsMissing {
@@ -120,7 +118,6 @@ func TestCompleteRejectsInvalidReceiptSet(t *testing.T) {
 	client.config.Model = "model"
 	client.config.AccountLaneHash = "lane"
 	client.config.RouteSafety = provider.ReceiptRouteSafety()
-	client.gatewayContractHealth = provider.GatewayContractHealthResult{State: provider.GatewayContractHealthHealthy, ReasonCode: "test_fixture"}
 	client.now = func() time.Time { return now.Add(2 * time.Second) }
 	_, err = client.Complete(context.Background(), provider.Request{ClientRequestID: "request-1"})
 	var receiptErr *Error

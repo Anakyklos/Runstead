@@ -19,7 +19,7 @@ func NewPolicySink(logger *slog.Logger) *PolicySink {
 }
 
 func (s *PolicySink) Emit(event governor.Event) {
-	args := []any{
+	s.logger.Info("account policy event",
 		"kind", event.Kind,
 		"account_policy_id", event.AccountPolicyID,
 		"provider", event.ProviderID,
@@ -65,16 +65,7 @@ func (s *PolicySink) Emit(event governor.Event) {
 			"retries_used", event.BudgetsAfter.RetriesUsed,
 			"manual_reserve_remaining", event.BudgetsAfter.ManualReserveRemaining,
 		),
-	}
-	if event.GatewayContractHealth != nil {
-		args = append(args, slog.Group("gateway_contract_health",
-			"state", event.GatewayContractHealth.State.String(),
-			"reason_code", event.GatewayContractHealth.ReasonCode,
-			"endpoint", event.GatewayContractHealth.Endpoint,
-			"checked_at", event.GatewayContractHealth.CheckedAt,
-		))
-	}
-	s.logger.Info("account policy event", args...)
+	)
 }
 
 func telemetryRemaining(value *int) any {

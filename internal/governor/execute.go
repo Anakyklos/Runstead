@@ -22,13 +22,6 @@ func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client p
 	if err := safety.Validate(); err != nil || !safety.Equal(g.config.RouteSafety) {
 		return ExecutionResult{Admission: g.result(AdmissionUnsafeProviderAmplification, AdmissionUnsafeProviderAmplification, time.Time{}, provider.ErrUnsafeRoute)}
 	}
-	if healthAware, ok := client.(provider.ContractHealthAware); ok {
-		health := healthAware.GatewayContractHealth()
-		if !health.Healthy() {
-			admission := g.gatewayContractHealthAdmission(request, health)
-			return ExecutionResult{Admission: admission, Err: admission.Err}
-		}
-	}
 	receiptAware := false
 	if g.config.RequireAttemptReceipts {
 		capability, ok := client.(provider.AttemptReceiptAware)
@@ -145,15 +138,6 @@ func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client p
 		}
 	}
 	return ExecutionResult{Admission: admission, Response: response, Completion: completion, Err: callErr}
-}
-
-func (g *Governor) gatewayContractHealthAdmission(request AttemptRequest, health provider.GatewayContractHealthResult) AdmissionResult {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	result := g.resultLocked(AdmissionGatewayContractUnhealthy, AdmissionGatewayContractUnhealthy, time.Time{}, provider.ErrGatewayContractUnhealthy)
-	result.GatewayContractHealth = &health
-	g.emitAdmissionLocked(request, result, false)
-	return result
 }
 
 // receiptEvidence flattens the sanitized receipt set for persistence. The

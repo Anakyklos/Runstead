@@ -473,14 +473,6 @@ func runContractScenario(t *testing.T, manifest contractManifest, scenario contr
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if scenario.Operation == "complete" && scenario.Config.AttemptReceipts {
-		// This corpus scenario isolates completion receipt validation. The
-		// on-demand gateway probe has its own deterministic request-count tests.
-		client.gatewayContractHealth = provider.GatewayContractHealthResult{
-			State:      provider.GatewayContractHealthHealthy,
-			ReasonCode: "test_fixture",
-		}
-	}
 
 	request := provider.Request{
 		Prompt:          scenario.Request.Prompt,

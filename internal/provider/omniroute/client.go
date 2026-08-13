@@ -81,14 +81,12 @@ type Client struct {
 	httpClient Doer
 	now        func() time.Time
 
-	mu                    sync.RWMutex
-	verified              bool
-	gatewayContractHealth provider.GatewayContractHealthResult
+	mu       sync.RWMutex
+	verified bool
 }
 
 var _ provider.Client = (*Client)(nil)
 var _ provider.SafetyAware = (*Client)(nil)
-var _ provider.ContractHealthAware = (*Client)(nil)
 
 func New(config Config, options Options) (*Client, error) {
 	baseURL, err := normalizeBaseURL(config.BaseURL)
@@ -231,9 +229,6 @@ func (c *Client) Preflight(ctx context.Context) error {
 func (c *Client) Complete(ctx context.Context, request provider.Request) (provider.Response, error) {
 	if c == nil {
 		return provider.Response{}, unsafeError(nil)
-	}
-	if health := c.GatewayContractHealth(); !health.Healthy() {
-		return provider.Response{}, gatewayContractUnhealthyError()
 	}
 	if !c.config.EnableAttemptReceipts {
 		return provider.Response{}, unsafeError(errAttemptReceiptsUnavailable)

@@ -237,25 +237,6 @@ than one active connection for the configured provider. It does not infer
 safety from model-name markers. Transport and response parsing remain covered
 through an internal test seam, not a production authorization path.
 
-### Gateway-contract health
-
-The on-demand `gateway_contract_health` probe is a read-only signal about the
-OmniRoute **management gateway contract** only. It reads exactly
-`/api/providers`, `/api/settings` and `/api/models/alias` with bounded GETs. It
-does not measure ChatGPT Web, Sentinel or any private upstream endpoint, and it
-does not prove authoritative attempt accounting.
-
-Its typed states are `unknown`, `healthy`, `degraded` and
-`protocol_changed`. A new client starts at `unknown`; timeouts, cancellation,
-transport uncertainty, ambiguous provider/model evidence, malformed JSON and
-shape drift never become `healthy`. All non-healthy states block protected
-execution. `healthy` only means that the three management responses have
-recognized compatible shapes. It does not replace `RouteSafety`, governor
-admission, policy, circuits, budgets, receipts or durable delivery-state
-accounting. The latest sanitized result is exposed in the existing trace path
-as `gateway_contract_health`; raw management bodies and credentials are never
-included.
-
 Receipt outcomes are typed for rate/capacity, authentication, HTTP 403,
 login challenges, CAPTCHA, suspicious activity, account warnings, feature
 restrictions, transport uncertainty and upstream failures. The governor
