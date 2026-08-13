@@ -81,12 +81,14 @@ type Client struct {
 	httpClient Doer
 	now        func() time.Time
 
-	mu       sync.RWMutex
-	verified bool
+	mu                    sync.RWMutex
+	verified              bool
+	gatewayContractHealth provider.GatewayContractHealthResult
 }
 
 var _ provider.Client = (*Client)(nil)
 var _ provider.SafetyAware = (*Client)(nil)
+var _ provider.ContractHealthAware = (*Client)(nil)
 
 func New(config Config, options Options) (*Client, error) {
 	baseURL, err := normalizeBaseURL(config.BaseURL)
