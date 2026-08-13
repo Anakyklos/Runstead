@@ -156,6 +156,7 @@ git commit -m "feat(provider): define gateway contract health state"
 
 **Files:**
 - Create: `internal/provider/omniroute/gateway_contract_health.go`
+- Modify: `internal/provider/omniroute/client.go` to add the synchronized latest-result field
 - Test: `internal/provider/omniroute/gateway_contract_health_test.go`
 - Reuse unchanged: `internal/provider/omniroute/contract_mock_test.go`
 - Reuse unchanged: `internal/provider/omniroute/contract_fixture_test.go`
@@ -203,7 +204,7 @@ Expected: FAIL because the probe and result storage do not exist.
 
 - [ ] **Step 3: Implement fixed endpoint order and result storage**
 
-Create `gateway_contract_health.go` with a fixed endpoint list:
+Add `gatewayContractHealth provider.GatewayContractHealthResult` to `Client` in `client.go`, leaving its zero value untouched so a new client is unprobed/`unknown`. Create `gateway_contract_health.go` with a fixed endpoint list:
 
 ```go
 var gatewayContractEndpoints = [...]string{providersPath, settingsPath, modelAliasesPath}
