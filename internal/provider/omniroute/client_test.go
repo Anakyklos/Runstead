@@ -18,92 +18,6 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
-// The proposed singleAttemptContract is intentionally present in this
-// fixture so tests prove it cannot authorize production execution.
-const safeResilienceResponse = `{
-  "requestQueue": {"concurrentRequests": 1, "minTimeBetweenRequestsMs": 0, "maxWaitMs": 15000, "maxQueueDepth": 0},
-  "singleAttemptContract": {
-    "version": 1,
-    "guaranteed": true,
-    "internalRetries": false,
-    "credentialRefreshRetry": false,
-    "cooldownReplay": false,
-    "accountPooling": false,
-    "automaticFallback": false
-  },
-  "connectionCooldown": {
-    "oauth": {"baseCooldownMs": 0, "useUpstreamRetryHints": false, "useUpstream429BreakerHints": false, "maxBackoffSteps": 0},
-    "apikey": {"baseCooldownMs": 0, "useUpstreamRetryHints": false, "useUpstream429BreakerHints": false, "maxBackoffSteps": 0}
-  },
-  "providerBreaker": {
-    "oauth": {"failureThreshold": 1, "degradationThreshold": 0, "resetTimeoutMs": 1000},
-    "apikey": {"failureThreshold": 1, "degradationThreshold": 0, "resetTimeoutMs": 1000}
-  },
-  "waitForCooldown": {"enabled": false, "maxRetries": 0, "maxRetryWaitSec": 0},
-  "comboCooldownWait": {"enabled": false, "maxAttempts": 0, "maxWaitMs": 0},
-  "quotaShareConcurrencyLimit": {"enabled": false},
-  "providerCooldown": {"enabled": false, "minRetryCooldownMs": 0, "maxRetryCooldownMs": 0},
-  "legacy": {"requestRetry": 0, "maxRetryIntervalSec": 0}
-}`
-
-func testConfig(baseURL string) Config {
-	return Config{
-		BaseURL:          baseURL + "/v1",
-		APIKey:           "secret-api-key",
-		Model:            "chatgpt-web/model",
-		Timeout:          time.Second,
-		MaxRequestBytes:  1 << 20,
-		MaxResponseBytes: 1 << 20,
-		RouteSafety:      provider.SafeRouteSafety(),
-	}
-}
-
-func newTransportClient(t *testing.T, handler http.Handler) (*Client, *httptest.Server) {
-	t.Helper()
-	server := httptest.NewServer(handler)
-	client, err := New(testConfig(server.URL), Options{HTTPClient: server.Client()})
-	if err != nil {
-		server.Close()
-		t.Fatal(err)
-	}
-	return client, server
-}
-
-func safeHandler(chat http.HandlerFunc) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/resilience", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, safeResilienceResponse)
-	})
-	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"wildcardAliases":[],"modelAliases":{},"globalFallbackModel":""}`)
-	})
-	mux.HandleFunc("/api/models/alias", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"aliases":{}}`)
-	})
-	mux.HandleFunc("/api/settings/model-aliases", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"builtIn":{},"custom":{},"all":{}}`)
-	})
-	mux.HandleFunc("/api/fallback/chains", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `[]`)
-	})
-	mux.HandleFunc("/api/combos", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"combos":[],"total":0}`)
-	})
-	mux.HandleFunc("/api/model-combo-mappings", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"mappings":[],"total":0}`)
-	})
-	mux.HandleFunc("/api/providers", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"connections":[{"id":"account-1","provider":"chatgpt-web","isActive":true,"defaultModel":"model"}],"total":1}`)
-	})
-	mux.HandleFunc("/v1/chat/completions", chat)
-	return mux
-}
-
 func TestCompleteTransportSendsOneMinimalNonStreamingRequestAndPreservesModelText(t *testing.T) {
 	var posts atomic.Int32
 	var gotAuthorization string
@@ -136,7 +50,7 @@ func TestCompleteTransportSendsOneMinimalNonStreamingRequestAndPreservesModelTex
 	if posts.Load() != 1 {
 		t.Fatalf("chat POSTs = %d, want 1", posts.Load())
 	}
-	if gotAuthorization != "Bearer secret-api-key" {
+	if gotAuthorization != "Bearer fixture-api-key" {
 		t.Fatalf("Authorization = %q", gotAuthorization)
 	}
 	if gotNoCache != "true" {
@@ -201,87 +115,6 @@ func TestCompleteTransportAcceptsMixedProseAndRefusalAsProviderText(t *testing.T
 			response, err := client.completeOnce(context.Background(), provider.Request{Prompt: "prompt"})
 			if err != nil || response.Text != content {
 				t.Fatalf("Complete() = (%q, %v), want provider text", response.Text, err)
-			}
-		})
-	}
-}
-
-func TestCompleteTransportClassifiesMalformedAndEmptyResponses(t *testing.T) {
-	tests := []struct {
-		name string
-		body string
-		want ErrorKind
-	}{
-		{name: "empty body", body: "", want: ErrorEmptyResponse},
-		{name: "invalid json", body: "{", want: ErrorMalformedJSON},
-		{name: "choices absent", body: `{}`, want: ErrorInvalidEnvelope},
-		{name: "message content absent", body: `{"choices":[{"message":{}}]}`, want: ErrorInvalidEnvelope},
-		{name: "empty content", body: `{"choices":[{"message":{"content":""}}]}`, want: ErrorEmptyResponse},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			client, server := newTransportClient(t, safeHandler(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				io.WriteString(w, tt.body)
-			}))
-			defer server.Close()
-			_, err := client.completeOnce(context.Background(), provider.Request{Prompt: "prompt"})
-			var providerErr *Error
-			if !errors.As(err, &providerErr) || providerErr.Kind != tt.want {
-				t.Fatalf("Complete() error = %T %v, want kind %s", err, err, tt.want)
-			}
-		})
-	}
-}
-
-func TestCompleteTransportClassifiesHTTPFailuresWithoutRetry(t *testing.T) {
-	tests := []struct {
-		name      string
-		status    int
-		body      string
-		headers   map[string]string
-		want      ErrorKind
-		wantRetry time.Duration
-	}{
-		{name: "expired authentication", status: http.StatusUnauthorized, body: `{"error":{"code":"token_expired"}}`, want: ErrorAuthenticationExpired},
-		{name: "denied authentication", status: http.StatusUnauthorized, body: `{"error":{"code":"invalid_api_key"}}`, want: ErrorAuthenticationDenied},
-		{name: "forbidden", status: http.StatusForbidden, body: `{}`, want: ErrorHTTP403},
-		{name: "rate limit", status: http.StatusTooManyRequests, body: `{"error":{"code":"rate_limit_exceeded"}}`, headers: map[string]string{"Retry-After": "7"}, want: ErrorRateCapacity, wantRetry: 7 * time.Second},
-		{name: "request timeout", status: http.StatusRequestTimeout, body: `{}`, want: ErrorTimeout},
-		{name: "upstream failure", status: http.StatusBadGateway, body: `{}`, want: ErrorUpstreamServerFailure},
-		{name: "login challenge", status: http.StatusUnauthorized, body: `{"error":{"code":"login_required"}}`, want: ErrorLoginChallenge},
-		{name: "captcha", status: http.StatusForbidden, body: `{"error":{"message":"captcha required"}}`, want: ErrorCAPTCHA},
-		{name: "suspicious activity", status: http.StatusForbidden, body: `{"error":{"code":"suspicious_activity"}}`, want: ErrorSuspiciousActivity},
-		{name: "account warning", status: http.StatusForbidden, body: `{"error":{"code":"account_warning"}}`, want: ErrorAccountWarning},
-		{name: "feature restriction", status: http.StatusBadRequest, body: `{"error":{"code":"feature_restricted"}}`, want: ErrorFeatureRestriction},
-		{name: "connection reset signal", status: http.StatusBadGateway, body: `{"error":{"code":"connection_reset"}}`, want: ErrorConnectionReset},
-		{name: "plain text expired", status: http.StatusUnauthorized, body: "token expired", want: ErrorAuthenticationExpired},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var posts atomic.Int32
-			client, server := newTransportClient(t, safeHandler(func(w http.ResponseWriter, r *http.Request) {
-				posts.Add(1)
-				for key, value := range tt.headers {
-					w.Header().Set(key, value)
-				}
-				w.WriteHeader(tt.status)
-				io.WriteString(w, tt.body)
-			}))
-			defer server.Close()
-			_, err := client.completeOnce(context.Background(), provider.Request{Prompt: "prompt"})
-			var providerErr *Error
-			if !errors.As(err, &providerErr) || providerErr.Kind != tt.want {
-				t.Fatalf("Complete() error = %T %v, want kind %s", err, err, tt.want)
-			}
-			if providerErr.RetryAfter != tt.wantRetry {
-				t.Fatalf("RetryAfter = %s, want %s", providerErr.RetryAfter, tt.wantRetry)
-			}
-			if posts.Load() != 1 {
-				t.Fatalf("chat POSTs = %d, want exactly one", posts.Load())
-			}
-			if strings.Contains(err.Error(), "secret-api-key") {
-				t.Fatalf("error leaked API key: %v", err)
 			}
 		})
 	}

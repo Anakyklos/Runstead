@@ -76,7 +76,7 @@ func TestSnapshotTreatsManagementAuthFailureAsOptionalTelemetryFailure(t *testin
 	if !errors.As(err, &providerErr) || providerErr.Kind != ErrorTelemetry {
 		t.Fatalf("Snapshot() error = %T %v, want telemetry error", err, err)
 	}
-	if strings.Contains(err.Error(), "secret-api-key") {
+	if strings.Contains(err.Error(), "fixture-api-key") {
 		t.Fatalf("telemetry error leaked API key: %v", err)
 	}
 }
