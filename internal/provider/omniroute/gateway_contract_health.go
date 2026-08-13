@@ -110,7 +110,6 @@ func classifyGatewayContractHTTPOrTransport(endpoint string, metadata provider.R
 	case http.StatusGone:
 		return healthResult(provider.GatewayContractHealthProtocolChanged, gatewayContractReasonHTTP410, endpoint, checkedAt)
 	case http.StatusTooManyRequests,
-		http.StatusInternalServerError,
 		http.StatusBadGateway,
 		http.StatusServiceUnavailable,
 		http.StatusGatewayTimeout:
