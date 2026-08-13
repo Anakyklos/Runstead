@@ -291,6 +291,7 @@ const (
 	AdmissionDuplicateClientRequest        AdmissionCode = "duplicate_client_request"
 	AdmissionGovernorClosed                AdmissionCode = "governor_closed"
 	AdmissionMissingAttemptReceipts        AdmissionCode = "missing_attempt_receipts"
+	AdmissionGatewayContractUnhealthy      AdmissionCode = "gateway_contract_unhealthy"
 )
 
 type AttemptRequest struct {
@@ -302,13 +303,14 @@ type AttemptRequest struct {
 }
 
 type AdmissionResult struct {
-	Code             AdmissionCode
-	Reason           AdmissionCode
-	RetryAt          time.Time
-	Delay            time.Duration
-	Permit           *Permit
-	Err              error
-	TelemetryHealthy bool
+	Code                  AdmissionCode
+	Reason                AdmissionCode
+	RetryAt               time.Time
+	Delay                 time.Duration
+	Permit                *Permit
+	Err                   error
+	TelemetryHealthy      bool
+	GatewayContractHealth *provider.GatewayContractHealthResult
 }
 
 func (r AdmissionResult) Admitted() bool {
@@ -529,6 +531,7 @@ type Event struct {
 	CircuitTo             CircuitState
 	CircuitReason         OutcomeClass
 	TelemetryHealthy      bool
+	GatewayContractHealth *provider.GatewayContractHealthResult
 }
 
 type EventSink interface {
