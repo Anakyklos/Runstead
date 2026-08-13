@@ -10,6 +10,49 @@ import (
 )
 
 var ErrUnsafeRoute = errors.New("provider route cannot guarantee authoritative upstream attempt accounting")
+var ErrGatewayContractUnhealthy = errors.New("provider gateway contract is not healthy")
+
+// GatewayContractHealth is the health of the provider's management gateway
+// contract. It is deliberately distinct from upstream or model-service
+// health, and its zero value is conservative.
+type GatewayContractHealth uint8
+
+const (
+	GatewayContractHealthUnknown GatewayContractHealth = iota
+	GatewayContractHealthHealthy
+	GatewayContractHealthDegraded
+	GatewayContractHealthProtocolChanged
+)
+
+func (h GatewayContractHealth) String() string {
+	switch h {
+	case GatewayContractHealthHealthy:
+		return "healthy"
+	case GatewayContractHealthDegraded:
+		return "degraded"
+	case GatewayContractHealthProtocolChanged:
+		return "protocol_changed"
+	default:
+		return "unknown"
+	}
+}
+
+type GatewayContractHealthResult struct {
+	State      GatewayContractHealth
+	ReasonCode string
+	Endpoint   string
+	CheckedAt  time.Time
+}
+
+func (r GatewayContractHealthResult) Healthy() bool {
+	return r.State == GatewayContractHealthHealthy
+}
+
+// ContractHealthAware is an optional provider capability. Providers without
+// management-contract health retain their existing behavior.
+type ContractHealthAware interface {
+	GatewayContractHealth() GatewayContractHealthResult
+}
 
 type SingleAttemptGuarantee uint8
 
