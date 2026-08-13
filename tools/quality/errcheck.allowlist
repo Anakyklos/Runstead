@@ -1,0 +1,68 @@
+# Runstead swallowed-error allowlist.
+#
+# The errcheck gate flags every non-test Go statement that binds a blank
+# identifier to a value whose static type implements error (`_ = f()`,
+# `x, _ := f()`, `_, _ = f()`). Each finding must be reviewed and either
+# fixed or listed here with a justification.
+#
+# Format: <relative-path>:<line>  <trimmed source line>
+# The recorded text must match the current source line exactly (both are
+# trimmed). Copy the line from the gate output when adding an entry.
+#
+# Process:
+#   - To fix a swallowed error: update the code and DELETE the entry.
+#   - To allow a new swallowed error: add the finding line here in the
+#     same PR with a concrete justification.
+#   - An entry that no longer matches a current finding (stale entry)
+#     fails the gate; remove it explicitly.
+#
+# Baseline: the 20 pre-existing swallowed errors in main, reviewed for
+# issue #35. All were deliberately best-effort by design; two are worth a
+# follow-up review (see notes).
+
+# Best-effort baseline capture: the status result is checked, while a diff
+# failure only degrades the rendered baseline (the loop still runs).
+internal/agent/loop.go:461  diffText, diffFlag, _ := l.registry.GitDiffText()
+
+# Telemetry timestamp is best-effort: a parse failure yields the zero time.
+# NOTE: follow-up review worth doing (telemetry parsing) outside issue #35.
+internal/provider/omniroute/telemetry.go:188  when, _ := time.Parse(time.RFC3339, typed)
+
+# Process/process-group termination on the cleanup path is best-effort; the
+# function is already returning a real error (or none) to its caller.
+internal/recipe/recipe.go:695  _ = process.Kill()
+internal/recipe/recipe.go:699  _ = syscall.Kill(-pgid, syscall.SIGTERM)
+internal/recipe/recipe.go:701  _ = syscall.Kill(-pgid, syscall.SIGKILL)
+
+# decodeAny is deliberately documented as non-failing: an undecodable
+# document leaves the target at its zero value and the authoritative
+# expected after-state hash gates reconciliation separately.
+internal/recovery/recovery.go:689  _ = jsonUnmarshal(raw, value)
+
+# Verification evidence rendering is best-effort: an undecodable evidence
+# JSON leaves the rendered list empty for inspect output.
+# NOTE: follow-up review worth doing (evidence parse) outside issue #35.
+internal/state/verification.go:290  _ = json.Unmarshal([]byte(evidenceJSON), &check.Evidence)
+
+# ripgrep is optional: when rg is absent the search falls back through the
+# registry's configured run paths instead of failing at construction.
+internal/tools/registry.go:125  rgPath, _ = lookPath("rg")
+
+# Temporary-file cleanup on the write rollback path is best-effort; the
+# write failure that triggered the cleanup is already being returned.
+internal/tools/write.go:268  _ = os.Remove(tmpName)
+
+# Argument extraction inside the executor switch: Execute has already run
+# ValidateArguments above, which extracts and checks the same arguments, so
+# the discarded *tools.Failure is nil by construction at these sites.
+internal/tools/execute.go:35  path, _ := stringArgument(action.Arguments, "path")
+internal/tools/execute.go:38  path, _ := stringArgument(action.Arguments, "path")
+internal/tools/execute.go:41  query, _ := stringArgument(action.Arguments, "query")
+internal/tools/execute.go:42  path, _ := stringArgument(action.Arguments, "path")
+internal/tools/execute.go:47  path, _ := stringArgument(action.Arguments, "path")
+internal/tools/execute.go:48  content, _ := stringArgumentAllowEmpty(action.Arguments, "content")
+internal/tools/execute.go:49  expected, _ := stringArgument(action.Arguments, "expected_before_hash")
+internal/tools/execute.go:52  path, _ := stringArgument(action.Arguments, "path")
+internal/tools/execute.go:53  patch, _ := stringArgumentAllowEmpty(action.Arguments, "patch")
+internal/tools/execute.go:54  expected, _ := stringArgument(action.Arguments, "expected_before_hash")
+internal/tools/execute.go:57  recipeID, _ := stringArgument(action.Arguments, "recipe")

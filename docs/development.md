@@ -33,19 +33,114 @@ not require Docker:
 ```bash
 test -z "$(gofmt -l .)"
 go test ./...
+go test -race ./...
 go vet ./...
 go build ./cmd/runstead
-go test -race ./...
 bash experiments/protocol/test.sh
+go test -count=1 ./internal/protocol/ -run '^(TestCorpusFixtures|TestParseValidAction|TestParseValidFinal|TestEnvelopeMarkersInsideJSONStringsAreContent)$'
+(cd tools/quality && go test -count=1 ./... && go vet ./...)
+(cd tools/quality && go build -o /tmp/quality-gates .)
+/tmp/quality-gates growth --root "$PWD"
+/tmp/quality-gates errcheck --root "$PWD"
+/tmp/quality-gates live-convention --root "$PWD"
 ```
 
-The formatting, test, vet, build and protocol checks above are the checks run by
-CI. The local workflow also includes the race detector, which is an additional
-check beyond the current CI workflow. The M0 offline replay also works natively:
+These are exactly the checks run by CI. The formatting, test, race, vet, build,
+protocol and quality-gate steps above are the authoritative set; see
+[Quality gates](#quality-gates) for what each gate protects and how to change
+its limits or allowlist. The M0 offline replay also works natively:
 
 ```bash
 bash experiments/protocol/run.sh --offline --sessions 4
 ```
+
+## Quality gates
+
+The GitHub Actions workflow (`ci.yml`) enforces deterministic, offline quality
+gates on PR and on push to main. None of them requires a provider, credentials,
+network access, Docker or a live environment, and none of them changes runtime
+behavior. The checks exist to protect real invariants: race freedom, protocol
+compatibility, bounded architectural growth, and explicit error handling.
+
+- **Formatting**: `test -z "$(gofmt -l .)"`.
+- **Tests**: `go test ./...`, plus the race detector `go test -race ./...`.
+  The race detector is a mandatory CI gate, not an optional local check.
+- **Vet and build**: `go vet ./...` and `go build ./cmd/runstead`.
+- **Protocol checks**: `bash experiments/protocol/test.sh` (M0 parser/offline
+  replay) plus an explicit golden corpus gate:
+
+  ```bash
+  go test -count=1 ./internal/protocol/ -run '^(TestCorpusFixtures|TestParseValidAction|TestParseValidFinal|TestEnvelopeMarkersInsideJSONStringsAreContent)$'
+  ```
+
+  The corpus gate reuses the existing `internal/protocol` tests and
+  `experiments/protocol/fixtures/corpus/`: every `runstead.protocol.v1`
+  action/final fixture must keep its expected classification, and drift
+  (missing or extra cases, changed expectations) fails the build. There is no
+  second fixture framework.
+- **Bounded growth** (`tools/quality` growth gate): maximum source file length
+  (1800 lines), maximum test file length (2400), maximum non-test files per
+  package (40) and maximum total Go files per package (60). Limits live in
+  `tools/quality/limits.json` and start green on the current tree with generous
+  headroom (largest source file: `internal/agent/loop.go` at 1346 lines;
+  largest package: `internal/state` at 15 source / 31 total files). Directories
+  named `vendor`, `fixtures`, `experiments`, `scratch`, `testdata` and dot-dirs
+  are excluded. Raising a limit is an explicit, reviewable change to
+  `limits.json` in the PR; failure messages always show the file/package, the
+  observed value and the limit.
+- **Swallowed errors** (`tools/quality` errcheck gate): type-accurate detection
+  of blank-identifier discards of error-typed values (`_ = f()`,
+  `x, _ := f()`) in non-test files, resolved with `go/types`. Findings fail
+  unless listed in `tools/quality/errcheck.allowlist` with a justification.
+  Type assertions, map lookups and channel receives (which discard `bool`)
+  are never reported. Test files are out of scope; the production baseline is
+  20 reviewed sites. The gate uses the local Go toolchain only (`go list
+  -export` with `GOPROXY=off`), never the network; CI runs `go test ./...`
+  before the gates, so the module cache is already populated.
+- **Live-test convention** (`tools/quality` live-convention gate): any test
+  file reading a `RUNSTEAD_LIVE_*` environment variable must call `t.Skip`, so
+  live provider tests stay opt-in and skipped by default (see
+  [Live tests stay opt-in](#live-tests-stay-opt-in)).
+
+`tools/quality` is a separate Go module of development tooling. It is never
+imported by the Runstead binary and adds no runtime dependency. Run its
+self-tests with:
+
+```bash
+(cd tools/quality && go test -count=1 ./... && go vet ./...)
+```
+
+### Changing a limit or allowlist entry
+
+- **Growth limits**: edit `tools/quality/limits.json` in the same PR that
+  needs the headroom, with a comment in the PR body explaining why. Do not
+  raise a limit to hide a regression: first determine whether the growth is a
+  legitimate baseline or a regression.
+- **Swallowed-error allowlist**: `tools/quality/errcheck.allowlist` entries are
+  line-anchored (`path:line  source text`). To fix a swallowed error, update
+  the code and delete the entry. To allow a new one, copy the finding line from
+  the gate output into the allowlist with a concrete justification. An entry
+  that no longer matches a current finding is a "stale entry" and fails the
+  gate, so exceptions cannot silently go dead.
+
+### Live tests stay opt-in
+
+The default CI path is hermetic. A live test that reaches a real provider must
+opt in through a `RUNSTEAD_LIVE_*` environment variable and skip by default:
+
+```go
+func TestLiveOmniRoute(t *testing.T) {
+    if os.Getenv("RUNSTEAD_LIVE_OMNIROUTE") != "1" {
+        t.Skip("set RUNSTEAD_LIVE_OMNIROUTE=1 to enable the live OmniRoute check")
+    }
+    // ...
+}
+```
+
+CI never sets `RUNSTEAD_LIVE_*`; the live-convention gate makes the pattern
+mechanically visible. The existing opt-in live check in
+`internal/provider/omniroute/live_test.go` follows this convention and is
+skipped by default.
 
 ## Required development layout
 
@@ -119,6 +214,18 @@ Run the M0 protocol checks through the primary development service with:
 docker compose run --rm dev bash experiments/protocol/test.sh
 docker compose run --rm dev bash experiments/protocol/run.sh --offline --sessions 4
 ```
+
+Run the quality gates through the same service (the repository is mounted at
+`/workspace`):
+
+```bash
+docker compose run --rm dev bash -c 'test -z "$(gofmt -l .)"'
+docker compose run --rm dev bash -c 'cd /workspace/tools/quality && go test -count=1 ./... && go vet ./...'
+docker compose run --rm dev bash -c 'cd /workspace/tools/quality && go build -o /tmp/quality-gates . && /tmp/quality-gates growth --root /workspace && /tmp/quality-gates errcheck --root /workspace && /tmp/quality-gates live-convention --root /workspace'
+```
+
+Docker remains optional and CI does not depend on it; the native commands are
+authoritative.
 
 The historical `experiments/protocol/Dockerfile` remains available for the M0
 experiment's historical reproduction, but it is not the primary development

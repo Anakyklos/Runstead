@@ -28,6 +28,9 @@ jobs:
       - name: Run tests
         run: go test ./...
 
+      - name: Run race detector
+        run: go test -race ./...
+
       - name: Run vet
         run: go vet ./...
 
@@ -36,3 +39,26 @@ jobs:
 
       - name: Run protocol checks
         run: bash experiments/protocol/test.sh
+
+      - name: Protocol golden corpus gate (runstead.protocol.v1)
+        # Proves the action/final envelopes stay parser-compatible: every
+        # corpus fixture must keep its expected classification, and drift
+        # (missing/extra cases or changed expectations) fails the build.
+        run: go test -count=1 ./internal/protocol/ -run '^(TestCorpusFixtures|TestParseValidAction|TestParseValidFinal|TestEnvelopeMarkersInsideJSONStringsAreContent)$'
+
+      - name: Build quality gates
+        working-directory: tools/quality
+        run: go build -o /tmp/quality-gates .
+
+      - name: Quality gate self-tests and vet
+        working-directory: tools/quality
+        run: go test -count=1 ./... && go vet ./...
+
+      - name: "Quality gate: bounded growth"
+        run: /tmp/quality-gates growth --root "$GITHUB_WORKSPACE"
+
+      - name: "Quality gate: swallowed errors"
+        run: /tmp/quality-gates errcheck --root "$GITHUB_WORKSPACE"
+
+      - name: "Quality gate: live-test convention"
+        run: /tmp/quality-gates live-convention --root "$GITHUB_WORKSPACE"
