@@ -275,3 +275,88 @@ func TestProbeGatewayContractContextErrorClassificationDoesNotUseCompletion(t *t
 		t.Fatalf("context probe chat POSTs = %d, want 0", got)
 	}
 }
+
+func newReceiptAwareHealthTestClient(t *testing.T, server *contractMockServer) *Client {
+	t.Helper()
+	config := testConfig(server.URL())
+	config.EnableAttemptReceipts = true
+	config.Provider = "chatgpt-web"
+	config.AccountLaneHash = "synthetic-lane-hash"
+	config.RouteSafety = provider.ReceiptRouteSafety()
+	client, err := New(config, Options{HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+func TestCompleteBlocksUnknownGatewayContractHealth(t *testing.T) {
+	server := newContractMockServer(t, contractMockConfig{})
+	defer server.Close()
+	client := newReceiptAwareHealthTestClient(t, server)
+
+	_, err := client.Complete(context.Background(), provider.Request{Prompt: "synthetic"})
+	if !errors.Is(err, provider.ErrGatewayContractUnhealthy) {
+		t.Fatalf("Complete() error = %v, want gateway contract health block", err)
+	}
+	if got := server.Counts()["chat_posts"]; got != 0 {
+		t.Fatalf("chat POSTs = %d, want 0", got)
+	}
+}
+
+func TestCompleteBlocksProtocolChangedGatewayContractHealth(t *testing.T) {
+	server := newContractMockServer(t, contractMockConfig{management: map[string]contractMockResponse{
+		"settings": {status: http.StatusOK, body: []byte(mustReadContractFixture("management/settings-shape-drift.json"))},
+	}})
+	defer server.Close()
+	client := newReceiptAwareHealthTestClient(t, server)
+
+	health := client.ProbeGatewayContract(context.Background())
+	if health.State != provider.GatewayContractHealthProtocolChanged {
+		t.Fatalf("health = %#v, want protocol_changed", health)
+	}
+	_, err := client.Complete(context.Background(), provider.Request{Prompt: "synthetic"})
+	if !errors.Is(err, provider.ErrGatewayContractUnhealthy) {
+		t.Fatalf("Complete() error = %v, want gateway contract health block", err)
+	}
+	if got := server.Counts()["chat_posts"]; got != 0 {
+		t.Fatalf("chat POSTs = %d, want 0", got)
+	}
+}
+
+func TestCompleteBlocksDegradedGatewayContractHealth(t *testing.T) {
+	server := newContractMockServer(t, contractMockConfig{management: map[string]contractMockResponse{
+		"providers": {status: http.StatusServiceUnavailable},
+	}})
+	defer server.Close()
+	client := newReceiptAwareHealthTestClient(t, server)
+
+	health := client.ProbeGatewayContract(context.Background())
+	if health.State != provider.GatewayContractHealthDegraded {
+		t.Fatalf("health = %#v, want degraded", health)
+	}
+	_, err := client.Complete(context.Background(), provider.Request{Prompt: "synthetic"})
+	if !errors.Is(err, provider.ErrGatewayContractUnhealthy) {
+		t.Fatalf("Complete() error = %v, want gateway contract health block", err)
+	}
+	if got := server.Counts()["chat_posts"]; got != 0 {
+		t.Fatalf("chat POSTs = %d, want 0", got)
+	}
+}
+
+func TestHealthyGatewayContractDoesNotBypassAttemptReceipts(t *testing.T) {
+	server := newContractMockServer(t, contractMockConfig{})
+	defer server.Close()
+	client := newGatewayContractHealthTestClient(t, server, nil)
+
+	if health := client.ProbeGatewayContract(context.Background()); !health.Healthy() {
+		t.Fatalf("health = %#v, want healthy", health)
+	}
+	_, err := client.Complete(context.Background(), provider.Request{Prompt: "synthetic"})
+	if !errors.Is(err, provider.ErrUnsafeRoute) {
+		t.Fatalf("Complete() error = %v, want existing unsafe receipt gate", err)
+	}
+	if got := server.Counts()["chat_posts"]; got != 0 {
+		t.Fatalf("chat POSTs = %d, want 0", got)
+	}
+}

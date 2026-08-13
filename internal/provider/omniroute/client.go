@@ -232,6 +232,9 @@ func (c *Client) Complete(ctx context.Context, request provider.Request) (provid
 	if c == nil {
 		return provider.Response{}, unsafeError(nil)
 	}
+	if health := c.GatewayContractHealth(); !health.Healthy() {
+		return provider.Response{}, gatewayContractUnhealthyError()
+	}
 	if !c.config.EnableAttemptReceipts {
 		return provider.Response{}, unsafeError(errAttemptReceiptsUnavailable)
 	}
