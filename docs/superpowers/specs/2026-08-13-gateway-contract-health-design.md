@@ -1,7 +1,7 @@
 # OmniRoute Gateway-Contract Health Design
 
-**Date:** 2026-08-13  
-**Issue:** #40  
+**Date:** 2026-08-13
+**Issue:** #40
 **Base:** `origin/main` at `d1f5aef1d1c5ce67f8ba427394e34d8b430f6df8`
 
 ## Goal

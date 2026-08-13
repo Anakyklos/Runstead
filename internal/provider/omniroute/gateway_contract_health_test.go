@@ -268,7 +268,7 @@ func TestProbeGatewayContractContextErrorClassificationDoesNotUseCompletion(t *t
 	cancel()
 
 	result := client.ProbeGatewayContract(ctx)
-	if !errors.Is(context.Canceled, context.Canceled) || result.State != provider.GatewayContractHealthUnknown {
+	if result.State != provider.GatewayContractHealthUnknown {
 		t.Fatalf("context result = %#v", result)
 	}
 	if got := server.Counts()["chat_posts"]; got != 0 {

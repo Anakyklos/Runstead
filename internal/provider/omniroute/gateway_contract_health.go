@@ -218,8 +218,7 @@ func validateGatewaySettings(root map[string]json.RawMessage) string {
 	if !ok || modelAliases == nil {
 		return gatewayContractReasonMissingField
 	}
-	fallback, ok := stringField(root, "globalFallbackModel")
-	if !ok || fallback == "" && !hasJSONField(root, "globalFallbackModel") {
+	if _, ok := stringField(root, "globalFallbackModel"); !ok {
 		return gatewayContractReasonMissingField
 	}
 	return ""
@@ -272,9 +271,4 @@ func intField(root map[string]json.RawMessage, key string) (int, bool) {
 		return 0, false
 	}
 	return *value, true
-}
-
-func hasJSONField(root map[string]json.RawMessage, key string) bool {
-	_, ok := root[key]
-	return ok
 }

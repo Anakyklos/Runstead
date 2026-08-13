@@ -64,7 +64,7 @@ func TestGatewayContractHealthResultHealthyOnlyForHealthyState(t *testing.T) {
 
 - [ ] **Step 2: Run the provider test and verify the expected missing-symbol failure**
 
-Run: `go test ./internal/provider -run 'TestGatewayContractHealth' -count=1`  
+Run: `go test ./internal/provider -run 'TestGatewayContractHealth' -count=1`
 Expected: FAIL because the health types and methods do not exist yet.
 
 - [ ] **Step 3: Implement the minimal provider-neutral types**
@@ -140,7 +140,7 @@ In `internal/governor/telemetry.go`, copy the optional result into the existing 
 
 - [ ] **Step 5: Run the focused tests and verify green**
 
-Run: `go test ./internal/provider ./internal/governor -run 'TestGatewayContractHealth' -count=1`  
+Run: `go test ./internal/provider ./internal/governor -run 'TestGatewayContractHealth' -count=1`
 Expected: PASS for the zero-value/type tests; the governor package may still have no execution gate test until Task 3.
 
 - [ ] **Step 6: Commit the provider-neutral surface**
@@ -199,7 +199,7 @@ Add cases for `settings-shape-drift.json`, `providers-ambiguous.json`, 404, 410,
 
 - [ ] **Step 2: Run the RED tests and confirm they fail for missing probe methods**
 
-Run: `go test ./internal/provider/omniroute -run 'Test(GatewayContractHealth|ProbeGatewayContract)' -count=1`  
+Run: `go test ./internal/provider/omniroute -run 'Test(GatewayContractHealth|ProbeGatewayContract)' -count=1`
 Expected: FAIL because the probe and result storage do not exist.
 
 - [ ] **Step 3: Implement fixed endpoint order and result storage**
@@ -287,7 +287,7 @@ A redirect response is not followed because `New` already installs `http.ErrUseL
 
 - [ ] **Step 6: Run all probe tests and verify green**
 
-Run: `go test ./internal/provider/omniroute -run 'Test(GatewayContractHealth|ProbeGatewayContract)' -count=1`  
+Run: `go test ./internal/provider/omniroute -run 'Test(GatewayContractHealth|ProbeGatewayContract)' -count=1`
 Expected: PASS, with request counts showing at most three management GETs per probe and zero completion POSTs.
 
 - [ ] **Step 7: Commit the probe implementation**
@@ -368,7 +368,7 @@ Assert the existing `RouteSafety` value remains independent and that a healthy p
 
 - [ ] **Step 2: Run the direct-execution RED tests**
 
-Run: `go test ./internal/provider/omniroute -run 'Test(CompleteBlocks|HealthyGatewayContract)' -count=1`  
+Run: `go test ./internal/provider/omniroute -run 'Test(CompleteBlocks|HealthyGatewayContract)' -count=1`
 Expected: FAIL because `Complete` does not yet inspect gateway health.
 
 - [ ] **Step 3: Add the direct adapter gate**
@@ -414,7 +414,7 @@ The governor config must use `provider.ReceiptRouteSafety()` and `RequireAttempt
 
 - [ ] **Step 5: Run the governor RED tests**
 
-Run: `go test ./internal/governor -run 'TestExecute.*GatewayContract' -count=1`  
+Run: `go test ./internal/governor -run 'TestExecute.*GatewayContract' -count=1`
 Expected: FAIL because `Governor.Execute` does not yet inspect the optional health capability.
 
 - [ ] **Step 6: Add the provider-neutral governor gate**
@@ -437,7 +437,7 @@ Providers without `ContractHealthAware` must follow the pre-existing path unchan
 
 - [ ] **Step 7: Run direct and governor tests and verify green**
 
-Run: `go test ./internal/provider/omniroute ./internal/governor -run 'Test(CompleteBlocks|HealthyGatewayContract|Execute.*GatewayContract)' -count=1`  
+Run: `go test ./internal/provider/omniroute ./internal/governor -run 'Test(CompleteBlocks|HealthyGatewayContract|Execute.*GatewayContract)' -count=1`
 Expected: PASS; non-healthy states produce no completion request and healthy never bypasses receipts.
 
 - [ ] **Step 8: Commit the execution gates**
@@ -478,7 +478,7 @@ sink.Emit(governor.Event{Kind: governor.EventAdmission, GatewayContractHealth: &
 
 - [ ] **Step 2: Run the trace RED test**
 
-Run: `go test ./internal/trace -run 'TestPolicySink.*Health|TestPolicySinkEmitsSanitized' -count=1`  
+Run: `go test ./internal/trace -run 'TestPolicySink.*Health|TestPolicySinkEmitsSanitized' -count=1`
 Expected: FAIL because the sink does not render the health group.
 
 - [ ] **Step 3: Render the exact diagnostic name through the existing sink**
@@ -548,7 +548,7 @@ Preserve every existing field and telemetry group in `fields`; the snippet shows
 
 - [ ] **Step 4: Run trace tests and verify green**
 
-Run: `go test ./internal/trace -run 'TestPolicySink.*Health|TestPolicySinkEmitsSanitized' -count=1`  
+Run: `go test ./internal/trace -run 'TestPolicySink.*Health|TestPolicySinkEmitsSanitized' -count=1`
 Expected: PASS with `gateway_contract_health` and no secret/raw-body fields.
 
 - [ ] **Step 5: Commit the trace integration**
