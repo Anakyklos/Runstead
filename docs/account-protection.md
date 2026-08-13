@@ -247,8 +247,10 @@ does not prove authoritative attempt accounting.
 
 Its typed states are `unknown`, `healthy`, `degraded` and
 `protocol_changed`. A new client starts at `unknown`; timeouts, cancellation,
-transport uncertainty, ambiguous provider/model evidence, malformed JSON and
-shape drift never become `healthy`. All non-healthy states block protected
+transport uncertainty, malformed JSON and structural shape drift never become
+`healthy`. Configuration concerns (active-connection selection, `defaultModel`
+or aliases) never affect the health state: they are decided by `RouteSafety`
+and preflight, not by this probe. All non-healthy states block protected
 execution. `healthy` only means that the three management responses have
 recognized compatible shapes. It does not replace `RouteSafety`, governor
 admission, policy, circuits, budgets, receipts or durable delivery-state

@@ -14,19 +14,17 @@ import (
 var gatewayContractEndpoints = [...]string{providersPath, settingsPath, modelAliasesPath}
 
 const (
-	gatewayContractReasonRecognized           = "recognized"
-	gatewayContractReasonContext              = "context_cancelled"
-	gatewayContractReasonContextMissing       = "context_missing"
-	gatewayContractReasonTimeout              = "timeout"
-	gatewayContractReasonTransport            = "transport_uncertain"
-	gatewayContractReasonHTTP404              = "http_404"
-	gatewayContractReasonHTTP410              = "http_410"
-	gatewayContractReasonTemporaryHTTP        = "temporary_http_status"
-	gatewayContractReasonUnexpectedHTTP       = "unexpected_http_status"
-	gatewayContractReasonMalformedJSON        = "malformed_json"
-	gatewayContractReasonMissingField         = "missing_or_invalid_field"
-	gatewayContractReasonProviderAmbiguous    = "provider_model_ambiguous"
-	gatewayContractReasonProviderIncompatible = "provider_model_incompatible"
+	gatewayContractReasonRecognized     = "recognized"
+	gatewayContractReasonContext        = "context_cancelled"
+	gatewayContractReasonContextMissing = "context_missing"
+	gatewayContractReasonTimeout        = "timeout"
+	gatewayContractReasonTransport      = "transport_uncertain"
+	gatewayContractReasonHTTP404        = "http_404"
+	gatewayContractReasonHTTP410        = "http_410"
+	gatewayContractReasonTemporaryHTTP  = "temporary_http_status"
+	gatewayContractReasonUnexpectedHTTP = "unexpected_http_status"
+	gatewayContractReasonMalformedJSON  = "malformed_json"
+	gatewayContractReasonMissingField   = "missing_or_invalid_field"
 )
 
 func (c *Client) GatewayContractHealth() provider.GatewayContractHealthResult {
@@ -67,7 +65,7 @@ func (c *Client) ProbeGatewayContract(ctx context.Context) provider.GatewayContr
 		if err != nil {
 			return c.recordGatewayContractHealth(classifyGatewayContractHTTPOrTransport(endpoint, metadata, err, checkedAt))
 		}
-		if reasonCode := validateGatewayContractEndpoint(endpoint, c.config.Model, c.config.Provider, body); reasonCode != "" {
+		if reasonCode := validateGatewayContractEndpoint(endpoint, body); reasonCode != "" {
 			return c.recordGatewayContractHealth(healthResult(
 				provider.GatewayContractHealthProtocolChanged,
 				reasonCode,
@@ -122,14 +120,14 @@ func classifyGatewayContractHTTPOrTransport(endpoint string, metadata provider.R
 	}
 }
 
-func validateGatewayContractEndpoint(endpoint, model, configuredProvider string, body []byte) string {
+func validateGatewayContractEndpoint(endpoint string, body []byte) string {
 	root, ok := jsonObject(body)
 	if !ok {
 		return gatewayContractReasonMalformedJSON
 	}
 	switch endpoint {
 	case providersPath:
-		return validateGatewayProviders(root, model, configuredProvider)
+		return validateGatewayProviders(root)
 	case settingsPath:
 		return validateGatewaySettings(root)
 	case modelAliasesPath:
@@ -139,7 +137,12 @@ func validateGatewayContractEndpoint(endpoint, model, configuredProvider string,
 	}
 }
 
-func validateGatewayProviders(root map[string]json.RawMessage, model, configuredProvider string) string {
+// validateGatewayProviders checks only the structural shape of /api/providers
+// that Runstead consumes. defaultModel values and active-connection selection
+// are route-configuration concerns owned by RouteSafety/preflight, so they are
+// deliberately ignored here: a nullable or differing defaultModel is not
+// gateway-contract drift.
+func validateGatewayProviders(root map[string]json.RawMessage) string {
 	connectionsRaw, exists := root["connections"]
 	if !exists {
 		return gatewayContractReasonMissingField
@@ -152,65 +155,26 @@ func validateGatewayProviders(root map[string]json.RawMessage, model, configured
 	if !ok || total != len(connections) {
 		return gatewayContractReasonMissingField
 	}
-	expectedProvider, expectedModel, ok := expectedProviderModel(model, configuredProvider)
-	if !ok {
-		return gatewayContractReasonProviderAmbiguous
-	}
-
-	activeProviderMatches := 0
-	connectionRoots := make([]map[string]json.RawMessage, 0, len(connections))
 	for _, raw := range connections {
 		connection, ok := jsonObject(raw)
 		if !ok {
 			return gatewayContractReasonMissingField
 		}
 		providerName, providerOK := stringField(connection, "provider")
-		active, activeOK := boolField(connection, "isActive")
+		_, activeOK := boolField(connection, "isActive")
 		if !providerOK || !activeOK || providerName == "" {
 			return gatewayContractReasonMissingField
 		}
-		connectionRoots = append(connectionRoots, connection)
-		if active && strings.EqualFold(providerName, expectedProvider) {
-			activeProviderMatches++
-		}
 	}
-	if activeProviderMatches > 1 {
-		return gatewayContractReasonProviderAmbiguous
-	}
-	for _, connection := range connectionRoots {
-		if _, ok := stringField(connection, "defaultModel"); !ok {
-			return gatewayContractReasonMissingField
-		}
-	}
-	if activeProviderMatches == 0 {
-		return gatewayContractReasonProviderIncompatible
-	}
-	for _, connection := range connectionRoots {
-		providerName, _ := stringField(connection, "provider")
-		active, _ := boolField(connection, "isActive")
-		defaultModel, _ := stringField(connection, "defaultModel")
-		if active && strings.EqualFold(providerName, expectedProvider) && strings.TrimSpace(defaultModel) == expectedModel {
-			return ""
-		}
-	}
-	return gatewayContractReasonProviderIncompatible
-}
-
-func expectedProviderModel(model, configuredProvider string) (string, string, bool) {
-	providerName, modelName, ok := explicitRouteModel(model)
-	if !ok {
-		return "", "", false
-	}
-	configuredProvider = strings.TrimSpace(configuredProvider)
-	if configuredProvider != "" && !strings.EqualFold(configuredProvider, providerName) {
-		return "", "", false
-	}
-	return providerName, modelName, true
+	return ""
 }
 
 func validateGatewaySettings(root map[string]json.RawMessage) string {
 	wildcards, exists := root["wildcardAliases"]
-	if !exists || !jsonStringArray(wildcards) {
+	// OmniRoute defines wildcardAliases as an array of {pattern,target}
+	// objects. A non-empty array is schema-valid; whether aliases make the
+	// protected route unsafe is a RouteSafety decision, not contract drift.
+	if !exists || !jsonArray(wildcards) {
 		return gatewayContractReasonMissingField
 	}
 	modelAliases, ok := jsonObjectField(root, "modelAliases")
@@ -231,8 +195,8 @@ func validateGatewayModelAliases(root map[string]json.RawMessage) string {
 	return ""
 }
 
-func jsonStringArray(raw json.RawMessage) bool {
-	var values []string
+func jsonArray(raw json.RawMessage) bool {
+	var values []json.RawMessage
 	return json.Unmarshal(raw, &values) == nil && values != nil
 }
 

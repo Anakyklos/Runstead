@@ -13,9 +13,9 @@ Add an on-demand, read-only, bounded, fail-closed probe that reports the health 
 Add a provider-neutral typed health value with a conservative zero value:
 
 - `unknown` is the zero value and covers unprobed state, cancellation, timeout, and transport uncertainty.
-- `healthy` requires recognized, compatible JSON shapes from all three required management endpoints and unambiguous provider/model evidence.
+- `healthy` requires recognized, compatible JSON shapes from all three required management endpoints. Configuration concerns (active-connection selection, `defaultModel`, aliases) never affect the health state: they belong to `RouteSafety`/preflight.
 - `degraded` is reserved for an explicitly recognized temporary management HTTP response. It remains a protected-execution blocker.
-- `protocol_changed` covers 404/410, malformed JSON, missing or mistyped fields, ambiguous provider/model evidence, and incompatible shapes.
+- `protocol_changed` covers 404/410, malformed JSON, and missing or mistyped structural fields. It does not cover configuration that is merely not suitable for the protected route.
 
 The provider package exposes a small optional `ContractHealthAware` capability and a sanitized `GatewayContractHealthResult`. The OmniRoute client stores the latest result under its existing mutex, starts at `unknown`, and exposes an explicit `ProbeGatewayContract(context.Context)` method. The probe performs exactly one GET per endpoint, in a fixed bounded sequence, using the existing timeout, response-body limit, redirect rejection, and HTTP seam. It never calls the completion endpoint, sends a POST, retries, follows redirects, uses cookies, rotates accounts, or runs in the background.
 
@@ -41,6 +41,6 @@ The latest result is exposed through the existing diagnostics/event path using t
 
 ## Testing
 
-Reuse the issue #43 contract mock and embedded synthetic corpus. Add focused deterministic coverage for initial `unknown`, all three safe fixtures yielding `healthy`, settings shape drift, ambiguous provider evidence, 404/410, malformed JSON/shape, timeout, cancellation, explicit temporary degradation, no `/v1/chat/completions`, no retry, bounded counts, redirect non-replay, direct and governor fail-closed execution gates, healthy-without-receipts, trace classification, and secret/body redaction. Keep the fixture-hygiene tests green and do not add a second fixture framework.
+Reuse the issue #43 contract mock and embedded synthetic corpus. Add focused deterministic coverage for initial `unknown`, all three safe fixtures yielding `healthy`, real OmniRoute formats yielding `healthy` (non-empty `wildcardAliases` array of objects; nullable `defaultModel`; unselected connections with null/different `defaultModel`), structural drift (settings shape drift, inconsistent `total`, missing `isActive`, non-array `wildcardAliases`), 404/410, malformed JSON/shape, timeout, cancellation, explicit temporary degradation, no `/v1/chat/completions`, no retry, bounded counts, redirect non-replay, direct and governor fail-closed execution gates, healthy-without-receipts, health-vs-RouteSafety separation (alias/ambiguous configurations stay unsafe at preflight while the gateway contract is healthy), trace classification, and secret/body redaction. Keep the fixture-hygiene tests green and do not add a second fixture framework.
 
 No live probe, scheduler, polling loop, dependency, account/session rotation, retry, fallback, or browser integration is part of this change.

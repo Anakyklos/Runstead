@@ -71,6 +71,80 @@ func TestProbeGatewayContractRecognizesThreeManagementFixtures(t *testing.T) {
 	}
 }
 
+func TestProbeGatewayContractAcceptsRealOmniRouteManagementFormats(t *testing.T) {
+	tests := []struct {
+		name       string
+		management map[string]contractMockResponse
+	}{
+		{
+			name: "non-empty wildcard alias objects",
+			management: map[string]contractMockResponse{
+				"settings": {status: http.StatusOK, body: []byte(mustReadContractFixture("management/settings-wildcard-aliases-safe.json"))},
+			},
+		},
+		{
+			name: "nullable default model on the selected connection",
+			management: map[string]contractMockResponse{
+				"providers": {status: http.StatusOK, body: []byte(mustReadContractFixture("management/providers-default-model-null.json"))},
+			},
+		},
+		{
+			name: "unselected connections with null or different default model",
+			management: map[string]contractMockResponse{
+				"providers": {status: http.StatusOK, body: []byte(mustReadContractFixture("management/providers-unselected-default-model.json"))},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newContractMockServer(t, contractMockConfig{management: tt.management})
+			defer server.Close()
+			client := newGatewayContractHealthTestClient(t, server, nil)
+
+			got := client.ProbeGatewayContract(context.Background())
+			if got.State != provider.GatewayContractHealthHealthy {
+				t.Fatalf("probe health = %#v, want healthy for a valid OmniRoute schema", got)
+			}
+			counts := server.Counts()
+			if counts["management_gets"] != 3 || counts["chat_posts"] != 0 || counts["total"] != 3 || counts["redirect_replays"] != 0 {
+				t.Fatalf("probe counts = %#v, want exactly three management GETs and no chat POST or replay", counts)
+			}
+		})
+	}
+}
+
+func TestGatewayContractHealthStaysSeparateFromRouteSafety(t *testing.T) {
+	t.Run("wildcard aliases healthy but route unsafe", func(t *testing.T) {
+		server := newContractMockServer(t, contractMockConfig{management: map[string]contractMockResponse{
+			"settings": {status: http.StatusOK, body: []byte(mustReadContractFixture("management/settings-wildcard-aliases-safe.json"))},
+		}})
+		defer server.Close()
+		client := newGatewayContractHealthTestClient(t, server, nil)
+
+		if health := client.ProbeGatewayContract(context.Background()); !health.Healthy() {
+			t.Fatalf("probe health = %#v, want healthy gateway contract", health)
+		}
+		if err := client.Preflight(context.Background()); !errors.Is(err, provider.ErrUnsafeRoute) {
+			t.Fatalf("Preflight() error = %v, want unsafe route refusal for alias configuration", err)
+		}
+	})
+
+	t.Run("ambiguous active connections healthy but route unsafe", func(t *testing.T) {
+		server := newContractMockServer(t, contractMockConfig{management: map[string]contractMockResponse{
+			"providers": {status: http.StatusOK, body: []byte(mustReadContractFixture("management/providers-ambiguous.json"))},
+		}})
+		defer server.Close()
+		client := newGatewayContractHealthTestClient(t, server, nil)
+
+		if health := client.ProbeGatewayContract(context.Background()); !health.Healthy() {
+			t.Fatalf("probe health = %#v, want healthy gateway contract", health)
+		}
+		if err := client.Preflight(context.Background()); !errors.Is(err, provider.ErrUnsafeRoute) {
+			t.Fatalf("Preflight() error = %v, want unsafe route refusal for ambiguous connections", err)
+		}
+	})
+}
+
 func TestProbeGatewayContractClassifiesProtocolChanges(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -85,13 +159,6 @@ func TestProbeGatewayContractClassifiesProtocolChanges(t *testing.T) {
 			wantReason: "missing_or_invalid_field",
 		},
 		{
-			name: "ambiguous provider evidence",
-			management: map[string]contractMockResponse{
-				"providers": {status: http.StatusOK, body: []byte(mustReadContractFixture("management/providers-ambiguous.json"))},
-			},
-			wantReason: "provider_model_ambiguous",
-		},
-		{
 			name: "malformed json",
 			management: map[string]contractMockResponse{
 				"providers": {status: http.StatusOK, body: []byte(`{"connections":`)},
@@ -102,6 +169,27 @@ func TestProbeGatewayContractClassifiesProtocolChanges(t *testing.T) {
 			name: "malformed shape",
 			management: map[string]contractMockResponse{
 				"model_aliases": {status: http.StatusOK, body: []byte(`{"aliases":[]}`)},
+			},
+			wantReason: "missing_or_invalid_field",
+		},
+		{
+			name: "provider total inconsistent",
+			management: map[string]contractMockResponse{
+				"providers": {status: http.StatusOK, body: []byte(`{"connections":[{"provider":"chatgpt-web","isActive":true}],"total":2}`)},
+			},
+			wantReason: "missing_or_invalid_field",
+		},
+		{
+			name: "provider connection missing isActive",
+			management: map[string]contractMockResponse{
+				"providers": {status: http.StatusOK, body: []byte(`{"connections":[{"provider":"chatgpt-web"}],"total":1}`)},
+			},
+			wantReason: "missing_or_invalid_field",
+		},
+		{
+			name: "wildcard aliases not an array",
+			management: map[string]contractMockResponse{
+				"settings": {status: http.StatusOK, body: []byte(`{"wildcardAliases":"synthetic","modelAliases":{},"globalFallbackModel":""}`)},
 			},
 			wantReason: "missing_or_invalid_field",
 		},
