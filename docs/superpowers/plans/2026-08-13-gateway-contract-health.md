@@ -195,7 +195,7 @@ func TestProbeGatewayContractRecognizesThreeManagementFixtures(t *testing.T) {
 }
 ```
 
-Add cases for `settings-shape-drift.json`, `providers-ambiguous.json`, 404, 410, malformed JSON, and malformed shape. Each case must assert the typed state and that `chat_posts == 0`.
+Add cases for `settings-shape-drift.json`, structurally missing/incompatible provider fields (inconsistent `total`, missing `isActive`), a non-array `wildcardAliases`, 404, 410, malformed JSON, and malformed shape. Each case must assert the typed state and that `chat_posts == 0`. Ambiguous or provider/model-incompatible *configuration* is not a gateway-contract case: it stays a `RouteSafety`/preflight refusal.
 
 - [ ] **Step 2: Run the RED tests and confirm they fail for missing probe methods**
 
@@ -230,7 +230,7 @@ func (c *Client) ProbeGatewayContract(ctx context.Context) provider.GatewayContr
             result = classifyGatewayContractHTTPOrTransport(endpoint, metadata, err, checkedAt)
             return c.recordGatewayContractHealth(result)
         }
-        if reasonCode := validateGatewayContractEndpoint(endpoint, c.config.Model, c.config.Provider, body); reasonCode != "" {
+        if reasonCode := validateGatewayContractEndpoint(endpoint, body); reasonCode != "" {
             result = provider.GatewayContractHealthResult{
                 State: provider.GatewayContractHealthProtocolChanged,
                 ReasonCode: reasonCode,
@@ -252,11 +252,11 @@ func (c *Client) ProbeGatewayContract(ctx context.Context) provider.GatewayContr
 
 Use `jsonObject` and `json.RawMessage` helpers, but keep these validators separate from `safeRouteEvidence`. `validateGatewayContractEndpoint` returns an empty string for a recognized shape or one of the fixed reason-code constants listed below; it never returns an `error` whose text could contain remote data:
 
-- `/api/providers`: require an object with `connections` array and integer `total`; each connection must have string `provider`, bool `isActive`, and string `defaultModel`; `total` must equal the connection count. Resolve the expected provider/model from explicit `Config.Provider` plus `Config.Model` or from the `provider/model` model string. Exactly one active matching provider/model is healthy; zero or multiple matches is `protocol_changed` with a fixed ambiguity reason.
-- `/api/settings`: require object fields `wildcardAliases` (array), `modelAliases` (object), and `globalFallbackModel` (string). Validate field types but do not interpret these values as route authorization.
+- `/api/providers`: require an object with a `connections` array and an integer `total` equal to the connection count; each connection must have a string `provider` and a bool `isActive`. This is structural only: `defaultModel` is nullable and is deliberately ignored, and provider/model selection or active-match counting is never a gateway-contract concern. Nullable, differing, or missing `defaultModel` values and ambiguous/incompatible active-connection configuration are owned by `RouteSafety`/preflight, not by this probe.
+- `/api/settings`: require object fields `wildcardAliases` (array of `{pattern,target}` objects per the OmniRoute schema), `modelAliases` (object), and `globalFallbackModel` (string). Validate field types only: a non-empty `wildcardAliases` array is schema-valid and is not contract drift; whether aliases make the protected route unsafe is a `RouteSafety` decision.
 - `/api/models/alias`: require object field `aliases` (object). Do not claim that an empty alias map proves route safety.
 
-Use fixed reason codes such as `recognized`, `context_cancelled`, `timeout`, `transport_uncertain`, `http_404`, `http_410`, `temporary_http_status`, `malformed_json`, `missing_or_invalid_field`, `provider_model_ambiguous`, and `provider_model_incompatible`. Do not return `err.Error()` as a reason.
+Use fixed reason codes such as `recognized`, `context_cancelled`, `timeout`, `transport_uncertain`, `http_404`, `http_410`, `temporary_http_status`, `malformed_json`, and `missing_or_invalid_field`. Do not return `err.Error()` as a reason.
 
 - [ ] **Step 5: Implement HTTP classification and preserve existing bounded transport behavior**
 
