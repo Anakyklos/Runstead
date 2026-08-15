@@ -212,50 +212,6 @@ func (c *Client) AttemptReceiptsEnabled() bool {
 	return c != nil && c.config.EnableAttemptReceipts
 }
 
-// Preflight validates observable management settings for diagnostics, but it
-// never authorizes protected execution. On the receipt-aware lane the
-// historical unconditional "attempt receipts unavailable" block ends: the
-// finalized receipt remains the sole authority over the physical attempt, and
-// preflight only confirms the surrounding protected-route assumptions
-// (management evidence + gateway contract health populated by
-// ProbeGatewayContract). Without receipt-aware activation the historical
-// fail-closed block stays in place.
-func (c *Client) Preflight(ctx context.Context) error {
-	if c == nil {
-		return unsafeError(nil)
-	}
-	c.mu.Lock()
-	c.verified = false
-	c.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return contextError(err, false)
-	}
-	evidence := make(map[string][]byte, 1+7)
-	for _, endpoint := range []string{resiliencePath, settingsPath, modelAliasesPath, settingsModelAliasesPath, fallbackChainsPath, combosPath, modelComboMappingsPath, providersPath} {
-		body, err := c.managementEvidence(ctx, endpoint)
-		if err != nil {
-			return err
-		}
-		evidence[endpoint] = body
-	}
-	if !safeResilience(evidence[resiliencePath]) {
-		return unsafeError(errors.New("OmniRoute resilience evidence is missing or unsafe"))
-	}
-	if !safeRouteEvidence(c.config.Model, evidence) {
-		return unsafeError(errors.New("OmniRoute route evidence is missing or unsafe"))
-	}
-	if c.config.EnableAttemptReceipts {
-		// The gateway contract health must have been populated by an explicit
-		// ProbeGatewayContract call; its zero value is conservatively unknown.
-		health := c.GatewayContractHealth()
-		if !health.Healthy() {
-			return gatewayContractUnhealthyError()
-		}
-		return nil
-	}
-	return unsafeError(errAttemptReceiptsUnavailable)
-}
-
 func (c *Client) Complete(ctx context.Context, request provider.Request) (provider.Response, error) {
 	if c == nil {
 		return provider.Response{}, unsafeError(nil)

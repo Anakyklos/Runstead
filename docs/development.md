@@ -467,8 +467,21 @@ physical attempt.
   present and non-empty; provider `chatgpt-web`; explicit `chatgpt-web/<model>`
   model; dedicated provider-scoped endpoint (an arbitrary
   `OMNIROUTE_CHAT_ENDPOINT` is rejected); healthy gateway contract
-  (`ProbeGatewayContract`); passing `Preflight`; receipt-aware route safety;
-  governor with `RequireAttemptReceipts`; valid durable governor state.
+  (`ProbeGatewayContract` with recognized management schema); passing
+  `Preflight`; receipt-aware route safety; governor with
+  `RequireAttemptReceipts`; valid durable governor state.
+- **Preflight semantics are split by attempt-accounting mode**. The legacy
+  single-attempt preflight is preserved byte-for-byte: it still requires
+  globally empty fallback chains, combos, model-combo mappings, neutralized
+  aliases/fallback and exactly one active connection for the provider. The
+  receipt-aware preflight only confirms the gateway is a compatible build
+  (healthy `ProbeGatewayContract` schema + explicit `<provider>/<model>`
+  matching the configured provider). Because the strict receipt-v1 producer is
+  secure per request (exact connection pin, exact provider/model, dedicated
+  route, combo/reroute/retry/fallback suppressed inside the request), other
+  active connections or unrelated global combo/fallback configuration for
+  non-Runstead traffic never block a pinned protected request. The finalized
+  attempt receipt remains the sole authority over the physical model send.
 - **Governor**: the live lane builds the governor with
   `provider.ReceiptRouteSafety()`, `RequireAttemptReceipts = true`, the same
   configured model and the derived account-lane hash. Every model request

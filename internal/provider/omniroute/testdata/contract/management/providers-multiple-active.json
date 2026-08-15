@@ -1,0 +1,23 @@
+{
+  "connections": [
+    {
+      "id": "synthetic-connection-001",
+      "provider": "chatgpt-web",
+      "isActive": true,
+      "defaultModel": "model"
+    },
+    {
+      "id": "synthetic-connection-002",
+      "provider": "chatgpt-web",
+      "isActive": true,
+      "defaultModel": "model"
+    },
+    {
+      "id": "synthetic-connection-003",
+      "provider": "openai",
+      "isActive": true,
+      "defaultModel": "model"
+    }
+  ],
+  "total": 3
+}

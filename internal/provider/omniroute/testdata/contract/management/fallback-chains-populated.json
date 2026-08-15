@@ -1,0 +1,1 @@
+[{"provider":"openai","model":"gpt-5","fallback":"anthropic/claude"}]
