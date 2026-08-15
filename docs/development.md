@@ -88,19 +88,33 @@ compatibility, bounded architectural growth, and explicit error handling.
   are excluded. Raising a limit is an explicit, reviewable change to
   `limits.json` in the PR; failure messages always show the file/package, the
   observed value and the limit.
-- **Swallowed errors** (`tools/quality` errcheck gate): type-accurate detection
-  of blank-identifier discards of error-typed values (`_ = f()`,
-  `x, _ := f()`) in non-test files, resolved with `go/types`. Findings fail
-  unless listed in `tools/quality/errcheck.allowlist` with a justification.
-  Type assertions, map lookups and channel receives (which discard `bool`)
-  are never reported. Test files are out of scope; the production baseline is
-  20 reviewed sites. The gate uses the local Go toolchain only (`go list
-  -export` with `GOPROXY=off`), never the network; CI runs `go test ./...`
-  before the gates, so the module cache is already populated.
-- **Live-test convention** (`tools/quality` live-convention gate): any test
-  file reading a `RUNSTEAD_LIVE_*` environment variable must call `t.Skip`, so
-  live provider tests stay opt-in and skipped by default (see
-  [Live tests stay opt-in](#live-tests-stay-opt-in)).
+- **Swallowed errors** (`tools/quality` errcheck gate): type-accurate
+  detection of discarded error-typed values in non-test files, resolved
+  with `go/types`. It covers blank-identifier discards (`_ = f()`,
+  `x, _ := f()`), bare call statements with an error-typed result
+  (`os.Remove(path)`), and `defer f()` / `go f()` calls with an
+  error-typed result (policy: `defer` and `go` discard results exactly
+  like a bare call, so they are swallowed errors; there is no silent
+  exclusion, and best-effort cleanup sites are reviewed one by one).
+  A small explicit set mirrors `errcheck`'s documented defaults (in-memory
+  buffer writes, `fmt` output printing, `io.Copy*`, `math/rand.Read`,
+  `os.Stdout/Stderr.Write`) and is never reported. Findings fail unless
+  listed in `tools/quality/errcheck.allowlist` with a justification.
+  Type assertions, map lookups and channel receives (which discard
+  `bool`) are never reported; channel receives and select cases are out
+  of scope. Test files are out of scope; the production baseline is 85
+  reviewed sites. The gate uses the local Go toolchain only (`go list
+  -export` with `GOPROXY=off`), never the network; CI runs `go test
+  ./...` before the gates, so the module cache is already populated.
+- **Live-test convention** (`tools/quality` live-convention gate): a test
+  function reading a `RUNSTEAD_LIVE_*` environment variable must call
+  `Skip`, `Skipf` or `SkipNow` on its own testing object (`*testing.T`,
+  `*testing.B` or `*testing.F`) within its own body, so live provider
+  tests stay opt-in and skipped by default (see
+  [Live tests stay opt-in](#live-tests-stay-opt-in)). The check is per
+  function, not per file: a `t.Skip` in another test or helper does not
+  protect the function that reads the variable, and package-scope reads
+  or reads in functions without a testing object fail closed.
 
 `tools/quality` is a separate Go module of development tooling. It is never
 imported by the Runstead binary and adds no runtime dependency. Run its
@@ -138,9 +152,16 @@ func TestLiveOmniRoute(t *testing.T) {
 ```
 
 CI never sets `RUNSTEAD_LIVE_*`; the live-convention gate makes the pattern
-mechanically visible. The existing opt-in live check in
-`internal/provider/omniroute/live_test.go` follows this convention and is
-skipped by default.
+mechanically visible per test function. What the gate verifies is narrow and
+structural: the function that reads a `RUNSTEAD_LIVE_*` variable must call
+`Skip`, `Skipf` or `SkipNow` on its own testing object somewhere in its own
+body. It does not prove that every live read is reachable only after the
+skip, nor that no other code path can reach a provider; it only prevents a
+skip in one function from silently covering an unprotected live read in
+another function of the same file. A helper that reads the variable without
+a testing object, or a read at package scope, fails closed. The existing
+opt-in live check in `internal/provider/omniroute/live_test.go` follows this
+convention and is skipped by default.
 
 ## Required development layout
 

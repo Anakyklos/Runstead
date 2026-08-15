@@ -21,7 +21,7 @@ const usageText = `usage: quality-gates <gate> [--root DIR]
 gates:
   growth            bounded-growth guards for the Go source tree
   errcheck          type-accurate swallowed-error detection (non-test files)
-  live-convention   opt-in live test convention (RUNSTEAD_LIVE_* + t.Skip)
+  live-convention   per-function opt-in live test convention (RUNSTEAD_LIVE_* reads must skip in the same test function)
 
 --root DIR   repository root to analyze (default: current directory)
 `
@@ -121,7 +121,7 @@ func runLiveConventionCLI(root string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if len(violations) == 0 {
-		fmt.Fprintln(stdout, "PASS: live tests are opt-in and skipped by default")
+		fmt.Fprintln(stdout, "PASS: every function that reads RUNSTEAD_LIVE_* skips on its testing object")
 		return 0
 	}
 	for _, v := range violations {

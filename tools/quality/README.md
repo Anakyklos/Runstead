@@ -53,25 +53,45 @@ them explicitly in `limits.json` as part of that change.
 
 ### errcheck
 
-Type-accurate swallowed-error detection. Using `go/types`, the gate
-flags every statement in a non-test Go file that binds a blank identifier
-to a value whose static type implements `error`:
+Type-accurate swallowed-error detection, equivalent to `errcheck`'s
+coverage. Using `go/types`, the gate flags every discarded value in a
+non-test Go file whose static type implements `error`:
 
-- `_ = f()` where `f` returns an error;
-- `x, _ := f()` / `x, _ = f()` where the discarded value is an error;
-- `_, _ = f()` for multi-error returns.
+- blank identifiers bound to an error-typed value: `_ = f()`,
+  `x, _ := f()` / `x, _ = f()` where the discarded value is an error,
+  and `_, _ = f()` for multi-error returns;
+- bare call statements whose call has at least one error-typed result:
+  `os.Remove(path)`, and multi-value calls such as `fmt.Println(...)`
+  whose error component is discarded;
+- `defer f()` and `go f()` where the call has at least one error-typed
+  result. Policy: `defer` and `go` discard their results exactly like a
+  bare call, so they are swallowed errors; there is no silent exclusion
+  for "best-effort cleanup". Such sites are reviewed through the
+  explicit allowlist, one entry per site.
 
 Because resolution is type-based, type assertions (`x, _ := v.(T)`), map
 lookups and channel receives (which discard `bool`, not `error`) are
 never reported, and concrete custom types implementing `error` are
-reported. Test files are out of scope: the test suite deliberately
-discards errors in scaffolding (mock HTTP writers, setup/teardown), and
-the existing production baseline is 20 reviewed sites.
+reported. Channel receives and select cases are out of scope even when
+the received element implements `error`: the policy covers function and
+method call results, not value consumption through channels. Test files
+are out of scope: the test suite deliberately discards errors in
+scaffolding (mock HTTP writers, setup/teardown).
+
+A small, explicit excluded set mirrors `errcheck`'s documented defaults
+and is never reported: in-memory buffer writes (`bytes.Buffer`,
+`strings.Builder`), `fmt` output printing (`Print*`, `Fprint*`), `io.Copy*`,
+`math/rand.Read` and `os.Stdout/Stderr.Write`. The set is a reviewed
+policy list in `errcheck.go`, not a heuristic: any other call whose
+identity resolves to a statically known function is reported. Adding or
+removing an entry is a deliberate gate change.
 
 Findings fail the gate unless they are listed in `errcheck.allowlist`
 (embedded at build time) with a justification. The allowlist is
 line-anchored: an entry only covers the exact file, line and source text
-it records.
+it records. The current baseline is 85 reviewed sites: 20 blank
+identifiers and 65 cleanup sites surfaced by the widened bare-call /
+`defer` / `go` coverage.
 
 Process:
 
@@ -84,11 +104,13 @@ Process:
 
 ### live-convention
 
-Opt-in live test convention. Any `_test.go` file that reads a
-`RUNSTEAD_LIVE_*` environment variable (via `os.Getenv` or
-`os.LookupEnv`) must also call `t.Skip` (or any `.Skip` method), so the
-default `go test ./...` path stays hermetic and live provider tests are
-skipped unless the operator explicitly opts in:
+Per-function opt-in live test convention. A function in a `_test.go` file
+that reads a `RUNSTEAD_LIVE_*` environment variable (via `os.Getenv` or
+`os.LookupEnv`) must call a skip method (`Skip`, `Skipf` or `SkipNow`) on
+its own testing object (`*testing.T`, `*testing.B` or `*testing.F`)
+within its own body, so the default `go test ./...` path stays hermetic
+and live provider tests are skipped unless the operator explicitly opts
+in:
 
 ```go
 func TestLiveOmniRoute(t *testing.T) {
@@ -99,8 +121,17 @@ func TestLiveOmniRoute(t *testing.T) {
 }
 ```
 
-The check is structural, not a proof of network isolation: it makes the
-convention mechanically visible instead of relying on review alone.
+The association is structural and per function: a `t.Skip` in another
+test or helper in the same file does not protect the function that reads
+the variable, and a `Skip` method on an object that is not the function's
+testing object does not count. A read at package scope (which cannot be
+guarded by any test skip) and a read in a function without a testing
+object both fail closed. The skip is attributed by receiver name, so a
+nested closure (for example a `t.Run` subtest) that shadows the
+parameter name is a documented approximation: the gate is structural,
+not a formal flow analysis, and does not prove that the skip is reachable
+before every live read. The existing opt-in check in
+`internal/provider/omniroute/live_test.go` follows this convention.
 
 ## Self-tests
 

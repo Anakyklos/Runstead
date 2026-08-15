@@ -33,8 +33,11 @@ func (e AllowlistEntry) String() string {
 	return fmt.Sprintf("%s:%d  %s", e.File, e.Line, e.Text)
 }
 
-// SwallowFinding is one blank identifier bound to an error-typed value in
-// a non-test Go file. File is relative to the analyzed root.
+// SwallowFinding is one discarded error-typed value in a non-test Go
+// file: either a blank identifier bound to an error-typed value or a
+// function call whose result (any component, for multi-value results) is
+// error-typed and is discarded as a bare statement, defer or go. File is
+// relative to the analyzed root.
 type SwallowFinding struct {
 	File string
 	Line int
@@ -95,14 +98,31 @@ func parseAllowlist(data []byte) ([]AllowlistEntry, error) {
 }
 
 // RunErrcheck type-checks every non-test Go file in the module rooted at
-// root and reports blank-identifier discards of error-typed values.
+// root and reports discarded error-typed values:
+//
+//   - blank identifiers bound to an error-typed value: `_ = f()`,
+//     `x, _ := f()`, `_, _ = f()`;
+//   - bare call statements whose call has at least one error-typed
+//     result: `f()` (including `os.Remove(path)` style single-result
+//     calls and multi-value calls such as `fmt.Println(...)`, where the
+//     error component is discarded);
+//   - `defer f()` and `go f()` where the call has at least one
+//     error-typed result. Policy: a deferred or goroutine-spawned call
+//     discards its results exactly like a bare call statement, so it is a
+//     swallowed error; there is no silent exclusion. Best-effort cleanup
+//     sites are reviewed through the allowlist, never skipped by the
+//     analysis.
+//
 // Findings covered by the allowlist are accepted; findings not in the
 // allowlist and allowlist entries that no longer match are failures.
 //
 // The analysis is type-accurate: go/types resolves the static type of
 // every discarded value, so type assertions (`x, _ := v.(T)`), map
 // lookups and channel receives (which discard bool, not error) are never
-// reported, and concrete types implementing error are reported.
+// reported, and concrete types implementing error are reported. Channel
+// receives and select cases are out of scope even when the received
+// element type implements error: the policy covers function/method call
+// results, not value consumption through channels.
 func RunErrcheck(root string, allowlist []AllowlistEntry) (*ErrcheckReport, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -181,8 +201,97 @@ func dedupeFindings(findings []SwallowFinding) []SwallowFinding {
 	return out
 }
 
+// excludedSymbols mirrors the default excluded set of the reference
+// errcheck tool: functions whose error result is conventionally ignored.
+// The set is explicit and reviewed, not a heuristic: detection above stays
+// type-based, and this list only exempts calls whose identity resolves to
+// one of these documented symbols. The error is ignored because the
+// operation cannot fail meaningfully (in-memory buffers), the result is
+// deliberately not actionable (CLI/output printing), or the standard
+// library documents the convention (io.Copy*, math/rand.Read,
+// os.Stdout/Stderr.Write). Adding or removing an entry is a deliberate
+// change to the gate's policy, reviewed like any other gate change.
+var excludedSymbols = map[string]bool{
+	// bytes: in-memory buffers cannot fail; the error exists only for
+	// io.Writer conformance.
+	"(*bytes.Buffer).Write":       true,
+	"(*bytes.Buffer).WriteByte":   true,
+	"(*bytes.Buffer).WriteRune":   true,
+	"(*bytes.Buffer).WriteString": true,
+	// fmt: printing to a chosen writer is best-effort output; the error
+	// is not actionable at the call site.
+	"fmt.Print":    true,
+	"fmt.Printf":   true,
+	"fmt.Println":  true,
+	"fmt.Fprint":   true,
+	"fmt.Fprintf":  true,
+	"fmt.Fprintln": true,
+	// io: copying between streams is best-effort by convention.
+	"io.Copy":       true,
+	"io.CopyBuffer": true,
+	"io.CopyN":      true,
+	// math/rand and os: stdlib-documented best-effort helpers.
+	"math/rand.Read":  true,
+	"os.Stdout.Write": true,
+	"os.Stderr.Write": true,
+	// strings: in-memory builder cannot fail; the error exists only for
+	// io.Writer conformance.
+	"(*strings.Builder).Write":       true,
+	"(*strings.Builder).WriteByte":   true,
+	"(*strings.Builder).WriteRune":   true,
+	"(*strings.Builder).WriteString": true,
+}
+
+// callFullName resolves the called function's identity to its fully
+// qualified name (for example "os.Remove", "fmt.Println" or
+// "(*strings.Builder).WriteString") using go/types objects. It returns ""
+// when the callee is not a statically known function (for example a
+// function value), in which case the call is never treated as excluded.
+func callFullName(call *ast.CallExpr, info *types.Info) string {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		if id, ok := call.Fun.(*ast.Ident); ok {
+			if fn, ok := info.Uses[id].(*types.Func); ok {
+				return fn.FullName()
+			}
+		}
+		return ""
+	}
+	if fn, ok := info.Uses[sel.Sel].(*types.Func); ok {
+		return fn.FullName()
+	}
+	if s, ok := info.Selections[sel]; ok {
+		if fn, ok := s.Obj().(*types.Func); ok {
+			return fn.FullName()
+		}
+	}
+	return ""
+}
+
+// isExcludedCall reports whether the call's statically resolved function
+// is in the documented excluded set.
+func isExcludedCall(call *ast.CallExpr, info *types.Info) bool {
+	return call != nil && excludedSymbols[callFullName(call, info)]
+}
+
+// blankRHS returns the expression that produced the value bound to the
+// i-th blank identifier of an assignment, or nil when the assignment
+// shape is not one of the covered forms. It mirrors blankType's handling
+// of `x, _ := f()` (one multi-valued RHS) and `_ = f()` (one RHS per
+// blank).
+func blankRHS(assign *ast.AssignStmt, i int) ast.Expr {
+	if len(assign.Rhs) == len(assign.Lhs) {
+		return assign.Rhs[i]
+	}
+	if len(assign.Rhs) == 1 {
+		return assign.Rhs[0]
+	}
+	return nil
+}
+
 // analyzePackage type-checks one package's non-test files and scans for
-// blank-identifier error discards.
+// discarded error-typed values: blank identifiers in assignments and
+// error-typed results of bare calls, defers and go statements.
 func analyzePackage(fset *token.FileSet, imp types.Importer, p goPackage, root string) ([]SwallowFinding, error) {
 	files := append(append([]string{}, p.GoFiles...), p.CgoFiles...)
 	if len(files) == 0 {
@@ -216,34 +325,83 @@ func analyzePackage(fset *token.FileSet, imp types.Importer, p goPackage, root s
 	}
 
 	var findings []SwallowFinding
+	report := func(pos token.Pos) {
+		position := fset.Position(pos)
+		rel, err := filepath.Rel(root, position.Filename)
+		if err != nil {
+			rel = position.Filename
+		}
+		findings = append(findings, SwallowFinding{
+			File: filepath.ToSlash(rel),
+			Line: position.Line,
+			Text: sourceLine(contents[position.Filename], position.Line),
+		})
+	}
 	for _, af := range afs {
 		ast.Inspect(af, func(n ast.Node) bool {
-			assign, ok := n.(*ast.AssignStmt)
-			if !ok {
-				return true
-			}
-			for i, lhs := range assign.Lhs {
-				id, ok := lhs.(*ast.Ident)
-				if !ok || id.Name != "_" {
-					continue
-				}
-				if t := blankType(assign, i, info); t != nil && isErrorType(t) {
-					pos := fset.Position(id.Pos())
-					rel, err := filepath.Rel(root, pos.Filename)
-					if err != nil {
-						rel = pos.Filename
+			switch node := n.(type) {
+			case *ast.AssignStmt:
+				for i, lhs := range node.Lhs {
+					id, ok := lhs.(*ast.Ident)
+					if !ok || id.Name != "_" {
+						continue
 					}
-					findings = append(findings, SwallowFinding{
-						File: filepath.ToSlash(rel),
-						Line: pos.Line,
-						Text: sourceLine(contents[pos.Filename], pos.Line),
-					})
+					if t := blankType(node, i, info); t != nil && isErrorType(t) {
+						if call, ok := blankRHS(node, i).(*ast.CallExpr); ok && isExcludedCall(call, info) {
+							continue
+						}
+						report(id.Pos())
+					}
+				}
+			case *ast.ExprStmt:
+				// A bare call statement discards every result of the
+				// call, so an error-typed result is swallowed.
+				if call, ok := node.X.(*ast.CallExpr); ok && callDiscardsError(call, info) && !isExcludedCall(call, info) {
+					report(node.Pos())
+				}
+			case *ast.DeferStmt:
+				// Policy: defer discards the deferred call's results
+				// exactly like a bare call, so an error-typed result is
+				// a swallowed error. There is no silent exclusion for
+				// best-effort cleanup; such sites are reviewed through
+				// the explicit allowlist.
+				if callDiscardsError(node.Call, info) && !isExcludedCall(node.Call, info) {
+					report(node.Pos())
+				}
+			case *ast.GoStmt:
+				// Policy: go discards the spawned call's results exactly
+				// like a bare call, so an error-typed result is a
+				// swallowed error (see the DeferStmt case).
+				if callDiscardsError(node.Call, info) && !isExcludedCall(node.Call, info) {
+					report(node.Pos())
 				}
 			}
 			return true
 		})
 	}
 	return findings, nil
+}
+
+// callDiscardsError reports whether a function or method call has at
+// least one result whose static type implements error. The call's result
+// type is resolved by go/types, so calls without results (for example
+// wg.Done() or t.Skip()), calls returning only non-error values and
+// concrete types implementing error are all handled uniformly. A call
+// with no results has an empty tuple and never matches.
+func callDiscardsError(call *ast.CallExpr, info *types.Info) bool {
+	tv, ok := info.Types[call]
+	if !ok || tv.Type == nil {
+		return false
+	}
+	if tup, ok := tv.Type.(*types.Tuple); ok {
+		for i := 0; i < tup.Len(); i++ {
+			if isErrorType(tup.At(i).Type()) {
+				return true
+			}
+		}
+		return false
+	}
+	return isErrorType(tv.Type)
 }
 
 // blankType resolves the static type bound to the i-th blank identifier
