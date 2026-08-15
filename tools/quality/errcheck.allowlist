@@ -92,9 +92,9 @@ internal/tools/execute.go:57  recipeID, _ := stringArgument(action.Arguments, "r
 # Deferred durable-store and script-file close on command shutdown paths:
 # the command's primary result/error is already returned before the defer
 # runs, so a close failure can only degrade the process exit.
-cmd/runstead/main.go:230  defer store.Close()
-cmd/runstead/main.go:787  defer store.Close()
-cmd/runstead/main.go:886  defer store.Close()
+cmd/runstead/main.go:259  defer store.Close()
+cmd/runstead/main.go:830  defer store.Close()
+cmd/runstead/main.go:929  defer store.Close()
 cmd/runstead/resume.go:170  defer store.Close()
 cmd/runstead/scripted.go:23  defer file.Close()
 
@@ -105,8 +105,8 @@ internal/governor/execute.go:50  admission.Permit.CancelBeforeStart()
 
 # HTTP response body close is best-effort cleanup on the request path; the
 # primary error (or the successful response) is already being returned.
-internal/provider/omniroute/client.go:316  defer response.Body.Close()
-internal/provider/omniroute/client_transport.go:89  response.Body.Close()
+internal/provider/omniroute/client.go:347  defer response.Body.Close()
+internal/provider/omniroute/client_transport.go:96  response.Body.Close()
 
 # Deferred transaction rollback uses the standard commit-then-rollback
 # idiom: Commit's error is checked explicitly at each site, and the

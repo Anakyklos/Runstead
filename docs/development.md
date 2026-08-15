@@ -419,10 +419,11 @@ environment, then conservative defaults. Workspace/logging use
 `RUNSTEAD_WORKSPACE` and `RUNSTEAD_LOG_LEVEL`; the durable state directory
 uses `RUNSTEAD_STATE_DIR` (default `$XDG_DATA_HOME/runstead` or
 `~/.local/share/runstead`). The optional OmniRoute config
-uses `OMNIROUTE_BASE_URL`, `OMNIROUTE_API_KEY`, `OMNIROUTE_MODEL` and
-`OMNIROUTE_CHAT_ENDPOINT`, with optional management URL and timeout variables;
-the `run` command exposes matching flags. API keys are never logged or
-included in errors, snapshots, telemetry or URLs.
+uses `OMNIROUTE_BASE_URL`, `OMNIROUTE_API_KEY`, `OMNIROUTE_MODEL`,
+`OMNIROUTE_CHAT_ENDPOINT` and `OMNIROUTE_CONNECTION_ID`, with optional
+management URL and timeout variables; the `run` command exposes matching
+flags. API keys and the raw connection id are never logged or included in
+errors, snapshots, telemetry or URLs.
 
 The legacy single-attempt route declaration uses
 `OMNIROUTE_SINGLE_ATTEMPT_GUARANTEED`,
@@ -437,12 +438,53 @@ prove the number of upstream attempts atomically.
 
 PR #33 added the Runstead consumer side of the authoritative receipt contract:
 provider-neutral receipt types, strict validation, receipt-aware OmniRoute
-transport parsing and per-attempt governor reconciliation. The normal CLI
-configuration does not yet expose receipt-aware activation. Protected live use
-therefore remains fail-closed until a compatible OmniRoute producer emits the
-versioned receipts and issue #30 wires the production configuration and opt-in
-live path. `Preflight` remains diagnostic and does not authorize model
-execution.
+transport parsing and per-attempt governor reconciliation. Issue #30 wires the
+production configuration and the opt-in live path: configuring
+`OMNIROUTE_CONNECTION_ID` activates the pinned chatgpt-web receipt lane
+(exactly provider `chatgpt-web`, an explicit `chatgpt-web/<model>`, the
+dedicated `providers/chatgpt-web/chat/completions` route, a derived
+account-lane hash and receipt-aware route safety). Without the connection pin
+the live lane stays fail-closed, and the legacy single-attempt declaration
+can never authorize it. `Preflight` remains diagnostic and does not authorize
+model execution: the finalized attempt receipt is the sole authority over the
+physical attempt.
+
+### Pinned OmniRoute receipt lane (issue #30)
+
+- **Activation**: `OMNIROUTE_CONNECTION_ID` (or `--omniroute-connection-id`)
+  plus `OMNIROUTE_BASE_URL`, `OMNIROUTE_API_KEY` and an explicit
+  `OMNIROUTE_MODEL=chatgpt-web/<model>`. The raw connection id is private
+  transport configuration: it is sent as `X-OmniRoute-Connection` on the
+  protected POST, redacted from `Config.String()`/`GoString()` and never
+  traced, persisted as evidence or printed in sanitized errors.
+- **Lane hash**: `AccountLaneHash` is derived automatically with
+  `SHA-256( UTF-8("omniroute-connection-v1") || 0x00 || UTF-8(connection_id) )`
+  (lowercase hex). The OmniRoute producer derives the receipt lane hash from
+  the actually selected connection, so a selection mismatch fails receipt
+  validation without exposing the raw id. There is no operator setting for a
+  manually typed lane hash.
+- **Fail-closed prerequisites** (before any model dispatch): connection id
+  present and non-empty; provider `chatgpt-web`; explicit `chatgpt-web/<model>`
+  model; dedicated provider-scoped endpoint (an arbitrary
+  `OMNIROUTE_CHAT_ENDPOINT` is rejected); healthy gateway contract
+  (`ProbeGatewayContract`); passing `Preflight`; receipt-aware route safety;
+  governor with `RequireAttemptReceipts`; valid durable governor state.
+- **Governor**: the live lane builds the governor with
+  `provider.ReceiptRouteSafety()`, `RequireAttemptReceipts = true`, the same
+  configured model and the derived account-lane hash. Every model request
+  still flows `agent.Executor -> governor.Execute -> provider.Client.Complete`;
+  there is no alternative direct provider path.
+- **Producer pin**: the compatible receipt-v1 producer is preserved in the
+  Runstead fork `pedro-labsabs/OmniRoute` at commit
+  `dbfb2c879aba3770a5dd1e195f0529bb236000dd` (based on upstream
+  `release/v3.8.50` `ee221d870c199bc1aa1f3b90303ff2bc7c74509b`). OmniRoute is a
+  temporary baseline provider for the M1–M5 validation phases, not a permanent
+  provider decision; do not rely on `latest` behaving identically.
+- **Opt-in live test**: `internal/provider/omniroute/live_test.go` contains
+  `TestLiveOmniRoutePinnedChatGPTWebLane`, skipped by default. Enable it with
+  `RUNSTEAD_LIVE_OMNIROUTE=1` plus the environment variables above (and
+  `RUNSTEAD_ALLOWANCE_PROFILE` when needed) against an OmniRoute instance
+  built from the pinned commit. No secret is stored in fixtures or source.
 
 Implemented package responsibilities are deliberately narrow:
 
@@ -499,10 +541,10 @@ scheduling and quota policy remain forbidden; those decisions belong to the
 Constructing a `Client` with receipt-aware configuration and a compatible
 producer permits its package-level `Complete` path to make one model POST and
 validate the returned receipt set. Missing, malformed, duplicated,
-out-of-order or mismatched receipts fail closed. The default CLI path does not
-yet construct that configuration, while `Preflight` always remains a
-non-authorizing diagnostic. Production activation, compatible contract/version
-documentation and the opt-in live success test belong to #30. Docker support
+out-of-order or mismatched receipts fail closed. The default CLI path
+constructs that configuration only for the pinned receipt lane (see
+[Pinned OmniRoute receipt lane](#pinned-omniroute-receipt-lane-issue-30));
+`Preflight` always remains a non-authorizing diagnostic. Docker support
 remains optional and pending #15; native commands are authoritative.
 
 ## Issue #21 account protection
@@ -602,10 +644,11 @@ verifier-produced summary of the acceptance checks, and the model's own final
 text appears only as `note (unverified):` — plus a sanitized lifecycle trace to
 stderr, and exits with the typed outcome code.
 
-Live OmniRoute configuration is accepted but refused before execution: protected
-live use remains blocked until a compatible OmniRoute attempt-receipt producer
-exists and #30 activates the live path (#29 -> #30 -> #4). The opt-in live
-check in `internal/provider/omniroute/live_test.go` stays skipped by default.
+Live OmniRoute runs the pinned receipt lane: `OMNIROUTE_CONNECTION_ID` is
+required, the gateway contract must be healthy and `Preflight` must pass
+before any model request; without the pin the run is refused fail-closed. The
+opt-in live check in `internal/provider/omniroute/live_test.go` stays skipped
+by default (#29 -> #30 -> #4).
 
 ### Loop budgets and defaults
 

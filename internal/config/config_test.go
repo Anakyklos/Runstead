@@ -160,3 +160,144 @@ func TestResolveOmniRouteDoesNotLogCredentialsOnValidationFailure(t *testing.T) 
 		t.Fatalf("Resolve() error leaked API key: %v", err)
 	}
 }
+
+func resolveWithEnv(t *testing.T, env map[string]string, overrides Overrides) (Config, error) {
+	t.Helper()
+	return Resolve(overrides, func(key string) (string, bool) {
+		value, ok := env[key]
+		return value, ok
+	})
+}
+
+func TestResolveOmniRoutePinnedLaneActivatesReceipts(t *testing.T) {
+	env := map[string]string{
+		EnvOmniRouteBaseURL:      "http://omniroute.test/v1",
+		EnvOmniRouteAPIKey:       "secret",
+		EnvOmniRouteModel:        "chatgpt-web/gpt-5",
+		EnvOmniRouteConnectionID: "conn-test-123",
+	}
+	got, err := resolveWithEnv(t, env, Overrides{})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	config := got.OmniRoute
+	if config == nil {
+		t.Fatal("Resolve() OmniRoute = nil")
+	}
+	if !config.EnableAttemptReceipts {
+		t.Fatal("pinned lane must enable attempt receipts")
+	}
+	if config.Provider != "chatgpt-web" {
+		t.Fatalf("pinned lane provider = %q, want chatgpt-web", config.Provider)
+	}
+	if config.ChatEndpoint != "providers/chatgpt-web/chat/completions" {
+		t.Fatalf("pinned lane endpoint = %q, want dedicated provider-scoped route", config.ChatEndpoint)
+	}
+	if config.AccountLaneHash != "ebae45b2394081da729b4006e58d00145162145bfae0bd2db50de6661961259f" {
+		t.Fatalf("derived account lane hash = %q, want golden vector", config.AccountLaneHash)
+	}
+	if config.RouteSafety.AttemptAccounting != provider.AttemptAccountingReceipts {
+		t.Fatalf("pinned lane route safety = %#v, want receipt-aware", config.RouteSafety)
+	}
+}
+
+func TestResolveOmniRoutePinnedLaneFlagOverridesEnv(t *testing.T) {
+	env := map[string]string{EnvOmniRouteConnectionID: "env-connection"}
+	got, err := resolveWithEnv(t, env, Overrides{OmniRoute: OmniRouteOverrides{
+		BaseURL:         "http://omniroute.test/v1",
+		BaseURLSet:      true,
+		APIKey:          "secret",
+		APIKeySet:       true,
+		Model:           "chatgpt-web/gpt-5",
+		ModelSet:        true,
+		ConnectionID:    "flag-connection",
+		ConnectionIDSet: true,
+	}})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got.OmniRoute == nil || got.OmniRoute.ConnectionID != "flag-connection" {
+		t.Fatalf("flag must override env connection id: %#v", got.OmniRoute)
+	}
+	if got.OmniRoute.AccountLaneHash == "" {
+		t.Fatal("pinned lane must derive an account lane hash")
+	}
+}
+
+func TestResolveOmniRoutePinnedLaneRejectsEmptyConnectionID(t *testing.T) {
+	_, err := resolveWithEnv(t, map[string]string{}, Overrides{OmniRoute: OmniRouteOverrides{
+		BaseURL:         "http://omniroute.test/v1",
+		BaseURLSet:      true,
+		APIKey:          "secret",
+		APIKeySet:       true,
+		Model:           "chatgpt-web/gpt-5",
+		ModelSet:        true,
+		ConnectionID:    "",
+		ConnectionIDSet: true,
+	}})
+	if err == nil || !strings.Contains(err.Error(), "connection id must not be empty") {
+		t.Fatalf("Resolve() error = %v, want empty connection id failure", err)
+	}
+}
+
+func TestResolveOmniRoutePinnedLaneRejectsSafeRouteDeclaration(t *testing.T) {
+	_, err := resolveWithEnv(t, map[string]string{
+		EnvOmniRouteConnectionID:            "conn-test-123",
+		EnvOmniRouteSingleAttemptGuaranteed: "true",
+		EnvOmniRouteInternalRetriesDisabled: "true",
+		EnvOmniRouteCooldownReplayDisabled:  "true",
+		EnvOmniRouteAccountPoolingDisabled:  "true",
+		EnvOmniRouteFallbackDisabled:        "true",
+		EnvOmniRouteComboRoutingDisabled:    "true",
+		EnvOmniRouteBaseURL:                 "http://omniroute.test/v1",
+		EnvOmniRouteAPIKey:                  "secret",
+		EnvOmniRouteModel:                   "chatgpt-web/gpt-5",
+	}, Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "receipt-aware route safety") {
+		t.Fatalf("Resolve() error = %v, want legacy safe-route rejection on the pinned lane", err)
+	}
+}
+
+func TestResolveOmniRoutePinnedLaneRejectsArbitraryEndpoint(t *testing.T) {
+	_, err := resolveWithEnv(t, map[string]string{
+		EnvOmniRouteConnectionID: "conn-test-123",
+		EnvOmniRouteBaseURL:      "http://omniroute.test/v1",
+		EnvOmniRouteAPIKey:       "secret",
+		EnvOmniRouteModel:        "chatgpt-web/gpt-5",
+		EnvOmniRouteChatEndpoint: "chat/completions",
+	}, Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "dedicated providers/chatgpt-web/chat/completions") {
+		t.Fatalf("Resolve() error = %v, want arbitrary endpoint rejection", err)
+	}
+}
+
+func TestResolveOmniRoutePinnedLaneRejectsNonChatGPTWebModel(t *testing.T) {
+	_, err := resolveWithEnv(t, map[string]string{
+		EnvOmniRouteConnectionID: "conn-test-123",
+		EnvOmniRouteBaseURL:      "http://omniroute.test/v1",
+		EnvOmniRouteAPIKey:       "secret",
+		EnvOmniRouteModel:        "openai/gpt-5",
+	}, Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "chatgpt-web/<model>") {
+		t.Fatalf("Resolve() error = %v, want explicit chatgpt-web model requirement", err)
+	}
+}
+
+func TestResolveOmniRoutePinnedLaneRedactsConnectionID(t *testing.T) {
+	env := map[string]string{
+		EnvOmniRouteBaseURL:      "http://omniroute.test/v1",
+		EnvOmniRouteAPIKey:       "secret",
+		EnvOmniRouteModel:        "chatgpt-web/gpt-5",
+		EnvOmniRouteConnectionID: "conn-private-77",
+	}
+	got, err := resolveWithEnv(t, env, Overrides{})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if strings.Contains(got.OmniRoute.String(), "conn-private-77") {
+		t.Fatalf("config String() leaked connection id: %s", got.OmniRoute.String())
+	}
+	if strings.Contains(got.OmniRoute.String(), "secret") {
+		t.Fatalf("config String() leaked API key: %s", got.OmniRoute.String())
+	}
+}

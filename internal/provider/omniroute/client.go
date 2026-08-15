@@ -53,6 +53,7 @@ type Config struct {
 	BaseURL               string
 	ManagementBaseURL     string
 	APIKey                string `json:"-"`
+	ConnectionID          string `json:"-"`
 	Model                 string
 	Provider              string
 	AccountLaneHash       string
@@ -65,7 +66,7 @@ type Config struct {
 }
 
 func (c Config) String() string {
-	return fmt.Sprintf("omniroute.Config{BaseURL:%q ManagementBaseURL:%q APIKey:<redacted> Model:%q Provider:%q AccountLaneHash:%q EnableAttemptReceipts:%t ChatEndpoint:%q Timeout:%s MaxRequestBytes:%d MaxResponseBytes:%d RouteSafety:%#v}", c.BaseURL, c.ManagementBaseURL, c.Model, c.Provider, c.AccountLaneHash, c.EnableAttemptReceipts, c.ChatEndpoint, c.Timeout, c.MaxRequestBytes, c.MaxResponseBytes, c.RouteSafety)
+	return fmt.Sprintf("omniroute.Config{BaseURL:%q ManagementBaseURL:%q APIKey:<redacted> ConnectionID:<redacted> Model:%q Provider:%q AccountLaneHash:%q EnableAttemptReceipts:%t ChatEndpoint:%q Timeout:%s MaxRequestBytes:%d MaxResponseBytes:%d RouteSafety:%#v}", c.BaseURL, c.ManagementBaseURL, c.Model, c.Provider, c.AccountLaneHash, c.EnableAttemptReceipts, c.ChatEndpoint, c.Timeout, c.MaxRequestBytes, c.MaxResponseBytes, c.RouteSafety)
 }
 
 func (c Config) GoString() string { return c.String() }
@@ -105,9 +106,11 @@ func New(config Config, options Options) (*Client, error) {
 	config.BaseURL = baseURL
 	config.ManagementBaseURL = managementURL
 	config.APIKey = strings.TrimSpace(config.APIKey)
+	config.ConnectionID = strings.TrimSpace(config.ConnectionID)
 	config.Model = strings.TrimSpace(config.Model)
 	config.Provider = strings.TrimSpace(config.Provider)
 	config.AccountLaneHash = strings.TrimSpace(config.AccountLaneHash)
+	config.ChatEndpoint = strings.TrimSpace(config.ChatEndpoint)
 	if config.APIKey == "" {
 		return nil, errors.New("OmniRoute API key must not be empty")
 	}
@@ -137,6 +140,17 @@ func New(config Config, options Options) (*Client, error) {
 	}
 	if config.EnableAttemptReceipts && config.AccountLaneHash == "" {
 		return nil, unsafeError(errors.New("attempt receipts require an account lane hash"))
+	}
+	// The pinned M1 lane (chatgpt-web + receipts) is structurally provable only
+	// with the exact connection pin and the dedicated provider-scoped endpoint.
+	// An arbitrary chat endpoint or a missing pin fails closed before dispatch.
+	if config.EnableAttemptReceipts && config.Provider == ProviderChatGPTWeb {
+		if config.ConnectionID == "" {
+			return nil, unsafeError(errors.New("the pinned chatgpt-web receipt lane requires a connection id"))
+		}
+		if config.ChatEndpoint != DedicatedChatEndpoint {
+			return nil, unsafeError(errors.New("the pinned chatgpt-web receipt lane requires the dedicated providers/chatgpt-web/chat/completions endpoint"))
+		}
 	}
 	if _, err := chatURL(config.BaseURL, config.ChatEndpoint); err != nil {
 		return nil, fmt.Errorf("invalid OmniRoute chat endpoint: %w", err)
@@ -199,8 +213,13 @@ func (c *Client) AttemptReceiptsEnabled() bool {
 }
 
 // Preflight validates observable management settings for diagnostics, but it
-// never authorizes protected execution. Until authoritative attempt receipts
-// are available, it returns ErrUnsafeRoute even when those settings are safe.
+// never authorizes protected execution. On the receipt-aware lane the
+// historical unconditional "attempt receipts unavailable" block ends: the
+// finalized receipt remains the sole authority over the physical attempt, and
+// preflight only confirms the surrounding protected-route assumptions
+// (management evidence + gateway contract health populated by
+// ProbeGatewayContract). Without receipt-aware activation the historical
+// fail-closed block stays in place.
 func (c *Client) Preflight(ctx context.Context) error {
 	if c == nil {
 		return unsafeError(nil)
@@ -225,6 +244,15 @@ func (c *Client) Preflight(ctx context.Context) error {
 	if !safeRouteEvidence(c.config.Model, evidence) {
 		return unsafeError(errors.New("OmniRoute route evidence is missing or unsafe"))
 	}
+	if c.config.EnableAttemptReceipts {
+		// The gateway contract health must have been populated by an explicit
+		// ProbeGatewayContract call; its zero value is conservatively unknown.
+		health := c.GatewayContractHealth()
+		if !health.Healthy() {
+			return gatewayContractUnhealthyError()
+		}
+		return nil
+	}
 	return unsafeError(errAttemptReceiptsUnavailable)
 }
 
@@ -239,6 +267,9 @@ func (c *Client) Complete(ctx context.Context, request provider.Request) (provid
 		return provider.Response{}, unsafeError(errAttemptReceiptsUnavailable)
 	}
 	if c.config.Provider == "" || c.config.AccountLaneHash == "" {
+		return provider.Response{}, &Error{Kind: ErrorAttemptReceiptsInvalid}
+	}
+	if c.config.Provider == ProviderChatGPTWeb && c.config.ConnectionID == "" {
 		return provider.Response{}, &Error{Kind: ErrorAttemptReceiptsInvalid}
 	}
 	if strings.TrimSpace(request.ClientRequestID) == "" {

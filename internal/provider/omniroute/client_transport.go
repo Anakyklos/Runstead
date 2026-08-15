@@ -58,6 +58,13 @@ func (c *Client) completeOnce(ctx context.Context, request provider.Request) (pr
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
 	req.Header.Set(noCacheHeader, "true")
+	// The pinned protected lane sends the exact connection id so OmniRoute
+	// selects the configured account/connection. Raw connection ids are
+	// configuration/transport state: they never appear in traces, evidence or
+	// sanitized errors.
+	if c.config.ConnectionID != "" {
+		req.Header.Set(connectionHeader, c.config.ConnectionID)
+	}
 	if request.ClientRequestID != "" {
 		req.Header.Set(clientRequestIDHeader, request.ClientRequestID)
 	}

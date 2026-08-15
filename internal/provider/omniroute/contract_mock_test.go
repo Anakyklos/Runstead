@@ -182,7 +182,7 @@ func (m *contractMock) recordRequest(r *http.Request) {
 func (m *contractMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m.recordRequest(r)
 	m.counts.total.Add(1)
-	if r.URL.Path == "/v1/chat/completions" {
+	if r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/providers/chatgpt-web/chat/completions" {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
