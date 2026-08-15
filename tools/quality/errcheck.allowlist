@@ -1,0 +1,185 @@
+# Runstead swallowed-error allowlist.
+#
+# The errcheck gate flags every non-test Go statement that discards a
+# value whose static type implements error:
+#   - blank identifiers bound to an error-typed value (`_ = f()`,
+#     `x, _ := f()`, `_, _ = f()`);
+#   - bare call statements whose call has at least one error-typed
+#     result (`os.Remove(path)`, `fmt.Fprintln(...)` style multi-value
+#     calls);
+#   - `defer f()` and `go f()` where the call has at least one error-typed
+#     result (policy: defer and go discard their results exactly like a
+#     bare call, so they are swallowed errors; there is no silent
+#     exclusion).
+#
+# Calls whose function identity resolves to the documented excluded set in
+# errcheck.go (in-memory buffer writes, fmt output printing, io.Copy*,
+# math/rand.Read, os.Stdout/Stderr.Write) are conventionally ignored and
+# never reported. Everything else must be reviewed and either fixed or
+# listed here with a justification.
+#
+# Format: <relative-path>:<line>  <trimmed source line>
+# The recorded text must match the current source line exactly (both are
+# trimmed). Copy the line from the gate output when adding an entry.
+#
+# Process:
+#   - To fix a swallowed error: update the code and DELETE the entry.
+#   - To allow a new swallowed error: add the finding line here in the
+#     same PR with a concrete justification.
+#   - An entry that no longer matches a current finding (stale entry)
+#     fails the gate; remove it explicitly.
+#
+# Baseline: 85 reviewed sites in main (20 blank-identifier sites plus 65
+# sites surfaced by the widened bare-call/defer/go coverage), all
+# deliberately best-effort by design; a few are worth a follow-up review
+# (see notes).
+
+# Best-effort baseline capture: the status result is checked, while a diff
+# failure only degrades the rendered baseline (the loop still runs).
+internal/agent/loop.go:461  diffText, diffFlag, _ := l.registry.GitDiffText()
+
+# Telemetry timestamp is best-effort: a parse failure yields the zero time.
+# NOTE: follow-up review worth doing (telemetry parsing) outside issue #35.
+internal/provider/omniroute/telemetry.go:188  when, _ := time.Parse(time.RFC3339, typed)
+
+# Process/process-group termination on the cleanup path is best-effort; the
+# function is already returning a real error (or none) to its caller.
+internal/recipe/recipe.go:695  _ = process.Kill()
+internal/recipe/recipe.go:699  _ = syscall.Kill(-pgid, syscall.SIGTERM)
+internal/recipe/recipe.go:701  _ = syscall.Kill(-pgid, syscall.SIGKILL)
+
+# decodeAny is deliberately documented as non-failing: an undecodable
+# document leaves the target at its zero value and the authoritative
+# expected after-state hash gates reconciliation separately.
+internal/recovery/recovery.go:689  _ = jsonUnmarshal(raw, value)
+
+# Verification evidence rendering is best-effort: an undecodable evidence
+# JSON leaves the rendered list empty for inspect output.
+# NOTE: follow-up review worth doing (evidence parse) outside issue #35.
+internal/state/verification.go:290  _ = json.Unmarshal([]byte(evidenceJSON), &check.Evidence)
+
+# ripgrep is optional: when rg is absent the search falls back through the
+# registry's configured run paths instead of failing at construction.
+internal/tools/registry.go:125  rgPath, _ = lookPath("rg")
+
+# Temporary-file cleanup on the write rollback path is best-effort; the
+# write failure that triggered the cleanup is already being returned.
+internal/tools/write.go:268  _ = os.Remove(tmpName)
+
+# Argument extraction inside the executor switch: Execute has already run
+# ValidateArguments above, which extracts and checks the same arguments, so
+# the discarded *tools.Failure is nil by construction at these sites.
+internal/tools/execute.go:35  path, _ := stringArgument(action.Arguments, "path")
+internal/tools/execute.go:38  path, _ := stringArgument(action.Arguments, "path")
+internal/tools/execute.go:41  query, _ := stringArgument(action.Arguments, "query")
+internal/tools/execute.go:42  path, _ := stringArgument(action.Arguments, "path")
+internal/tools/execute.go:47  path, _ := stringArgument(action.Arguments, "path")
+internal/tools/execute.go:48  content, _ := stringArgumentAllowEmpty(action.Arguments, "content")
+internal/tools/execute.go:49  expected, _ := stringArgument(action.Arguments, "expected_before_hash")
+internal/tools/execute.go:52  path, _ := stringArgument(action.Arguments, "path")
+internal/tools/execute.go:53  patch, _ := stringArgumentAllowEmpty(action.Arguments, "patch")
+internal/tools/execute.go:54  expected, _ := stringArgument(action.Arguments, "expected_before_hash")
+internal/tools/execute.go:57  recipeID, _ := stringArgument(action.Arguments, "recipe")
+
+# --- Widened-coverage baseline (reviewed for issue #35) ---------------------
+#
+# The gate now also flags error results discarded by bare call statements,
+# `defer` and `go`. These 65 pre-existing sites are best-effort cleanup:
+# each entry discards an error that is a no-op by design (deferred rollback
+# after an already-checked commit) or a cleanup on a path whose primary
+# error is already returned to the caller.
+
+# Deferred durable-store and script-file close on command shutdown paths:
+# the command's primary result/error is already returned before the defer
+# runs, so a close failure can only degrade the process exit.
+cmd/runstead/main.go:230  defer store.Close()
+cmd/runstead/main.go:787  defer store.Close()
+cmd/runstead/main.go:886  defer store.Close()
+cmd/runstead/resume.go:170  defer store.Close()
+cmd/runstead/scripted.go:23  defer file.Close()
+
+# Governor cancellation bookkeeping is best-effort: the admission error is
+# already recorded in the returned ExecutionResult, and a cancellation
+# failure cannot change the outcome being returned.
+internal/governor/execute.go:50  admission.Permit.CancelBeforeStart()
+
+# HTTP response body close is best-effort cleanup on the request path; the
+# primary error (or the successful response) is already being returned.
+internal/provider/omniroute/client.go:316  defer response.Body.Close()
+internal/provider/omniroute/client_transport.go:89  response.Body.Close()
+
+# Deferred transaction rollback uses the standard commit-then-rollback
+# idiom: Commit's error is checked explicitly at each site, and the
+# deferred Rollback is a no-op (sql.ErrTxDone) after a successful commit.
+# The rollback only runs on error paths, where the function's real error
+# is already being returned.
+internal/state/actions.go:18  defer tx.Rollback()
+internal/state/actions.go:57  defer tx.Rollback()
+internal/state/approval_flow.go:49  defer tx.Rollback()
+internal/state/migrations.go:104  defer tx.Rollback()
+internal/state/provider_attempts.go:62  defer tx.Rollback()
+internal/state/provider_attempts.go:111  defer tx.Rollback()
+internal/state/recovery.go:89  defer tx.Rollback()
+internal/state/recovery.go:121  defer tx.Rollback()
+internal/state/recovery.go:172  defer tx.Rollback()
+internal/state/recovery.go:280  defer tx.Rollback()
+internal/state/recovery.go:315  defer tx.Rollback()
+internal/state/tasks.go:31  defer tx.Rollback()
+internal/state/tasks.go:59  defer tx.Rollback()
+internal/state/tasks.go:93  defer tx.Rollback()
+internal/state/tool_attempts.go:21  defer tx.Rollback()
+internal/state/tool_attempts.go:80  defer tx.Rollback()
+internal/state/verification.go:87  defer tx.Rollback()
+internal/state/verification.go:146  defer tx.Rollback()
+internal/state/verification.go:199  defer tx.Rollback()
+internal/state/verification.go:308  defer tx.Rollback()
+internal/state/verification.go:343  defer tx.Rollback()
+internal/state/write_policy.go:39  defer tx.Rollback()
+internal/state/write_policy.go:94  defer tx.Rollback()
+internal/state/write_policy.go:179  defer tx.Rollback()
+internal/state/write_reconcile.go:49  defer tx.Rollback()
+
+# Deferred rows close is best-effort cleanup after iteration: scan errors
+# and rows.Err() are checked explicitly, and the deferred close only runs
+# on paths whose primary error is already being returned.
+internal/state/approval_flow.go:100  defer rows.Close()
+internal/state/events.go:43  defer rows.Close()
+internal/state/governor_state.go:191  defer rows.Close()
+internal/state/governor_state.go:210  defer rows.Close()
+internal/state/governor_state.go:229  defer rows.Close()
+internal/state/governor_state.go:248  defer rows.Close()
+internal/state/governor_state.go:267  defer rows.Close()
+internal/state/inspect.go:523  defer rows.Close()
+internal/state/inspect.go:542  defer rows.Close()
+internal/state/inspect.go:565  defer rows.Close()
+internal/state/inspect.go:592  defer rows.Close()
+internal/state/inspect.go:652  defer rows.Close()
+internal/state/inspect.go:724  defer rows.Close()
+internal/state/inspect.go:742  defer rows.Close()
+internal/state/recovery.go:498  defer rows.Close()
+internal/state/recovery.go:517  defer rows.Close()
+internal/state/recovery.go:538  defer rows.Close()
+internal/state/recovery.go:566  defer rows.Close()
+internal/state/verification.go:253  defer rows.Close()
+internal/state/verification.go:282  defer rows.Close()
+
+# Store-open failure paths close the just-created database before
+# returning the failure that caused the open to abort; the close error is
+# secondary to the error being returned.
+internal/state/store.go:155  db.Close()
+internal/state/store.go:159  db.Close()
+internal/state/store.go:163  db.Close()
+internal/state/store.go:167  db.Close()
+
+# File and temp-file close on read/write paths is best-effort cleanup: the
+# primary error of the operation is already checked and returned. The
+# hasher.Write result cannot fail for the concrete hash implementations
+# used here and is ignored by convention.
+internal/tools/read_file.go:62  defer file.Close()
+internal/tools/read_file.go:79  hasher.Write(chunk)
+internal/tools/search_text.go:293  defer file.Close()
+internal/tools/write.go:184  defer file.Close()
+internal/tools/write.go:272  tmp.Close()
+internal/tools/write.go:276  tmp.Close()
+internal/tools/write.go:282  tmp.Close()
+internal/tools/write_file.go:316  defer file.Close()

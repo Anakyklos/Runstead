@@ -1,0 +1,16 @@
+{
+  "max_source_file_lines": 1800,
+  "max_test_file_lines": 2400,
+  "max_source_files_per_package": 40,
+  "max_go_files_per_package": 60,
+  "exclude_dirs": [
+    ".git",
+    "vendor",
+    "fixtures",
+    "experiments",
+    "scratch",
+    "testdata",
+    ".omx",
+    ".superpowers"
+  ]
+}
