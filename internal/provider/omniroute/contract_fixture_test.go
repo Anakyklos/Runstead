@@ -464,9 +464,13 @@ func runContractScenario(t *testing.T, manifest contractManifest, scenario contr
 		config.Timeout = time.Duration(scenario.Config.TimeoutMS) * time.Millisecond
 	}
 	if scenario.Config.AttemptReceipts {
+		// The receipt scenarios exercise the pinned M1 lane: exact connection
+		// pin, dedicated provider-scoped endpoint and the derived lane hash.
 		config.EnableAttemptReceipts = true
-		config.Provider = "chatgpt-web"
-		config.AccountLaneHash = "lane-hash-synthetic-001"
+		config.Provider = ProviderChatGPTWeb
+		config.ConnectionID = "synthetic-connection-001"
+		config.ChatEndpoint = DedicatedChatEndpoint
+		config.AccountLaneHash = LaneHashForConnection("synthetic-connection-001")
 		config.RouteSafety = provider.ReceiptRouteSafety()
 	}
 	client, err := New(config, options)

@@ -19,6 +19,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/policy"
 	"github.com/RenyEnnos/Runstead/internal/provider"
+	"github.com/RenyEnnos/Runstead/internal/provider/omniroute"
 	"github.com/RenyEnnos/Runstead/internal/recipe"
 	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
@@ -86,6 +87,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	omniBaseURL := ""
 	omniManagementBaseURL := ""
 	omniAPIKey := ""
+	omniConnectionID := ""
 	omniModel := ""
 	omniChatEndpoint := ""
 	omniTimeout := ""
@@ -116,6 +118,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	flags.StringVar(&omniBaseURL, "omniroute-base-url", "", "OmniRoute base URL (OMNIROUTE_BASE_URL)")
 	flags.StringVar(&omniManagementBaseURL, "omniroute-management-base-url", "", "OmniRoute management URL (OMNIROUTE_MANAGEMENT_BASE_URL)")
 	flags.StringVar(&omniAPIKey, "omniroute-api-key", "", "OmniRoute API key (OMNIROUTE_API_KEY)")
+	flags.StringVar(&omniConnectionID, "omniroute-connection-id", "", "exact OmniRoute provider connection pin for the protected chatgpt-web receipt lane (OMNIROUTE_CONNECTION_ID)")
 	flags.StringVar(&omniModel, "omniroute-model", "", "OmniRoute model (OMNIROUTE_MODEL)")
 	flags.StringVar(&omniChatEndpoint, "omniroute-chat-endpoint", "", "OmniRoute chat endpoint (OMNIROUTE_CHAT_ENDPOINT)")
 	flags.StringVar(&omniTimeout, "omniroute-timeout", "", "OmniRoute timeout (OMNIROUTE_TIMEOUT)")
@@ -138,6 +141,8 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		ManagementBaseURLSet: flagWasSet(flags, "omniroute-management-base-url"),
 		APIKey:               omniAPIKey,
 		APIKeySet:            flagWasSet(flags, "omniroute-api-key"),
+		ConnectionID:         omniConnectionID,
+		ConnectionIDSet:      flagWasSet(flags, "omniroute-connection-id"),
 		Model:                omniModel,
 		ModelSet:             flagWasSet(flags, "omniroute-model"),
 		ChatEndpoint:         omniChatEndpoint,
@@ -200,12 +205,36 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 			fmt.Fprintln(errOut, "run: scripted offline mode cannot be combined with OmniRoute configuration")
 			return exitUsage
 		}
-	} else if cfg.OmniRoute != nil {
-		fmt.Fprintln(errOut, "run: live OmniRoute execution remains blocked until a compatible attempt-receipt producer exists (#29 -> #30 -> #4). Use --scripted FILE for a deterministic offline run.")
+	} else if cfg.OmniRoute == nil {
+		fmt.Fprintln(errOut, "run: no provider configured. Use --scripted FILE for a deterministic offline run, or configure the pinned OmniRoute lane (OMNIROUTE_BASE_URL, OMNIROUTE_API_KEY, OMNIROUTE_MODEL, OMNIROUTE_CONNECTION_ID).")
 		return exitUnavailable
-	} else {
-		fmt.Fprintln(errOut, "run: no provider configured. Use --scripted FILE for a deterministic offline run, or configure OmniRoute (live path remains blocked).")
+	} else if !cfg.OmniRoute.EnableAttemptReceipts {
+		// The live lane is protected: it requires the exact connection pin.
+		// Without it the historical unconditional refusal stays in place.
+		fmt.Fprintln(errOut, "run: live OmniRoute requires the pinned receipt lane: set OMNIROUTE_CONNECTION_ID (--omniroute-connection-id) to pin the exact chatgpt-web connection. The legacy single-attempt declaration cannot authorize this lane.")
 		return exitUnavailable
+	}
+
+	// The protected live lane constructs the receipt-aware OmniRoute client
+	// before any admission: the gateway contract must be healthy and the
+	// protected-route preflight must pass, or no model request is ever made.
+	var liveClient *omniroute.Client
+	if !scriptedSet {
+		omniClient, err := omniroute.New(*cfg.OmniRoute, omniroute.Options{})
+		if err != nil {
+			fmt.Fprintf(errOut, "run: live OmniRoute lane unavailable: %v\n", err)
+			return exitUnavailable
+		}
+		health := omniClient.ProbeGatewayContract(ctx)
+		if !health.Healthy() {
+			fmt.Fprintf(errOut, "run: OmniRoute gateway contract is not healthy (%s): %s\n", health.State, health.ReasonCode)
+			return exitUnavailable
+		}
+		if err := omniClient.Preflight(ctx); err != nil {
+			fmt.Fprintf(errOut, "run: OmniRoute preflight failed: %v\n", err)
+			return exitUnavailable
+		}
+		liveClient = omniClient
 	}
 
 	accountConfig, err := resolveGovernorConfig(scriptedSet, cfg, minStartInterval, flagWasSet(flags, "min-start-interval"), allowanceProfile, flagWasSet(flags, "allowance-profile"))
@@ -257,10 +286,11 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		client = provider.NewFake(responses...)
 		model = "scripted"
 	} else {
-		// Unreachable: the OmniRoute path is refused above while live receipts
-		// are unavailable.
-		fmt.Fprintln(errOut, "run: live provider path is not activatable in this milestone")
-		return exitUnavailable
+		// The protected lane client was constructed and verified above
+		// (gateway contract + preflight); every model request still flows
+		// through the governor below.
+		client = liveClient
+		model = cfg.OmniRoute.Model
 	}
 
 	executor, err := agent.NewExecutor(accountGovernor, client, nil)
@@ -319,7 +349,11 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	}
 
 	taskID := "cli-" + fmt.Sprint(time.Now().UnixNano())
-	logger.InfoContext(ctx, "run started", "task_id", taskID, "provider", "scripted", "workspace", cfg.Workspace)
+	providerLabel := "scripted"
+	if !scriptedSet {
+		providerLabel = "omniroute"
+	}
+	logger.InfoContext(ctx, "run started", "task_id", taskID, "provider", providerLabel, "workspace", cfg.Workspace)
 	fmt.Fprintf(errOut, "task: %s\n", taskID)
 	result := loop.Run(ctx, agent.Task{ID: taskID, Prompt: taskPrompt})
 	if err := printFinalRuntimeResult(ctx, out, errOut, store, taskID, result, "run"); err != nil {
@@ -630,6 +664,15 @@ func resolveGovernorConfig(scripted bool, cfg config.Config, minStartInterval st
 		return governor.Config{}, fmt.Errorf("unsupported allowance profile %q", allowanceProfile)
 	}
 	accountConfig.Model = model
+	// The pinned receipt lane: the governor requires authoritative attempt
+	// receipts, uses the same receipt-aware route safety as the adapter and
+	// validates the derived account-lane hash against every receipt.
+	if !scripted && cfg.OmniRoute != nil && cfg.OmniRoute.EnableAttemptReceipts {
+		accountConfig.RequireSingleAttempt = false
+		accountConfig.RequireAttemptReceipts = true
+		accountConfig.AccountLaneHash = cfg.OmniRoute.AccountLaneHash
+		accountConfig.AttemptProviderID = cfg.OmniRoute.Provider
+	}
 	if intervalSet {
 		interval, err := time.ParseDuration(strings.TrimSpace(minStartInterval))
 		if err != nil || interval <= 0 {
@@ -1004,7 +1047,7 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Configuration precedence: flags > environment > defaults")
 	fmt.Fprintf(out, "  %s, %s, %s, %s\n", config.EnvWorkspace, config.EnvLogLevel, config.EnvTask, config.EnvStateDir)
-	fmt.Fprintf(out, "  OmniRoute: %s, %s, %s, %s\n", config.EnvOmniRouteBaseURL, config.EnvOmniRouteAPIKey, config.EnvOmniRouteModel, config.EnvOmniRouteChatEndpoint)
+	fmt.Fprintf(out, "  OmniRoute: %s, %s, %s, %s, %s\n", config.EnvOmniRouteBaseURL, config.EnvOmniRouteAPIKey, config.EnvOmniRouteModel, config.EnvOmniRouteChatEndpoint, config.EnvOmniRouteConnectionID)
 	fmt.Fprintln(out, "Use 'runstead <command> --help' for command-specific help.")
 }
 
@@ -1039,8 +1082,13 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "The deterministic offline mode replays scripted model responses (JSONL with")
 	fmt.Fprintln(out, "one {\"text\":\"...\"} object per line) through the real governor and tools.")
-	fmt.Fprintln(out, "Live OmniRoute execution remains blocked until a compatible attempt-receipt")
-	fmt.Fprintln(out, "producer exists (#29 -> #30 -> #4).")
+	fmt.Fprintln(out, "Live mode runs the pinned OmniRoute receipt lane: exactly provider")
+	fmt.Fprintln(out, "chatgpt-web, the configured chatgpt-web/<model>, the dedicated")
+	fmt.Fprintln(out, "providers/chatgpt-web/chat/completions route and the exact")
+	fmt.Fprintln(out, "OMNIROUTE_CONNECTION_ID pin, with one authoritative attempt receipt")
+	fmt.Fprintln(out, "per model send. The gateway contract must be healthy and preflight")
+	fmt.Fprintln(out, "must pass before any model request; the legacy --omniroute-safe-route")
+	fmt.Fprintln(out, "declaration cannot authorize the live lane.")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Flags:")
 	fmt.Fprintln(out, "  --task PROMPT             task prompt (RUNSTEAD_TASK)")
@@ -1064,10 +1112,11 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --omniroute-base-url URL             base URL (OMNIROUTE_BASE_URL)")
 	fmt.Fprintln(out, "  --omniroute-management-base-url URL  management URL (OMNIROUTE_MANAGEMENT_BASE_URL)")
 	fmt.Fprintln(out, "  --omniroute-api-key KEY              API key (OMNIROUTE_API_KEY)")
-	fmt.Fprintln(out, "  --omniroute-model MODEL              explicit model (OMNIROUTE_MODEL)")
-	fmt.Fprintln(out, "  --omniroute-chat-endpoint PATH       endpoint (OMNIROUTE_CHAT_ENDPOINT)")
+	fmt.Fprintln(out, "  --omniroute-connection-id ID         exact connection pin for the protected chatgpt-web receipt lane (OMNIROUTE_CONNECTION_ID); required for live mode")
+	fmt.Fprintln(out, "  --omniroute-model MODEL              explicit chatgpt-web/<model> (OMNIROUTE_MODEL)")
+	fmt.Fprintln(out, "  --omniroute-chat-endpoint PATH       generic endpoint (OMNIROUTE_CHAT_ENDPOINT); incompatible with the pinned live lane")
 	fmt.Fprintln(out, "  --omniroute-timeout DURATION         timeout (OMNIROUTE_TIMEOUT)")
-	fmt.Fprintln(out, "  --omniroute-safe-route               static declaration; remote preflight remains mandatory")
+	fmt.Fprintln(out, "  --omniroute-safe-route               legacy static declaration; cannot authorize the live receipt lane")
 }
 
 func printInspectHelp(out io.Writer) {

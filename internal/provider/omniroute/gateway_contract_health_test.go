@@ -368,8 +368,10 @@ func newReceiptAwareHealthTestClient(t *testing.T, server *contractMockServer) *
 	t.Helper()
 	config := testConfig(server.URL())
 	config.EnableAttemptReceipts = true
-	config.Provider = "chatgpt-web"
-	config.AccountLaneHash = "synthetic-lane-hash"
+	config.Provider = ProviderChatGPTWeb
+	config.ConnectionID = "synthetic-connection-001"
+	config.ChatEndpoint = DedicatedChatEndpoint
+	config.AccountLaneHash = LaneHashForConnection("synthetic-connection-001")
 	config.RouteSafety = provider.ReceiptRouteSafety()
 	client, err := New(config, Options{HTTPClient: server.Client()})
 	if err != nil {

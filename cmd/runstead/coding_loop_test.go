@@ -432,8 +432,8 @@ func TestCodingLoopLivePathFailsClosed(t *testing.T) {
 	if code != exitUnavailable {
 		t.Fatalf("run exit = %d, want %d (live path fails closed)\nstderr:\n%s", code, exitUnavailable, errOut.String())
 	}
-	if !strings.Contains(errOut.String(), "#29") {
-		t.Fatalf("the diagnostic must name the live blocker (#29 -> #30 -> #4):\n%s", errOut.String())
+	if !strings.Contains(errOut.String(), "OMNIROUTE_CONNECTION_ID") {
+		t.Fatalf("the diagnostic must name the connection-pin live blocker:\n%s", errOut.String())
 	}
 }
 

@@ -69,6 +69,12 @@ const (
 	EnvOmniRouteTimeout           = "OMNIROUTE_TIMEOUT"
 	EnvOmniRouteMaxRequestBytes   = "OMNIROUTE_MAX_REQUEST_BYTES"
 	EnvOmniRouteMaxResponseBytes  = "OMNIROUTE_MAX_RESPONSE_BYTES"
+	// EnvOmniRouteConnectionID pins the exact OmniRoute provider connection
+	// used by the protected chatgpt-web receipt lane (issue #30). The raw id
+	// is configuration/transport state: it is never traced, persisted as
+	// evidence or printed in sanitized errors. Its account-lane hash is
+	// derived automatically.
+	EnvOmniRouteConnectionID = "OMNIROUTE_CONNECTION_ID"
 
 	EnvOmniRouteSingleAttemptGuaranteed = "OMNIROUTE_SINGLE_ATTEMPT_GUARANTEED"
 	EnvOmniRouteInternalRetriesDisabled = "OMNIROUTE_INTERNAL_RETRIES_DISABLED"
@@ -107,6 +113,8 @@ type OmniRouteOverrides struct {
 	ManagementBaseURLSet bool
 	APIKey               string
 	APIKeySet            bool
+	ConnectionID         string
+	ConnectionIDSet      bool
 	Model                string
 	ModelSet             bool
 	ChatEndpoint         string
@@ -170,7 +178,7 @@ func Resolve(overrides Overrides, lookupEnv LookupEnv) (Config, error) {
 }
 
 func resolveOmniRoute(overrides OmniRouteOverrides, lookupEnv LookupEnv) (*omniroute.Config, error) {
-	configured := overrides.BaseURLSet || overrides.ManagementBaseURLSet || overrides.APIKeySet || overrides.ModelSet || overrides.ChatEndpointSet || overrides.TimeoutSet || overrides.MaxRequestBytesSet || overrides.MaxResponseBytesSet || overrides.RouteSafetySet
+	configured := overrides.BaseURLSet || overrides.ManagementBaseURLSet || overrides.APIKeySet || overrides.ConnectionIDSet || overrides.ModelSet || overrides.ChatEndpointSet || overrides.TimeoutSet || overrides.MaxRequestBytesSet || overrides.MaxResponseBytesSet || overrides.RouteSafetySet
 	read := func(key string) (string, bool) {
 		if lookupEnv == nil {
 			return "", false
@@ -192,6 +200,10 @@ func resolveOmniRoute(overrides OmniRouteOverrides, lookupEnv LookupEnv) (*omnir
 	apiKey := ""
 	if value, ok := read(EnvOmniRouteAPIKey); ok {
 		apiKey = value
+	}
+	connectionID := ""
+	if value, ok := read(EnvOmniRouteConnectionID); ok {
+		connectionID = value
 	}
 	model := DefaultOmniRouteModel
 	if value, ok := read(EnvOmniRouteModel); ok {
@@ -235,6 +247,9 @@ func resolveOmniRoute(overrides OmniRouteOverrides, lookupEnv LookupEnv) (*omnir
 	if overrides.APIKeySet {
 		apiKey = overrides.APIKey
 	}
+	if overrides.ConnectionIDSet {
+		connectionID = overrides.ConnectionID
+	}
 	if overrides.ModelSet {
 		model = overrides.Model
 	}
@@ -251,6 +266,13 @@ func resolveOmniRoute(overrides OmniRouteOverrides, lookupEnv LookupEnv) (*omnir
 		maxResponseBytes = overrides.MaxResponseBytes
 	}
 
+	// An explicitly empty connection pin is a configuration error, never a
+	// silent fallback to the legacy un-pinned path.
+	if overrides.ConnectionIDSet && strings.TrimSpace(connectionID) == "" {
+		return nil, fmt.Errorf("OmniRoute connection id must not be empty")
+	}
+	connectionID = strings.TrimSpace(connectionID)
+
 	safety, safetyConfigured, err := resolveRouteSafety(overrides, read)
 	if err != nil {
 		return nil, err
@@ -259,19 +281,44 @@ func resolveOmniRoute(overrides OmniRouteOverrides, lookupEnv LookupEnv) (*omnir
 	if !configured {
 		return nil, nil
 	}
-	if !overrides.RouteSafetySet && !safetyConfigured {
-		return nil, fmt.Errorf("OmniRoute route safety must be explicitly configured")
-	}
+
 	resolved := &omniroute.Config{
 		BaseURL:           baseURL,
 		ManagementBaseURL: managementBaseURL,
 		APIKey:            apiKey,
+		ConnectionID:      connectionID,
 		Model:             model,
 		ChatEndpoint:      chatEndpoint,
 		Timeout:           timeout,
 		MaxRequestBytes:   maxRequestBytes,
 		MaxResponseBytes:  maxResponseBytes,
 		RouteSafety:       safety,
+	}
+
+	// ── Pinned receipt lane (issue #30) ─────────────────────────────────────
+	// A configured connection id activates the protected M1 lane: exactly
+	// provider chatgpt-web, an explicit chatgpt-web/<model>, the dedicated
+	// provider-scoped endpoint, derived account-lane hash, receipt-aware route
+	// safety and authoritative attempt receipts. The legacy safe-route /
+	// single-attempt declarations can never authorize this lane.
+	if connectionID != "" {
+		if !strings.HasPrefix(model, omniroute.ProviderChatGPTWeb+"/") {
+			return nil, fmt.Errorf("the pinned OmniRoute lane requires an explicit chatgpt-web/<model> model")
+		}
+		if chatEndpoint != "" && chatEndpoint != omniroute.DedicatedChatEndpoint {
+			return nil, fmt.Errorf("the pinned OmniRoute lane requires the dedicated providers/chatgpt-web/chat/completions endpoint")
+		}
+		if safetyConfigured && safety.AttemptAccounting != provider.AttemptAccountingReceipts {
+			return nil, fmt.Errorf("the pinned OmniRoute lane requires receipt-aware route safety; legacy single-attempt declarations cannot authorize it")
+		}
+		resolved.Provider = omniroute.ProviderChatGPTWeb
+		resolved.ChatEndpoint = omniroute.DedicatedChatEndpoint
+		resolved.EnableAttemptReceipts = true
+		resolved.AccountLaneHash = omniroute.LaneHashForConnection(connectionID)
+		resolved.RouteSafety = provider.ReceiptRouteSafety()
+	}
+	if !overrides.RouteSafetySet && !safetyConfigured && resolved.EnableAttemptReceipts == false && connectionID == "" {
+		return nil, fmt.Errorf("OmniRoute route safety must be explicitly configured")
 	}
 	if _, err := omniroute.New(*resolved, omniroute.Options{}); err != nil {
 		return nil, fmt.Errorf("invalid OmniRoute configuration")
