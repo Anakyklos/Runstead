@@ -1,0 +1,184 @@
+{
+  "provenance": {
+    "recorded": "v1 live run log (sanitized stdout)",
+    "rebuilt": "lib/rebuild_evidence.mjs with fixed classifier (v2)",
+    "note": "classification re-derived from method+path; turns attributed by recorded dispatch timestamps"
+  },
+  "events": [
+    {
+      "kind": "spike_start",
+      "mode": "live",
+      "_kind": "spike_start"
+    },
+    {
+      "kind": "self_audit",
+      "failed": false,
+      "findings": [],
+      "_kind": "self_audit"
+    },
+    {
+      "kind": "browser_launched",
+      "binary": "google-chrome-stable",
+      "discoveredBy": "which google-chrome-stable",
+      "profileFresh": false,
+      "profilePath": "~/Documentos/codigo/Runstead/experiments/first-party-…/profiles/standalone-spike",
+      "_kind": "browser_launched"
+    },
+    {
+      "kind": "cdp_connected",
+      "browserProduct": "Chrome",
+      "browserVersion": "151.0.7922.71",
+      "targetCountAtConnect": 3,
+      "cdpEndpointObtained": "DevToolsActivePort + /json/version",
+      "_kind": "cdp_connected"
+    },
+    {
+      "kind": "session_state",
+      "verdict": "ready",
+      "onChatGPT": true,
+      "signedOut": false,
+      "composerPresent": true,
+      "_kind": "session_state"
+    },
+    {
+      "kind": "harness_installed",
+      "verdict": "ready",
+      "_kind": "harness_installed"
+    },
+    {
+      "kind": "baseline_done",
+      "counts": {
+        "other": 341,
+        "ces_telemetry": 12,
+        "backend_api_aux": 30,
+        "session_check": 4,
+        "sentinel_aux": 2,
+        "conversation_list": 1,
+        "conversation_api_aux": 1,
+        "model_effect_prepare": 4
+      },
+      "modelEffectInBaseline": 0,
+      "_kind": "baseline_done"
+    },
+    {
+      "kind": "composer_verified",
+      "length": 79,
+      "hash": 3885781,
+      "_kind": "composer_verified"
+    },
+    {
+      "kind": "dispatch_clicked",
+      "_kind": "dispatch_clicked"
+    },
+    {
+      "kind": "response_started",
+      "requestId": "989287.559",
+      "classification": "model_effect…",
+      "status": 200,
+      "mimeType": "text/event-stream",
+      "_kind": "response_started"
+    },
+    {
+      "kind": "turn1",
+      "outcome": "ok",
+      "physical_sends": 0,
+      "prepare_sends": 1,
+      "in_window_counts": {
+        "sentinel_aux": 8,
+        "other": 39,
+        "model_effect…": 1,
+        "ces_telemetry": 7,
+        "conversation_api_aux": 2,
+        "conversation_list": 2,
+        "backend_api_aux": 1,
+        "model_effect_prepare": 1
+      },
+      "post_window_counts": {
+        "sentinel_aux": 2
+      },
+      "response_started": false,
+      "loading_completions": [],
+      "dom_terminal": true,
+      "dom_busy_false": true,
+      "token_present": true,
+      "text_length": 253,
+      "text_hash": 1111094390,
+      "conversation_id": "6a811a31-6f7……",
+      "hidden_retry_or_fanout": false,
+      "_kind": "turn1"
+    },
+    {
+      "kind": "composer_verified",
+      "length": 72,
+      "hash": 3151077146,
+      "_kind": "composer_verified"
+    },
+    {
+      "kind": "dispatch_clicked",
+      "_kind": "dispatch_clicked"
+    },
+    {
+      "kind": "response_started",
+      "requestId": "989287.559",
+      "classification": "model_effect…",
+      "status": 200,
+      "mimeType": "text/event-stream",
+      "_kind": "response_started"
+    },
+    {
+      "kind": "cancel_attempt",
+      "clicked": true,
+      "reason": "stop button found and clicked",
+      "requestId": "989287.559",
+      "_kind": "cancel_attempt"
+    },
+    {
+      "kind": "turn2",
+      "outcome": "completed_before_cancel",
+      "physical_sends": 0,
+      "response_started": true,
+      "loading": {
+        "completion": "finished",
+        "errorText": null,
+        "streamChunks": 15,
+        "streamBytes": 12017
+      },
+      "dom_after_cancel": {
+        "busy": false,
+        "terminal": true,
+        "textLength": 253,
+        "textHash": 1111094390,
+        "messageCount": 1
+      },
+      "in_window_counts": {
+        "sentinel_aux": 8,
+        "other": 39,
+        "model_effect…": 2,
+        "ces_telemetry": 8,
+        "conversation_api_aux": 2,
+        "conversation_list": 2,
+        "backend_api_aux": 1,
+        "model_effect_prepare": 2
+      },
+      "hidden_retry_or_fanout": false,
+      "_kind": "turn2"
+    },
+    {
+      "kind": "crash_test",
+      "action": "sigkill_browser",
+      "_kind": "crash_test"
+    },
+    {
+      "kind": "crash_classified",
+      "cdp_close_code": 1006,
+      "cdp_close_clean": false,
+      "browser_exit": {
+        "signal": "SIGKILL"
+      },
+      "automatic_retry_observed": false,
+      "model_sends_after_crash": 0,
+      "state": "fail_closed_no_replay",
+      "_kind": "crash_classified"
+    }
+  ]
+}

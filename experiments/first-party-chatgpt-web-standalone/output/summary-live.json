@@ -1,0 +1,47 @@
+{
+  "mode": "live",
+  "date": "2026-08-16",
+  "provenance": {
+    "recorded": "v1 live run log (sanitized stdout)",
+    "rebuilt": "lib/rebuild_evidence.mjs with fixed classifier (v2)",
+    "note": "classification re-derived from method+path; turns attributed by recorded dispatch timestamps"
+  },
+  "turn1": {
+    "outcome": "ok",
+    "physical_sends": 1,
+    "response_started": true,
+    "completion": "finished",
+    "status": 200,
+    "mimeType": "text/event-stream",
+    "streamBytes": 12017,
+    "token_present": true,
+    "text_length": 253,
+    "dom_terminal": true,
+    "conversation_id": "6a811a31-6f7……",
+    "hidden_retry_or_fanout": false,
+    "correlated": true
+  },
+  "turn2": {
+    "outcome": "canceled_aborted",
+    "physical_sends": 1,
+    "response_started": false,
+    "completion": "failed",
+    "errorText": "net::ERR_ABORTED",
+    "canceled": true,
+    "cancel_clicked": true,
+    "cancel_ms_after_dispatch": 61,
+    "hidden_retry_or_fanout": false
+  },
+  "crash": {
+    "kind": "crash_classified",
+    "cdp_close_code": 1006,
+    "cdp_close_clean": false,
+    "browser_exit": {
+      "signal": "SIGKILL"
+    },
+    "automatic_retry_observed": false,
+    "model_sends_after_crash": 0,
+    "state": "fail_closed_no_replay",
+    "_kind": "crash_classified"
+  }
+}
