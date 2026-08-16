@@ -15,10 +15,14 @@ O relatório anterior documentou o `ChatGptWebExecutor` (o *transporte*: cookie 
 
 1. **O executor está estável desde o relatório anterior.** O blob de `open-sse/executors/chatgpt-web.ts` tem o **mesmo hash** (`0168d07de2eb421e64db7ea69c9cb14f757c29e7`) em `release/v3.8.50` (07/ago) e no `main` de hoje (15/ago). Nenhuma mudança no caminho crítico do ChatGPT Web em 8 dias. O relatório anterior permanece válido integralmente.
 2. **O pool é dirigido por classificação de falhas por sinais, não por status HTTP.** `open-sse/services/accountFallback.ts` (2.121 linhas) mantém listas de sinais de texto/erro para 6 categorias (conta desativada, créditos exaustos, token OAuth inválido, estouro de contexto, modelo sem acesso, rate limit) e classifica cada falha antes de decidir o remédio.
-3. **Circuit breaker por modelo, não por conta.** O lockout é chaveado por `(provider, connectionId, model, reason)` com cooldown escalado: exponential backoff, honra de reset informado pelo upstream (`Retry-After`, `X-RateLimit-Reset`, "Resets in 160h"), `quota_exhausted` → trava até meia-noite, decay da contagem de falhas, evicção de overflow (cap) e lock "exato" para casos que não devem afetar a família de modelos.
-4. **O loop de execução está no `chatCore`**: `while (attempts < maxAttempts)` com **exclusão de connection IDs** entre tentativas (um request falho não re-tenta na mesma conta) e um failover dedicado para Codex (`codexFailover.ts`).
-5. **O OmniRoute já tem a lane Codex OAuth de primeira parte** (`src/lib/oauth/providers/codex.ts`, `codexDeviceFlow.ts`, `src/mitm/targets/codex.ts`): login via OAuth com `id_token` contendo `chatgpt_account_id`, `chatgpt_plan_type` e workspace. Ou seja: o "caminho estável oficial" que o Runstead considera para o bake-off (#18) **já está implementado no OmniRoute** — a decisão não é "OmniRoute ou Codex", é "usar a lane Codex do OmniRoute ou a lane reverse-engineered".
-6. **Gap para o caso free do Runstead:** o pool do OmniRoute foi desenhado para provedores com rate limits por janela e créditos (429 → cooldown). A semântica free do ChatGPT (teto **semanal**, modelo único GPT-5.6 Luna, "unlimited subject to abuse guardrails") **não existe no OmniRoute** — o tratamento de `quota_exhausted` (trava até meia-noite) é o análogo mais próximo do reset semanal, mas a contabilidade do teto semanal é responsabilidade do governor do Runstead (#58).
+3. **Circuit breaker por modelo escopado a cota, não por conta.** A chave de lockout é `canonicalProvider:connectionId:lockModel` onde `lockModel` é:
+   - o modelo exato para erros 404/`not_found` (modelo literal não existe);
+   - o *scope de cota* do provedor: `family:gemini|claude|other` para Antigravity; `codex|spark` para Codex;
+   - caso contrário, o modelo literal.
+   `reason` e `status` influenciam a escolha do scope mas **não** são componentes persistidos da chave. Cooldown escalado com exponential backoff, honra de reset do upstream (`Retry-After`, `X-RateLimit-Reset`, "Resets in 160h"), `quota_exhausted` → trava até o reset conhecido (meia-noite para janelas diárias; para Codex Spark, janela semanal mapeada), decay da contagem de falhas, evicção de overflow (cap), e lock "exato" (`exactModelLock`) para tuplas literais que não devem afetar a família.
+4. **O loop de execução está no `chatCore`**: `while (attempts < maxAttempts)` com **exclusão de connection IDs** entre tentativas (um request falho não re-tenta na mesma conta) e um failover dedicado para Codex (`codexFailover.ts` — marca o scope `codex|spark` como rate-limited até o reset informado).
+5. **O OmniRoute já tem a lane Codex OAuth de primeira parte** (`src/lib/oauth/providers/codex.ts`, `codexDeviceFlow.ts`, `src/mitm/targets/codex.ts`): login via OAuth com `id_token` contendo `chatgpt_account_id`, `chatgpt_plan_type` e workspace; `codexResetCredits.ts`/`quotaShareConsumption.ts` rastreiam cotas flat-rate. O `codexDeviceFlow.ts` é **browser-driven** (comentário explícito: `auth.openai.com` bloqueia IPs de datacenter; o fluxo DEVE originar do navegador do usuário); o servidor persiste os tokens *após* o usuário completar o flow no browser. Não prova login puramente headless/server-side para #41.
+6. **Gap para o caso free do Runstead:** o pool do OmniRoute foi desenhado para provedores com rate limits por janela e créditos (429 → cooldown). A hipótese de semântica free do ChatGPT (teto **semanal**, modelo único GPT-5.6 Luna, "unlimited subject to abuse guardrails") **não é fato observado live** — a própria #58 exige evidência live antes de tratar a transição como observada. A documentação oficial atual da OpenAI informa GPT-5.5 Instant como padrão no ChatGPT, Free com limites dinâmicos em janela de 5h, e Luna fora das conversas padrão. O tratamento de `quota_exhausted` (trava até reset conhecido) é o análogo mais próximo, mas a contabilidade do teto (semanal ou janela) é responsabilidade do governor do Runstead (#58) e deve ser baseada em evidência live, não em hipótese.
 
 ---
 
@@ -60,12 +64,16 @@ Observações de design que valem para o Runstead:
 
 O circuito por modelo (`modelLockouts` Map + `modelFailureState`) é o mecanismo mais maduro da camada:
 
-- **Chave**: `(provider, connectionId, model, reason, status)` — o lockout é **por modelo por conta**, não por conta inteira. Um modelo que falha não derruba os outros da mesma conta.
+- **Chave**: `canonicalProvider:connectionId:lockModel` (retornado por `getModelLockKey`), onde `lockModel` é:
+  - o modelo exato para erros 404/`not_found` (modelo literal não existe);
+  - o *scope de cota* do provedor: `family:gemini|claude|other` para Antigravity (`getQuotaScopedModelForProvider`); `codex|spark` para Codex (`getCodexModelScope`);
+  - caso contrário, o modelo literal.
+  `reason` e `status` **influenciam a escolha do scope** (ex.: `reason === "not_found" || status === 404` força modelo literal; `canonicalProvider === "codex"` usa scope Codex) mas **não são componentes persistidos da chave**. O lockout é por modelo-escopado-a-cota por conta, não por conta inteira.
 - **Cooldown escalado** (`recordModelLockoutFailure`):
   - Exponential backoff por contagem de falhas (padrão);
   - **Honra de reset do upstream** (`selectLockoutCooldownMs` + `exactCooldownIsUpstreamReset`): se o erro trouxe `Retry-After`, `X-RateLimit-Reset` ou "Resets in 160h" parseado, o cooldown respeita **exatamente** esse valor — mesmo acima do teto (`maxCooldownMs`). Um "resets in 92h" não é achatado para minutos, senão o router martela 429 contra cota sabidamente ausente (#7940);
-  - Estimativas **sintéticas** (backoff puro, quota-exhausted até meia-noite) ficam sujeitas ao teto;
-  - **`quota_exhausted` → trava até 00:00** do dia seguinte (`getMsUntilTomorrow`), o análogo mais próximo do reset semanal free.
+  - Estimativas **sintéticas** (backoff puro, quota-exhausted até reset conhecido) ficam sujeitas ao teto;
+  - **`quota_exhausted` → trava até o reset conhecido** (`getMsUntilTomorrow` para janelas diárias; para Codex Spark, janela semanal mapeada via `toCodexScopedQuotaWindowName`).
 - **Preserva o cooldown mais longo** entre lock concorrente (sem mutex: atômico no event loop single-threaded do Node; no Go do Runstead, exige mutex ou CAS).
 - **Decay** (`decayModelFailureCount`): falhas antigas expiram pela janela (`getFailureWindowMs`, padrão 30 min), então a contagem não acumula para sempre.
 - **Evicção de overflow** (`evictModelLockoutOverflow`, cap `MODEL_LOCKOUT_EVICTION_CAP`): o mapa não cresce sem limite.
@@ -100,12 +108,13 @@ O circuito por modelo (`modelLockouts` Map + `modelFailureState`) é o mecanismo
 ## 7. Lane Codex OAuth (o "caminho oficial" já existe no OmniRoute)
 
 - `src/lib/oauth/providers/codex.ts`: fluxo OAuth do Codex com `id_token` JWT contendo claims custom em `https://api.openai.com/auth` (`chatgpt_account_id`, `chatgpt_plan_type`, `chatgpt_user_id`, `organizations[].{id, is_default, role, title}`) — o workspace selecionado na tela de autorização chega embutido no token.
-- `src/lib/oauth/codexDeviceFlow.ts`: **device code flow** — login em headless sem navegador (exatamente o que o Runstead precisaria para admitir sessões em servidor).
-- `src/lib/oauth/utils/codexAuthFile.ts`, `codexSessionImport.ts`, `codexAuthImport.ts`: importa o `auth.json` do Codex CLI (`~/.codex/auth.json`) como fonte de credencial — o Runstead pode reutilizar sessões já autenticadas pelo usuário.
+- `src/lib/oauth/codexDeviceFlow.ts`: **device code flow browser-driven** — o comentário no código é explícito: `auth.openai.com` bloqueia IPs de datacenter (Cloudflare) mas permite CORS; o fluxo **DEVE originar do navegador do usuário**. O usuário abre `https://auth.openai.com/codex/device` e digita o `user_code`; o servidor OmniRoute faz o polling do token e persiste `access_token`, `refresh_token`, `id_token` *após* a autorização. **Não prova login puramente headless/server-side para #41** — o step "browser do usuário" é obrigatório.
+- `src/lib/oauth/utils/codexAuthFile.ts`, `codexSessionImport.ts`, `codexAuthImport.ts`: importa o `auth.json` do Codex CLI (`~/.codex/auth.json`) como fonte de credencial — o Runstead pode reutilizar sessões já autenticadas pelo usuário (mas a admissão inicial ainda requer o browser-driven flow).
 - `src/mitm/targets/codex.ts` + `src/mitm/handlers/codex.ts`: o OmniRoute também serve Codex via MITM de proxy.
-- `src/lib/usage/codexResetCredits.ts`, `flatRateProviders.ts`, `quotaShareConsumption.ts`: o OmniRoute **já rastreia créditos/reset do Codex** (cota flat-rate compartilhada) — pré-requisito de contabilidade que o governor do Runstead (#58) precisa espelhar para o free.
+- `src/lib/usage/codexResetCredits.ts`, `flatRateProviders.ts`, `quotaShareConsumption.ts`: o OmniRoute **já rastreia créditos/reset do Codex** (cota flat-rate compartilhada, scopes `codex` e `spark` com janelas `session`/`weekly` mapeadas) — pré-requisito de contabilidade que o governor do Runstead (#58) pode espelhar.
+- `markCodexScopeRateLimited` (`codexFailover.ts`): failover dedicado da lane Codex — em 429, marca o scope (`codex|spark`) como rate-limited até o `rateLimitedUntil` informado pelo upstream; na próxima tentativa, exclui conexões com scope bloqueado.
 
-Implicação para o bake-off (#18): a pergunta deixa de ser "OmniRoute (frágil) vs first-party (estável)" e passa a ser "qual lane do OmniRoute usar para quê": **Codex OAuth lane** para tarefas críticas (estável, oficial, com limite de plano) e **ChatGPT Web lane** para volume free (ilimitado, reverse-engineered). O OmniRoute já hospeda as duas — a decisão do Runstead é de roteamento, não de substituição de gateway.
+Implicação para o bake-off (#18/M7): a existência da lane Codex OAuth dentro do OmniRoute é um **achado relevante** (alternativa futura, roteamento interno), mas **não redefine o gate do bake-off**. O README, `docs/roadmap.md` e a própria #18 definem o bake-off entre `provider/omniroute` (reverse-engineered ChatGPT Web) e o first-party `provider/chatgptweb` (ainda não implementado). A lane Codex pode ser registrada como alternativa futura; não muda o gate sem decisão arquitetural explícita e evidência live. Também não há base nesta inspeção estática para chamar essa lane de "estável" em contraste com o first-party path ainda não implementado.
 
 ---
 
@@ -117,13 +126,14 @@ Implicação para o bake-off (#18): a pergunta deixa de ser "OmniRoute (frágil)
 |---|---|---|
 | Classificação de falhas por sinais (terminal vs transitório vs conta-específico) | `accountFallback.ts` §3 | Governor #58 + telemetria #39 |
 | Sinais ancorados no mínimo (lição `tier has been exhausted`) | `CREDITS_EXHAUSTED_SIGNALS` | Classificador do Runstead |
-| Lockout por `(conta, modelo, reason)` com cooldown escalado + backoff | `recordModelLockoutFailure` | Governor #58 |
+| Lockout por `(conta, lockModel)` com cooldown escalado + backoff | `recordModelLockoutFailure` | Governor #58 |
 | Honra de reset do upstream (exato, acima do teto) vs estimativa (teto) | `exactCooldownIsUpstreamReset` | Governor #58 |
-| `quota_exhausted` → trava até reset conhecido (00:00; no Runstead: reset semanal) | `getMsUntilTomorrow` | Governor #58 |
+| `quota_exhausted` → trava até reset conhecido (meia-noite diária, semanal para Codex Spark) | `getMsUntilTomorrow`, `toCodexScopedQuotaWindowName` | Governor #58 |
 | Decay de contagem de falhas + evicção (cap) | `decayModelFailureCount`, `evictModelLockoutOverflow` | Governor #58 |
 | Exclusão de connection IDs entre tentativas do loop | `chatCore` while-loop | Provider adapter (omniroute lane) |
-| Device flow + import de `~/.codex/auth.json` | `codexDeviceFlow.ts`, `codexAuthFile.ts` | Admissão de sessões (issue #41) |
-| Contabilidade de reset de cota flat-rate | `codexResetCredits.ts`, `quotaShareConsumption.ts` | Governor #58 (teto semanal free) |
+| Import de `~/.codex/auth.json` (reuso de sessão já autenticada) | `codexAuthFile.ts` | Admissão de sessões (issue #41) |
+| Contabilidade de reset de cota flat-rate (scopes `codex`/`spark`, janelas `session`/`weekly`) | `codexResetCredits.ts`, `quotaShareConsumption.ts` | Governor #58 |
+| Failover por scope Codex (`markCodexScopeRateLimited`) | `codexFailover.ts` | Governor #58 |
 
 ### Rejeitar (não adotar no Runstead)
 
@@ -139,11 +149,11 @@ Implicação para o bake-off (#18): a pergunta deixa de ser "OmniRoute (frágil)
 
 ## 9. Gap free-tier: o que o OmniRoute não resolve para o Runstead
 
-O pool do OmniRoute foi desenhado para **provedores com créditos/rate limits por janela**. O caso free do ChatGPT (decisão do projeto: web lane como provedor principal, contas free) tem semântica própria que o OmniRoute **não conhece**:
+O pool do OmniRoute foi desenhado para **provedores com créditos/rate limits por janela**. O caso free do ChatGPT (decisão do projeto: web lane como provedor principal, contas free) tem semântica que **não é fato observado live** — a própria #58 exige evidência live antes de tratar a transição como observada. A documentação oficial atual da OpenAI informa GPT-5.5 Instant como padrão no ChatGPT, Free com limites dinâmicos em janela de 5h, e Luna fora das conversas padrão. O que se sabe da implementação do OmniRoute:
 
-1. **Teto semanal único** (desde 10/ago/2026): o 429 free não carrega janela curta — carrega "conta exausta até reset semanal". O `quota_exhausted → até meia-noite` do OmniRoute é o análogo, mas o Runstead precisa da contabilidade do teto semanal por conta **antes** de mandar o request (governor admission), não reativamente.
-2. **Modelo único (GPT-5.6 Luna)**: o fallback por modelo do OmniRoute (lockout por modelo) não se aplica — dentro da conta free não há outro modelo. O fallback é **entre contas**, e o lockout por modelo vira lockout por conta (ou por "sessão exausta").
-3. **"Unlimited subject to abuse guardrails"**: o limitante real é o Sentinel/anti-bot, não o rate limit. O lockout por sinais do OmniRoute não detecta "sentinel começou a exigir Turnstile" — isso é o drift probe + classificação `SENTINEL_BLOCKED` (já mapeada no relatório do executor).
+1. **Reset de cota conhecido**: o `quota_exhausted` do OmniRoute trava até o reset conhecido (meia-noite para janelas diárias; janela semanal mapeada para Codex Spark). É o análogo mais próximo, mas a contabilidade do teto (semanal, janela de 5h, ou outro) é responsabilidade do governor do Runstead (#58) e deve ser baseada em evidência live, não em hipótese.
+2. **Modelo único (se confirmado)**: se a conta free realmente tiver um único modelo, o fallback por modelo do OmniRoute (lockout por `lockModel`) não se aplica — o fallback seria entre contas, e o lockout por modelo vira lockout por conta/sessão.
+3. **"Unlimited subject to abuse guardrails"**: se o limitante real for o Sentinel/anti-bot (não o rate limit), o lockout por sinais do OmniRoute não detecta "sentinel começou a exigir Turnstile" — isso é o drift probe + classificação `SENTINEL_BLOCKED` (já mapeada no relatório do executor).
 4. **Custo de admissão alto**: cada conta free nova custa login + verificação + Turnstile. O pool do OmniRoute assume conexões baratas de criar; o Runstead precisa tratar sessão como ativo caro (warming, custódia, reuso — issue #41).
 
 ---
@@ -152,11 +162,11 @@ O pool do OmniRoute foi desenhado para **provedores com créditos/rate limits po
 
 | Issue | Impacto dos achados |
 |---|---|
-| **#58** (governor Luna) | O `accountFallback` é o modelo de referência completo: classificação por sinais, lockout por chave com cooldown escalado, honra de reset upstream, decay, evicção. Adaptar: chave `(conta)` em vez de `(conta, modelo)`; reset semanal em vez de meia-noite; falha `SENTINEL_BLOCKED` como categoria própria. |
-| **#39** (telemetria mínima) | O motivo da falha deve ser a **categoria classificada** (conta_banida / teto_semanal / sentinel / token_invalido / drift / timeout), não só o status HTTP — é o que permite calibrar pool e detectar guardrail antes do usuário. |
-| **#18** (bake-off) | OmniRoute já tem a lane Codex OAuth (device flow, import de auth.json, contabilidade de reset). A decisão de default passa a ser de roteamento entre lanes do mesmo gateway, não de troca de gateway. |
+| **#58** (governor Luna) | O `accountFallback` é o modelo de referência completo: classificação por sinais, lockout por `lockModel` (scope de cota) com cooldown escalado, honra de reset upstream, decay, evicção, failover por scope Codex. Adaptações: chave baseada no `lockModel` do provedor; reset conhecido (não hipótese semanal); falha `SENTINEL_BLOCKED` como categoria própria; contabilidade baseada em evidência live. |
+| **#39** (telemetria mínima) | O motivo da falha deve ser a **categoria classificada** (conta_banida / creditos_exaustos / sentinel / token_invalido / drift / timeout), não só o status HTTP — é o que permite calibrar pool e detectar guardrail antes do usuário. Lição: sinais ancorados no mínimo (ex.: `tier has been exhausted`). |
+| **#18** (bake-off/M7) | OmniRoute tem a lane Codex OAuth (browser-driven flow, import de auth.json, contabilidade de reset/scopes). É achado relevante (alternativa futura, roteamento interno), mas **não redefine o gate** entre `provider/omniroute` e first-party `provider/chatgptweb`. |
 | **#16/#17** (first-party adapter) | O loop com exclusão de connection IDs e o tratamento de falha por categoria são o contrato esperado do adapter. |
-| **Drift probe (nova)** | O executor está estável no OmniRoute (hash idêntico), mas os valores de frontend do ChatGPT (OAI-Client-Version/Build de abril/2026) continuam codificados sem detector — formalizar a issue de probe com base no relatório anterior. |
+| **Drift probe (nova #74)** | O executor está estável no OmniRoute (hash idêntico), mas os valores de frontend do ChatGPT (OAI-Client-Version/Build de abril/2026) continuam codificados sem detector — formalizar a issue de probe com base no relatório anterior. |
 
 ---
 
@@ -170,7 +180,7 @@ O pool do OmniRoute foi desenhado para **provedores com créditos/rate limits po
 | `open-sse/handlers/chatCore.ts` (+ `chatCore/`) | — | Rota única de execução; loop com exclusão de connection IDs |
 | `open-sse/handlers/chatCore/{executionCredentials,idempotency,codexFailover,quotaShareConsumption}.ts` | — | Credenciais, idempotência, failover Codex |
 | `src/lib/oauth/providers/codex.ts` | — | OAuth Codex (id_token com workspace) |
-| `src/lib/oauth/codexDeviceFlow.ts` | — | Device code flow headless |
+| `src/lib/oauth/codexDeviceFlow.ts` | — | Device code flow browser-driven (requer navegador do usuário) |
 | `src/lib/oauth/utils/codexAuthFile.ts` | — | Import de `~/.codex/auth.json` |
 | `src/lib/usage/codexResetCredits.ts` | — | Contabilidade de reset da cota Codex |
 | `tests/unit/account-fallback-*.test.ts` | — | Suite de testes do pool (referência de casos) |
