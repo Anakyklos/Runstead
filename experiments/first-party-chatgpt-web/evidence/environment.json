@@ -1,0 +1,29 @@
+# Environment evidence captured 2026-08-16 (sanitized; identifiers and
+# personal paths redacted). Only the facts needed to reproduce/understand the
+# spike are kept.
+
+## orca runtime
+appRunning: true
+desktopWindowStatus: available
+runtimeState: ready
+runtimeReachable: true
+graphState: ready
+
+## orca embedded browser
+profile source: chrome
+profile type: default
+
+## tabs during the spike (identifiers and URLs redacted)
+- one ChatGPT tab with an authenticated session (plan: Free) - used for the live proof
+- other tabs (OmniRoute dashboards, fixture pages) - unrelated, omitted
+
+## jcode generic browser backend (verified, NOT used for the spike)
+backend: firefox_agent_bridge
+browser: firefox
+binary: installed
+setup: complete
+bridge: responding
+
+## jcode source snapshot used for mechanism analysis
+describe: v0.67.1-43-gaadd92f6d
+head: aadd92f6d
