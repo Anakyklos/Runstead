@@ -2,7 +2,7 @@
   {
     "kind": "start",
     "ts": 1786841111.2029676,
-    "tab": "f6d5b169-fac5-4efc-bf70-cbd3ae94e65b",
+    "tab": "f6d5b169…",
     "prompt": "Reply with exactly: RUNSTEAD_FIRST_PARTY_OK"
   },
   {
@@ -114,7 +114,7 @@
     "turn": "success",
     "text_match": true,
     "text_length": 23,
-    "conversation_id": "6a810833-9e44-83e9-b8e2-daf0ada5239b",
+    "conversation_id": "6a810833…",
     "signal": "terminal_markers"
   },
   {
@@ -266,7 +266,7 @@
     "seq": 12,
     "method": "GET",
     "hostname": "chatgpt.com",
-    "path": "/backend-api/conversation/6a810833-9e44-83e9-b8e2-daf0ada5239b/stream_status",
+    "path": "/backend-api/conversation/6a810833…/stream_status",
     "status": 200,
     "phase": "submitted"
   },
@@ -277,7 +277,7 @@
     "seq": 13,
     "method": "GET",
     "hostname": "chatgpt.com",
-    "path": "/backend-api/conversation/6a810833-9e44-83e9-b8e2-daf0ada5239b/textdocs",
+    "path": "/backend-api/conversation/6a810833…/textdocs",
     "status": 200,
     "phase": "submitted"
   },
@@ -395,7 +395,7 @@
     "kind": "correlation",
     "ts": 1786841151.2946079,
     "turn": "success",
-    "url_conversation_id": "6a810833-9e44-83e9-b8e2-daf0ada5239b",
+    "url_conversation_id": "6a810833…",
     "network_ids": [],
     "match": false
   },
@@ -410,13 +410,13 @@
     "ts": 1786841157.967841,
     "tag": "cancel-pre-preflight",
     "composer": true,
-    "conversationId": "6a810833-9e44-83e9-b8e2-daf0ada5239b",
+    "conversationId": "6a810833…",
     "dialogPresent": false,
     "dialogText": "",
     "modelPill": "Pensar",
     "onChatGPT": true,
     "signedOut": false,
-    "url": "https://chatgpt.com/c/6a810833-9e44-83e9-b8e2-daf0ada5239b",
+    "url": "https://chatgpt.com/c/6a810833…",
     "verdict": "ready"
   },
   {
@@ -500,13 +500,13 @@
     "ts": 1786841179.1814427,
     "tag": "cancel-post-preflight",
     "composer": true,
-    "conversationId": "6a810833-9e44-83e9-b8e2-daf0ada5239b",
+    "conversationId": "6a810833…",
     "dialogPresent": false,
     "dialogText": "",
     "modelPill": "Pensar",
     "onChatGPT": true,
     "signedOut": false,
-    "url": "https://chatgpt.com/c/6a810833-9e44-83e9-b8e2-daf0ada5239b",
+    "url": "https://chatgpt.com/c/6a810833…",
     "verdict": "ready"
   },
   {
@@ -585,7 +585,7 @@
     "ts": 1786841213.2950377,
     "fixture": "session_unavailable",
     "rc": 1,
-    "error": "Browser page 00000000-0000-0000-0000-000000000000 was not found"
+    "error": "Browser page 00000000… was not found"
   },
   {
     "kind": "ready_check",
@@ -620,7 +620,7 @@
     "modelPill": "",
     "onChatGPT": false,
     "signedOut": true,
-    "url": "file:///home/pedro/Documentos/codigo/Runstead/experiments/first-party-chatgpt-web/fixtures/logged-out.html",
+    "url": "file://<repo>/experiments/first-party-chatgpt-web/fixtures/logged-out.html",
     "verdict": "contract_missing"
   },
   {
@@ -629,7 +629,7 @@
     "fixture": "login_expired_or_wrong_origin",
     "verdict": "contract_missing",
     "signed_out_markers": true,
-    "url": "file:///home/pedro/Documentos/codigo/Runstead/experiments/first-party-chatgpt-web/fixtures/logged-out.html",
+    "url": "file://<repo>/experiments/first-party-chatgpt-web/fixtures/logged-out.html",
     "acted": false
   },
   {
@@ -639,7 +639,7 @@
       "status": "ok",
       "physical_sends": 1,
       "correlated": false,
-      "conversation_id": "6a810833-9e44-83e9-b8e2-daf0ada5239b"
+      "conversation_id": "6a810833…"
     },
     "cancel_pre": {
       "status": "ok",

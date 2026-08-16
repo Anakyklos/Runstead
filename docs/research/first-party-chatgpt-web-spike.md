@@ -111,7 +111,7 @@ Answers to the investigation questions, with evidence:
    embedded browser in this environment is **Chrome-based** (`orca tab profile
    list` → `source:chrome`), driven through the `orca` CLI (tab/eval/click/
    fill/snapshot); the CLI talks to the Orca runtime over a local unix socket
-   (`~/.config/orca/o-11760-7d47.sock`, `srw-------`).
+   (`~/.config/orca/o-*.sock`, `srw-------`).
 3. **Bridge/sidecar local?** Yes: local native host + extension for JCode;
    local Orca runtime + CLI for this environment. No remote sidecar used.
 4. **Private web transport called directly?** For the ChatGPT Web provider,
@@ -124,7 +124,7 @@ Answers to the investigation questions, with evidence:
    detects it via DOM. Orca keeps the Chrome profile at
    `~/.config/orca/profiles/local-default` (Cookies, Local Storage live
    there). The spike reused the already-authenticated ChatGPT session in the
-   Orca embedded browser (user `renyennos`, Free plan).
+   Orca embedded browser (user account redacted, Free plan).
 6. **Does the runtime receive cookies/tokens or only a handle?** Only a
    handle. JCode passes `tabId`; the extension performs the actions in-page.
    The spike used Orca page ids and a11y element refs only; no cookie, token
@@ -175,7 +175,7 @@ Answers to the investigation questions, with evidence:
 
 ## One-turn lifecycle
 
-Observed successful turn (turn 1, conversation `6a810833-9e44-83e9-b8e2-daf0ada5239b`):
+Observed successful turn (turn 1, conversation `6a810833…`):
 
 1. harness contract check: `ready` (on chatgpt.com, composer present,
    signed-out markers absent, no dialog);
@@ -331,13 +331,29 @@ Current, evidence-based comparison for the transport Runstead would own
 | Packaging | Requires Orca runtime presence; prototype = scripts + orca CLI | Single binary + bundled/assumed Chromium | JCode-style `browser/` dir + native manifest |
 | Second language | None (Go ↔ orca JSON) | None | None |
 | Maintenance | Orca protocol is third-party and evolving (draft-ish); small surface | CDP is stable and versioned; large but mature surface | Juggler stable; agent-bridge is jcode-owned but Firefox-specific |
-| Risk of becoming a second control plane | LOW if kept a thin client; MEDIUM if the Orca runtime starts to look like a router | LOW | LOW |
+| Risk of becoming a second control plane | LOW if kept a thin client; MEDIUM if the Orca runtime starts to look like a router | LOW |
+
+**Orca-independence caveat (review blocker, mandatory):** the live proof ran
+entirely on the user's Orca runtime/CLI/profile. That proves the viability of
+a *browser boundary*, **not** that Runstead already has a self-sufficient
+first-party provider. Without Orca this prototype does not run, and a
+standalone Runstead-owned substrate (any of the three candidates above,
+installed and exercised outside the Orca environment) remains **UNPROVEN**.
+The boundary proposal below therefore does **not** privilege the
+`orca CLI/runtime` path for production; it is one candidate whose production
+claim requires a later gate proving installation, lifecycle, network
+visibility, cancellation/crash behavior and profile custody outside the Orca
+environment. This point stays research-only. LOW |
 
 Sources for technical claims: JCode local source (cited above), the observed
 `orca` CLI surface and runtime socket, and this spike's live observations.
-No claim in this table prefers Rust, Chromium or Camoufox by taste. Camoufox
-in particular is not recommended: Runstead's architecture doc already rejects
-fingerprint/TLS mimicry, which is Camoufox's purpose.
+No claim in this table prefers Rust, Chromium or Camoufox by taste. Per #16
+and #49, fingerprint controls / automation concealment are **transport
+properties to be measured, not categorically prohibited**; Camoufox therefore
+remains a research candidate until evidence or the #16 ADR decides. The
+OmniRoute audit's rejections (TLS impersonation, hidden retry/accounting
+gaps) concern that implementation's accounting behavior, not fingerprint
+behavior in general.
 
 ## Proposed minimum boundary
 
@@ -347,11 +363,18 @@ Conceptually, if Runstead pursues this path (no integration in this spike):
 Runstead Go (governor, retry, delivery/accounting, task truth SQLite,
             policy/approval, verifier, evidence)
    └─ provider/chatgptweb (thin Go adapter, future)
-        └─ bounded session boundary (thin client over orca CLI/runtime,
-           or later a Chromium CDP client)
+        └─ bounded session boundary (candidate transports, not yet chosen:
+           thin client over orca CLI/runtime, or Chromium CDP client,
+           or Firefox/Juggler-style protocol client)
              └─ dedicated authenticated browser profile (auth custody)
                   └─ ChatGPT Web (real page, real browser)
 ```
+
+The transport is explicitly **not chosen** by this spike. The orca path is
+the one that was exercised and works in the user's environment today, but
+its production candidacy is gated on a standalone-substrate proof outside
+Orca (installation, lifecycle, network visibility, cancellation/crash,
+profile custody).
 
 Rules demonstrated by the spike and required for the boundary:
 
@@ -375,7 +398,9 @@ Rules demonstrated by the spike and required for the boundary:
 - The session stayed in the browser profile; the harness used page ids and
   element refs only.
 - Artifacts are sanitized (method, hostname, path without query, status,
-  timestamps, conversation ids). Audited: no `Authorization`, `access_token`,
+  timestamps). Conversation ids and page ids are truncated to their first 8
+  hex chars; runtime ids, pids, account names, personal paths and unrelated
+  tab listings are removed. Audited: no `Authorization`, `access_token`,
   `refresh_token`, password, or exact prompt/response text in the artifact
   files.
 - The instrument captures only `conversation_id`/message id from backend
@@ -386,7 +411,7 @@ Rules demonstrated by the spike and required for the boundary:
 
 ## Evidence collected
 
-Artifacts (all committed under `experiments/first-party-chatgpt-web/`):
+Artifacts (all committed under `experiments/first-party-chatgpt-web/`): Identifiers in artifacts are truncated/redacted (see Security/secret handling).
 
 - `instrument.js` — sanitized network observability (fetch/XHR wrapper,
   conversation-id-only body extraction);
@@ -430,9 +455,12 @@ Key numbers:
   resource timeline before the spike's windows (user/browser activity,
   00:32:20Z). It did not enter any instrumented window; it demonstrates why
   turn-scoped windows are mandatory.
-- **Orca runtime dependency:** the prototype requires the user's Orca
-  runtime; reconnect/crash semantics of the Orca runtime itself were not
-  exercised (only CLI-level failure classification).
+- **Orca runtime dependency (standalone substrate UNPROVEN):** the
+  prototype requires the user's Orca runtime and does not run without it.
+  Reconnect/crash semantics of the Orca runtime itself were not exercised
+  (only CLI-level failure classification). A standalone Runstead-owned
+  substrate must be proven (installation, lifecycle, network visibility,
+  cancellation/crash, profile custody) before any production claim.
 - **The JCode source snapshot may lag the running binary** (source described
   v0.67.1-43, binary v0.76.0); the chatgpt-web provider facts were read from
   the snapshot and match observed bridge behavior.
@@ -442,10 +470,8 @@ Key numbers:
 
 ## Go/no-go recommendation
 
-**GO (for the next research step), with the accounting caveat carried
-forward.**
-
-The spike is technically promising by its own criteria:
+**GO apenas para a próxima pesquisa standalone** — not a go-live of any
+provider. The spike is technically promising by its own criteria:
 
 | Criterion | Result |
 |---|---|
@@ -460,22 +486,33 @@ The spike is technically promising by its own criteria:
 | 9 browser/session failure classifiable | PROVEN (fail-closed matrix + CLI errors) |
 | 10 boundary smaller than a general browser agent/router | PROVEN (thin harness; no routing, no fallback) |
 | 11 policy/task truth not delegated to browser | PROVEN (nothing but the prompt reached the page) |
+| 12 standalone Runstead-owned substrate outside Orca | **UNPROVEN** (prototype requires the Orca runtime; production candidacy needs the standalone gate) |
 
 Post-dispatch cancellation stays UNPROVEN and must be proven before any
-production design depends on stop semantics. Nothing in this spike justifies
-closing #16; the ADR and the bake-off remain the maintainer's decisions.
+production design depends on stop semantics. The orca path must not be
+treated as a production default: without Orca this prototype does not run,
+and the standalone substrate gate (installation, lifecycle, network
+visibility, cancellation/crash, profile custody outside Orca) is mandatory
+before any design proceeds. Nothing in this spike justifies closing #16; the
+ADR and the bake-off remain the maintainer's decisions.
 
 ## Next research required
 
+- **standalone-substrate gate (mandatory before any production claim):**
+  prove installation, lifecycle, network visibility, cancellation/crash and
+  profile custody for a Runstead-owned substrate outside the Orca
+  environment; without it the orca path stays research-only;
 - prove post-dispatch cancellation with the atomic `stopIfGenerating`
   pattern (1 more live turn, separate budget);
-- obtain transport-level send visibility for the Orca browser (CDP
-  `Network` observer if the Orca runtime exposes a debug port) and re-confirm
-  N=1 on a longer, multi-chunk response;
+- obtain transport-level send visibility (CDP `Network` observer or
+  equivalent) and re-confirm N=1 on a longer, multi-chunk response;
 - re-validate conversation-id extraction from the response body (fixed
   instrument);
+- measure fingerprint/automation-concealment properties as transport
+  properties per #16/#49 (Camoufox stays a research candidate; the #16 ADR
+  decides);
 - decide the boundary mechanism (thin orca CLI client vs Chromium CDP vs
-  Firefox/Juggler) as the #16 ADR, using the comparison table above;
+  Firefox/Juggler/Camoufox) as the #16 ADR, using the comparison table above;
 - confirm Orca runtime crash/reconnect behavior with the user's runtime
   before relying on it.
 
@@ -502,14 +539,15 @@ closing #16; the ADR and the bake-off remain the maintainer's decisions.
   DOM-terminal detection; conservative uncertain handling).
 - **What we reject:** JCode's Firefox-extension dependency for Runstead
   (environment-specific), its lack of network-level send accounting, its
-  N=1-by-construction assumption, its API-path hidden retries/WS handoff as a
-  pattern for the web path, and Camoufox/fingerprint mimicry (explicitly
-  rejected by Runstead's architecture doc).
+  N=1-by-construction assumption, and its API-path hidden retries/WS handoff
+  as a pattern for the web path. Fingerprint/automation-concealment behavior
+  (Camoufox) is **not** rejected here: per #16/#49 it is a transport property
+  to be measured, and it stays a research candidate until the ADR decides.
 - **Why:** the observed boundary is smaller than a browser agent/router,
   keeps auth under browser custody with zero credentials in the core, and
   makes the physical send count observable with the right instrumentation;
-  the rejected items either duplicate OmniRoute's accountability gaps or
-  violate the trust model.
+  the rejected items duplicate OmniRoute's accountability gaps (hidden
+  retries, N assumed not counted).
 - **Invariants preserved:** governor sole admission/accounting boundary;
   conservative fail-closed accounting; delivery-state evidence as the replay
   unit; no silent retry/fallback/rotation; task truth in SQLite; policy and

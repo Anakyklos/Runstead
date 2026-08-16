@@ -21,6 +21,7 @@ spike tokens and conversation ids needed for correlation.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -30,8 +31,6 @@ OUT = os.path.join(HERE, "output")
 
 PROMPT_OK = "Reply with exactly: RUNSTEAD_FIRST_PARTY_OK"
 PROMPT_CANCEL = "Reply with exactly: RUNSTEAD_CANCELLED_OK"
-
-DEFAULT_TAB = "f6d5b169-fac5-4efc-bf70-cbd3ae94e65b"
 
 lifecycle = []
 
@@ -91,6 +90,33 @@ def fnv1a_utf16(text):
             h = ((h ^ code) * 16777619) & 0xFFFFFFFF
             length += 1
     return length, h
+
+
+_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
+
+
+def redact(value):
+    """Sanitize artifacts before writing: truncate ids, strip personal paths.
+
+    Conversation/page/runtime ids are truncated to their first 8 hex chars;
+    home paths, account names and socket names are replaced with generic
+    markers. Applied at write time so committed artifacts never contain
+    environment-coupled identifiers.
+    """
+    if isinstance(value, dict):
+        return {k: redact(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact(v) for v in value]
+    if isinstance(value, str):
+        value = _UUID_RE.sub(lambda m: m.group(0)[:8] + "\u2026", value)
+        value = value.replace(os.path.expanduser("~"), "~")
+        value = value.replace("/home/", "~")  # covers <repo> under any user
+        value = value.replace("o-11760-7d47.sock", "o-*.sock")
+        value = value.replace("renyennos", "<account>")
+        return value
+    return value
 
 
 def install_scripts(page):
@@ -519,7 +545,11 @@ def classification_matrix(page):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tab", default=DEFAULT_TAB)
+    ap.add_argument(
+        "--tab",
+        required=True,
+        help="Orca browser page id of the authenticated ChatGPT tab, from `orca tab list --json`. Required: page ids are ephemeral and must never be hard-coded.",
+    )
     ap.add_argument("--skip-live", action="store_true", help="skip live model turns (fixtures + matrix only)")
     args = ap.parse_args()
 
@@ -556,9 +586,9 @@ def main():
     log_event("end", **summary)
 
     with open(os.path.join(OUT, "lifecycle.json"), "w", encoding="utf-8") as f:
-        json.dump(lifecycle, f, indent=2, ensure_ascii=False)
+        json.dump(redact(lifecycle), f, indent=2, ensure_ascii=False)
     with open(os.path.join(OUT, "summary.json"), "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2, ensure_ascii=False)
+        json.dump(redact(summary), f, indent=2, ensure_ascii=False)
     print(f"\nArtifacts written to {OUT}/")
 
 

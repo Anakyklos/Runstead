@@ -8,7 +8,9 @@ production code, does not modify `go.mod`, and adds no production dependency.
 
 - One bounded text turn through the Orca embedded browser (dedicated
   authenticated profile) produced the exact expected token
-  `RUNSTEAD_FIRST_PARTY_OK`.
+  `RUNSTEAD_FIRST_PARTY_OK`. **Caveat:** this proves a browser boundary, not
+  a self-sufficient provider; without the Orca runtime this prototype does
+  not run, and a standalone Runstead-owned substrate remains UNPROVEN.
 - Physical model-effect sends: **1** per turn (`POST /backend-api/f/conversation`),
   counted by a sanitized page-level fetch/XHR wrapper and cross-checked with
   browser resource timing. No hidden retry/fan-out observed.
@@ -40,11 +42,13 @@ classification matrix and fixtures only (0 model turns).
 
 ```sh
 # dry validation (no model turns)
-python3 run_spike.py --skip-live
+python3 run_spike.py --tab <chatgpt-page-id> --skip-live
 
 # full live run (2 model turns)
-python3 run_spike.py --tab <chatgpt-page-id>   # page id from: orca tab list
+python3 run_spike.py --tab <chatgpt-page-id>
 ```
+
+`--tab` is required: page ids are ephemeral and must never be hard-coded.
 
 Notes:
 
@@ -70,7 +74,8 @@ Notes:
   sends.
 - Adopt: browser-boundary architecture concepts. Reject: JCode's Firefox
   extension dependency, N=1-by-construction accounting, hidden API retries as
-  a pattern, Camoufox/fingerprint mimicry.
+  a pattern. Fingerprint/automation-concealment (Camoufox) stays a research
+  candidate per #16/#49, to be measured, not categorically prohibited.
 - Invariants preserved: governor sole accounting boundary, conservative
   fail-closed accounting, delivery-state replay unit, task truth in SQLite,
   policy/verifier in Go, no production changes.

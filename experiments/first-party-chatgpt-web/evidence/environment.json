@@ -1,34 +1,29 @@
-# Environment evidence captured 2026-08-16 (sanitized; no secrets)
+# Environment evidence captured 2026-08-16 (sanitized; identifiers and
+# personal paths redacted). Only the facts needed to reproduce/understand the
+# spike are kept.
 
-## orca status
+## orca runtime
 appRunning: true
-pid: 11760
 desktopWindowStatus: available
 runtimeState: ready
 runtimeReachable: true
-runtimeId: 7d47e8a3-f8c7-45f9-9676-1c1288a45c45
 graphState: ready
 
-## orca tab profile list
-* default  Default  default  source:chrome
+## orca embedded browser
+profile source: chrome
+profile type: default
 
-## orca tab list
-* [0] aaf0e061-8a82-4d11-b10b-8e1ca876e095  OmniRoute — AI Gateway for Multi-Provider LLMs — http://127.0.0.1:20128/dashboard/api-manager
-  [1] f6d5b169-fac5-4efc-bf70-cbd3ae94e65b  RUNSTEAD_FIRST_PARTY_OK — https://chatgpt.com/c/6a810833-9e44-83e9-b8e2-daf0ada5239b
-  [2] eea664ab-0ba5-4db2-a374-0f79ef5554da  OmniRoute — AI Gateway for Multi-Provider LLMs — http://127.0.0.1:20128/dashboard/providers/chatgpt-web
-  [3] 8306f186-b4c6-4b32-aabf-b49691a26fb7  data:text/html, — data:text/html,
+## tabs during the spike (identifiers and URLs redacted)
+- one ChatGPT tab with an authenticated session (plan: Free) - used for the live proof
+- other tabs (OmniRoute dashboards, fixture pages) - unrelated, omitted
 
-## orca runtime socket
-srw------- 1 USER pedro 0 ago 15 09:00 /home/pedro/.config/orca/o-11760-7d47.sock
+## jcode generic browser backend (verified, NOT used for the spike)
+backend: firefox_agent_bridge
+browser: firefox
+binary: installed
+setup: complete
+bridge: responding
 
-## jcode browser status (generic backend, NOT used for the spike)
-Browser automation
-  backend: firefox_agent_bridge
-  browser: firefox
-  binary: installed
-  setup: complete
-  bridge: responding
-
-## jcode source snapshot
-v0.67.1-43-gaadd92f6d
-aadd92f6d
+## jcode source snapshot used for mechanism analysis
+describe: v0.67.1-43-gaadd92f6d
+head: aadd92f6d
