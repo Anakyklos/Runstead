@@ -1,0 +1,16 @@
+{
+  "success_turn": {
+    "status": "ok",
+    "physical_sends": 1,
+    "correlated": false,
+    "conversation_id": "6a810833-9e44-83e9-b8e2-daf0ada5239b"
+  },
+  "cancel_pre": {
+    "status": "ok",
+    "physical_sends": 0
+  },
+  "cancel_post": {
+    "status": "response_started",
+    "physical_sends": 1
+  }
+}

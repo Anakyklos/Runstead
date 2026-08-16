@@ -1,0 +1,653 @@
+[
+  {
+    "kind": "start",
+    "ts": 1786841111.2029676,
+    "tab": "f6d5b169-fac5-4efc-bf70-cbd3ae94e65b",
+    "prompt": "Reply with exactly: RUNSTEAD_FIRST_PARTY_OK"
+  },
+  {
+    "kind": "orca_status",
+    "ts": 1786841113.2312694,
+    "rc": 0
+  },
+  {
+    "kind": "classify_matrix",
+    "ts": 1786841119.376698,
+    "name": "nominal",
+    "verdict": "ready",
+    "expected": "ready",
+    "pass": true
+  },
+  {
+    "kind": "classify_matrix",
+    "ts": 1786841119.3767722,
+    "name": "wrong-origin",
+    "verdict": "contract_missing",
+    "expected": "contract_missing",
+    "pass": true
+  },
+  {
+    "kind": "classify_matrix",
+    "ts": 1786841119.3768036,
+    "name": "login-expired",
+    "verdict": "login_required",
+    "expected": "login_required",
+    "pass": true
+  },
+  {
+    "kind": "classify_matrix",
+    "ts": 1786841119.3768263,
+    "name": "unknown-composer",
+    "verdict": "contract_missing",
+    "expected": "contract_missing",
+    "pass": true
+  },
+  {
+    "kind": "classify_matrix",
+    "ts": 1786841119.3768458,
+    "name": "dialog-blocking",
+    "verdict": "dialog_blocking",
+    "expected": "dialog_blocking",
+    "pass": true
+  },
+  {
+    "kind": "turn",
+    "ts": 1786841119.376902,
+    "turn": "success",
+    "prompt_hash": [
+      43,
+      2003421256
+    ],
+    "budget": "1/2"
+  },
+  {
+    "kind": "ready_check",
+    "ts": 1786841126.3257165,
+    "tag": "success-preflight",
+    "composer": true,
+    "conversationId": null,
+    "dialogPresent": false,
+    "dialogText": "",
+    "modelPill": "Pensar",
+    "onChatGPT": true,
+    "signedOut": false,
+    "url": "https://chatgpt.com/",
+    "verdict": "ready"
+  },
+  {
+    "kind": "filled",
+    "ts": 1786841131.5243804,
+    "element_ref": "e24",
+    "length": 43
+  },
+  {
+    "kind": "fingerprint",
+    "ts": 1786841134.3096328,
+    "present": true,
+    "expected_len": 43,
+    "actual_len": 43,
+    "expected_hash": 2003421256,
+    "actual_hash": 2003421256,
+    "match": true
+  },
+  {
+    "kind": "dispatched",
+    "ts": 1786841139.1297295,
+    "turn": "success",
+    "clicked": true
+  },
+  {
+    "kind": "response_started",
+    "ts": 1786841141.4593475,
+    "turn": "success",
+    "signal": "stop_button"
+  },
+  {
+    "kind": "response_streaming",
+    "ts": 1786841145.2534072,
+    "turn": "success",
+    "signal": "assistant_text"
+  },
+  {
+    "kind": "final_response",
+    "ts": 1786841145.2534583,
+    "turn": "success",
+    "text_match": true,
+    "text_length": 23,
+    "conversation_id": "6a810833-9e44-83e9-b8e2-daf0ada5239b",
+    "signal": "terminal_markers"
+  },
+  {
+    "kind": "accounting",
+    "ts": 1786841151.2941415,
+    "turn": "success",
+    "logical_turns": 1,
+    "physical_model_effect_sends": 1,
+    "total_observed_requests": 24,
+    "conversations_seen": []
+  },
+  {
+    "kind": "model_effect_request",
+    "ts": 1786841151.2941978,
+    "turn": "success",
+    "seq": 19,
+    "method": "POST",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/f/conversation",
+    "status": 200,
+    "phase": "submitted",
+    "conversation_id": null
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2942266,
+    "turn": "success",
+    "seq": 1,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/apps/sources_dropdown",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2942488,
+    "turn": "success",
+    "seq": 2,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/sentinel/chat-requirements/prepare",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2942681,
+    "turn": "success",
+    "seq": 3,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/sentinel/ping",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.294285,
+    "turn": "success",
+    "seq": 4,
+    "method": "POST",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/sentinel/ping",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2943013,
+    "turn": "success",
+    "seq": 5,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/sentinel/chat-requirements/finalize",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2943172,
+    "turn": "success",
+    "seq": 6,
+    "method": "POST",
+    "hostname": "chatgpt.com",
+    "path": "/ces/v1/t",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2943332,
+    "turn": "success",
+    "seq": 7,
+    "method": "POST",
+    "hostname": "chatgpt.com",
+    "path": "/ces/v1/t",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2943492,
+    "turn": "success",
+    "seq": 8,
+    "method": "POST",
+    "hostname": "chatgpt.com",
+    "path": "/ces/v1/t",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2943654,
+    "turn": "success",
+    "seq": 9,
+    "method": "POST",
+    "hostname": "chatgpt.com",
+    "path": "/ces/v1/t",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2943885,
+    "turn": "success",
+    "seq": 10,
+    "method": "POST",
+    "hostname": "chatgpt.com",
+    "path": "/ces/v1/p",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2944047,
+    "turn": "success",
+    "seq": 11,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/conversations",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2944205,
+    "turn": "success",
+    "seq": 12,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/conversation/6a810833-9e44-83e9-b8e2-daf0ada5239b/stream_status",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2944365,
+    "turn": "success",
+    "seq": 13,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/conversation/6a810833-9e44-83e9-b8e2-daf0ada5239b/textdocs",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2944522,
+    "turn": "success",
+    "seq": 14,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/sentinel/ping",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2944677,
+    "turn": "success",
+    "seq": 15,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/conversations",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2944827,
+    "turn": "success",
+    "seq": 16,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/lat/r",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2944982,
+    "turn": "success",
+    "seq": 17,
+    "method": "POST",
+    "hostname": "chatgpt.com",
+    "path": "/ces/v1/t",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2945132,
+    "turn": "success",
+    "seq": 18,
+    "method": "POST",
+    "hostname": "chatgpt.com",
+    "path": "/ces/v1/t",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2945282,
+    "turn": "success",
+    "seq": 20,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/f/conversation/prepare",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2945435,
+    "turn": "success",
+    "seq": 21,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/sentinel/ping",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2945585,
+    "turn": "success",
+    "seq": 22,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/conversations",
+    "status": 200,
+    "phase": "submitted"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2945735,
+    "turn": "success",
+    "seq": 23,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/sentinel/ping",
+    "status": 200,
+    "phase": "done"
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841151.2945886,
+    "turn": "success",
+    "seq": 24,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/ces/v1/rgstr",
+    "status": 202,
+    "phase": "done"
+  },
+  {
+    "kind": "correlation",
+    "ts": 1786841151.2946079,
+    "turn": "success",
+    "url_conversation_id": "6a810833-9e44-83e9-b8e2-daf0ada5239b",
+    "network_ids": [],
+    "match": false
+  },
+  {
+    "kind": "turn",
+    "ts": 1786841151.2946336,
+    "turn": "cancel-pre",
+    "budget": "no model turn"
+  },
+  {
+    "kind": "ready_check",
+    "ts": 1786841157.967841,
+    "tag": "cancel-pre-preflight",
+    "composer": true,
+    "conversationId": "6a810833-9e44-83e9-b8e2-daf0ada5239b",
+    "dialogPresent": false,
+    "dialogText": "",
+    "modelPill": "Pensar",
+    "onChatGPT": true,
+    "signedOut": false,
+    "url": "https://chatgpt.com/c/6a810833-9e44-83e9-b8e2-daf0ada5239b",
+    "verdict": "ready"
+  },
+  {
+    "kind": "filled",
+    "ts": 1786841162.839272,
+    "element_ref": "e44",
+    "length": 43
+  },
+  {
+    "kind": "fingerprint",
+    "ts": 1786841165.7027164,
+    "present": true,
+    "expected_len": 43,
+    "actual_len": 43,
+    "expected_hash": 2003421256,
+    "actual_hash": 2003421256,
+    "match": true
+  },
+  {
+    "kind": "cancelled_before_dispatch",
+    "ts": 1786841170.2030895,
+    "turn": "cancel-pre",
+    "cleared": true
+  },
+  {
+    "kind": "accounting",
+    "ts": 1786841172.6839783,
+    "turn": "cancel-pre",
+    "logical_turns": 0,
+    "physical_model_effect_sends": 0,
+    "total_observed_requests": 4
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841172.6840408,
+    "turn": "cancel-pre",
+    "seq": 1,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/sentinel/ping",
+    "status": 200
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841172.6840572,
+    "turn": "cancel-pre",
+    "seq": 2,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/f/conversation/prepare",
+    "status": 200
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841172.6840684,
+    "turn": "cancel-pre",
+    "seq": 3,
+    "method": "POST",
+    "hostname": "chatgpt.com",
+    "path": "/ces/statsc/flush",
+    "status": 200
+  },
+  {
+    "kind": "aux_request",
+    "ts": 1786841172.6840775,
+    "turn": "cancel-pre",
+    "seq": 4,
+    "method": "GET",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/sentinel/ping",
+    "status": 200
+  },
+  {
+    "kind": "turn",
+    "ts": 1786841172.684096,
+    "turn": "cancel-post",
+    "budget": "2/2"
+  },
+  {
+    "kind": "ready_check",
+    "ts": 1786841179.1814427,
+    "tag": "cancel-post-preflight",
+    "composer": true,
+    "conversationId": "6a810833-9e44-83e9-b8e2-daf0ada5239b",
+    "dialogPresent": false,
+    "dialogText": "",
+    "modelPill": "Pensar",
+    "onChatGPT": true,
+    "signedOut": false,
+    "url": "https://chatgpt.com/c/6a810833-9e44-83e9-b8e2-daf0ada5239b",
+    "verdict": "ready"
+  },
+  {
+    "kind": "filled",
+    "ts": 1786841184.1147382,
+    "element_ref": "e44",
+    "length": 41
+  },
+  {
+    "kind": "fingerprint",
+    "ts": 1786841186.7766626,
+    "present": true,
+    "expected_len": 41,
+    "actual_len": 41,
+    "expected_hash": 3610979758,
+    "actual_hash": 3610979758,
+    "match": true
+  },
+  {
+    "kind": "dispatched",
+    "ts": 1786841191.078844,
+    "turn": "cancel-post",
+    "clicked": true
+  },
+  {
+    "kind": "dispatch_confirmed",
+    "ts": 1786841193.098825,
+    "turn": "cancel-post",
+    "busy": true,
+    "text_length": 0
+  },
+  {
+    "kind": "stop_clicked",
+    "ts": 1786841194.989077,
+    "turn": "cancel-post",
+    "clicked": false
+  },
+  {
+    "kind": "cancelled_after_dispatch",
+    "ts": 1786841197.098435,
+    "turn": "cancel-post",
+    "final_text_length": 21,
+    "final_text_hash": 1332592220,
+    "busy": false,
+    "terminal": true
+  },
+  {
+    "kind": "accounting",
+    "ts": 1786841203.284698,
+    "turn": "cancel-post",
+    "logical_turns": 1,
+    "physical_model_effect_sends": 1,
+    "total_observed_requests": 14
+  },
+  {
+    "kind": "model_effect_request",
+    "ts": 1786841203.2847476,
+    "turn": "cancel-post",
+    "seq": 8,
+    "method": "POST",
+    "hostname": "chatgpt.com",
+    "path": "/backend-api/f/conversation",
+    "status": 200,
+    "phase": "submitted",
+    "conversation_id": null
+  },
+  {
+    "kind": "cancel_post_classification",
+    "ts": 1786841203.2847726,
+    "turn": "cancel-post",
+    "state": "response_started",
+    "physical_sends": 1
+  },
+  {
+    "kind": "failure_fixture",
+    "ts": 1786841213.2950377,
+    "fixture": "session_unavailable",
+    "rc": 1,
+    "error": "Browser page 00000000-0000-0000-0000-000000000000 was not found"
+  },
+  {
+    "kind": "ready_check",
+    "ts": 1786841221.9440556,
+    "tag": "about-blank",
+    "composer": false,
+    "conversationId": null,
+    "dialogPresent": false,
+    "dialogText": "",
+    "modelPill": "",
+    "onChatGPT": false,
+    "signedOut": false,
+    "url": "data:text/html,",
+    "verdict": "contract_missing"
+  },
+  {
+    "kind": "failure_fixture",
+    "ts": 1786841221.94414,
+    "fixture": "contract_missing",
+    "verdict": "contract_missing",
+    "url": "data:text/html,",
+    "acted": false
+  },
+  {
+    "kind": "ready_check",
+    "ts": 1786841232.6486845,
+    "tag": "login-marker-fixture",
+    "composer": false,
+    "conversationId": null,
+    "dialogPresent": false,
+    "dialogText": "",
+    "modelPill": "",
+    "onChatGPT": false,
+    "signedOut": true,
+    "url": "file:///home/pedro/Documentos/codigo/Runstead/experiments/first-party-chatgpt-web/fixtures/logged-out.html",
+    "verdict": "contract_missing"
+  },
+  {
+    "kind": "failure_fixture",
+    "ts": 1786841232.6487463,
+    "fixture": "login_expired_or_wrong_origin",
+    "verdict": "contract_missing",
+    "signed_out_markers": true,
+    "url": "file:///home/pedro/Documentos/codigo/Runstead/experiments/first-party-chatgpt-web/fixtures/logged-out.html",
+    "acted": false
+  },
+  {
+    "kind": "end",
+    "ts": 1786841234.6039064,
+    "success_turn": {
+      "status": "ok",
+      "physical_sends": 1,
+      "correlated": false,
+      "conversation_id": "6a810833-9e44-83e9-b8e2-daf0ada5239b"
+    },
+    "cancel_pre": {
+      "status": "ok",
+      "physical_sends": 0
+    },
+    "cancel_post": {
+      "status": "response_started",
+      "physical_sends": 1
+    }
+  }
+]
