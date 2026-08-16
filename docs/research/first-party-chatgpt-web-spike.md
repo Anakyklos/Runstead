@@ -82,9 +82,13 @@ the invariants a first-party connector must preserve:
 - delivery evidence (`not_sent` / `sent_confirmed` / `sent_unconfirmed` /
   `response_started` / `completed`) is the transport-evidence unit for replay
   safety; it does not create an upstream idempotency guarantee;
-- a first-party connector must not reproduce OmniRoute's rejected practices:
-  TLS impersonation, fingerprint mimicry, silent account fallback, encryption
-  fail-open, hard-coded frontend build values without drift probes;
+- a first-party connector must not reproduce OmniRoute's specific defects
+  as implemented and audited: hidden retry/accounting gaps, silent account
+  fallback, encryption fail-open, hard-coded frontend build values without
+  drift probes, and TLS impersonation as used by that executor. Per #16 and
+  #49, fingerprint controls / automation concealment are **transport
+  properties to be measured**, not categorically prohibited, and are not
+  part of this invariant;
 - task truth stays in SQLite; policy/approval and verifier stay in Go.
 
 ## JCode/Orca mechanism observed
@@ -331,7 +335,7 @@ Current, evidence-based comparison for the transport Runstead would own
 | Packaging | Requires Orca runtime presence; prototype = scripts + orca CLI | Single binary + bundled/assumed Chromium | JCode-style `browser/` dir + native manifest |
 | Second language | None (Go ↔ orca JSON) | None | None |
 | Maintenance | Orca protocol is third-party and evolving (draft-ish); small surface | CDP is stable and versioned; large but mature surface | Juggler stable; agent-bridge is jcode-owned but Firefox-specific |
-| Risk of becoming a second control plane | LOW if kept a thin client; MEDIUM if the Orca runtime starts to look like a router | LOW |
+| Risk of becoming a second control plane | LOW if kept a thin client; MEDIUM if the Orca runtime starts to look like a router | LOW | LOW |
 
 **Orca-independence caveat (review blocker, mandatory):** the live proof ran
 entirely on the user's Orca runtime/CLI/profile. That proves the viability of
@@ -343,7 +347,7 @@ The boundary proposal below therefore does **not** privilege the
 `orca CLI/runtime` path for production; it is one candidate whose production
 claim requires a later gate proving installation, lifecycle, network
 visibility, cancellation/crash behavior and profile custody outside the Orca
-environment. This point stays research-only. LOW |
+environment. This point stays research-only.
 
 Sources for technical claims: JCode local source (cited above), the observed
 `orca` CLI surface and runtime socket, and this spike's live observations.

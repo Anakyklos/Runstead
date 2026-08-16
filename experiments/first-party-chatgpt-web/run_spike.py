@@ -37,8 +37,10 @@ lifecycle = []
 
 def log_event(kind, **fields):
     entry = {"kind": kind, "ts": time.time(), **fields}
+    entry = redact(entry)  # sanitize before store AND before any print output
     lifecycle.append(entry)
-    print(f"[{kind}] {json.dumps(fields, ensure_ascii=False)[:400]}", flush=True)
+    printable = {k: v for k, v in entry.items() if k != "ts"}
+    print(f"[{kind}] {json.dumps(printable, ensure_ascii=False)[:400]}", flush=True)
     return entry
 
 
@@ -98,12 +100,16 @@ _UUID_RE = re.compile(
 
 
 def redact(value):
-    """Sanitize artifacts before writing: truncate ids, strip personal paths.
+    """Structural/generic sanitization for anything destined for evidence.
 
-    Conversation/page/runtime ids are truncated to their first 8 hex chars;
-    home paths, account names and socket names are replaced with generic
-    markers. Applied at write time so committed artifacts never contain
-    environment-coupled identifiers.
+    No value-specific rules (no account names, no socket names): only
+    structural transformations that hold for any environment:
+    - any UUID (conversation/page/runtime ids) is truncated to its first 8
+      hex chars;
+    - any absolute path under the current user's home (or any `/home/<u>/`)
+      is rewritten to `~`.
+    Applied at log time, so both the persisted lifecycle and every printed
+    line are sanitized before they can be captured as evidence.
     """
     if isinstance(value, dict):
         return {k: redact(v) for k, v in value.items()}
@@ -111,10 +117,10 @@ def redact(value):
         return [redact(v) for v in value]
     if isinstance(value, str):
         value = _UUID_RE.sub(lambda m: m.group(0)[:8] + "\u2026", value)
-        value = value.replace(os.path.expanduser("~"), "~")
-        value = value.replace("/home/", "~")  # covers <repo> under any user
-        value = value.replace("o-11760-7d47.sock", "o-*.sock")
-        value = value.replace("renyennos", "<account>")
+        home = os.path.expanduser("~")
+        if home and home != "~":
+            value = value.replace(home, "~")
+        value = re.sub(r"^/home/[^/]+/", "~/", value)
         return value
     return value
 
