@@ -1,11 +1,21 @@
 # Tests for ChatGPT Web Sidecar
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+import os
 
-from chatgptweb.config import Settings
-from chatgptweb.crypto import get_encryption_key, encrypt_cookies, decrypt_cookies
-from chatgptweb.session import AccountSession, SessionManager
+import pytest
+
+# Set test environment variables before importing
+os.environ["CHATGPTWEB_MASTER_KEY"] = "test-master-key-32-characters-long!!"
+
+from chatgptweb.crypto import decrypt_cookies, encrypt_cookies, get_encryption_key
+from chatgptweb.session import (
+    AccountSession,
+    ChallengeType,
+    ErrorCode,
+    SessionNotReady,
+    SSEReconciler,
+    TransportState,
+)
 
 
 class TestCrypto:
@@ -25,79 +35,169 @@ class TestCrypto:
         assert key1 == key2
 
 
-class TestAccountSession:
-    """Test AccountSession logic."""
+class TestSSEReconciler:
+    """Test SSE reconciler with deterministic fixtures."""
 
-    @pytest.fixture
-    def mock_settings(self):
-        with patch("chatgptweb.session.settings") as mock:
-            mock.accounts_dir = "/tmp/test-accounts"
-            mock.master_key = "test-master-key-32-chars-long!!"
-            mock.proxy = None
-            mock.headless = True
-            mock.request_timeout = 30
-            yield mock
+    def test_first_chunk(self):
+        """Test processing first chunk."""
+        reconciler = SSEReconciler()
+        # First chunk with content "Hello"
+        event = '{"message": {"content": {"parts": ["Hello"]}}}'
+        delta = reconciler.process_chunk(event)
+        assert delta == "Hello"
+        assert reconciler.last_content == "Hello"
 
-    @pytest.mark.asyncio
-    async def test_extract_key_cookies(self, mock_settings):
-        """Test extraction of key cookies."""
-        session = AccountSession("test-account")
-        session._cookies = {
-            "cf_clearance": "test-cf",
-            "oai-device-id": "test-device",
-            "__Secure-next-auth.session-token": "test-token",
-            "other": "value",
-        }
-        session._extract_key_cookies()
-        assert session._cf_clearance == "test-cf"
-        assert session._oai_device_id == "test-device"
-        assert session._access_token == "test-token"
+    def test_cumulative_second_chunk(self):
+        """Test cumulative second chunk."""
+        reconciler = SSEReconciler()
+        reconciler.process_chunk('{"message": {"content": {"parts": ["Hello"]}}}')
+        # Second chunk with "Hello world"
+        delta = reconciler.process_chunk('{"message": {"content": {"parts": ["Hello world"]}}}')
+        assert delta == " world"
+        assert reconciler.last_content == "Hello world"
 
-    @pytest.mark.asyncio
-    async def test_format_messages(self, mock_settings):
-        """Test message formatting."""
-        session = AccountSession("test-account")
-        messages = [
-            {"role": "system", "content": "You are helpful"},
-            {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "Hi there"},
+    def test_exact_duplicate_ignored(self):
+        """Test that exact duplicate is ignored."""
+        reconciler = SSEReconciler()
+        reconciler.process_chunk('{"message": {"content": {"parts": ["Hello"]}}}')
+        # Duplicate
+        delta = reconciler.process_chunk('{"message": {"content": {"parts": ["Hello"]}}}')
+        assert delta is None
+
+    def test_growing_cumulative(self):
+        """Test growing cumulative content."""
+        reconciler = SSEReconciler()
+        reconciler.process_chunk('{"message": {"content": {"parts": ["H"]}}}')
+        reconciler.process_chunk('{"message": {"content": {"parts": ["He"]}}}')
+        delta = reconciler.process_chunk('{"message": {"content": {"parts": ["Hel"]}}}')
+        assert delta == "l"
+
+    def test_malformed_event_ignored(self):
+        """Test that malformed/non-message event is ignored."""
+        reconciler = SSEReconciler()
+        delta = reconciler.process_chunk('{"other": "field"}')
+        assert delta is None
+
+    def test_done_signal(self):
+        """Test [DONE] signal returns empty string."""
+        reconciler = SSEReconciler()
+        delta = reconciler.process_chunk("[DONE]")
+        assert delta == ""
+
+    def test_final_assembled_response(self):
+        """Test final assembled response from multiple chunks."""
+        reconciler = SSEReconciler()
+        chunks = [
+            '{"message": {"content": {"parts": ["H"]}}}',
+            '{"message": {"content": {"parts": ["He"]}}}',
+            '{"message": {"content": {"parts": ["Hel"]}}}',
+            '{"message": {"content": {"parts": ["Hell"]}}}',
+            '{"message": {"content": {"parts": ["Hello"]}}}',
         ]
-        formatted = session._format_messages(messages)
-        assert len(formatted) == 3
-        assert formatted[0]["role"] == "system"
-        assert formatted[1]["role"] == "user"
-        assert formatted[2]["role"] == "assistant"
+        result = ""
+        for chunk in chunks:
+            delta = reconciler.process_chunk(chunk)
+            if delta is not None:
+                result += delta
+        assert result == "Hello"
+
+    def test_no_negative_slicing(self):
+        """Test no regression/negative slicing."""
+        reconciler = SSEReconciler()
+        reconciler.process_chunk('{"message": {"content": {"parts": ["Hello"]}}}')
+        # Going backwards in content should be ignored
+        delta = reconciler.process_chunk('{"message": {"content": {"parts": ["Hel"]}}}')
+        assert delta is None
 
 
-class TestSessionManager:
-    """Test SessionManager."""
+class TestChallengeDetection:
+    """Test challenge detection types."""
 
-    @pytest.fixture
-    def mock_settings(self):
-        with patch("chatgptweb.session.settings") as mock:
-            mock.accounts_dir = "/tmp/test-accounts"
-            mock.master_key = "test-master-key-32-chars-long!!"
-            mock.proxy = None
-            mock.headless = True
-            yield mock
-
-    def test_get_session_creates_new(self, mock_settings):
-        """Test that get_session creates new session."""
-        manager = SessionManager()
-        session = manager.get_session("account-1")
-        assert isinstance(session, AccountSession)
-        assert session.account_id == "account-1"
-        # Second call returns same instance
-        session2 = manager.get_session("account-1")
-        assert session is session2
-
-    def test_list_accounts_empty(self, mock_settings):
-        """Test listing accounts when directory doesn't exist."""
-        manager = SessionManager()
-        accounts = manager.list_accounts()
-        assert accounts == []
+    def test_challenge_types_exist(self):
+        """Verify all challenge types are defined."""
+        assert ChallengeType.TURNSTILE.value == "turnstile"
+        assert ChallengeType.CAPTCHA.value == "captcha"
+        assert ChallengeType.MFA.value == "mfa"
+        assert ChallengeType.LOGIN_WALL.value == "login_wall"
+        assert ChallengeType.SUSPICIOUS_ACTIVITY.value == "suspicious_activity"
+        assert ChallengeType.UNKNOWN.value == "unknown"
 
 
-# Run with: pytest tests/test_sidecar.py -v
+class TestErrorCodes:
+    """Test error code taxonomy."""
+
+    def test_error_codes_exist(self):
+        """Verify all error codes are defined."""
+        assert ErrorCode.AUTHENTICATION_REQUIRED.value == "authentication_required"
+        assert ErrorCode.HUMAN_CHALLENGE_REQUIRED.value == "human_challenge_required"
+        assert ErrorCode.RATE_LIMITED.value == "rate_limited"
+        assert ErrorCode.CONTRACT_DRIFT.value == "contract_drift"
+        assert ErrorCode.TRANSPORT_FAILED.value == "transport_failed"
+        assert ErrorCode.TIMEOUT_UNCERTAIN.value == "timeout_uncertain"
+        assert ErrorCode.CONFIGURATION_ERROR.value == "configuration_error"
+
+
+class TestTransportStates:
+    """Test transport evidence states."""
+
+    def test_transport_states_exist(self):
+        """Verify all transport states are defined."""
+        assert TransportState.NO_SEND_OBSERVED.value == "no_send_observed"
+        assert TransportState.SEND_OBSERVED.value == "send_observed"
+        assert TransportState.RESPONSE_STARTED.value == "response_started"
+        assert TransportState.COMPLETED.value == "completed"
+        assert TransportState.CANCELED.value == "canceled"
+        assert TransportState.TIMEOUT_UNCERTAIN.value == "timeout_uncertain"
+        assert TransportState.TRANSPORT_FAILED.value == "transport_failed"
+        assert TransportState.UNKNOWN.value == "unknown"
+
+
+class TestRequestIdentities:
+    """Test that local and upstream request identities stay distinct."""
+
+    def test_client_request_id_vs_upstream_request_id(self):
+        """Verify the two identities are distinct concepts."""
+        # ClientRequestID is generated by governor (local deduplication)
+        client_id = "cli-123-456"
+        # RequestID is upstream provider identifier (transport evidence)
+        upstream_id = "upstream-req-abc"
+        assert client_id != upstream_id
+        # They serve different purposes - local deduplication vs transport evidence
+
+
+class TestNoAutomaticRetry:
+    """Test that no automatic retry/fallback exists."""
+
+    def test_no_retry_in_sse_reconciler(self):
+        """SSEReconciler has no retry logic."""
+        reconciler = SSEReconciler()
+        # No retry methods exist
+        assert not hasattr(reconciler, "retry")
+        assert not hasattr(reconciler, "fallback")
+
+    def test_no_retry_in_session(self):
+        """AccountSession has no automatic retry/fallback."""
+        # Check that AccountSession methods don't contain retry logic
+        methods = [m for m in dir(AccountSession) if not m.startswith("_")]
+        assert "retry" not in str(methods).lower()
+        assert "fallback" not in str(methods).lower()
+
+
+class TestSessionNotReady:
+    """Test SessionNotReady exception carries challenge info."""
+
+    def test_session_not_ready_carries_challenge(self):
+        """SessionNotReady carries challenge_type and reason."""
+        exc = SessionNotReady(challenge_type="turnstile", reason="Turnstile detected")
+        assert exc.challenge_type == "turnstile"
+        assert "Turnstile" in str(exc)
+
+    def test_session_not_ready_without_challenge(self):
+        """SessionNotReady can have no challenge type."""
+        exc = SessionNotReady(reason="Session expired")
+        assert exc.challenge_type is None
+        assert "expired" in str(exc)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

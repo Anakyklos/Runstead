@@ -5,7 +5,7 @@ description = "ChatGPT Web direct provider sidecar for Runstead (Issue #16 resea
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "nodriver>=1.1.0",
+    "nodriver>=0.50.0",
     "cryptography>=42.0.0",
     "pydantic>=2.7.0",
     "pydantic-settings>=2.3.0",

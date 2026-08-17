@@ -1,7 +1,7 @@
 # Encryption utilities for credential storage
 
 import base64
-import os
+
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -13,7 +13,7 @@ def get_encryption_key() -> bytes:
     """Derive encryption key from master key + machine ID."""
     machine_id = ""
     try:
-        with open("/etc/machine-id", "r") as f:
+        with open("/etc/machine-id") as f:
             machine_id = f.read().strip()
     except FileNotFoundError:
         machine_id = "unknown-machine"
