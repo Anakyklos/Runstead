@@ -1,0 +1,156 @@
+# ChatGPT Web Sidecar — Python + nodriver
+
+Standalone experiment for Issue #16 provider abstraction.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        RUNSTEAD CORE (Go)                       │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
+│  │   Agent     │  │  Governor   │  │   State     │             │
+│  │   Loop      │  │  (account   │  │  (SQLite)   │             │
+│  │             │  │   protection)                │             │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘             │
+│         │                │                │                    │
+│         ▼                ▼                ▼                    │
+│  ┌─────────────────────────────────────────────┐              │
+│  │         Provider Interface (thin)           │              │
+│  │  Complete() / HealthCheck() / Models()      │              │
+│  └────────────────────┬────────────────────────┘              │
+│                       │ JSON-RPC over stdio                    │
+└───────────────────────┼────────────────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    CHATGPT WEB SIDECAR (Python)                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  Python 3.11+ + nodriver (async)                        │   │
+│  │  • Session warming & cookie persistence (encrypted)     │   │
+│  │  • SSE streaming + echo suppression reconciler          │   │
+│  │  • Sentinel handshake (PoW + Turnstile via browser)     │   │
+│  │  • Drift detection (sentinel/sdk.js hash probe)         │   │
+│  │  • Account health checks + circuit breaker local        │   │
+│  └─────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Quick Start
+
+```bash
+cd experiments/provider-abstraction/chatgptweb-sidecar
+
+# Create venv
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install -e .
+
+# Run sidecar (stdio JSON-RPC)
+python -m chatgptweb
+```
+
+## Configuration
+
+Environment variables:
+- `CHATGPTWEB_ACCOUNTS_DIR` — directory for encrypted cookies (default: `~/.local/share/runstead/chatgptweb`)
+- `CHATGPTWEB_MASTER_KEY` — master key for cookie encryption (required)
+- `CHATGPTWEB_PROXY` — optional proxy (e.g., `http://user:pass@host:port`)
+- `CHATGPTWEB_DEFAULT_ACCOUNT` — account ID to use by default
+- `CHATGPTWEB_HEADLESS` — browser headless mode (default: `false` for better bypass)
+
+## JSON-RPC Protocol (stdio)
+
+### Request (Go → Python)
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "req-001",
+  "method": "complete",
+  "params": {
+    "client_request_id": "cli-123-456",
+    "model": "gpt-5.6-luna",
+    "messages": [
+      {"role": "system", "content": "You are a coding assistant."},
+      {"role": "user", "content": "Read README.md"}
+    ],
+    "stream": true
+  }
+}
+```
+
+### Response (Python → Go) — Streaming
+```json
+{"jsonrpc": "2.0", "method": "stream_delta", "params": {"delta": "Hello", "done": false}}
+{"jsonrpc": "2.0", "method": "stream_delta", "params": {"delta": " world", "done": true}}
+```
+
+### Final Response
+```json
+{"jsonrpc": "2.0", "id": "req-001", "result": {
+  "content": "Hello world",
+  "metadata": {
+    "status_code": 200,
+    "request_id": "upstream-req-abc",
+    "session_id": "conv-xyz",
+    "duration_ms": 12500,
+    "model": "gpt-5.6-luna"
+  }
+}}
+```
+
+### Error Response
+```json
+{"jsonrpc": "2.0", "id": "req-001", "error": {"code": -32001, "message": "RATE_LIMITED", "data": {"retry_after_seconds": 60}}}
+```
+
+## Methods
+
+| Method | Params | Description |
+|--------|--------|-------------|
+| `initialize` | `config` | Called once at startup |
+| `complete` | `client_request_id`, `model`, `messages`, `stream` | Execute completion |
+| `health_check` | — | Validate auth, model, endpoint |
+| `models` | — | List available models |
+| `warm_session` | `account_id?` | Force re-authentication |
+
+## Session Warming
+
+1. Load encrypted cookies from `accounts_dir/account-id/cookies.enc`
+2. `health_check` → GET `/api/auth/session` with cookies
+3. If 200 + valid access_token → session warm, ready for `complete`
+4. If 401/403 → launch nodriver browser, navigate chatgpt.com
+5. Sentinel handshake runs in iframe → obtain `cf_clearance` + tokens
+6. Save cookies encrypted → session warm
+
+## SSE Reconciliation (Echo Suppression)
+
+ChatGPT Web sends **cumulative deltas** with echo suppression:
+- Prior turns don't appear until current turn reaches `in_progress`
+- Reconciler tracks last content hash, ignores stale echoes
+- Only emits NEW assistant content as deltas
+
+## Drift Detection
+
+Periodic probe of `https://chatgpt.com/backend-api/sentinel/sdk.js`:
+- Hash response body (SHA256)
+- Compare to known-good hash
+- On drift → alert, fail gracefully with diagnostic
+
+## Tests
+
+```bash
+# Unit tests
+pytest tests/
+
+# Integration (requires real credentials)
+pytest tests/integration/ -v
+```
+
+## Security
+
+- Cookies encrypted with Fernet (master key from `CHATGPTWEB_MASTER_KEY`)
+- Master key derived from machine-id + user secret
+- Never logged: cookies, tokens, credentials
+- Sidecar stdout/stderr only JSON-RPC, no PII
