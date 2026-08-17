@@ -53,7 +53,7 @@ import {
 } from "./lib/browser.mjs";
 import { NetworkObserver } from "./lib/network.mjs";
 import { INSTALL_EXPR, EXPR, READY_EXPR } from "./lib/dom.mjs";
-import { runFailClosedProofs, exhaustiveModelEffectScope, hasOrphanedModelEffects } from "./lib/proofs.mjs";
+import { runFailClosedProofs, exhaustiveModelEffectScope, assertNoOrphanedModelEffects } from "./lib/proofs.mjs";
 
 // Harness version history (identified exactly, see lib/rebuild_evidence.mjs):
 //   v1 - executed the live run (sent-confirmed cancellation semantics);
@@ -707,10 +707,11 @@ async function runLive() {
       scope1.known.length > 1 ||
       potential1 > 0 ||
       scope1.known.length === 0;
-    if (hasOrphanedModelEffects(net.records)) {
-      logEvent("orphaned_model_effect", { detected: true, action: "fail_closed" });
-      return 1;
-    }
+    // Fail closed if any model-effect request escapes every turn scope. Shared
+    // with turn 2 and the canonical rebuild; an orphaned window throws and
+    // terminates the run with a non-success exit BEFORE a clean/final verdict
+    // is emitted (assertNoOrphanedModelEffects is the single authority).
+    assertNoOrphanedModelEffects(net.records, "turn1");
     logEvent("turn1", {
       outcome: terminal1 && token1.tokenPresent ? "ok" : "completed_no_token",
       physical_sends: scope1.known.length,
@@ -802,9 +803,12 @@ async function runLive() {
     const scope2 = exhaustiveModelEffectScope(net.records, sent2.turnId);
     const potential2 = scope2.potential.length;
     const fanout2 = scope2.known.length > 1 || potential2 > 0;
-    if (hasOrphanedModelEffects(net.records)) {
-      logEvent("orphaned_model_effect", { detected: true, action: "fail_closed" });
-    }
+    // Fail closed if any model-effect request escapes every turn scope (same
+    // authority as turn 1 and the canonical rebuild). An orphaned request after
+    // turn 2 must terminate the run with a non-success exit rather than let a
+    // clean turn2 verdict be emitted, so detection can never be observed while
+    // the harness still concludes success.
+    assertNoOrphanedModelEffects(net.records, "turn2");
     logEvent("turn2", {
       outcome: cancelOutcome,
       physical_sends: scope2.known.length,

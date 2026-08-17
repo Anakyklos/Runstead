@@ -35,7 +35,7 @@ import path from "node:path";
 
 import { classifyRequest } from "./network.mjs";
 import { conversationIdEvidence, redact, sanitizeConversationPath, urlShape } from "./sanitize.mjs";
-import { hiddenRetryVerdict, exhaustiveModelEffectScope, hasOrphanedModelEffects } from "./proofs.mjs";
+import { hiddenRetryVerdict, exhaustiveModelEffectScope, assertNoOrphanedModelEffects } from "./proofs.mjs";
 
 // Conversation ids can appear inside conversation-namespace paths (e.g.
 // /backend-api/conversation/<id>/stream_status). They are replaced wholesale
@@ -555,10 +555,9 @@ function main() {
   }
   // Exhaustive accounting gate: no between-turns (or other) model-effect
   // request may escape every turn's verdict scope. The canonical evidence
-  // must not contain an orphaned window.
-  if (hasOrphanedModelEffects(requests)) {
-    throw new Error("consistency check failed: orphaned model-effect request outside every turn scope");
-  }
+  // must not contain an orphaned window. Same authority as the runtime: an
+  // orphaned request aborts the rebuild with a non-success exit.
+  assertNoOrphanedModelEffects(requests, "rebuild");
 }
 
 main();

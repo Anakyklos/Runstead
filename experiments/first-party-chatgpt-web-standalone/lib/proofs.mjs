@@ -100,6 +100,21 @@ export function hasOrphanedModelEffects(requests) {
   return false;
 }
 
+// Central fail-closed assertion for orphaned model-effect requests. Shared by
+// the runtime (run_spike.mjs) and the canonical rebuild (rebuild_evidence.mjs)
+// so both terminate identically when any model-effect request escapes every
+// turn's exhaustive scope. Throwing here forces a non-zero exit / non-success
+// decision path BEFORE a clean/final verdict is emitted, so detection can
+// never be observed while the run still concludes success. `context` labels the
+// failing turn for diagnostics.
+export function assertNoOrphanedModelEffects(requests, context) {
+  if (hasOrphanedModelEffects(requests)) {
+    throw new Error(
+      `orphaned model-effect request outside every turn scope (${context ?? "unknown"})`
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Fixture tables
 // ---------------------------------------------------------------------------
@@ -281,6 +296,49 @@ const EXHAUSTIVE_SCOPE_FIXTURES = [
   },
 ];
 
+// DECISION-PATH proof (review #4954384690): orphaned model-effect detection
+// must TERMINATE the run (throw -> non-zero/non-success) and not merely be
+// observed. The live harness relies on this to fail closed before a clean /
+// final verdict is emitted. These fixtures drive the same shared authority the
+// runtime uses (assertNoOrphanedModelEffects) for both turns and the rebuild.
+const ORPHANED_TERMINAL_FIXTURES = [
+  {
+    name: "clean-run-success",
+    requests: [
+      FIXT(0, "baseline", "backend_api_aux"),
+      FIXT(1, "turn", "model_effect_conversation"),
+      FIXT(1, "post_turn", "sentinel_aux"),
+      FIXT(2, "pre_turn", "sentinel_aux"),
+      FIXT(2, "turn", "model_effect_conversation"),
+      FIXT(2, "post_turn", "sentinel_aux"),
+    ],
+    terminal: false,
+    note: "clean run: assertNoOrphanedModelEffects returns (non-terminal / success path)",
+  },
+  {
+    name: "orphaned-after-turn2-terminates",
+    requests: [
+      FIXT(0, "baseline", "backend_api_aux"),
+      FIXT(1, "turn", "model_effect_conversation"),
+      FIXT(2, "pre_turn", "sentinel_aux"),
+      FIXT(2, "turn", "model_effect_conversation"),
+      FIXT(0, "turn", "potential_model_effect"), // orphan present at turn-2 accounting time
+    ],
+    terminal: true,
+    note: "an orphaned request present when turn 2 accounting runs TERMINATES via assertNoOrphanedModelEffects (non-success), mirroring the turn-2 fail-closed path that previously only logged",
+  },
+  {
+    name: "orphaned-after-turn1-terminates",
+    requests: [
+      FIXT(0, "baseline", "backend_api_aux"),
+      FIXT(1, "turn", "model_effect_conversation"),
+      FIXT(0, "turn", "potential_model_effect"), // orphan detected at turn-1 accounting
+    ],
+    terminal: true,
+    note: "an orphaned request at turn-1 accounting TERMINATES (non-success), mirroring the turn-1 fail-closed path",
+  },
+];
+
 function assertEqual(actual, expected, label) {
   const a = JSON.stringify(actual);
   const e = JSON.stringify(expected);
@@ -342,6 +400,31 @@ export function runFailClosedProofs() {
   });
   sections.push({ name: "exhaustive_model_effect_scope", rows: exhaustiveRows });
 
+  // DECISION-PATH proof: orphaned model-effect detection must TERMINATE the run
+  // (throw -> non-zero/non-success), never merely be observed while a clean
+  // verdict is still emitted. Drives the same shared authority the runtime and
+  // rebuild call (assertNoOrphanedModelEffects).
+  const orphanedTerminalRows = ORPHANED_TERMINAL_FIXTURES.map((f) => {
+    let threw = false;
+    try {
+      assertNoOrphanedModelEffects(f.requests, f.name);
+    } catch {
+      threw = true;
+    }
+    const passed = threw === f.terminal;
+    return {
+      ...f,
+      pass: passed,
+      threw,
+      terminalCheck: assertEqual(
+        { terminal: threw },
+        { terminal: f.terminal },
+        `orphaned-terminal ${f.name}`
+      ),
+    };
+  });
+  sections.push({ name: "orphaned_effect_fail_closed_terminal", rows: orphanedTerminalRows });
+
   const failed = [];
   for (const s of sections) {
     for (const r of s.rows) {
@@ -349,6 +432,7 @@ export function runFailClosedProofs() {
       else if (r.stateCheck && r.stateCheck.pass === false) failed.push({ section: s.name, label: r.stateCheck.label, expected: r.stateCheck.expected, actual: r.stateCheck.actual });
       else if (r.verdictCheck && r.verdictCheck.pass === false) failed.push({ section: s.name, label: r.verdictCheck.label, expected: r.verdictCheck.expected, actual: r.verdictCheck.actual });
       else if (r.scopeCheck && r.scopeCheck.pass === false) failed.push({ section: s.name, label: r.scopeCheck.label, expected: r.scopeCheck.expected, actual: r.scopeCheck.actual });
+      else if (r.terminalCheck && r.terminalCheck.pass === false) failed.push({ section: s.name, label: r.terminalCheck.label, expected: r.terminalCheck.expected, actual: r.terminalCheck.actual });
       else if (r.check_result === false) failed.push({ section: s.name, label: "conversation_id_redaction", note: r.note });
     }
   }

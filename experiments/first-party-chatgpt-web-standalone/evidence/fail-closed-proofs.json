@@ -691,6 +691,126 @@
       ]
     },
     {
+      "name": "orphaned_effect_fail_closed_terminal",
+      "rows": [
+        {
+          "name": "clean-run-success",
+          "requests": [
+            {
+              "turn": 0,
+              "window": "baseline",
+              "classification": "backend_api_aux"
+            },
+            {
+              "turn": 1,
+              "window": "turn",
+              "classification": "model_effect_conversation"
+            },
+            {
+              "turn": 1,
+              "window": "post_turn",
+              "classification": "sentinel_aux"
+            },
+            {
+              "turn": 2,
+              "window": "pre_turn",
+              "classification": "sentinel_aux"
+            },
+            {
+              "turn": 2,
+              "window": "turn",
+              "classification": "model_effect_conversation"
+            },
+            {
+              "turn": 2,
+              "window": "post_turn",
+              "classification": "sentinel_aux"
+            }
+          ],
+          "terminal": false,
+          "note": "clean run: assertNoOrphanedModelEffects returns (non-terminal / success path)",
+          "pass": true,
+          "threw": false,
+          "terminalCheck": {
+            "pass": true,
+            "expected": "{\"terminal\":false}",
+            "actual": "{\"terminal\":false}",
+            "label": "orphaned-terminal clean-run-success"
+          }
+        },
+        {
+          "name": "orphaned-after-turn2-terminates",
+          "requests": [
+            {
+              "turn": 0,
+              "window": "baseline",
+              "classification": "backend_api_aux"
+            },
+            {
+              "turn": 1,
+              "window": "turn",
+              "classification": "model_effect_conversation"
+            },
+            {
+              "turn": 2,
+              "window": "pre_turn",
+              "classification": "sentinel_aux"
+            },
+            {
+              "turn": 2,
+              "window": "turn",
+              "classification": "model_effect_conversation"
+            },
+            {
+              "turn": 0,
+              "window": "turn",
+              "classification": "potential_model_effect"
+            }
+          ],
+          "terminal": true,
+          "note": "an orphaned request present when turn 2 accounting runs TERMINATES via assertNoOrphanedModelEffects (non-success), mirroring the turn-2 fail-closed path that previously only logged",
+          "pass": true,
+          "threw": true,
+          "terminalCheck": {
+            "pass": true,
+            "expected": "{\"terminal\":true}",
+            "actual": "{\"terminal\":true}",
+            "label": "orphaned-terminal orphaned-after-turn2-terminates"
+          }
+        },
+        {
+          "name": "orphaned-after-turn1-terminates",
+          "requests": [
+            {
+              "turn": 0,
+              "window": "baseline",
+              "classification": "backend_api_aux"
+            },
+            {
+              "turn": 1,
+              "window": "turn",
+              "classification": "model_effect_conversation"
+            },
+            {
+              "turn": 0,
+              "window": "turn",
+              "classification": "potential_model_effect"
+            }
+          ],
+          "terminal": true,
+          "note": "an orphaned request at turn-1 accounting TERMINATES (non-success), mirroring the turn-1 fail-closed path",
+          "pass": true,
+          "threw": true,
+          "terminalCheck": {
+            "pass": true,
+            "expected": "{\"terminal\":true}",
+            "actual": "{\"terminal\":true}",
+            "label": "orphaned-terminal orphaned-after-turn1-terminates"
+          }
+        }
+      ]
+    },
+    {
       "name": "redact_smoke",
       "rows": [
         {
