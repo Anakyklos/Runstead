@@ -460,6 +460,237 @@
       ]
     },
     {
+      "name": "exhaustive_model_effect_scope",
+      "rows": [
+        {
+          "name": "clean-two-turn-run",
+          "requests": [
+            {
+              "turn": 0,
+              "window": "baseline",
+              "classification": "backend_api_aux"
+            },
+            {
+              "turn": 1,
+              "window": "turn",
+              "classification": "model_effect_conversation"
+            },
+            {
+              "turn": 1,
+              "window": "post_turn",
+              "classification": "sentinel_aux"
+            },
+            {
+              "turn": 2,
+              "window": "turn",
+              "classification": "model_effect_conversation"
+            },
+            {
+              "turn": 2,
+              "window": "post_turn",
+              "classification": "sentinel_aux"
+            }
+          ],
+          "expect": {
+            "turn1": {
+              "known": 1,
+              "potential": 0
+            },
+            "turn2": {
+              "known": 1,
+              "potential": 0
+            },
+            "orphaned": false
+          },
+          "note": "no model effect in pre-turn windows; clean",
+          "scopeCheck": {
+            "pass": true,
+            "expected": "{\"turn1\":{\"known\":1,\"potential\":0},\"turn2\":{\"known\":1,\"potential\":0},\"orphaned\":false}",
+            "actual": "{\"turn1\":{\"known\":1,\"potential\":0},\"turn2\":{\"known\":1,\"potential\":0},\"orphaned\":false}",
+            "label": "exhaustive clean-two-turn-run"
+          },
+          "actual": {
+            "turn1": {
+              "known": 1,
+              "potential": 0
+            },
+            "turn2": {
+              "known": 1,
+              "potential": 0
+            },
+            "orphaned": false
+          }
+        },
+        {
+          "name": "pre-turn-known-blocks-turn2",
+          "requests": [
+            {
+              "turn": 0,
+              "window": "baseline",
+              "classification": "backend_api_aux"
+            },
+            {
+              "turn": 1,
+              "window": "turn",
+              "classification": "model_effect_conversation"
+            },
+            {
+              "turn": 1,
+              "window": "post_turn",
+              "classification": "sentinel_aux"
+            },
+            {
+              "turn": 2,
+              "window": "pre_turn",
+              "classification": "model_effect_conversation"
+            },
+            {
+              "turn": 2,
+              "window": "turn",
+              "classification": "model_effect_conversation"
+            }
+          ],
+          "expect": {
+            "turn1": {
+              "known": 1,
+              "potential": 0
+            },
+            "turn2": {
+              "known": 2,
+              "potential": 0
+            },
+            "orphaned": false
+          },
+          "note": "a known model effect in turn 2's pre-turn window belongs to turn 2's scope",
+          "scopeCheck": {
+            "pass": true,
+            "expected": "{\"turn1\":{\"known\":1,\"potential\":0},\"turn2\":{\"known\":2,\"potential\":0},\"orphaned\":false}",
+            "actual": "{\"turn1\":{\"known\":1,\"potential\":0},\"turn2\":{\"known\":2,\"potential\":0},\"orphaned\":false}",
+            "label": "exhaustive pre-turn-known-blocks-turn2"
+          },
+          "actual": {
+            "turn1": {
+              "known": 1,
+              "potential": 0
+            },
+            "turn2": {
+              "known": 2,
+              "potential": 0
+            },
+            "orphaned": false
+          }
+        },
+        {
+          "name": "pre-turn-potential-blocks-and-not-orphaned",
+          "requests": [
+            {
+              "turn": 0,
+              "window": "baseline",
+              "classification": "backend_api_aux"
+            },
+            {
+              "turn": 1,
+              "window": "turn",
+              "classification": "model_effect_conversation"
+            },
+            {
+              "turn": 1,
+              "window": "post_turn",
+              "classification": "sentinel_aux"
+            },
+            {
+              "turn": 2,
+              "window": "pre_turn",
+              "classification": "potential_model_effect"
+            },
+            {
+              "turn": 2,
+              "window": "turn",
+              "classification": "model_effect_conversation"
+            }
+          ],
+          "expect": {
+            "turn1": {
+              "known": 1,
+              "potential": 0
+            },
+            "turn2": {
+              "known": 1,
+              "potential": 1
+            },
+            "orphaned": false
+          },
+          "note": "a potential model effect in turn 2's pre-turn window blocks the clean verdict for turn 2 and is not orphaned",
+          "scopeCheck": {
+            "pass": true,
+            "expected": "{\"turn1\":{\"known\":1,\"potential\":0},\"turn2\":{\"known\":1,\"potential\":1},\"orphaned\":false}",
+            "actual": "{\"turn1\":{\"known\":1,\"potential\":0},\"turn2\":{\"known\":1,\"potential\":1},\"orphaned\":false}",
+            "label": "exhaustive pre-turn-potential-blocks-and-not-orphaned"
+          },
+          "actual": {
+            "turn1": {
+              "known": 1,
+              "potential": 0
+            },
+            "turn2": {
+              "known": 1,
+              "potential": 1
+            },
+            "orphaned": false
+          }
+        },
+        {
+          "name": "orphaned-window-detected",
+          "requests": [
+            {
+              "turn": 0,
+              "window": "baseline",
+              "classification": "backend_api_aux"
+            },
+            {
+              "turn": 1,
+              "window": "turn",
+              "classification": "model_effect_conversation"
+            },
+            {
+              "turn": 0,
+              "window": "turn",
+              "classification": "potential_model_effect"
+            }
+          ],
+          "expect": {
+            "turn1": {
+              "known": 1,
+              "potential": 0
+            },
+            "turn2": {
+              "known": 0,
+              "potential": 0
+            },
+            "orphaned": true
+          },
+          "note": "a model effect that no turn's scope covers (turn 0 / window turn) is detected as orphaned",
+          "scopeCheck": {
+            "pass": true,
+            "expected": "{\"turn1\":{\"known\":1,\"potential\":0},\"turn2\":{\"known\":0,\"potential\":0},\"orphaned\":true}",
+            "actual": "{\"turn1\":{\"known\":1,\"potential\":0},\"turn2\":{\"known\":0,\"potential\":0},\"orphaned\":true}",
+            "label": "exhaustive orphaned-window-detected"
+          },
+          "actual": {
+            "turn1": {
+              "known": 1,
+              "potential": 0
+            },
+            "turn2": {
+              "known": 0,
+              "potential": 0
+            },
+            "orphaned": true
+          }
+        }
+      ]
+    },
+    {
       "name": "redact_smoke",
       "rows": [
         {

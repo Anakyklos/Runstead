@@ -118,12 +118,27 @@ export class NetworkObserver {
 
   openBaseline() {
     this.window = "baseline";
+    this.turnId = 0;
     this.baselineStartedAt = Date.now();
   }
 
+  // Explicit between-turns window attributed to the UPCOMING turn. This makes
+  // the pre-dispatch gap belong to exactly one turn's verdict scope, so no
+  // model-effect request observed there can be orphaned.
+  openPreTurn(turnNumber) {
+    this.window = "pre_turn";
+    this.turnId = turnNumber;
+    this.turnPreOpenedAt = Date.now();
+    return this.turnId;
+  }
+
   openTurn() {
+    // If the turn id was already assigned by openPreTurn, keep it; otherwise
+    // advance to a new turn division.
+    if (this.window !== "pre_turn") {
+      this.turnId += 1;
+    }
     this.window = "turn";
-    this.turnId += 1;
     this.turnOpenedAt = Date.now();
     this.turnClosedAt = null;
     return this.turnId;

@@ -35,7 +35,7 @@ import path from "node:path";
 
 import { classifyRequest } from "./network.mjs";
 import { conversationIdEvidence, redact, sanitizeConversationPath, urlShape } from "./sanitize.mjs";
-import { hiddenRetryVerdict } from "./proofs.mjs";
+import { hiddenRetryVerdict, exhaustiveModelEffectScope, hasOrphanedModelEffects } from "./proofs.mjs";
 
 // Conversation ids can appear inside conversation-namespace paths (e.g.
 // /backend-api/conversation/<id>/stream_status). They are replaced wholesale
@@ -180,10 +180,12 @@ function turnOf(ts) {
 }
 
 // Per-turn derived accounting from transport records (never from raw events).
+// Uses the SAME exhaustive per-turn scope rule as the runtime
+// (exhaustiveModelEffectScope / hasOrphanedModelEffects), so runtime and
+// rebuild agree and no between-turns (pre-turn) window can be orphaned.
 function turnAccounting(requests, turn) {
   const inTurn = requests.filter((r) => r.turn === turn && r.window === "turn");
   const post = requests.filter((r) => r.turn === turn && r.window === "post_turn");
-  const baseline = requests.filter((r) => r.turn === 0 && r.window === "baseline");
   const countBy = (reqs) => {
     const counts = {};
     for (const r of reqs) {
@@ -191,25 +193,21 @@ function turnAccounting(requests, turn) {
     }
     return counts;
   };
+  const scope = exhaustiveModelEffectScope(requests, turn);
+  const known = scope.known;
+  const potential = scope.potential;
   const conversations = inTurn.filter((r) => r.classification === "model_effect_conversation");
-  const potential = inTurn.filter((r) => r.classification === "potential_model_effect");
-  const postPotential = post.filter((r) => r.classification === "potential_model_effect");
-  const postConversations = post.filter((r) => r.classification === "model_effect_conversation");
-  const baselineConversations = baseline.filter((r) => r.classification === "model_effect_conversation");
 
-  const verdict = hiddenRetryVerdict(
-    conversations.length + postConversations.length + baselineConversations.length,
-    potential.length + postPotential.length
-  );
+  const verdict = hiddenRetryVerdict(known.length, potential.length);
 
   return {
-    physical_sends: conversations.length,
+    physical_sends: known.length,
     prepare_sends: inTurn.filter((r) => r.classification === "model_effect_prepare").length,
-    potential_model_effect: potential.length + postPotential.length,
+    potential_model_effect: potential.length,
     response_started: conversations.some((r) => r.completion === "finished" || r.streamBytes > 0),
     in_window_counts: countBy(inTurn),
     post_window_counts: countBy(post),
-    conversations: conversations.map((r) => ({
+    conversations: known.map((r) => ({
       requestId: r.requestId,
       status: r.status,
       mimeType: r.mimeType,
@@ -554,6 +552,12 @@ function main() {
   }
   if (summary.turn2.outcome === "canceled_aborted" && summary.turn2.response_started) {
     throw new Error("consistency check failed: canceled_aborted cannot have response_started");
+  }
+  // Exhaustive accounting gate: no between-turns (or other) model-effect
+  // request may escape every turn's verdict scope. The canonical evidence
+  // must not contain an orphaned window.
+  if (hasOrphanedModelEffects(requests)) {
+    throw new Error("consistency check failed: orphaned model-effect request outside every turn scope");
   }
 }
 

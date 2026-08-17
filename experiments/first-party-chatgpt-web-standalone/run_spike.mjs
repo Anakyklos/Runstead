@@ -53,7 +53,7 @@ import {
 } from "./lib/browser.mjs";
 import { NetworkObserver } from "./lib/network.mjs";
 import { INSTALL_EXPR, EXPR, READY_EXPR } from "./lib/dom.mjs";
-import { runFailClosedProofs } from "./lib/proofs.mjs";
+import { runFailClosedProofs, exhaustiveModelEffectScope, hasOrphanedModelEffects } from "./lib/proofs.mjs";
 
 // Harness version history (identified exactly, see lib/rebuild_evidence.mjs):
 //   v1 - executed the live run (sent-confirmed cancellation semantics);
@@ -698,17 +698,22 @@ async function runLive() {
     const turn1Counts = net.countByClassification("turn", sent1.turnId);
     const turn1Post = net.countByClassification("post_turn", sent1.turnId);
     const modelEffects1 = net.modelEffectRequests("turn", sent1.turnId);
-    const potential1 =
-      net.potentialModelEffectRequests("turn", sent1.turnId).length +
-      net.potentialModelEffectRequests("post_turn", sent1.turnId).length;
+    // Exhaustive scope for turn 1: initial baseline (turn 0) + turn1 +
+    // post_turn1. Shared with the canonical rebuild so runtime and rebuild
+    // apply the same rule; no between-turns window can be orphaned.
+    const scope1 = exhaustiveModelEffectScope(net.records, sent1.turnId);
+    const potential1 = scope1.potential.length;
     const fanout1 =
-      turn1Counts.model_effect_conversation > 1 ||
+      scope1.known.length > 1 ||
       potential1 > 0 ||
-      net.modelEffectRequests("post_turn", sent1.turnId).length > 0 ||
-      net.modelEffectRequests("baseline", 0).length > 0;
+      scope1.known.length === 0;
+    if (hasOrphanedModelEffects(net.records)) {
+      logEvent("orphaned_model_effect", { detected: true, action: "fail_closed" });
+      return 1;
+    }
     logEvent("turn1", {
       outcome: terminal1 && token1.tokenPresent ? "ok" : "completed_no_token",
-      physical_sends: turn1Counts.model_effect_conversation ?? 0,
+      physical_sends: scope1.known.length,
       prepare_sends: turn1Counts.model_effect_prepare ?? 0,
       potential_model_effect: potential1,
       in_window_counts: redact(turn1Counts),
@@ -735,7 +740,10 @@ async function runLive() {
     });
 
     // --- Turn 2: post-dispatch cancellation ---
-    net.openBaseline();
+    // The between-turns gap is an explicit pre_turn window attributed to turn
+    // 2, so any model-effect request observed here belongs to turn 2's verdict
+    // scope (no orphaned window).
+    net.openPreTurn(2);
     await sleep(2000);
     const sent2 = await sendPrompt(cdp, sessionId, net, PROMPT_TURN2);
     if (!sent2.ok) {
@@ -788,16 +796,18 @@ async function runLive() {
       cancelOutcome = "uncertain";
     }
     const turn2Counts = net.countByClassification("turn", sent2.turnId);
-    const potential2 =
-      net.potentialModelEffectRequests("turn", sent2.turnId).length +
-      net.potentialModelEffectRequests("post_turn", sent2.turnId).length;
-    const fanout2 =
-      turn2Counts.model_effect_conversation > 1 ||
-      potential2 > 0 ||
-      net.modelEffectRequests("post_turn", sent2.turnId).length > 0;
+    // Exhaustive scope for turn 2: pre_turn[2] + turn2 + post_turn2. Shared
+    // with the canonical rebuild; the pre-dispatch between-turns window is
+    // included so a model effect there cannot escape the verdict.
+    const scope2 = exhaustiveModelEffectScope(net.records, sent2.turnId);
+    const potential2 = scope2.potential.length;
+    const fanout2 = scope2.known.length > 1 || potential2 > 0;
+    if (hasOrphanedModelEffects(net.records)) {
+      logEvent("orphaned_model_effect", { detected: true, action: "fail_closed" });
+    }
     logEvent("turn2", {
       outcome: cancelOutcome,
-      physical_sends: turn2Counts.model_effect_conversation ?? 0,
+      physical_sends: scope2.known.length,
       prepare_sends: turn2Counts.model_effect_prepare ?? 0,
       potential_model_effect: potential2,
       response_started: sentReq.streamChunks > 0,

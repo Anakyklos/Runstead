@@ -46,6 +46,60 @@ export function hiddenRetryVerdict(knownSends, potentialSends) {
   return { hidden_retry_or_fanout: false, blocked_by: null };
 }
 
+// EXHAUSTIVE per-turn model-effect scope. Shared by the runtime fanout logic
+// (run_spike.mjs) and the canonical rebuild (rebuild_evidence.mjs) so both
+// apply the SAME rule and no between-turns window can be orphaned.
+//
+// A turn N's verdict scope is every request in:
+//   - pre_turn[N]  (explicit between-turns window attributed to turn N)
+//   - turn[N]
+//   - post_turn[N]
+//   - for N == 1 only, the initial baseline (turn 0, window "baseline"),
+//     because the pre-any-turn window belongs to the first turn's verdict.
+//
+// Every request between the session's initial baseline and the final
+// post-turn close therefore belongs to exactly one turn's scope (enforced by
+// hasOrphanedModelEffects/assertNoOrphanedModelEffects over the whole run).
+export function exhaustiveModelEffectScope(requests, turnNumber) {
+  const inScope = (r) =>
+    (r.turn === turnNumber &&
+      (r.window === "turn" || r.window === "post_turn")) ||
+    (r.window === "pre_turn" && r.turn === turnNumber) ||
+    (turnNumber === 1 && r.turn === 0 && r.window === "baseline");
+
+  const known = [];
+  const potential = [];
+  for (const r of requests) {
+    const c = r.classification;
+    if (c !== "model_effect_conversation" && c !== "potential_model_effect") continue;
+    if (!inScope(r)) continue;
+    if (c === "model_effect_conversation") known.push(r);
+    else potential.push(r);
+  }
+  return { known, potential };
+}
+
+// A model-effect request is attributable iff it falls in some turn's scope.
+function isAnyTurnScope(r) {
+  if (r.turn === 0 && r.window === "baseline") return true; // attributed to turn 1
+  if (r.window === "turn" || r.window === "post_turn" || r.window === "pre_turn") {
+    return r.turn > 0;
+  }
+  return false;
+}
+
+// True if any model-effect request is NOT in any turn's exhaustive scope
+// (i.e. it would be orphaned / escape all verdicts). Callers must fail closed
+// when this is true: "no orphaned window is acceptable".
+export function hasOrphanedModelEffects(requests) {
+  for (const r of requests) {
+    const c = r.classification;
+    if (c !== "model_effect_conversation" && c !== "potential_model_effect") continue;
+    if (!isAnyTurnScope(r)) return true;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Fixture tables
 // ---------------------------------------------------------------------------
@@ -159,6 +213,74 @@ const TIMEOUT_FIXTURES = [
   },
 ];
 
+// A request is a helper for the exhaustive-scope fixtures.
+const FIXT = (turn, window, classification) => ({ turn, window, classification });
+
+// Exhaustive accounting: no between-turns (pre-turn) model effect may escape a
+// verdict. These fixtures FAIL under the old behavior (which left the
+// inter-turn baseline window orphaned) and pass with exhaustiveModelEffectScope
+// + hasOrphanedModelEffects.
+const EXHAUSTIVE_SCOPE_FIXTURES = [
+  {
+    name: "clean-two-turn-run",
+    requests: [
+      FIXT(0, "baseline", "backend_api_aux"),
+      FIXT(1, "turn", "model_effect_conversation"),
+      FIXT(1, "post_turn", "sentinel_aux"),
+      FIXT(2, "turn", "model_effect_conversation"),
+      FIXT(2, "post_turn", "sentinel_aux"),
+    ],
+    expect: {
+      turn1: { known: 1, potential: 0 },
+      turn2: { known: 1, potential: 0 },
+      orphaned: false,
+    },
+    note: "no model effect in pre-turn windows; clean",
+  },
+  {
+    name: "pre-turn-known-blocks-turn2",
+    requests: [
+      FIXT(0, "baseline", "backend_api_aux"),
+      FIXT(1, "turn", "model_effect_conversation"),
+      FIXT(1, "post_turn", "sentinel_aux"),
+      FIXT(2, "pre_turn", "model_effect_conversation"), // orphaned under OLD rule
+      FIXT(2, "turn", "model_effect_conversation"),
+    ],
+    expect: {
+      turn1: { known: 1, potential: 0 },
+      turn2: { known: 2, potential: 0 }, // pre-turn known + in-turn known
+      orphaned: false, // attributed to turn 2, NOT orphaned
+    },
+    note: "a known model effect in turn 2's pre-turn window belongs to turn 2's scope",
+  },
+  {
+    name: "pre-turn-potential-blocks-and-not-orphaned",
+    requests: [
+      FIXT(0, "baseline", "backend_api_aux"),
+      FIXT(1, "turn", "model_effect_conversation"),
+      FIXT(1, "post_turn", "sentinel_aux"),
+      FIXT(2, "pre_turn", "potential_model_effect"),
+      FIXT(2, "turn", "model_effect_conversation"),
+    ],
+    expect: {
+      turn1: { known: 1, potential: 0 },
+      turn2: { known: 1, potential: 1 },
+      orphaned: false,
+    },
+    note: "a potential model effect in turn 2's pre-turn window blocks the clean verdict for turn 2 and is not orphaned",
+  },
+  {
+    name: "orphaned-window-detected",
+    requests: [
+      FIXT(0, "baseline", "backend_api_aux"),
+      FIXT(1, "turn", "model_effect_conversation"),
+      FIXT(0, "turn", "potential_model_effect"), // wrong turn attribution -> orphaned
+    ],
+    expect: { turn1: { known: 1, potential: 0 }, turn2: { known: 0, potential: 0 }, orphaned: true },
+    note: "a model effect that no turn's scope covers (turn 0 / window turn) is detected as orphaned",
+  },
+];
+
 function assertEqual(actual, expected, label) {
   const a = JSON.stringify(actual);
   const e = JSON.stringify(expected);
@@ -201,12 +323,32 @@ export function runFailClosedProofs() {
   });
   sections.push({ name: "timeout_fail_closed", rows: timeoutRows });
 
+  // Exhaustive per-turn accounting: no between-turns (pre-turn) model effect
+  // may escape a verdict, and orphaned windows are detected and reported.
+  const exhaustiveRows = EXHAUSTIVE_SCOPE_FIXTURES.map((f) => {
+    const scope1 = exhaustiveModelEffectScope(f.requests, 1);
+    const scope2 = exhaustiveModelEffectScope(f.requests, 2);
+    const orphaned = hasOrphanedModelEffects(f.requests);
+    const actual = {
+      turn1: { known: scope1.known.length, potential: scope1.potential.length },
+      turn2: { known: scope2.known.length, potential: scope2.potential.length },
+      orphaned,
+    };
+    return {
+      ...f,
+      scopeCheck: assertEqual(actual, f.expect, `exhaustive ${f.name}`),
+      actual,
+    };
+  });
+  sections.push({ name: "exhaustive_model_effect_scope", rows: exhaustiveRows });
+
   const failed = [];
   for (const s of sections) {
     for (const r of s.rows) {
       if (r.pass === false) failed.push({ section: s.name, label: r.label, expected: r.expected, actual: r.actual });
       else if (r.stateCheck && r.stateCheck.pass === false) failed.push({ section: s.name, label: r.stateCheck.label, expected: r.stateCheck.expected, actual: r.stateCheck.actual });
       else if (r.verdictCheck && r.verdictCheck.pass === false) failed.push({ section: s.name, label: r.verdictCheck.label, expected: r.verdictCheck.expected, actual: r.verdictCheck.actual });
+      else if (r.scopeCheck && r.scopeCheck.pass === false) failed.push({ section: s.name, label: r.scopeCheck.label, expected: r.scopeCheck.expected, actual: r.scopeCheck.actual });
       else if (r.check_result === false) failed.push({ section: s.name, label: "conversation_id_redaction", note: r.note });
     }
   }
