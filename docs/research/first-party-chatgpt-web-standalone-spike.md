@@ -212,13 +212,19 @@ belongs to exactly one turn's verdict. An un-attributable (orphaned)
 model-effect request is a **terminal fail-closed**: the shared authority
 `assertNoOrphanedModelEffects` (same helper) is called at turn 1, at turn 2,
 and by the rebuild, and throws so the live run exits non-zero **before** any
-clean/final verdict is emitted. This closes the review finding that a model
-effect in the between-turns window could escape both turn verdicts, and the
-follow-up that an orphan detected at the end of turn 2 could previously be
-observed while the harness still concluded success. The decision-path property
-(orphan -> terminal non-success, not merely detected) is proven deterministically
-in `evidence/fail-closed-proofs.json`, section
-`orphaned_effect_fail_closed_terminal`.
+clean/final verdict is emitted. In the rebuild the same gate runs **before**
+`build(...)`/`writeArtifacts(...)`, so an invalid (orphaned) input can never
+leave behind apparently-clean canonical artifacts: the rebuild's only
+observable outcome is a non-zero exit. This closes the review finding that a
+model effect in the between-turns window could escape both turn verdicts, and
+the follow-ups that an orphan detected at the end of turn 2 (live) or by the
+rebuild could previously be observed/persisted while the run still concluded
+success. The decision-path property (orphan -> terminal non-success, not merely
+detected) is proven deterministically in
+`evidence/fail-closed-proofs.json`, section
+`orphaned_effect_fail_closed_terminal`, and the rebuild's no-persistence-before-gate
+guarantee is enforced by a deterministic regression in `test.sh` (an orphaned
+rebuild exits non-zero and the canonical artifacts are byte-for-byte untouched).
 
 **Observed turn windows.** Baseline (pre-dispatch, ~3 s quiet): 0
 model-effect sends (341 `other`, 12 `ces_telemetry`, 30 `backend_api_aux`,

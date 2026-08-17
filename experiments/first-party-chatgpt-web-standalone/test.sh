@@ -82,6 +82,31 @@ if (sum.turn2.physical_sends !== t2.physical_sends) process.exit(1);
 if (sum.turn1.response_started !== t1.response_started) process.exit(1);
 console.log("cross-artifact agreement: key-events == summary");
 ' || fail "cross-artifact agreement"
+# 5. Evidence-authority regression (review): an orphaned model-effect request
+# must terminate the rebuild non-zero BEFORE any clean/final canonical verdict
+# is persisted, and must never overwrite the valid canonical artifacts with
+# apparently-clean results of an invalid run. Hermetic: runs the rebuild against
+# a synthetic orphaned log in $TEST_TMP and verifies the three real canonical
+# artifacts are byte-for-byte untouched.
+ORPHAN_LOG="$TEST_TMP/orphaned-run.log"
+cat >"$ORPHAN_LOG" <<'LOG'
+[net:request_will_be_sent] {"requestId":"110.1","method":"POST","host":"chatgpt.com","path":"/backend-api/f/conversation","window":"turn","turn":1,"ts":1786845745125}
+[net:request_will_be_sent] {"requestId":"110.2","method":"POST","host":"chatgpt.com","path":"/backend-api/f/conversation","window":"turn","turn":2,"ts":1786845754010}
+[net:request_will_be_sent] {"requestId":"110.3","method":"POST","host":"chatgpt.com","path":"/backend-api/f/conversation","window":"turn","turn":0,"ts":1786845759000}
+LOG
+NET_LIVE_BEFORE=$(sha256sum "$ROOT_DIR/evidence/network-turns-live.json" | cut -d' ' -f1)
+KE_LIVE_BEFORE=$(sha256sum "$ROOT_DIR/evidence/live-key-events.json" | cut -d' ' -f1)
+SUM_LIVE_BEFORE=$(sha256sum "$ROOT_DIR/output/summary-live.json" | cut -d' ' -f1)
+if node "$ROOT_DIR/lib/rebuild_evidence.mjs" "$ORPHAN_LOG" >/dev/null 2>&1; then
+  fail "orphaned model-effect rebuild exited 0 (must terminate non-success)"
+fi
+NET_LIVE_AFTER=$(sha256sum "$ROOT_DIR/evidence/network-turns-live.json" | cut -d' ' -f1)
+KE_LIVE_AFTER=$(sha256sum "$ROOT_DIR/evidence/live-key-events.json" | cut -d' ' -f1)
+SUM_LIVE_AFTER=$(sha256sum "$ROOT_DIR/output/summary-live.json" | cut -d' ' -f1)
+if [ "$NET_LIVE_BEFORE" != "$NET_LIVE_AFTER" ] || [ "$KE_LIVE_BEFORE" != "$KE_LIVE_AFTER" ] || [ "$SUM_LIVE_BEFORE" != "$SUM_LIVE_AFTER" ]; then
+  fail "orphaned rebuild overwrote canonical artifacts (fail-open persistence)"
+fi
+echo "orphaned rebuild regression passed: non-zero exit + canonical artifacts untouched"
 # No residual conversation-id fragment or third-party host in the DERIVED
 # live/canonical artifacts. (evidence/fail-closed-proofs.json intentionally
 # contains synthetic fixture IDs used to demonstrate the redaction rules and

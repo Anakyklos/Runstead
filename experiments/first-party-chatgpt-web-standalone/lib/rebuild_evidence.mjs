@@ -533,6 +533,14 @@ function main() {
     storedAggregates = art.storedAggregates;
   }
 
+  // Evidence-authority gate: no model-effect request may escape every turn's
+  // exhaustive scope. This runs BEFORE build(...)/writeArtifacts(...), so an
+  // invalid (orphaned) input can never leave behind apparently-clean canonical
+  // artifacts: a non-zero exit is the only observable outcome. Same authority
+  // as turn 1 / turn 2 live (assertNoOrphanedModelEffects); this is not a
+  // parallel orphan rule.
+  assertNoOrphanedModelEffects(requests, "rebuild");
+
   const { networkEvidence, keyEventsEvidence, summary, t1, t2, agg } = build(requests, events, storedAggregates);
   writeArtifacts(networkEvidence, keyEventsEvidence, summary);
 
@@ -553,11 +561,6 @@ function main() {
   if (summary.turn2.outcome === "canceled_aborted" && summary.turn2.response_started) {
     throw new Error("consistency check failed: canceled_aborted cannot have response_started");
   }
-  // Exhaustive accounting gate: no between-turns (or other) model-effect
-  // request may escape every turn's verdict scope. The canonical evidence
-  // must not contain an orphaned window. Same authority as the runtime: an
-  // orphaned request aborts the rebuild with a non-success exit.
-  assertNoOrphanedModelEffects(requests, "rebuild");
 }
 
 main();
