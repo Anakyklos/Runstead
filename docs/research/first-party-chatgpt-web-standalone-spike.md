@@ -365,6 +365,9 @@ runs the deterministic suite: fail-closed proofs, conservative-classifier and
 conversation-path edge cases, URL/target/file/conv-id redaction shaping, the
 canonical live-evidence rebuild idempotence, cross-artifact agreement, and a
 leak scan over the derived artifacts. Zero browser launch, zero model turns.
+It is wired into the repository CI (`.github/workflows/ci.yml`,
+"Run standalone browser-substrate spike deterministic checks") so the
+review-hardened evidence invariants are continuously validated on the branch.
 The `urlShape`/`sanitizeConversationPath` helpers also replace any UUID-shaped
 segment (including the `/c/<conversation-id>` content route) with a
 placeholder before the generic redactor runs, so no truncated fragment can
