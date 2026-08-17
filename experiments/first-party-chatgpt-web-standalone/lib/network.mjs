@@ -5,23 +5,60 @@
 //
 // Sanitization is structural and happens at event ingestion: only the
 // allowlisted fields below are ever kept. Headers, cookies, bodies,
-// credential material, query strings and response data are never read or
-// logged. Request ids are truncated; hosts are hostnames only; paths are
-// pathnames only (query strings dropped).
+// credential material, query strings, fragments and response data are never
+// read or logged. Request ids are truncated; hosts are hostnames only; paths
+// are pathnames only (query strings dropped). URL shaping lives in
+// lib/sanitize.mjs (urlShape) and is shared with target-event logging so no
+// raw URL is ever persisted.
+//
+// Classification is CONSERVATIVE on the conversation namespace: a POST under
+// /backend-api/conversation* or /backend-api/f/conversation* is a candidate
+// for a hidden continuation/resume/replay of a model effect. Only the two
+// exact model-effect paths, the known pre-dispatch `prepare` step and the
+// known `init` aux path are allowlisted; ANY other POST in that namespace is
+// classified `potential_model_effect` (uncertain) and, in this spike, blocks
+// the "no hidden retry/fan-out" verdict instead of passing silently.
 
-import { redact } from "./sanitize.mjs";
+import { redact, urlShape } from "./sanitize.mjs";
 
 const MODEL_EFFECT_PATHS = new Set([
   "/backend-api/conversation",
   "/backend-api/f/conversation",
 ]);
 
+// Known non-model-effect POSTs inside the conversation namespace. Anything
+// else that is a POST under /backend-api/conversation* or
+// /backend-api/f/conversation* becomes potential_model_effect.
+const CONVERSATION_POST_PREPARE = "/backend-api/f/conversation/prepare";
+const CONVERSATION_POST_INIT = "/backend-api/conversation/init";
+
+// Conversation ids can appear inside conversation-namespace paths (e.g.
+// /backend-api/conversation/<id>/stream_status). Those segments never get a
+// correlatable fragment: they are replaced wholesale by a placeholder.
+// "init"/"prepare" labels are untouched (they are not id-shaped).
+const CONVERSATION_ID_SEG_RE = /(\/backend-api\/conversation\/)[0-9a-fA-F-]+(?:…)*/g;
+export function sanitizeConversationPath(path) {
+  return String(path).replace(CONVERSATION_ID_SEG_RE, "$1<conv>");
+}
+
 export function classifyRequest(method, pathname) {
   if (method === "POST" && MODEL_EFFECT_PATHS.has(pathname)) {
     return "model_effect_conversation";
   }
-  if (method === "POST" && pathname === "/backend-api/f/conversation/prepare") {
-    return "model_effect_prepare"; // pre-dispatch auxiliary (prepare step)
+  if (method === "POST" && pathname === CONVERSATION_POST_PREPARE) {
+    return "model_effect_prepare"; // known pre-dispatch auxiliary (prepare step)
+  }
+  if (method === "POST" && pathname === CONVERSATION_POST_INIT) {
+    return "conversation_api_aux"; // known init auxiliary
+  }
+  if (
+    method === "POST" &&
+    (pathname.startsWith("/backend-api/conversation/") ||
+      pathname.startsWith("/backend-api/f/conversation/"))
+  ) {
+    // Unknown POST in the conversation namespace: could be a continuation,
+    // resume or replay of the model effect. Fail conservatively.
+    return "potential_model_effect";
   }
   if (
     pathname === "/backend-api/me" ||
@@ -31,7 +68,7 @@ export function classifyRequest(method, pathname) {
     return "session_check";
   }
   if (pathname.startsWith("/backend-api/conversation/")) {
-    return "conversation_api_aux"; // stream_status / textdocs / etc.
+    return "conversation_api_aux"; // GET stream_status / textdocs / etc.
   }
   if (pathname.startsWith("/backend-api/conversations")) {
     return "conversation_list";
@@ -62,18 +99,7 @@ function truncateId(id) {
 }
 
 function parseUrl(rawUrl) {
-  try {
-    const u = new URL(rawUrl);
-    return { host: u.hostname, path: u.pathname };
-  } catch {
-    return { host: "", path: "" };
-  }
-}
-
-// Long script/asset paths are truncated for evidence compactness.
-// Classification always runs on the full path before truncation.
-function truncatePath(path) {
-  return path.length > 160 ? path.slice(0, 160) + "\u2026" : path;
+  return urlShape(rawUrl);
 }
 
 export class NetworkObserver {
@@ -133,13 +159,20 @@ export class NetworkObserver {
   _handle(method, params) {
     switch (method) {
       case "Network.requestWillBeSent": {
-        const { host, path: fullPath } = parseUrl(params.request?.url || "");
-        const path = truncatePath(fullPath);
+        // Full pathname (query/fragment dropped) is used for classification;
+        // the recorded path is the truncated shape from urlShape.
+        let fullPath = "";
+        try {
+          fullPath = new URL(params.request?.url || "").pathname;
+        } catch {
+          fullPath = "";
+        }
+        const shape = parseUrl(params.request?.url || "");
         const state = {
           requestId: truncateId(params.requestId),
           method: params.request?.method || "",
-          host,
-          path,
+          host: shape.host,
+          path: sanitizeConversationPath(shape.path),
           type: params.type || "",
           classification: classifyRequest(params.request?.method || "", fullPath),
           window: this.window,
@@ -242,6 +275,24 @@ export class NetworkObserver {
   modelEffectRequests(windowName, turnId = null) {
     return this.requestsInWindow(windowName, turnId).filter(
       (r) => r.classification === "model_effect_conversation"
+    );
+  }
+
+  // Unknown POSTs in the conversation namespace: conservative flag for
+  // possible hidden continuation/resume/replay. Must block
+  // "no hidden retry/fan-out" verdicts when non-empty.
+  potentialModelEffectRequests(windowName, turnId = null) {
+    return this.requestsInWindow(windowName, turnId).filter(
+      (r) => r.classification === "potential_model_effect"
+    );
+  }
+
+  // Any transport record that could carry a model effect, known or unknown.
+  modelEffectLikeRequests(windowName, turnId = null) {
+    return this.requestsInWindow(windowName, turnId).filter(
+      (r) =>
+        r.classification === "model_effect_conversation" ||
+        r.classification === "potential_model_effect"
     );
   }
 

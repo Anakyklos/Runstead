@@ -1,12 +1,14 @@
 # Standalone first-party browser substrate spike
 
-**Date:** 2026-08-16
+**Date:** 2026-08-16 (live run); 2026-08-17 (review-driven hardening + canonical evidence rebuild)
 **Status:** Research spike, disposable prototype. No production integration.
 **Issue:** Refs #16 (research only; issue not closed)
 **Branch:** `research/issue-16-standalone-browser-spike`
 **Base:** `188048a00a0089aab6f6419f18d5269e5dac2680` (main at spike start)
 **Live model turn budget used:** 2 of 2 (one success turn, one post-dispatch
-cancellation turn that aborted).
+cancellation turn that aborted). Zero additional model turns were consumed by
+the review hardening (everything below is deterministic rebuild, fixtures, and
+dry-mode validation).
 
 ---
 
@@ -170,15 +172,24 @@ wrappers are injected (unlike PR #72). Classification (full path, method):
 | Class | Rule |
 |---|---|
 | `model_effect_conversation` | POST `/backend-api/f/conversation` or `/backend-api/conversation` |
-| `model_effect_prepare` | POST `/backend-api/f/conversation/prepare` |
+| `model_effect_prepare` | POST `/backend-api/f/conversation/prepare` (known pre-dispatch step) |
+| `potential_model_effect` | ANY other POST under `/backend-api/conversation/*` or `/backend-api/f/conversation/*` (unknown continuation/resume/replay candidates; BLOCKS the no-hidden-retry verdict) |
 | `session_check` | GET `/backend-api/me`, `/backend-api/accounts/*`, settings |
 | `sentinel_aux` | `/backend-api/sentinel/*` |
 | `ces_telemetry` | `/ces/*` |
 | `conversation_list` | `/backend-api/conversations` |
-| `conversation_api_aux` | `/backend-api/conversation/*` (stream_status, textdocs) |
+| `conversation_api_aux` | GET `/backend-api/conversation/*` (stream_status, textdocs) + known POSTs `init`/`prepare` |
 | `backend_api_aux` | other `/backend-api/*` |
 | `static_asset` | `/_next/*`, `/static/*`, etc. |
-| `other` | everything else |
+| `other` | everything else (static assets, fonts, avatars, third-party noise) |
+
+Classification is conservative by design: the two exact model-effect paths,
+the `prepare` pre-dispatch step and the `init` aux path are allowlisted; any
+other POST in the conversation namespace is `potential_model_effect`
+(uncertain) and flips `hidden_retry_or_fanout` from `false` to `true` instead
+of passing silently as auxiliary. In the observed live run there were zero
+such unknowns (the only conversation-namespace POSTs were `prepare`, `init`),
+so the clean verdicts below hold under conservative accounting.
 
 Every request is recorded with sequence, timestamp, method, host (hostname
 only), path (pathname only, query dropped, >160 chars truncated), opaque
@@ -233,19 +244,42 @@ then cleared without ever clicking send; the turn window records
 (`output/summary-dry.json`, dry run).
 
 **Post-dispatch (turn 2, budget 2/2).** Dispatch confirmed at the transport
-level: `POST /backend-api/f/conversation` (requestId `989287.643`) 43 ms
-after the dispatch click. The stop button was located and clicked 61 ms
-after dispatch (18 ms after the request was sent). Outcome at the transport
-level: `Network.loadingFailed` with `net::ERR_ABORTED`, `canceled: true` —
-the request was aborted before any SSE chunk (`response_started` was not
-observed for this request). No retry, no re-dispatch; the DOM settled with
-`busy=false` and the turn-2 assistant section never rendered.
+level: the in-turn conversation POST became visible to the Network domain
+(`sent_confirmed`) and the stop button was clicked immediately **without
+waiting for the first response byte**. In the live run: `POST
+/backend-api/f/conversation` (requestId `989287.643`) 43 ms after the
+dispatch click; stop located and clicked 61 ms after dispatch (18 ms after
+the request was sent); `Network.loadingFailed` with `net::ERR_ABORTED`,
+`canceled: true` — the request was aborted before any SSE chunk
+(`response_started` was not observed for this request). No retry, no
+re-dispatch; the DOM settled with `busy=false` and the turn-2 assistant
+section never rendered.
 
 Classification: `sent_confirmed -> canceled_aborted` (response_started not
 reached). This is a positive, observable cancellation: a physical
 model-effect request was in flight and was aborted by the stop action. The
-criterion is marked PROVEN with the caveat that the abort landed before the
-first response byte; a later abort (mid-stream) was not measured.
+current harness reproduces exactly this semantics: `waitForSent` (the
+conversation POST's `requestWillBeSent`), stop click, then `loadingFailed`
+observation. It NEVER waits for response data before cancelling, so the code
+is aligned with what was actually executed in the live run (which was
+executed by harness v1 with the same sent-confirmed flow). The criterion is
+marked PROVEN with the caveat that the abort landed before the first response
+byte; a later abort (mid-stream) was not measured.
+
+**Timeout (0 additional model turns, deterministic dry proof).** Issue #16's
+prototype requirements include proving cancellation **and timeout** behavior.
+The timeout behavior is proven synthetically in
+`evidence/fail-closed-proofs.json` (section `timeout_fail_closed`, run by
+`run_spike.mjs dry`): a turn whose model-effect request is SENT but never
+starts (and never completes) within the bounded wait must derive the typed
+fail-closed state `sent_timeout_fail_closed` and must NOT re-dispatch or
+replay (`replay: false`, `retry_dispatched: false`); a later unknown
+conversation-namespace POST flips the no-hidden-retry verdict to blocked.
+The runtime mirrors this: every bounded wait in `run_spike.mjs` (response
+start, terminal DOM, cancel outcome, sent confirmation) is wrapped in
+`waitForTyped`, which on expiry records a typed `uncertain_timeout` event
+with `re_dispatched: false` and terminates the turn fail-closed (recovery
+belongs to Runstead, never the browser). Zero model turns.
 
 ## Crash/disconnect
 
@@ -266,12 +300,25 @@ Additionally, `Target.closeTarget` on the fixture target produced
 ## Page-contract drift
 
 Before any interaction the harness probes a self-contained readiness
-expression: origin must be `chatgpt.com`, no signed-out markers
-(`Log in`/`Sign up`/`Entrar`/`Criar conta`/`Cadastre-se`), no blocking
-dialog, composer known (`#prompt-textarea` or the localized contenteditable
-variants). Verdicts: `ready`, `login_required`, `auth_pending`,
-`dialog_blocking`, `contract_missing`. Anything unknown fails closed — no
-clicks, no typing, no dispatch.
+expression: origin must be EXACTLY `https://chatgpt.com` (a real origin
+comparison via `location.origin === 'https://chatgpt.com'`, NEVER a textual
+prefix — a lookalike such as `https://chatgpt.com.evil.example` fails
+closed), no signed-out markers (`Log in`/`Sign up`/`Entrar`/`Criar
+conta`/`Cadastre-se`), no blocking dialog, composer known (`#prompt-textarea`
+or the localized contenteditable variants). Auth origins are an explicit
+enumeration (`https://auth0.openai.com`, `https://auth.openai.com`,
+`https://platform.openai.com`) and nothing else may satisfy `auth_pending`.
+Verdicts: `ready`, `login_required`, `auth_pending`, `dialog_blocking`,
+`contract_missing`. Anything unknown fails closed — no clicks, no typing, no
+dispatch.
+
+The exact-origin rule, the conservative classifier, url/conversation-id
+redaction and the timeout state machine are all covered by deterministic
+fixtures in `evidence/fail-closed-proofs.json` (10 origin fixtures including
+`chatgpt.com.evil.example`, `www.chatgpt.com`, `sub.chatgpt.com`,
+insecure-scheme and auth-lookalike cases; 11 classifier fixtures including
+unknown conversation-namespace POSTs; 3 URL-shape fixtures; 6 timeout
+state-table rows). Zero model turns.
 
 Live fixture proof (0 model turns): a local `file://` fixture mimicking a
 signed-out page with a composer is classified `contract_missing` (wrong
@@ -287,12 +334,31 @@ classified `login_required` (pt-BR labels supported).
 - structural redaction applied before any stdout/JSON/file: hex tokens
   (UUIDs, conversation ids) truncated to 8 chars, long opaque tokens
   truncated, home paths rewritten to `~` (`lib/sanitize.mjs`);
-- query strings dropped from URLs; paths truncated; request ids truncated;
+- **conversation ids are NEVER persisted, not even truncated**: evidence
+  carries a non-correlatable placeholder only (`conv#turn1`, `conv#turn2`)
+  with `conversation_id_redacted: true` (`conversationIdEvidence` in
+  `lib/sanitize.mjs`). Conversation ids that appear inside API paths
+  (`/backend-api/conversation/<id>/stream_status`) are replaced by a
+  placeholder segment (`<conv>`);
+- query strings and fragments are always dropped (`urlShape`); target URLs
+  are never logged raw — `Target.targetCreated` records host plus a coarse
+  first-segment class (`targetShape`), so conversation id, query and fragment
+  can never leak through target events;
+- **per-request evidence is minimized**: `other` traffic (static assets,
+  fonts, avatars, third-party noise) is dropped from the persisted
+  per-request artifacts (its aggregate counts are kept), and the persisted
+  lifecycle excludes `other` request streams;
 - self-audit: the harness scans its own source (comments stripped) for
   forbidden APIs — 0 findings (`evidence/environment.json`,
   `evidence/auth-custody.json`);
 - the dedicated profile is gitignored and never committed; no secrets in
   git, none in SQLite.
+
+The redaction rules above are enforced by deterministic fixtures in
+`evidence/fail-closed-proofs.json` (URL-shape, target-shape and
+conversation-id sections). A generic redactor is NOT trusted for
+conversation ids (it can leave an 8-char prefix); the placeholder mechanism
+is the only path conversation ids take into evidence.
 
 ## Candidate comparison
 
@@ -327,29 +393,99 @@ stealth-maintenance cost and are unmeasured in this repo.
   the CDP flow (same flags/endpoints), but DevToolsActivePort path and
   process-exit semantics differ; not claimed as tested.
 
+## Review-driven hardening (2026-08-17, zero additional model turns)
+
+PR review #4953346768 requested changes before merge. Each point was
+addressed without consuming any additional live model turn:
+
+1. **Evidence consistency.** `evidence/live-key-events.json` no longer
+   carries the stale v1 derived fields (`physical_sends: 0`,
+   `response_started: false`, `completed_before_cancel`, the reused turn-1
+   request id). `lib/rebuild_evidence.mjs` (v3) rebuilds every derived
+   per-turn verdict from the corrected transport records + preserved DOM
+   facts, and the three canonical artifacts
+   (`network-turns-live.json`, `live-key-events.json`, `summary-live.json`)
+   now agree with each other and with this document (asserted in the
+   rebuild script).
+2. **Cancellation provenance.** The live run was executed by harness v1 with
+   sent-confirmed semantics; the current harness identifies versions exactly
+   (v1/v2/v3) and its turn-2 code now implements the same semantics:
+   `waitForSent` (conversation POST `requestWillBeSent`), stop click
+   immediately, then `loadingFailed` observation. It never waits for response
+   data before cancelling, so it reproduces the documented
+   `response_started: false` abort. Provenance is recorded in every artifact.
+3. **Conservative accounting.** The classifier now treats ANY unknown POST
+   under `/backend-api/conversation/*` or `/backend-api/f/conversation/*` as
+   `potential_model_effect` (uncertain) instead of silent `conversation_api_aux`;
+   `potential_model_effect` blocks the "no hidden retry/fan-out" verdict
+   (fixtures in `evidence/fail-closed-proofs.json`).
+4. **Exact-origin trust boundary.** The DOM contract uses
+   `location.origin === 'https://chatgpt.com'` (never a textual prefix) and
+   an explicit auth-origin enumeration. Deterministic negative fixtures cover
+   `https://chatgpt.com.evil.example`, `www.`/`sub.` subdomains, insecure
+   scheme, and auth lookalikes.
+5. **Redaction minimization.** Per-request evidence drops `other` traffic
+   (aggregate counts preserved); conversation ids are replaced by
+   non-correlatable placeholders (`conv#turn1`, `conv#turn2`) — including
+   ids embedded in API paths (`<conv>`); `Target.targetCreated` never logs a
+   raw URL (host + coarse path class only); query strings/fragments are
+   always dropped.
+6. **Timeout criterion covered.** Issue #16's "prove cancellation/timeout
+   behavior" is now covered: a deterministic zero-turn state machine proves
+   timeout -> `sent_timeout_fail_closed` -> no dispatch/replay, and the
+   runtime wraps every bounded wait in a typed fail-closed path
+   (`uncertain_timeout`, `re_dispatched: false`). Matrix row 15, PROVEN
+   (synthetic). The matrix is now 19/19 PROVEN.
+
 ## Evidence
 
 - `experiments/first-party-chatgpt-web-standalone/output/summary-live.json`
-  — live verdicts (rebuilt with fixed classifier);
+  — canonical live verdicts (rebuilt with the fixed/ conservative
+  classifier; conversation ids as non-correlatable placeholders);
 - `output/lifecycle-dry.json`, `output/summary-dry.json` — dry run
-  (fixtures, pre-dispatch N=0, crash), produced by the fixed harness;
+  (fixtures, pre-dispatch N=0, crash, fail-closed proofs), re-produced by
+  the v3 harness on 2026-08-17 (0 model turns); `other` request streams are
+  excluded from the persisted lifecycle (counts kept in the wrapper);
 - `evidence/network-turns-live.json` — per-request transport records of the
-  live run (rebuilt from the run log with the fixed classifier);
-- `evidence/live-key-events.json` — key events of the live run as recorded;
-- `evidence/environment.json` — runtime/process/dependency proof;
+  live run (accounting-relevant classes only; `other` dropped with aggregate
+  counts preserved; conversation-id path segments replaced by `<conv>`);
+- `evidence/network-turns.json` — per-request records of the v3 dry run
+  (accounting-relevant classes only);
+- `evidence/live-key-events.json` — canonical key events: per-turn derived
+  verdicts rebuilt from transport records, request ids corrected, stale v1
+  fields discarded, conversation ids as placeholders;
+- `evidence/fail-closed-proofs.json` — deterministic zero-turn proofs
+  (exact origin incl. lookalike negatives, conservative classifier, URL/
+  target/conversation-id redaction, timeout fail-closed state machine);
+- `evidence/environment.json` — runtime/process/dependency proof (v3 dry
+  re-validation);
 - `evidence/auth-custody.json` — credential-handling proof;
 - `evidence/login-enrollment.json` — enrollment flow + measured login-gate
   property.
 
-**Harness v1 accounting bug (transparency).** The first live run was
-recorded with harness v1, whose redactor truncated classification strings
-and whose turn windows were not per-turn scoped, producing wrong in-memory
-totals (the raw sanitized records themselves were correct). The bugs were
-fixed (v2) and validated in dry mode; the live evidence was rebuilt from the
-preserved run log with the fixed classifier (`lib/rebuild_evidence.mjs`).
-No additional model turns were consumed.
+**Harness versions (identified exactly, per review).**
+- **v1** executed the live run on 2026-08-16 (budget 2/2) with the
+  sent-confirmed cancellation flow: dispatch -> request in flight -> stop
+  clicked before response start. Its redactor truncated classification
+  strings and its turn windows were not per-turn scoped, so some in-memory
+  totals and raw key-event verdicts were wrong (the raw sanitized transport
+  records themselves were correct).
+- **v2** fixed the classifier + per-turn scoping and re-derived the
+  transport records from the preserved run log.
+- **v3** (2026-08-17, review hardening, zero additional model turns):
+  canonicalizes the whole evidence package from the corrected transport
+  records + preserved DOM facts (`lib/rebuild_evidence.mjs`), applies the
+  exact-origin contract, the conservative conversation-namespace
+  classification, conversation-id placeholders, target URL shaping and the
+  deterministic fail-closed/timeout proofs; the current `run_spike.mjs`
+  cancellation code is aligned to the sent-confirmed semantics that v1
+  actually executed. v3 was validated in dry mode (2026-08-17).
 
 ## Proven / unproven matrix
+
+All 19 criteria: **19 PROVEN / 0 UNPROVEN / 0 FAILED** (with the caveats
+stated in the result column; criterion 19 is proven by deterministic
+zero-turn synthetic fixtures, criteria 1-18 by the live/dry runs as before).
 
 | # | Criterion | Result |
 |---|---|---|
@@ -364,13 +500,14 @@ No additional model turns were consumed.
 | 9 | physical model-effect send count observable | PROVEN (1+1, N=0 pre) |
 | 10 | one live text turn completes | PROVEN (token + terminal) |
 | 11 | final response correlated to current turn | PROVEN |
-| 12 | no hidden retry/fan-out observed | PROVEN (this run) |
+| 12 | no hidden retry/fan-out observed | PROVEN (this run, conservative: any unknown conversation-namespace POST flips this to blocked) |
 | 13 | pre-dispatch cancellation N=0 | PROVEN |
-| 14 | post-dispatch cancellation classified | PROVEN (sent -> aborted pre-response) |
-| 15 | browser/CDP crash classified | PROVEN (SIGKILL -> 1006, no replay) |
-| 16 | unknown DOM state fail-closed | PROVEN (fixture + verdict matrix) |
-| 17 | browser has no retry/policy/task truth authority | PROVEN by construction |
-| 18 | no production dependency added | PROVEN (no go.mod/package changes) |
+| 14 | post-dispatch cancellation classified | PROVEN (sent-confirmed -> aborted pre-response) |
+| 15 | timeout behavior fails closed | PROVEN (deterministic zero-turn state machine + typed runtime waits; no replay) |
+| 16 | browser/CDP crash classified | PROVEN (SIGKILL -> 1006, no replay) |
+| 17 | unknown DOM state fail-closed | PROVEN (fixture + verdict matrix + exact-origin fixtures) |
+| 18 | browser has no retry/policy/task truth authority | PROVEN by construction |
+| 19 | no production dependency added | PROVEN (no go.mod/package changes) |
 
 ## Limitations
 
@@ -381,11 +518,16 @@ No additional model turns were consumed.
   debugging-flagged launch is challenged by Cloudflare/Auth0. Runtime CDP
   operation with an enrolled session is unaffected.
 - Single environment (Linux, Chrome 151, same authenticated ChatGPT account
-  used by PR #72), single day, N=1 per turn; ChatGPT Web DOM/endpoints change
-  over time and the contract probes are version-sensitive.
-- The live evidence was rebuilt from the run log after a harness v1
-  accounting-label bug; the raw facts are preserved, but the ideal is a
-  clean v2 live run (would consume 2 more model turns; not done).
+  used by PR #72), N=1 per turn; ChatGPT Web DOM/endpoints change over time
+  and the contract probes are version-sensitive.
+- The live evidence was canonicalized after review (v3) from the preserved
+  transport records + DOM facts; the raw facts are preserved in the
+  canonical artifacts and the harness now produces correct artifacts
+  directly. A fresh clean v2/v3 live run would consume 2 more model turns;
+  not done.
+- Timeout behavior is proven by deterministic zero-turn fixtures and the
+  typed runtime wait path, not by an observed live timeout (an observed live
+  timeout would require consuming another model turn and is not authorized).
 - Firefox/Juggler and Camoufox remain unmeasured.
 
 ## ADR implications

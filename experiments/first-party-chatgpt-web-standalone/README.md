@@ -22,9 +22,20 @@ touch production code, does not modify `go.mod`, and adds no dependency.
   12017 bytes streamed, terminal DOM, `RUNSTEAD_STANDALONE_OK` present,
   conversation correlated, no hidden retry/fan-out.
 - **Turn 2 (post-dispatch cancellation)**: 1 physical send, stop button
-  clicked 61 ms after dispatch, request aborted
-  (`net::ERR_ABORTED`, `canceled: true`) before the first SSE chunk.
+  clicked 61 ms after dispatch (sent-confirmed semantics: the harness waits
+  for the conversation POST to be in flight, NOT for response data), request
+  aborted (`net::ERR_ABORTED`, `canceled: true`) before the first SSE chunk.
+- **Timeout**: deterministic zero-turn proof
+  (`evidence/fail-closed-proofs.json`) that a sent-but-never-started turn
+  derives `sent_timeout_fail_closed` with no dispatch/replay; every bounded
+  wait in the harness is a typed fail-closed path (`uncertain_timeout`).
 - **Pre-dispatch cancellation**: N=0 model-effect sends.
+- **Exact-origin contract**: `location.origin === 'https://chatgpt.com'`
+  (never a textual prefix); lookalikes like
+  `https://chatgpt.com.evil.example` fail closed (deterministic fixtures).
+- **Conservative accounting**: any unknown POST under
+  `/backend-api/conversation/*` becomes `potential_model_effect` and blocks
+  the no-hidden-retry verdict instead of passing as auxiliary.
 - **Crash/disconnect**: SIGKILL of the browser -> CDP close code 1006,
   typed fail-closed state, zero automatic replay.
 - **Measured login-gate property**: OpenAI's login gate (Cloudflare
@@ -41,12 +52,16 @@ Full report: `docs/research/first-party-chatgpt-web-standalone-spike.md`.
 - `lib/browser.mjs` — chrome discovery/launch/profile/port/targets
 - `lib/network.mjs` — transport-level accounting (CDP Network events)
 - `lib/dom.mjs` — fail-closed page contract, composer, turn state
-- `lib/sanitize.mjs` — structural redaction for all evidence
-- `lib/rebuild_evidence.mjs` — one-off evidence rebuild for the v1 live run
-  (see Evidence note below)
+- `lib/sanitize.mjs` — structural redaction for all evidence (incl. exact
+  URL/target shaping and conversation-id placeholders)
+- `lib/proofs.mjs` — deterministic zero-turn fail-closed proofs (origin,
+  classifier, redaction, timeout)
+- `lib/rebuild_evidence.mjs` — canonical rebuild of the live evidence
+  (v3; see Evidence note below)
 - `fixtures/logged-out.html` — wrong-origin fail-closed fixture
 - `profiles/` — dedicated profile (gitignored; holds real auth session)
-- `output/`, `evidence/` — sanitized artifacts of the runs
+- `output/`, `evidence/` — sanitized artifacts of the runs (incl.
+  `evidence/fail-closed-proofs.json`)
 
 ## How to re-run
 
@@ -66,15 +81,25 @@ node run_spike.mjs live
 
 Budget: exactly 2 live model turns. Do not exceed.
 
-## Evidence note (harness v1 accounting bug)
+## Evidence note (harness versions)
 
-The first live run was recorded by harness v1, which had two
-accounting-label bugs (redactor mangled classification strings; turn
-windows not scoped per turn). The raw sanitized records were preserved in
-the run log. `lib/rebuild_evidence.mjs` re-derives classification with the
-fixed classifier and attributes turns by the recorded dispatch timestamps.
-The harness itself was fixed (v2) and re-validated in dry mode; future live
-runs produce correct artifacts directly.
+- **v1** executed the live run (2026-08-16, budget 2/2) with sent-confirmed
+  cancellation semantics. Its redactor mangled classification strings and
+  its turn windows were not per-turn scoped, so some in-memory totals and
+  raw key-event verdicts were wrong (the raw sanitized transport records
+  were correct).
+- **v2** fixed the classifier + per-turn scoping and re-derived the
+  transport records from the preserved run log.
+- **v3** (2026-08-17, review hardening, zero additional model turns):
+  `lib/rebuild_evidence.mjs` canonicalizes the whole evidence package from
+  the corrected records + preserved DOM facts (no stale derived fields),
+  applies exact-origin checks, conservative conversation-namespace
+  classification, conversation-id placeholders, target URL shaping and
+  deterministic fail-closed/timeout proofs. `run_spike.mjs` is aligned to
+  the sent-confirmed cancellation semantics that v1 actually executed, and
+  was re-validated in dry mode. Run `node lib/rebuild_evidence.mjs` to
+  re-canonicalize; run `node run_spike.mjs dry` to re-run the proofs (0
+  model turns).
 
 ## Provenance
 

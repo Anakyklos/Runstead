@@ -2,85 +2,7 @@
   "redaction": {
     "removed_other_requests": 339
   },
-  "events": [
-    {
-      "kind": "spike_start",
-      "ts": 1786992111680,
-      "mode": "dry",
-      "harnessVersion": "v3"
-    },
-    {
-      "kind": "self_audit",
-      "ts": 1786992111685,
-      "failed": false,
-      "findings": []
-    },
-    {
-      "kind": "fail_closed_proofs",
-      "ts": 1786992111687,
-      "passed": true,
-      "sections": [
-        {
-          "name": "origin_exact_match",
-          "rows": 10,
-          "failedRows": 0
-        },
-        {
-          "name": "classifier_conservative",
-          "rows": 11,
-          "failedRows": 0
-        },
-        {
-          "name": "url_shape_redaction",
-          "rows": 3,
-          "failedRows": 0
-        },
-        {
-          "name": "conversation_id_redaction",
-          "rows": 1,
-          "failedRows": 0
-        },
-        {
-          "name": "timeout_fail_closed",
-          "rows": 6,
-          "failedRows": 0
-        },
-        {
-          "name": "redact_smoke",
-          "rows": 1,
-          "failedRows": 0
-        }
-      ],
-      "failed": []
-    },
-    {
-      "kind": "browser_launched",
-      "ts": 1786992113609,
-      "binary": "google-chrome-stable",
-      "discoveredBy": "which google-chrome-stable",
-      "profileFresh": false,
-      "profilePath": "~/Documentos/codigo/Runstead/experiments/first-party-chatgpt-web-standalone/profiles/standalone-spike"
-    },
-    {
-      "kind": "cdp_connected",
-      "ts": 1786992113706,
-      "browserProduct": "Chrome",
-      "browserVersion": "151.0.7922.71",
-      "targetCountAtConnect": 1,
-      "cdpEndpointObtained": "DevToolsActivePort + /json/version"
-    },
-    {
-      "kind": "target_created",
-      "ts": 1786992113720,
-      "type": "page",
-      "host": "chatgpt.com",
-      "pathClass": "/"
-    },
-    {
-      "kind": "chatgpt_target",
-      "ts": 1786992113727,
-      "alreadyOpen": false
-    },
+  "requests": [
     {
       "seq": 230,
       "kind": "request_will_be_sent",
@@ -1793,21 +1715,6 @@
       "mimeType": "application/json"
     },
     {
-      "kind": "session_state",
-      "ts": 1786992115769,
-      "verdict": "ready",
-      "onChatGPT": true,
-      "signedOut": false,
-      "composerPresent": true
-    },
-    {
-      "kind": "target_created",
-      "ts": 1786992115777,
-      "type": "page",
-      "host": "file:",
-      "pathClass": "/"
-    },
-    {
       "seq": 1380,
       "kind": "response_received",
       "ts": 1786992115788,
@@ -2286,26 +2193,6 @@
       "streamBytes": 26
     },
     {
-      "kind": "fixture_contract",
-      "ts": 1786992115870,
-      "fixture": "logged-out.html",
-      "verdict": "contract_missing",
-      "onChatGPT": false,
-      "signedOut": true,
-      "composerPresent": true
-    },
-    {
-      "kind": "fixture_no_dispatch",
-      "ts": 1786992115872,
-      "composerPresent": true,
-      "refused": true
-    },
-    {
-      "kind": "target_destroyed",
-      "ts": 1786992115882,
-      "targetId": "F20A12C4…"
-    },
-    {
       "seq": 1679,
       "kind": "response_received",
       "ts": 1786992115922,
@@ -2420,18 +2307,6 @@
       "requestId": "41557.343",
       "classification": "backend_api_aux",
       "streamBytes": 117
-    },
-    {
-      "kind": "target_created",
-      "ts": 1786992116062,
-      "type": "worker",
-      "host": "",
-      "pathClass": "/"
-    },
-    {
-      "kind": "target_destroyed",
-      "ts": 1786992116083,
-      "targetId": "BA738CE6…"
     },
     {
       "seq": 1719,
@@ -2589,17 +2464,6 @@
       "streamBytes": 27
     },
     {
-      "kind": "target_lifecycle",
-      "ts": 1786992116874,
-      "step": "closeTarget",
-      "observed": "target_destroyed"
-    },
-    {
-      "kind": "harness_installed",
-      "ts": 1786992116878,
-      "verdict": "ready"
-    },
-    {
       "seq": 1737,
       "kind": "request_will_be_sent",
       "ts": 1786992116906,
@@ -2730,38 +2594,6 @@
       "requestId": "41557.564",
       "classification": "ces_telemetry",
       "streamBytes": 16
-    },
-    {
-      "kind": "cancel_pre",
-      "ts": 1786992118919,
-      "outcome": "ok",
-      "physical_sends": 0,
-      "prepare_sends": 0,
-      "potential_model_effect": 0,
-      "model_effect_in_post": 0
-    },
-    {
-      "kind": "target_lifecycle",
-      "ts": 1786992118919,
-      "step": "crash_test"
-    },
-    {
-      "kind": "crash_test",
-      "ts": 1786992118919,
-      "action": "sigkill_browser"
-    },
-    {
-      "kind": "crash_classified",
-      "ts": 1786992120020,
-      "cdp_close_code": 1006,
-      "cdp_close_clean": false,
-      "browser_exit": {
-        "signal": "SIGKILL"
-      },
-      "automatic_retry_observed": false,
-      "new_network_records_after_crash": 0,
-      "model_sends_before_crash": 0,
-      "state": "fail_closed_no_replay"
     }
   ]
 }

@@ -30,7 +30,9 @@
 //
 // Artifacts (all sanitized): output/lifecycle.json, output/summary.json,
 // evidence/environment.json, evidence/network-turns.json,
-// evidence/auth-custody.json.
+// evidence/fail-closed-proofs.json (dry), evidence/auth-custody.json.
+// Canonical live evidence (network-turns-live.json, live-key-events.json,
+// output/summary-live.json) is produced by lib/rebuild_evidence.mjs.
 //
 // The profile directory (profiles/standalone-spike) is gitignored and holds
 // the real auth session. It is created fresh by this harness, never copied,
@@ -40,7 +42,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
-import { redact } from "./lib/sanitize.mjs";
+import { redact, targetShape, conversationIdEvidence } from "./lib/sanitize.mjs";
 import { Cdp } from "./lib/cdp.mjs";
 import {
   launchBrowser,
@@ -51,6 +53,16 @@ import {
 } from "./lib/browser.mjs";
 import { NetworkObserver } from "./lib/network.mjs";
 import { INSTALL_EXPR, EXPR, READY_EXPR } from "./lib/dom.mjs";
+import { runFailClosedProofs } from "./lib/proofs.mjs";
+
+// Harness version history (identified exactly, see lib/rebuild_evidence.mjs):
+//   v1 - executed the live run (sent-confirmed cancellation semantics);
+//   v2 - fixed classifier + per-turn scoping;
+//   v3 - this code: exact-origin contract, conservative conversation-namespace
+//        classification, sent-confirmed cancellation aligned to what v1
+//        actually executed, conversation-id placeholders, target URL shaping,
+//        deterministic fail-closed/timeout proofs.
+const HARNESS_VERSION = "v3";
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const PROFILE_DIR = path.join(HERE, "profiles", "standalone-spike");
@@ -137,7 +149,9 @@ const SELF_FILES = [
   "lib/browser.mjs",
   "lib/network.mjs",
   "lib/dom.mjs",
+  "lib/proofs.mjs",
   "lib/sanitize.mjs",
+  "lib/rebuild_evidence.mjs",
 ];
 
 // Remove comments so scans reflect executable code only.
@@ -195,12 +209,16 @@ async function startSession() {
   const { cdp, meta } = await connectBrowser(launched.port);
   logEvent("cdp_connected", meta);
 
-  // Track target lifecycle at browser level (sanitized ids only).
+  // Track target lifecycle at browser level (sanitized ids only; raw target
+  // URLs are NEVER logged - targetShape keeps host + coarse path class and
+  // discards conversation ids, query strings and fragments).
   cdp.onEvent((method, params) => {
     if (method === "Target.targetCreated") {
+      const shape = targetShape(params.targetInfo?.url ?? "");
       logEvent("target_created", {
         type: params.targetInfo?.type ?? "",
-        url: params.targetInfo?.url ?? "",
+        host: shape.host,
+        pathClass: shape.pathClass,
       });
     } else if (method === "Target.targetDestroyed") {
       logEvent("target_destroyed", {
@@ -335,12 +353,56 @@ async function waitForResponseStarted(net, turnId, { timeout = 30000 }) {
     { timeout, interval: 200, label: "response_started (SSE data)" }
   );
   logEvent("response_started", {
+    turn: turnId,
     requestId: started.requestId,
     classification: started.classification,
     status: started.status,
     mimeType: started.mimeType,
   });
   return started;
+}
+
+// Transport-level send confirmation: the in-turn conversation POST became
+// visible to the Network domain (requestWillBeSent). This is the semantics
+// that was actually executed in the live run: dispatch -> request in flight
+// -> stop clicked BEFORE response start (response_started was never reached
+// for the aborted turn). The harness waits for SENT, not for response data.
+async function waitForSent(net, turnId, { timeout = 30000 }) {
+  const sent = await waitFor(
+    () => {
+      for (const r of net.turnConversationRequests(turnId)) {
+        if (r) return r;
+      }
+      return null;
+    },
+    { timeout, interval: 100, label: "sent_confirmed (conversation POST)" }
+  );
+  logEvent("sent_confirmed", {
+    turn: turnId,
+    requestId: sent.requestId,
+    classification: sent.classification,
+  });
+  return sent;
+}
+
+// Bounded waits that expire are typed fail-closed events, never silent:
+// the run records `uncertain_timeout` and the harness must NOT re-dispatch
+// or replay (the turn is over; recovery belongs to Runstead, not the
+// browser). The deterministic timeout state machine is proven in dry mode
+// (lib/proofs.mjs, evidence/fail-closed-proofs.json).
+async function waitForTyped(fn, { timeout, interval = 200, label, eventKind }) {
+  try {
+    return await waitFor(fn, { timeout, interval, label });
+  } catch (err) {
+    logEvent(eventKind, {
+      state: "uncertain_timeout",
+      label,
+      timeout_ms: timeout,
+      re_dispatched: false,
+      error: String(err.message || err),
+    });
+    throw err; // fail closed: the caller terminates the run without retry
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -504,10 +566,14 @@ async function runPreDispatchCancel(cdp, sessionId, net) {
   const prepares = net.requestsInWindow("turn", cancelTurnId).filter(
     (r) => r.classification === "model_effect_prepare"
   ).length;
+  const potential = net.requestsInWindow("turn", cancelTurnId).filter(
+    (r) => r.classification === "potential_model_effect"
+  ).length;
   logEvent("cancel_pre", {
     outcome: "ok",
     physical_sends: counts.model_effect_conversation ?? 0,
     prepare_sends: prepares,
+    potential_model_effect: potential,
     model_effect_in_post: net.modelEffectRequests("post_turn").length,
   });
 }
@@ -516,6 +582,31 @@ async function runPreDispatchCancel(cdp, sessionId, net) {
 // Mode: dry (fail-closed matrix, pre-dispatch cancel, lifecycle, crash)
 // ---------------------------------------------------------------------------
 async function runDry() {
+  // Deterministic, zero-model-turn proofs: exact-origin lookalike fixtures,
+  // conservative classifier, URL/conversation-id redaction, and the timeout
+  // state machine (timeout -> typed fail-closed -> no dispatch/replay).
+  const proofs = runFailClosedProofs();
+  fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
+  fs.writeFileSync(
+    path.join(EVIDENCE_DIR, "fail-closed-proofs.json"),
+    JSON.stringify({ harnessVersion: HARNESS_VERSION, ...proofs }, null, 2)
+  );
+  logEvent("fail_closed_proofs", {
+    passed: proofs.passed,
+    sections: proofs.sections.map((s) => ({
+      name: s.name,
+      rows: s.rows.length,
+      failedRows: s.rows.filter(
+        (r) => r.pass === false || (r.stateCheck && r.stateCheck.pass === false) || (r.verdictCheck && r.verdictCheck.pass === false) || r.check_result === false
+      ).length,
+    })),
+    failed: proofs.failed,
+  });
+  if (!proofs.passed) {
+    console.error("fail-closed proofs failed; see evidence/fail-closed-proofs.json");
+    return 1;
+  }
+
   let ctx = null;
   try {
     ctx = await startSession();
@@ -578,15 +669,19 @@ async function runLive() {
       logEvent("turn1", { outcome: sent1.reason });
       return 1;
     }
-    await waitForResponseStarted(net, sent1.turnId, { timeout: 30000 });
+    await waitForTyped(() => waitForResponseStarted(net, sent1.turnId, { timeout: 30000 }), {
+      eventKind: "response_timeout",
+      label: "turn1 response_started",
+      timeout: 30000,
+    });
 
-    const terminal1 = await waitFor(
+    const terminal1 = await waitForTyped(
       async () => {
         const st = await evalInPage(cdp, sessionId, EXPR.turnState);
         if (st.terminal && !st.busy) return st;
         return null;
       },
-      { timeout: 300000, interval: 500, label: "turn1 terminal DOM" }
+      { eventKind: "terminal_timeout", label: "turn1 terminal DOM", timeout: 300000, interval: 500 }
     );
     const token1 = await evalInPage(cdp, sessionId, EXPR.containsToken);
     net.closeTurn();
@@ -595,14 +690,19 @@ async function runLive() {
     const turn1Counts = net.countByClassification("turn", sent1.turnId);
     const turn1Post = net.countByClassification("post_turn", sent1.turnId);
     const modelEffects1 = net.modelEffectRequests("turn", sent1.turnId);
+    const potential1 =
+      net.potentialModelEffectRequests("turn", sent1.turnId).length +
+      net.potentialModelEffectRequests("post_turn", sent1.turnId).length;
     const fanout1 =
       turn1Counts.model_effect_conversation > 1 ||
+      potential1 > 0 ||
       net.modelEffectRequests("post_turn", sent1.turnId).length > 0 ||
       net.modelEffectRequests("baseline", 0).length > 0;
     logEvent("turn1", {
       outcome: terminal1 && token1.tokenPresent ? "ok" : "completed_no_token",
       physical_sends: turn1Counts.model_effect_conversation ?? 0,
       prepare_sends: turn1Counts.model_effect_prepare ?? 0,
+      potential_model_effect: potential1,
       in_window_counts: redact(turn1Counts),
       post_window_counts: redact(turn1Post),
       response_started: modelEffects1.some((r) => r.streamChunks > 0),
@@ -620,8 +720,10 @@ async function runLive() {
       token_present: token1.tokenPresent,
       text_length: token1.textLength,
       text_hash: terminal1?.textHash ?? null,
-      conversation_id: terminal1?.conversationId ?? null,
+      ...conversationIdEvidence("turn1"),
+      conversation_id_raw_fragment_removed: true,
       hidden_retry_or_fanout: fanout1,
+      verdict_blocked_by: fanout1 ? (potential1 > 0 ? "potential_model_effect" : "multiple_model_effect_sends") : null,
     });
 
     // --- Turn 2: post-dispatch cancellation ---
@@ -632,25 +734,33 @@ async function runLive() {
       logEvent("turn2", { outcome: sent2.reason });
       return 1;
     }
-    const started2 = await waitForResponseStarted(net, sent2.turnId, {
+    // Cancel semantics as actually executed in the live run: confirm the
+    // request is in flight at the transport level (sent), then click Stop
+    // immediately - WITHOUT waiting for the first response byte. The abort
+    // therefore lands before response start (response_started: false), which
+    // is the observable cancellation the spike reports.
+    const sentReq = await waitForTyped(() => waitForSent(net, sent2.turnId, { timeout: 30000 }), {
+      eventKind: "sent_timeout",
+      label: "turn2 sent_confirmed",
       timeout: 30000,
     });
     const stop = await evalInPage(cdp, sessionId, EXPR.stopIfGenerating);
     logEvent("cancel_attempt", {
       clicked: stop.clicked,
       reason: stop.reason ?? null,
-      requestId: started2.requestId,
+      requestId: sentReq.requestId,
+      ms_after_dispatch: Date.now() - (lastEvent("dispatch_clicked")?.ts ?? Date.now()),
     });
 
     // Observe the conversation request outcome (no retry, no re-dispatch).
-    const completion2 = await waitFor(
+    const completion2 = await waitForTyped(
       () => {
         for (const r of net.turnConversationRequests(sent2.turnId)) {
           if (r.completion) return r;
         }
         return null;
       },
-      { timeout: 15000, interval: 200, label: "cancel outcome" }
+      { eventKind: "cancel_outcome_timeout", label: "cancel outcome", timeout: 15000, interval: 200 }
     );
     net.closeTurn();
     await sleep(3000); // post_turn window
@@ -670,10 +780,19 @@ async function runLive() {
       cancelOutcome = "uncertain";
     }
     const turn2Counts = net.countByClassification("turn", sent2.turnId);
+    const potential2 =
+      net.potentialModelEffectRequests("turn", sent2.turnId).length +
+      net.potentialModelEffectRequests("post_turn", sent2.turnId).length;
+    const fanout2 =
+      turn2Counts.model_effect_conversation > 1 ||
+      potential2 > 0 ||
+      net.modelEffectRequests("post_turn", sent2.turnId).length > 0;
     logEvent("turn2", {
       outcome: cancelOutcome,
       physical_sends: turn2Counts.model_effect_conversation ?? 0,
-      response_started: started2.streamChunks > 0,
+      prepare_sends: turn2Counts.model_effect_prepare ?? 0,
+      potential_model_effect: potential2,
+      response_started: sentReq.streamChunks > 0,
       loading: completion2
         ? {
             completion: completion2.completion,
@@ -691,9 +810,8 @@ async function runLive() {
         messageCount: dom2.messageCount,
       },
       in_window_counts: redact(turn2Counts),
-      hidden_retry_or_fanout:
-        turn2Counts.model_effect_conversation > 1 ||
-        net.modelEffectRequests("post_turn", sent2.turnId).length > 0,
+      hidden_retry_or_fanout: fanout2,
+      verdict_blocked_by: fanout2 ? (potential2 > 0 ? "potential_model_effect" : "multiple_model_effect_sends") : null,
     });
 
     // --- Crash / disconnect (no model turn consumed) ---
@@ -748,12 +866,44 @@ function lastEvent(kind) {
   return null;
 }
 
+// Persisted lifecycle evidence keeps only accounting-relevant request
+// streams. "other" traffic (static assets, fonts, avatars, third-party
+// noise) is dropped from FILES (its aggregate count is kept in a note);
+// it is still printed to stdout so a raw log remains available for rebuild.
+const NET_KINDS = new Set([
+  "request_will_be_sent",
+  "response_received",
+  "data_received",
+  "loading_finished",
+  "loading_failed",
+]);
+
+function sanitizedLifecycle() {
+  const otherIds = new Set(
+    lifecycle
+      .filter((e) => e.kind === "request_will_be_sent" && e.classification === "other")
+      .map((e) => e.requestId)
+  );
+  const removedOther = otherIds.size;
+  const entries = lifecycle.filter(
+    (e) => !NET_KINDS.has(e.kind) || !otherIds.has(e.requestId)
+  );
+  return {
+    entries,
+    removedOther,
+    note:
+      "request streams classified 'other' (static assets, fonts, avatars, third-party noise) are excluded from persisted lifecycle evidence; counts: " +
+      JSON.stringify(removedOther),
+  };
+}
+
 function writeArtifacts(summary) {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
+  const life = sanitizedLifecycle();
   fs.writeFileSync(
     path.join(OUT_DIR, "lifecycle.json"),
-    JSON.stringify(lifecycle, null, 2)
+    JSON.stringify({ redaction: { removed_other_requests: life.removedOther }, events: life.entries }, null, 2)
   );
 
   // summary.json: structured verdicts, derived from the sanitized lifecycle.
@@ -773,10 +923,10 @@ function writeArtifacts(summary) {
     JSON.stringify(redact(derived), null, 2)
   );
 
-  const netRecords = lifecycle.filter((e) => e.kind === "net");
+  const netRecords = life.entries.filter((e) => NET_KINDS.has(e.kind));
   fs.writeFileSync(
     path.join(EVIDENCE_DIR, "network-turns.json"),
-    JSON.stringify(redact(netRecords), null, 2)
+    JSON.stringify(redact({ redaction: { removed_other_requests: life.removedOther }, requests: netRecords }), null, 2)
   );
 
   const environment = {
@@ -853,7 +1003,7 @@ async function main() {
     console.error(`unknown mode: ${mode} (login|dry|live)`);
     process.exit(2);
   }
-  logEvent("spike_start", { mode });
+  logEvent("spike_start", { mode, harnessVersion: HARNESS_VERSION });
   const audit = selfAudit();
   if (audit.length > 0) {
     logEvent("self_audit", { failed: true, findings: redact(audit) });

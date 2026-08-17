@@ -1,0 +1,477 @@
+{
+  "harnessVersion": "v3",
+  "mode": "dry",
+  "model_turns": 0,
+  "passed": true,
+  "failed": [],
+  "sections": [
+    {
+      "name": "origin_exact_match",
+      "rows": [
+        {
+          "origin": "https://chatgpt.com",
+          "expect": {
+            "onChatGPT": true,
+            "authOrigin": false
+          },
+          "note": "exact ChatGPT origin",
+          "pass": true,
+          "expected": "{\"onChatGPT\":true,\"authOrigin\":false}",
+          "actual": "{\"onChatGPT\":true,\"authOrigin\":false}",
+          "label": "origin https://chatgpt.com"
+        },
+        {
+          "origin": "https://chatgpt.com.evil.example",
+          "expect": {
+            "onChatGPT": false,
+            "authOrigin": false
+          },
+          "note": "lookalike suffix must NOT match",
+          "pass": true,
+          "expected": "{\"onChatGPT\":false,\"authOrigin\":false}",
+          "actual": "{\"onChatGPT\":false,\"authOrigin\":false}",
+          "label": "origin https://chatgpt.com.evil.example"
+        },
+        {
+          "origin": "https://evil.example/chatgpt.com",
+          "expect": {
+            "onChatGPT": false,
+            "authOrigin": false
+          },
+          "note": "path lookalike must NOT match",
+          "pass": true,
+          "expected": "{\"onChatGPT\":false,\"authOrigin\":false}",
+          "actual": "{\"onChatGPT\":false,\"authOrigin\":false}",
+          "label": "origin https://evil.example/chatgpt.com"
+        },
+        {
+          "origin": "https://www.chatgpt.com",
+          "expect": {
+            "onChatGPT": false,
+            "authOrigin": false
+          },
+          "note": "www subdomain fails closed",
+          "pass": true,
+          "expected": "{\"onChatGPT\":false,\"authOrigin\":false}",
+          "actual": "{\"onChatGPT\":false,\"authOrigin\":false}",
+          "label": "origin https://www.chatgpt.com"
+        },
+        {
+          "origin": "https://sub.chatgpt.com",
+          "expect": {
+            "onChatGPT": false,
+            "authOrigin": false
+          },
+          "note": "any subdomain fails closed",
+          "pass": true,
+          "expected": "{\"onChatGPT\":false,\"authOrigin\":false}",
+          "actual": "{\"onChatGPT\":false,\"authOrigin\":false}",
+          "label": "origin https://sub.chatgpt.com"
+        },
+        {
+          "origin": "http://chatgpt.com",
+          "expect": {
+            "onChatGPT": false,
+            "authOrigin": false
+          },
+          "note": "insecure scheme fails closed",
+          "pass": true,
+          "expected": "{\"onChatGPT\":false,\"authOrigin\":false}",
+          "actual": "{\"onChatGPT\":false,\"authOrigin\":false}",
+          "label": "origin http://chatgpt.com"
+        },
+        {
+          "origin": "https://auth0.openai.com",
+          "expect": {
+            "onChatGPT": false,
+            "authOrigin": true
+          },
+          "note": "auth0 exact origin",
+          "pass": true,
+          "expected": "{\"onChatGPT\":false,\"authOrigin\":true}",
+          "actual": "{\"onChatGPT\":false,\"authOrigin\":true}",
+          "label": "origin https://auth0.openai.com"
+        },
+        {
+          "origin": "https://auth.openai.com",
+          "expect": {
+            "onChatGPT": false,
+            "authOrigin": true
+          },
+          "note": "auth exact origin",
+          "pass": true,
+          "expected": "{\"onChatGPT\":false,\"authOrigin\":true}",
+          "actual": "{\"onChatGPT\":false,\"authOrigin\":true}",
+          "label": "origin https://auth.openai.com"
+        },
+        {
+          "origin": "https://auth0.openai.com.evil.example",
+          "expect": {
+            "onChatGPT": false,
+            "authOrigin": false
+          },
+          "note": "auth lookalike must NOT match",
+          "pass": true,
+          "expected": "{\"onChatGPT\":false,\"authOrigin\":false}",
+          "actual": "{\"onChatGPT\":false,\"authOrigin\":false}",
+          "label": "origin https://auth0.openai.com.evil.example"
+        },
+        {
+          "origin": "null",
+          "expect": {
+            "onChatGPT": false,
+            "authOrigin": false
+          },
+          "note": "file:// fixture origin (null)",
+          "pass": true,
+          "expected": "{\"onChatGPT\":false,\"authOrigin\":false}",
+          "actual": "{\"onChatGPT\":false,\"authOrigin\":false}",
+          "label": "origin null"
+        }
+      ]
+    },
+    {
+      "name": "classifier_conservative",
+      "rows": [
+        {
+          "method": "POST",
+          "path": "/backend-api/f/conversation",
+          "expect": "model_effect_conversation",
+          "note": "live model effect (turns 1 and 2)",
+          "pass": true,
+          "expected": "\"model_effect_conversation\"",
+          "actual": "\"model_effect_conversation\"",
+          "label": "classify POST /backend-api/f/conversation"
+        },
+        {
+          "method": "POST",
+          "path": "/backend-api/conversation",
+          "expect": "model_effect_conversation",
+          "note": "non-f variant model effect",
+          "pass": true,
+          "expected": "\"model_effect_conversation\"",
+          "actual": "\"model_effect_conversation\"",
+          "label": "classify POST /backend-api/conversation"
+        },
+        {
+          "method": "POST",
+          "path": "/backend-api/f/conversation/prepare",
+          "expect": "model_effect_prepare",
+          "note": "known pre-dispatch prepare",
+          "pass": true,
+          "expected": "\"model_effect_prepare\"",
+          "actual": "\"model_effect_prepare\"",
+          "label": "classify POST /backend-api/f/conversation/prepare"
+        },
+        {
+          "method": "POST",
+          "path": "/backend-api/conversation/init",
+          "expect": "conversation_api_aux",
+          "note": "known init auxiliary",
+          "pass": true,
+          "expected": "\"conversation_api_aux\"",
+          "actual": "\"conversation_api_aux\"",
+          "label": "classify POST /backend-api/conversation/init"
+        },
+        {
+          "method": "GET",
+          "path": "/backend-api/conversation/stream_status",
+          "expect": "conversation_api_aux",
+          "note": "GET aux read",
+          "pass": true,
+          "expected": "\"conversation_api_aux\"",
+          "actual": "\"conversation_api_aux\"",
+          "label": "classify GET /backend-api/conversation/stream_status"
+        },
+        {
+          "method": "GET",
+          "path": "/backend-api/conversation/textdocs",
+          "expect": "conversation_api_aux",
+          "note": "GET aux read",
+          "pass": true,
+          "expected": "\"conversation_api_aux\"",
+          "actual": "\"conversation_api_aux\"",
+          "label": "classify GET /backend-api/conversation/textdocs"
+        },
+        {
+          "method": "POST",
+          "path": "/backend-api/conversation/resume",
+          "expect": "potential_model_effect",
+          "note": "unknown POST must be flagged",
+          "pass": true,
+          "expected": "\"potential_model_effect\"",
+          "actual": "\"potential_model_effect\"",
+          "label": "classify POST /backend-api/conversation/resume"
+        },
+        {
+          "method": "POST",
+          "path": "/backend-api/f/conversation/continuation",
+          "expect": "potential_model_effect",
+          "note": "unknown f-route POST must be flagged",
+          "pass": true,
+          "expected": "\"potential_model_effect\"",
+          "actual": "\"potential_model_effect\"",
+          "label": "classify POST /backend-api/f/conversation/continuation"
+        },
+        {
+          "method": "POST",
+          "path": "/backend-api/conversation/stream_status",
+          "expect": "potential_model_effect",
+          "note": "POST to an aux-shaped route is still unknown -> flagged",
+          "pass": true,
+          "expected": "\"potential_model_effect\"",
+          "actual": "\"potential_model_effect\"",
+          "label": "classify POST /backend-api/conversation/stream_status"
+        },
+        {
+          "method": "DELETE",
+          "path": "/backend-api/conversation/abc",
+          "expect": "conversation_api_aux",
+          "note": "non-POST cannot be a model effect",
+          "pass": true,
+          "expected": "\"conversation_api_aux\"",
+          "actual": "\"conversation_api_aux\"",
+          "label": "classify DELETE /backend-api/conversation/abc"
+        },
+        {
+          "method": "GET",
+          "path": "/backend-api/me",
+          "expect": "session_check",
+          "note": "session probe",
+          "pass": true,
+          "expected": "\"session_check\"",
+          "actual": "\"session_check\"",
+          "label": "classify GET /backend-api/me"
+        }
+      ]
+    },
+    {
+      "name": "url_shape_redaction",
+      "rows": [
+        {
+          "raw": "https://chatgpt.com/c/6a811a31-6f7a-4f6a-9c81-6f7a4f6a9c81?x=1#frag",
+          "expect": "query and fragment must be dropped",
+          "note": "URLs are reduced to host + pathname; query/fragment never persisted",
+          "pass": true,
+          "actual": {
+            "host": "chatgpt.com",
+            "path": "/c/6a811a31-6f7……"
+          },
+          "expected": "query and fragment must be dropped"
+        },
+        {
+          "raw": "https://chatgpt.com.evil.example/c?token=secret",
+          "expect": "host kept, query dropped",
+          "note": "host shape + pathname only",
+          "pass": true,
+          "actual": {
+            "host": "chatgpt.com.evil.example",
+            "path": "/c"
+          },
+          "expected": "host kept, query dropped"
+        },
+        {
+          "raw": "https://chatgpt.com/c/6a811a31-6f7a-4f6a-9c81-6f7a4f6a9c81?x=1#frag",
+          "use": "targetShape",
+          "expect": "target shape: host + coarse path class, NO conversation-id fragment",
+          "note": "target URLs are never logged raw; only host + first path segment",
+          "pass": true,
+          "actual": {
+            "host": "chatgpt.com",
+            "pathClass": "/c"
+          },
+          "expected": "target shape: host + coarse path class, NO conversation-id fragment"
+        }
+      ]
+    },
+    {
+      "name": "conversation_id_redaction",
+      "rows": [
+        {
+          "raw": "6a811a31-6f7a-4f6a-9c81-6f7a4f6a9c81",
+          "expect": "conv#turn1 placeholder, no original fragment, redacted flag set",
+          "note": "conversation id must never be persisted, not even truncated",
+          "check_result": true,
+          "actual": {
+            "conversation_id": null,
+            "conversation_id_placeholder": "conv#turn1",
+            "conversation_id_redacted": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "timeout_fail_closed",
+      "rows": [
+        {
+          "name": "sent-then-timeout",
+          "input": {
+            "sent": true,
+            "responseStarted": false,
+            "completion": null,
+            "timedOut": true
+          },
+          "expect": {
+            "state": "sent_timeout_fail_closed",
+            "replay": false,
+            "retry_dispatched": false
+          },
+          "note": "bounded wait expiry -> typed fail-closed, no replay",
+          "stateCheck": {
+            "pass": true,
+            "expected": "{\"state\":\"sent_timeout_fail_closed\",\"replay\":false,\"retry_dispatched\":false}",
+            "actual": "{\"state\":\"sent_timeout_fail_closed\",\"replay\":false,\"retry_dispatched\":false}",
+            "label": "timeout sent-then-timeout"
+          }
+        },
+        {
+          "name": "not-sent",
+          "input": {
+            "sent": false,
+            "responseStarted": false,
+            "completion": null,
+            "timedOut": true
+          },
+          "expect": {
+            "state": "not_sent",
+            "replay": false,
+            "retry_dispatched": false
+          },
+          "note": "pre-dispatch N=0 family",
+          "stateCheck": {
+            "pass": true,
+            "expected": "{\"state\":\"not_sent\",\"replay\":false,\"retry_dispatched\":false}",
+            "actual": "{\"state\":\"not_sent\",\"replay\":false,\"retry_dispatched\":false}",
+            "label": "timeout not-sent"
+          }
+        },
+        {
+          "name": "completed",
+          "input": {
+            "sent": true,
+            "responseStarted": true,
+            "completion": "finished",
+            "timedOut": false
+          },
+          "expect": {
+            "state": "completed",
+            "replay": false,
+            "retry_dispatched": false
+          },
+          "note": "turn 1 shape",
+          "stateCheck": {
+            "pass": true,
+            "expected": "{\"state\":\"completed\",\"replay\":false,\"retry_dispatched\":false}",
+            "actual": "{\"state\":\"completed\",\"replay\":false,\"retry_dispatched\":false}",
+            "label": "timeout completed"
+          }
+        },
+        {
+          "name": "aborted",
+          "input": {
+            "sent": true,
+            "responseStarted": false,
+            "completion": "failed",
+            "timedOut": false
+          },
+          "expect": {
+            "state": "transport_failed",
+            "replay": false,
+            "retry_dispatched": false
+          },
+          "note": "canceled_aborted shape",
+          "stateCheck": {
+            "pass": true,
+            "expected": "{\"state\":\"transport_failed\",\"replay\":false,\"retry_dispatched\":false}",
+            "actual": "{\"state\":\"transport_failed\",\"replay\":false,\"retry_dispatched\":false}",
+            "label": "timeout aborted"
+          }
+        },
+        {
+          "name": "retry-flips-verdict",
+          "input": {
+            "sent": true,
+            "responseStarted": false,
+            "completion": null,
+            "timedOut": true
+          },
+          "expect": {
+            "state": "sent_timeout_fail_closed",
+            "replay": false,
+            "retry_dispatched": false
+          },
+          "extra": {
+            "knownSends": 1,
+            "potentialSends": 1
+          },
+          "expectVerdict": {
+            "hidden_retry_or_fanout": true,
+            "blocked_by": "potential_model_effect"
+          },
+          "note": "a later unknown conversation POST blocks no-hidden-retry",
+          "stateCheck": {
+            "pass": true,
+            "expected": "{\"state\":\"sent_timeout_fail_closed\",\"replay\":false,\"retry_dispatched\":false}",
+            "actual": "{\"state\":\"sent_timeout_fail_closed\",\"replay\":false,\"retry_dispatched\":false}",
+            "label": "timeout retry-flips-verdict"
+          },
+          "verdictCheck": {
+            "pass": true,
+            "expected": "{\"hidden_retry_or_fanout\":true,\"blocked_by\":\"potential_model_effect\"}",
+            "actual": "{\"hidden_retry_or_fanout\":true,\"blocked_by\":\"potential_model_effect\"}",
+            "label": "verdict retry-flips-verdict"
+          }
+        },
+        {
+          "name": "clean-turn-verdict",
+          "input": {
+            "sent": true,
+            "responseStarted": true,
+            "completion": "finished",
+            "timedOut": false
+          },
+          "expect": {
+            "state": "completed",
+            "replay": false,
+            "retry_dispatched": false
+          },
+          "extra": {
+            "knownSends": 1,
+            "potentialSends": 0
+          },
+          "expectVerdict": {
+            "hidden_retry_or_fanout": false,
+            "blocked_by": null
+          },
+          "note": "turn 1 clean verdict",
+          "stateCheck": {
+            "pass": true,
+            "expected": "{\"state\":\"completed\",\"replay\":false,\"retry_dispatched\":false}",
+            "actual": "{\"state\":\"completed\",\"replay\":false,\"retry_dispatched\":false}",
+            "label": "timeout clean-turn-verdict"
+          },
+          "verdictCheck": {
+            "pass": true,
+            "expected": "{\"hidden_retry_or_fanout\":false,\"blocked_by\":null}",
+            "actual": "{\"hidden_retry_or_fanout\":false,\"blocked_by\":null}",
+            "label": "verdict clean-turn-verdict"
+          }
+        }
+      ]
+    },
+    {
+      "name": "redact_smoke",
+      "rows": [
+        {
+          "pass": true,
+          "actual": {
+            "conversation_id": null,
+            "conversation_id_placeholder": "conv#turn1",
+            "conversation_id_redacted": true
+          },
+          "note": "conversation ids are replaced wholesale by non-correlatable placeholders; the generic redactor is not trusted for ids"
+        }
+      ]
+    }
+  ]
+}

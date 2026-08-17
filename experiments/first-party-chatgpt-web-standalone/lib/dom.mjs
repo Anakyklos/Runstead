@@ -6,8 +6,35 @@
 // Rules:
 //   - the orchestrator NEVER interacts with the page unless ready() == "ready";
 //   - unknown states fail closed (no clicks, no typing, no dispatch);
+//   - the ChatGPT origin check is an EXACT origin comparison
+//     (location.origin === 'https://chatgpt.com'), never a textual prefix: a
+//     lookalike such as https://chatgpt.com.evil.example must fail closed;
+//   - auth origins are explicitly enumerated (exact match) and nothing else
+//     may satisfy auth_pending;
 //   - page code never touches cookies, localStorage, sessionStorage or any
 //     credential material; only DOM probes and input insertion.
+
+// Exact-origin vocabulary. This IS the trust boundary: a page is only
+// "on ChatGPT" when its origin matches exactly; a page is only an auth page
+// when its origin is one of these exact values.
+export const CHATGPT_ORIGIN = "https://chatgpt.com";
+export const AUTH_ORIGINS = new Set([
+  "https://auth0.openai.com",
+  "https://auth.openai.com",
+  "https://platform.openai.com",
+]);
+
+// Pure origin classifier, shared by the page probes and the deterministic
+// negative fixtures (dry proofs). Never a prefix match.
+export function originState(origin) {
+  if (origin === CHATGPT_ORIGIN) {
+    return { onChatGPT: true, authOrigin: false };
+  }
+  if (AUTH_ORIGINS.has(origin)) {
+    return { onChatGPT: false, authOrigin: true };
+  }
+  return { onChatGPT: false, authOrigin: false };
+}
 
 const INSTALL = `
 (function () {
@@ -63,11 +90,12 @@ const INSTALL = `
     var dialog = document.querySelector('[role="dialog"]');
     var comp = composer();
     var authOrigin =
-      url.indexOf('https://auth0.openai.com') === 0 ||
-      url.indexOf('https://auth.openai.com') === 0 ||
-      url.indexOf('https://platform.openai.com') === 0;
+      location.origin === 'https://auth0.openai.com' ||
+      location.origin === 'https://auth.openai.com' ||
+      location.origin === 'https://platform.openai.com';
+    var onChatGPT = location.origin === 'https://chatgpt.com';
     var verdict;
-    if (url.indexOf('https://chatgpt.com') !== 0) {
+    if (!onChatGPT) {
       verdict = authOrigin ? 'auth_pending' : 'contract_missing';
     } else if (signedOut) verdict = 'login_required';
     else if (dialog) verdict = 'dialog_blocking';
@@ -77,7 +105,7 @@ const INSTALL = `
       verdict: verdict,
       url: url,
       authOrigin: authOrigin,
-      onChatGPT: url.indexOf('https://chatgpt.com') === 0,
+      onChatGPT: onChatGPT,
       signedOut: signedOut,
       dialogPresent: !!dialog,
       composerPresent: !!comp,
@@ -184,9 +212,10 @@ export const READY_EXPR = `(function () {
   });
   var dialog = document.querySelector('[role="dialog"]');
   var authOrigin =
-    url.indexOf('https://auth0.openai.com') === 0 ||
-    url.indexOf('https://auth.openai.com') === 0 ||
-    url.indexOf('https://platform.openai.com') === 0;
+    location.origin === 'https://auth0.openai.com' ||
+    location.origin === 'https://auth.openai.com' ||
+    location.origin === 'https://platform.openai.com';
+  var onChatGPT = location.origin === 'https://chatgpt.com';
   var comp = null;
   for (var i = 0; i < 3; i++) {
     var sel = ['[contenteditable=true][aria-label="Chat with ChatGPT"]',
@@ -196,7 +225,7 @@ export const READY_EXPR = `(function () {
     if (el) { comp = el; break; }
   }
   var verdict;
-  if (url.indexOf('https://chatgpt.com') !== 0) {
+  if (!onChatGPT) {
     verdict = authOrigin ? 'auth_pending' : 'contract_missing';
   } else if (signedOut) verdict = 'login_required';
   else if (dialog) verdict = 'dialog_blocking';
@@ -206,7 +235,7 @@ export const READY_EXPR = `(function () {
     verdict: verdict,
     url: url,
     authOrigin: authOrigin,
-    onChatGPT: url.indexOf('https://chatgpt.com') === 0,
+    onChatGPT: onChatGPT,
     signedOut: signedOut,
     dialogPresent: !!dialog,
     composerPresent: !!comp,
