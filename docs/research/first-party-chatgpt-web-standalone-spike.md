@@ -348,6 +348,11 @@ classified `login_required` (pt-BR labels supported).
   fonts, avatars, third-party noise) is dropped from the persisted
   per-request artifacts (its aggregate counts are kept), and the persisted
   lifecycle excludes `other` request streams;
+- **profile paths are hermetic**: evidence never records an absolute
+  filesystem path; the dedicated profile is expressed repo-relative as
+  `profiles/standalone-spike` (and raw v1 key events are normalized to this
+  form on canonicalization), so committed evidence is reproducible and does
+  not leak a machine-specific checkout path;
 - self-audit: the harness scans its own source (comments stripped) for
   forbidden APIs — 0 findings (`evidence/environment.json`,
   `evidence/auth-custody.json`);
@@ -364,7 +369,9 @@ is the only path conversation ids take into evidence.
 runs the deterministic suite: fail-closed proofs, conservative-classifier and
 conversation-path edge cases, URL/target/file/conv-id redaction shaping, the
 canonical live-evidence rebuild idempotence, cross-artifact agreement, and a
-leak scan over the derived artifacts. Zero browser launch, zero model turns.
+leak scan over the derived artifacts (including a hermeticity assertion that
+no absolute filesystem path leaks into evidence). Zero browser launch, zero
+model turns.
 It is wired into the repository CI (`.github/workflows/ci.yml`,
 "Run standalone browser-substrate spike deterministic checks") so the
 review-hardened evidence invariants are continuously validated on the branch.
