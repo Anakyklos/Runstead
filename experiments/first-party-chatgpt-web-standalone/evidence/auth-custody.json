@@ -1,0 +1,33 @@
+{
+  "auth_stays_in_profile": true,
+  "harness_never_receives_password": true,
+  "credential_material_read_by_harness": false,
+  "harness_never_exports_session": true,
+  "runstead_sqlite_touched": false,
+  "evidence": {
+    "source_scan": [],
+    "cdp_methods_used": [
+      "Target.setDiscoverTargets",
+      "Target.getTargets",
+      "Target.createTarget",
+      "Target.attachToTarget",
+      "Target.closeTarget",
+      "Page.enable",
+      "Runtime.enable",
+      "Runtime.evaluate",
+      "Input.insertText",
+      "Network.enable"
+    ],
+    "cdp_methods_never_used": [
+      "Network.getCookies",
+      "Network.getAllCookies",
+      "Network.getResponseBody",
+      "Network.setCookie",
+      "Storage.getCookies",
+      "Storage.setCookies",
+      "Fetch.enable"
+    ],
+    "profile_root": "profiles/standalone-spike",
+    "credentials_in_artifacts": "none by construction (structural redaction)"
+  }
+}

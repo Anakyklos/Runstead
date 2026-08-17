@@ -1,0 +1,58 @@
+{
+  "mode": "live",
+  "date": "2026-08-16",
+  "harness_version": {
+    "executed_by": "v1",
+    "canonicalized_by": "v3"
+  },
+  "provenance": {
+    "executed_by": "harness v1 (live run 2026-08-16, budget 2/2)",
+    "canonicalized_by": "lib/rebuild_evidence.mjs (harness v3)",
+    "note": "classification re-derived from method+path with the conservative v3 classifier; turns attributed by recorded dispatch timestamps and window/turn fields; derived per-turn verdicts rebuilt from transport records, never copied from raw v1 key events; conversation ids replaced by non-correlatable placeholders"
+  },
+  "turn1": {
+    "outcome": "ok",
+    "physical_sends": 1,
+    "prepare_sends": 2,
+    "potential_model_effect": 0,
+    "response_started": true,
+    "completion": "finished",
+    "status": 200,
+    "mimeType": "text/event-stream",
+    "streamBytes": 12017,
+    "token_present": true,
+    "text_length": 253,
+    "dom_terminal": true,
+    "conversation_id": null,
+    "conversation_id_placeholder": "conv#turn1",
+    "conversation_id_redacted": true,
+    "conversation_id_raw_fragment_removed": true,
+    "hidden_retry_or_fanout": false,
+    "correlated": true
+  },
+  "turn2": {
+    "outcome": "canceled_aborted",
+    "physical_sends": 1,
+    "prepare_sends": 0,
+    "potential_model_effect": 0,
+    "response_started": false,
+    "completion": "failed",
+    "errorText": "net::ERR_ABORTED",
+    "canceled": true,
+    "cancel_clicked": true,
+    "cancel_ms_after_dispatch": 61,
+    "hidden_retry_or_fanout": false
+  },
+  "crash": {
+    "kind": "crash_classified",
+    "cdp_close_code": 1006,
+    "cdp_close_clean": false,
+    "browser_exit": {
+      "signal": "SIGKILL"
+    },
+    "automatic_retry_observed": false,
+    "model_sends_after_crash": 0,
+    "state": "fail_closed_no_replay",
+    "_kind": "crash_classified"
+  }
+}

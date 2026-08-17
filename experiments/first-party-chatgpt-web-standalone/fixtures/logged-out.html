@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>spike fixture: signed-out marker (no real auth)</title>
+  </head>
+  <body>
+    <!--
+      Fixture for fail-closed classification tests. It deliberately mimics the
+      two markers the harness probes (a "Log in" button and an editable
+      composer-like element) so the harness must classify the page as
+      contract_missing (wrong origin) and login_required (signed-out marker)
+      and MUST NOT type or dispatch anything on it.
+    -->
+    <header>
+      <button>Log in</button>
+      <button>Sign up</button>
+    </header>
+    <main>
+      <div id="prompt-textarea" contenteditable="true">fake composer</div>
+      <button data-testid="composer-send-button">Send</button>
+    </main>
+  </body>
+</html>

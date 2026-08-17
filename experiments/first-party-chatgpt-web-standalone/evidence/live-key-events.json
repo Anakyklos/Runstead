@@ -1,0 +1,208 @@
+{
+  "provenance": {
+    "executed_by": "harness v1 (live run 2026-08-16, budget 2/2)",
+    "canonicalized_by": "lib/rebuild_evidence.mjs (harness v3)",
+    "note": "classification re-derived from method+path with the conservative v3 classifier; turns attributed by recorded dispatch timestamps and window/turn fields; derived per-turn verdicts rebuilt from transport records, never copied from raw v1 key events; conversation ids replaced by non-correlatable placeholders"
+  },
+  "note": "canonical key events: per-turn derived verdicts rebuilt from transport records; raw v1 stale fields (physical_sends/response_started/requestId) discarded; conversation ids replaced by non-correlatable placeholders",
+  "events": [
+    {
+      "kind": "spike_start",
+      "mode": "live",
+      "_kind": "spike_start"
+    },
+    {
+      "kind": "self_audit",
+      "failed": false,
+      "findings": [],
+      "_kind": "self_audit"
+    },
+    {
+      "kind": "browser_launched",
+      "binary": "google-chrome-stable",
+      "discoveredBy": "which google-chrome-stable",
+      "profileFresh": false,
+      "profilePath": "profiles/standalone-spike",
+      "_kind": "browser_launched"
+    },
+    {
+      "kind": "cdp_connected",
+      "browserProduct": "Chrome",
+      "browserVersion": "151.0.7922.71",
+      "targetCountAtConnect": 3,
+      "cdpEndpointObtained": "DevToolsActivePort + /json/version",
+      "_kind": "cdp_connected"
+    },
+    {
+      "kind": "session_state",
+      "verdict": "ready",
+      "onChatGPT": true,
+      "signedOut": false,
+      "composerPresent": true,
+      "_kind": "session_state"
+    },
+    {
+      "kind": "harness_installed",
+      "verdict": "ready",
+      "_kind": "harness_installed"
+    },
+    {
+      "kind": "baseline_done",
+      "counts": {
+        "ces_telemetry": 12,
+        "backend_api_aux": 31,
+        "session_check": 4,
+        "sentinel_aux": 2,
+        "conversation_list": 1,
+        "conversation_api_aux": 1,
+        "model_effect_prepare": 4
+      },
+      "modelEffectInBaseline": 0,
+      "_kind": "baseline_done"
+    },
+    {
+      "kind": "composer_verified",
+      "length": 79,
+      "hash": 3885781,
+      "_kind": "composer_verified"
+    },
+    {
+      "kind": "composer_verified",
+      "length": 72,
+      "hash": 3151077146,
+      "_kind": "composer_verified"
+    },
+    {
+      "kind": "dispatch_clicked",
+      "_kind": "dispatch_clicked"
+    },
+    {
+      "kind": "dispatch_clicked",
+      "_kind": "dispatch_clicked"
+    },
+    {
+      "kind": "sent_confirmed",
+      "turn": 1,
+      "requestId": "989287.559",
+      "classification": "model_effect_conversation",
+      "_kind": "sent_confirmed"
+    },
+    {
+      "kind": "sent_confirmed",
+      "turn": 2,
+      "requestId": "989287.643",
+      "classification": "model_effect_conversation",
+      "_kind": "sent_confirmed"
+    },
+    {
+      "kind": "response_started",
+      "turn": 1,
+      "requestId": "989287.559",
+      "classification": "model_effect_conversation",
+      "status": 200,
+      "mimeType": "text/event-stream",
+      "_kind": "response_started"
+    },
+    {
+      "kind": "turn1",
+      "outcome": "ok",
+      "physical_sends": 1,
+      "prepare_sends": 2,
+      "potential_model_effect": 0,
+      "in_window_counts": {
+        "model_effect_conversation": 1,
+        "sentinel_aux": 7,
+        "ces_telemetry": 7,
+        "conversation_api_aux": 2,
+        "conversation_list": 2,
+        "backend_api_aux": 1,
+        "model_effect_prepare": 2
+      },
+      "post_window_counts": {
+        "sentinel_aux": 2
+      },
+      "response_started": true,
+      "loading_completions": [
+        {
+          "requestId": "989287.559",
+          "completion": "finished",
+          "errorText": null,
+          "status": 200,
+          "mimeType": "text/event-stream",
+          "streamBytes": 12017
+        }
+      ],
+      "dom_terminal": true,
+      "dom_busy_false": true,
+      "token_present": true,
+      "text_length": 253,
+      "text_hash": 1111094390,
+      "conversation_id": null,
+      "conversation_id_placeholder": "conv#turn1",
+      "conversation_id_redacted": true,
+      "conversation_id_raw_fragment_removed": true,
+      "hidden_retry_or_fanout": false,
+      "verdict_blocked_by": null,
+      "_kind": "turn1"
+    },
+    {
+      "kind": "turn2",
+      "outcome": "canceled_aborted",
+      "physical_sends": 1,
+      "prepare_sends": 0,
+      "potential_model_effect": 0,
+      "in_window_counts": {
+        "model_effect_conversation": 1,
+        "ces_telemetry": 1
+      },
+      "post_window_counts": {
+        "sentinel_aux": 4,
+        "backend_api_aux": 1,
+        "ces_telemetry": 1,
+        "model_effect_prepare": 1
+      },
+      "response_started": false,
+      "loading": {
+        "completion": "failed",
+        "errorText": "net::ERR_ABORTED",
+        "canceled": true,
+        "streamBytes": 0
+      },
+      "dom_after_cancel": {
+        "busy": false,
+        "terminal": true,
+        "textLength": 253,
+        "textHash": 1111094390,
+        "messageCount": 1
+      },
+      "hidden_retry_or_fanout": false,
+      "verdict_blocked_by": null,
+      "_kind": "turn2"
+    },
+    {
+      "kind": "cancel_attempt",
+      "clicked": true,
+      "reason": "stop button found and clicked",
+      "requestId": "989287.643",
+      "ms_after_dispatch": 61,
+      "_kind": "cancel_attempt"
+    },
+    {
+      "kind": "crash_test",
+      "action": "sigkill_browser",
+      "_kind": "crash_test"
+    },
+    {
+      "kind": "crash_classified",
+      "cdp_close_code": 1006,
+      "cdp_close_clean": false,
+      "browser_exit": {
+        "signal": "SIGKILL"
+      },
+      "automatic_retry_observed": false,
+      "model_sends_after_crash": 0,
+      "state": "fail_closed_no_replay",
+      "_kind": "crash_classified"
+    }
+  ]
+}

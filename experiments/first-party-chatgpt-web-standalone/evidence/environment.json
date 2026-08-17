@@ -1,0 +1,50 @@
+{
+  "date": "2026-08-17",
+  "node": "v24.19.0",
+  "chrome": {
+    "kind": "browser_launched",
+    "ts": 1786997789635,
+    "binary": "google-chrome-stable",
+    "discoveredBy": "which google-chrome-stable",
+    "profileFresh": false,
+    "profilePath": "profiles/standalone-spike"
+  },
+  "cdp": {
+    "kind": "cdp_connected",
+    "ts": 1786997789930,
+    "browserProduct": "Chrome",
+    "browserVersion": "151.0.7922.71",
+    "targetCountAtConnect": 1,
+    "cdpEndpointObtained": "DevToolsActivePort + /json/version"
+  },
+  "profile": {
+    "path": "profiles/standalone-spike",
+    "fresh": false,
+    "gitignored": true,
+    "reusedAcrossRuns": true
+  },
+  "orca_jcode_runtime_dependency": {
+    "used": false,
+    "why": "harness spawns only the chrome binary; see evidence/runtime-proof below"
+  },
+  "spawned_processes": [
+    {
+      "file": "lib/browser.mjs",
+      "call": "execFileSync",
+      "kind": "momentary_command_probe"
+    },
+    {
+      "file": "lib/browser.mjs",
+      "call": "execFileSync",
+      "kind": "momentary_command_probe"
+    },
+    {
+      "file": "lib/browser.mjs",
+      "call": "spawn",
+      "kind": "long_lived_child_process"
+    }
+  ],
+  "self_audit_forbidden_api": [],
+  "protocol_test_applicable": false,
+  "notes": "experiments/protocol/test.sh belongs to the protocol experiment (parse/run fixtures) and is not applicable to the browser substrate spike."
+}

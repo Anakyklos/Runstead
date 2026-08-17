@@ -1,0 +1,32 @@
+{
+  "date": "2026-08-16",
+  "phase1_enrollment": {
+    "launch": "clean chrome (no remote debugging flags)",
+    "profile": "dedicated spike profile (profiles/standalone-spike)",
+    "user_action": "manual login (email/password), window closed after success",
+    "credential_capture": "none",
+    "window_close": { "exitCode": 0 }
+  },
+  "phase2_verification": {
+    "relaunch": "same profile WITH remote debugging (CDP)",
+    "contract": "ready (composer present, not signed out, no dialog)",
+    "session_state": "authenticated_in_profile"
+  },
+  "measured_transport_property": {
+    "finding": "OpenAI login gate (Cloudflare Turnstile on auth.openai.com + Auth0 'browser may not be secure') challenges Chrome launches with remote-debugging flags",
+    "plain_launch": "login succeeds (verified 2026-08-16)",
+    "debug_launch_with_remote_allow_origins": "challenged, stuck on Turnstile / Auth0 error",
+    "debug_launch_minimal_remote_debugging_port_only": "challenged again (captcha)",
+    "implication": "first login (enrollment) must use a clean launch; the authenticated runtime phase works with CDP",
+    "automation_concealment_used": "none (no --disable-blink-features, no UA spoofing, no stealth)"
+  },
+  "auth_custody": {
+    "password_seen_by_harness": false,
+    "cookies_read": false,
+    "cookies_exported": false,
+    "profile_copied": false,
+    "session_imported_from_other_profile": false,
+    "localStorage_read": false,
+    "tokens_persisted": false
+  }
+}

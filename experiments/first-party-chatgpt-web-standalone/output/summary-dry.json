@@ -1,0 +1,46 @@
+{
+  "mode": "dry",
+  "date": "2026-08-17",
+  "login": null,
+  "session": {
+    "kind": "session_state",
+    "ts": 1786997794413,
+    "verdict": "ready",
+    "onChatGPT": true,
+    "signedOut": false,
+    "composerPresent": true
+  },
+  "turn1": null,
+  "turn2": null,
+  "cancel_pre": {
+    "kind": "cancel_pre",
+    "ts": 1786997798083,
+    "outcome": "ok",
+    "physical_sends": 0,
+    "prepare_sends": 0,
+    "potential_model_effect": 0,
+    "model_effect_in_post": 0
+  },
+  "crash": {
+    "kind": "crash_classified",
+    "ts": 1786997799186,
+    "cdp_close_code": 1006,
+    "cdp_close_clean": false,
+    "browser_exit": {
+      "signal": "SIGKILL"
+    },
+    "automatic_retry_observed": false,
+    "new_network_records_after_crash": 0,
+    "model_sends_before_crash": 0,
+    "state": "fail_closed_no_replay"
+  },
+  "fixture_contract": {
+    "kind": "fixture_contract",
+    "ts": 1786997794715,
+    "fixture": "logged-out.html",
+    "verdict": "contract_missing",
+    "onChatGPT": false,
+    "signedOut": true,
+    "composerPresent": true
+  }
+}
