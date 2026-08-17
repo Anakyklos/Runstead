@@ -100,5 +100,10 @@ fi
 if grep -l "googleusercontent\|auth0.com/avatars" "${DERIVED_ARTIFACTS[@]}" 2>/dev/null; then
   fail "third-party/personal path leaked into derived evidence/output"
 fi
+# Hermeticity: derived evidence must never carry an absolute filesystem path
+# (home dir or a machine-specific checkout path) for the profile or anywhere.
+if grep -lE "/home/[^/]+|Documentos/codigo" "${DERIVED_ARTIFACTS[@]}" 2>/dev/null; then
+  fail "absolute filesystem path leaked into derived evidence/output (hermeticity)"
+fi
 
 echo "OK: standalone spike deterministic tests passed"

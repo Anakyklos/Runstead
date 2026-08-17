@@ -27,7 +27,7 @@
       "Storage.setCookies",
       "Fetch.enable"
     ],
-    "profile_root": "~/Documentos/codigo/Runstead/experiments/first-party-chatgpt-web-standalone/profiles/standalone-spike",
+    "profile_root": "profiles/standalone-spike",
     "credentials_in_artifacts": "none by construction (structural redaction)"
   }
 }

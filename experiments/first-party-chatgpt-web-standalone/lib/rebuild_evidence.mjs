@@ -45,6 +45,18 @@ function sanitizePath(pathname) {
   return redact(sanitizeConversationPath(String(pathname)));
 }
 
+// Evidence never records an absolute filesystem path for the profile. Raw v1
+// logs carried the machine-specific checkout path (e.g. ~/Documentos/codigo/
+// Runstead/experiments/.../profiles/standalone-spike); the canonical form is
+// repo-relative and hermetic.
+function normalizeProfilePath(value) {
+  if (typeof value !== "string") return value;
+  if (/profiles[\\/]standalone-spike$/.test(value)) {
+    return "profiles/standalone-spike";
+  }
+  return value;
+}
+
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const EXPERIMENT = path.join(HERE, "..");
 const EVIDENCE_DIR = path.join(EXPERIMENT, "evidence");
@@ -225,8 +237,13 @@ function canonicalKeyEvents(events, requests) {
     ) {
       continue; // rebuilt below from transport records + preserved facts
     }
-    // Preserve raw DOM/lifecycle facts; no conversation id fragments.
+    // Preserve raw DOM/lifecycle facts; no conversation id fragments and no
+    // absolute profile path.
     const copy = { ...e, _kind: undefined };
+    if (copy.profilePath) copy.profilePath = normalizeProfilePath(copy.profilePath);
+    if (copy.profile && typeof copy.profile === "object" && copy.profile.path) {
+      copy.profile.path = normalizeProfilePath(copy.profile.path);
+    }
     if (copy.conversation_id) {
       const { conversation_id, ...rest } = copy;
       Object.assign(copy, conversationIdEvidence(k === "turn1" ? "turn1" : "turn2"));

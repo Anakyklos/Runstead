@@ -22,7 +22,7 @@
       "binary": "google-chrome-stable",
       "discoveredBy": "which google-chrome-stable",
       "profileFresh": false,
-      "profilePath": "~/Documentos/codigo/Runstead/experiments/first-party-…/profiles/standalone-spike",
+      "profilePath": "profiles/standalone-spike",
       "_kind": "browser_launched"
     },
     {

@@ -66,6 +66,14 @@ const HARNESS_VERSION = "v3";
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const PROFILE_DIR = path.join(HERE, "profiles", "standalone-spike");
+
+// Evidence never records an absolute filesystem path for the profile: it uses
+// a repo-relative form ("profiles/standalone-spike") so the committed
+// artifacts are hermetic and do not leak a machine-specific checkout path.
+function profileEvidencePath() {
+  return path.relative(HERE, PROFILE_DIR);
+}
+
 const OUT_DIR = path.join(HERE, "output");
 const EVIDENCE_DIR = path.join(HERE, "evidence");
 const FIXTURE_URL = `file://${path.join(HERE, "fixtures", "logged-out.html")}`;
@@ -204,7 +212,7 @@ async function startSession() {
     binary: path.basename(launched.info.bin),
     discoveredBy: launched.info.discoveredBy,
     profileFresh: launched.fresh,
-    profilePath: PROFILE_DIR,
+    profilePath: profileEvidencePath(),
   });
   const { cdp, meta } = await connectBrowser(launched.port);
   logEvent("cdp_connected", meta);
@@ -432,7 +440,7 @@ async function runLogin() {
     binary: path.basename(clean.info.bin),
     discoveredBy: clean.info.discoveredBy,
     profileFresh: clean.fresh,
-    profilePath: PROFILE_DIR,
+    profilePath: profileEvidencePath(),
     flags: "clean",
   });
   console.log(
@@ -935,7 +943,7 @@ function writeArtifacts(summary) {
     chrome: lifecycle.find((e) => e.kind === "browser_launched"),
     cdp: lifecycle.find((e) => e.kind === "cdp_connected"),
     profile: {
-      path: redact(PROFILE_DIR),
+      path: profileEvidencePath(),
       fresh: lifecycle.find((e) => e.kind === "browser_launched")?.profileFresh,
       gitignored: true,
       reusedAcrossRuns: true,

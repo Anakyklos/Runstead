@@ -3,22 +3,22 @@
   "node": "v24.19.0",
   "chrome": {
     "kind": "browser_launched",
-    "ts": 1786993474799,
+    "ts": 1786995333259,
     "binary": "google-chrome-stable",
     "discoveredBy": "which google-chrome-stable",
     "profileFresh": false,
-    "profilePath": "~/Documentos/codigo/Runstead/experiments/first-party-chatgpt-web-standalone/profiles/standalone-spike"
+    "profilePath": "profiles/standalone-spike"
   },
   "cdp": {
     "kind": "cdp_connected",
-    "ts": 1786993474965,
+    "ts": 1786995333476,
     "browserProduct": "Chrome",
     "browserVersion": "151.0.7922.71",
     "targetCountAtConnect": 1,
     "cdpEndpointObtained": "DevToolsActivePort + /json/version"
   },
   "profile": {
-    "path": "~/Documentos/codigo/Runstead/experiments/first-party-chatgpt-web-standalone/profiles/standalone-spike",
+    "path": "profiles/standalone-spike",
     "fresh": false,
     "gitignored": true,
     "reusedAcrossRuns": true
