@@ -32,15 +32,6 @@ const MODEL_EFFECT_PATHS = new Set([
 const CONVERSATION_POST_PREPARE = "/backend-api/f/conversation/prepare";
 const CONVERSATION_POST_INIT = "/backend-api/conversation/init";
 
-// Conversation ids can appear inside conversation-namespace paths (e.g.
-// /backend-api/conversation/<id>/stream_status). Those segments never get a
-// correlatable fragment: they are replaced wholesale by a placeholder.
-// "init"/"prepare" labels are untouched (they are not id-shaped).
-const CONVERSATION_ID_SEG_RE = /(\/backend-api\/conversation\/)[0-9a-fA-F-]+(?:…)*/g;
-export function sanitizeConversationPath(path) {
-  return String(path).replace(CONVERSATION_ID_SEG_RE, "$1<conv>");
-}
-
 export function classifyRequest(method, pathname) {
   if (method === "POST" && MODEL_EFFECT_PATHS.has(pathname)) {
     return "model_effect_conversation";
@@ -172,7 +163,7 @@ export class NetworkObserver {
           requestId: truncateId(params.requestId),
           method: params.request?.method || "",
           host: shape.host,
-          path: sanitizeConversationPath(shape.path),
+          path: shape.path,
           type: params.type || "",
           classification: classifyRequest(params.request?.method || "", fullPath),
           window: this.window,

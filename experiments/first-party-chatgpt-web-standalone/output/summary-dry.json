@@ -4,7 +4,7 @@
   "login": null,
   "session": {
     "kind": "session_state",
-    "ts": 1786992115769,
+    "ts": 1786993477030,
     "verdict": "ready",
     "onChatGPT": true,
     "signedOut": false,
@@ -14,7 +14,7 @@
   "turn2": null,
   "cancel_pre": {
     "kind": "cancel_pre",
-    "ts": 1786992118919,
+    "ts": 1786993480168,
     "outcome": "ok",
     "physical_sends": 0,
     "prepare_sends": 0,
@@ -23,7 +23,7 @@
   },
   "crash": {
     "kind": "crash_classified",
-    "ts": 1786992120020,
+    "ts": 1786993481271,
     "cdp_close_code": 1006,
     "cdp_close_clean": false,
     "browser_exit": {
@@ -36,7 +36,7 @@
   },
   "fixture_contract": {
     "kind": "fixture_contract",
-    "ts": 1786992115870,
+    "ts": 1786993477115,
     "fixture": "logged-out.html",
     "verdict": "contract_missing",
     "onChatGPT": false,

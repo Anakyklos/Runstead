@@ -33,15 +33,16 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { classifyRequest, sanitizeConversationPath } from "./network.mjs";
-import { conversationIdEvidence, redact, urlShape } from "./sanitize.mjs";
+import { classifyRequest } from "./network.mjs";
+import { conversationIdEvidence, redact, sanitizeConversationPath, urlShape } from "./sanitize.mjs";
 import { hiddenRetryVerdict } from "./proofs.mjs";
 
 // Conversation ids can appear inside conversation-namespace paths (e.g.
 // /backend-api/conversation/<id>/stream_status). They are replaced wholesale
-// by a placeholder plus the generic redactor, so no fragment is kept.
+// by a placeholder (while the UUID is intact), then the generic redactor
+// runs; this ordering cannot leave a truncated fragment.
 function sanitizePath(pathname) {
-  return sanitizeConversationPath(redact(String(pathname)));
+  return redact(sanitizeConversationPath(String(pathname)));
 }
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);

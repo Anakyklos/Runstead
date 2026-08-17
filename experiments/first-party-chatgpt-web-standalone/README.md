@@ -58,6 +58,9 @@ Full report: `docs/research/first-party-chatgpt-web-standalone-spike.md`.
   classifier, redaction, timeout)
 - `lib/rebuild_evidence.mjs` — canonical rebuild of the live evidence
   (v3; see Evidence note below)
+- `test.sh` — deterministic 0-model-turn test entry point (proofs,
+  classifier + conversation-path edge cases, redaction shaping, rebuild
+  idempotence, cross-artifact agreement, leak scan)
 - `fixtures/logged-out.html` — wrong-origin fail-closed fixture
 - `profiles/` — dedicated profile (gitignored; holds real auth session)
 - `output/`, `evidence/` — sanitized artifacts of the runs (incl.
@@ -69,6 +72,10 @@ Requirements: Google Chrome or Chromium on PATH (or
 `RUNSTEAD_SPIKE_CHROME`), Node >= 22 (built-in WebSocket), no other runtime.
 
 ```sh
+# deterministic suite (0 model turns): proofs, classifier/path edge cases,
+# redaction shaping, rebuild idempotence, cross-artifact agreement, leak scan
+./test.sh
+
 # first login (user-assisted, clean window, no flags): log in, close window
 node run_spike.mjs login
 

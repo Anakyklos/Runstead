@@ -255,7 +255,7 @@
           "pass": true,
           "actual": {
             "host": "chatgpt.com",
-            "path": "/c/6a811a31-6f7……"
+            "path": "/c/<conv>"
           },
           "expected": "query and fragment must be dropped"
         },

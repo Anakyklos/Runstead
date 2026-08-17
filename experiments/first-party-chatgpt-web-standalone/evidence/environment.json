@@ -3,7 +3,7 @@
   "node": "v24.19.0",
   "chrome": {
     "kind": "browser_launched",
-    "ts": 1786992113609,
+    "ts": 1786993474799,
     "binary": "google-chrome-stable",
     "discoveredBy": "which google-chrome-stable",
     "profileFresh": false,
@@ -11,7 +11,7 @@
   },
   "cdp": {
     "kind": "cdp_connected",
-    "ts": 1786992113706,
+    "ts": 1786993474965,
     "browserProduct": "Chrome",
     "browserVersion": "151.0.7922.71",
     "targetCountAtConnect": 1,

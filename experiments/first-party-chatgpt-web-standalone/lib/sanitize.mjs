@@ -56,14 +56,31 @@ export function conversationIdEvidence(label) {
   };
 }
 
+// Conversation ids can appear as path segments in conversation-namespace and
+// content routes (e.g. /backend-api/conversation/<id>/stream_status,
+// /c/<id>). A UUID-shaped segment anywhere in a path is replaced wholesale by
+// a placeholder so no correlatable fragment is ever persisted. Known labels
+// ("init", "prepare", "<conv>") and non-id segments are untouched.
+const CONV_ID_PLACEHOLDER = "<conv>";
+const CONV_ID_SEGMENT_RE =
+  /(^|\/)(?:[0-9a-fA-F]{8}-[0-9a-fA-F-]{4,}|[0-9a-fA-F]{8}\u2026|conv#[a-z0-9]+)(?=\/|$)/g;
+export function sanitizeConversationPath(pathname) {
+  return String(pathname).replace(CONV_ID_SEGMENT_RE, "$1" + CONV_ID_PLACEHOLDER);
+}
+
 // URL shape for evidence: host = hostname only, path = pathname only
 // (query string and fragment ALWAYS dropped). Long tokens in the path are
-// subject to the generic redactor, and paths above a bounding length are
-// truncated. Never returns the raw URL.
+// subject to the generic redactor, conversation-id-shaped segments are
+// replaced by a placeholder, and paths above a bounding length are truncated.
+// Never returns the raw URL.
 export function urlShape(rawUrl) {
   try {
     const u = new URL(rawUrl);
-    return { host: u.hostname, path: truncatePath(redact(u.pathname)) };
+    // Sanitize full conversation-id segments FIRST (while the UUID is
+    // intact) so no truncated fragment survives, then apply the generic
+    // redactor and bounding truncation.
+    const path = truncatePath(redact(sanitizeConversationPath(u.pathname)));
+    return { host: u.hostname, path };
   } catch {
     return { host: "", path: "" };
   }
