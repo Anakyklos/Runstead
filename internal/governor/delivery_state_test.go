@@ -34,10 +34,10 @@ func (c deliveryReceiptClient) Complete(context.Context, provider.Request) (prov
 
 func TestExecuteClassifierCannotFabricateDeliveryState(t *testing.T) {
 	governor, _, _ := instantGovernor(t)
-	client := provider.NewFake(provider.Response{
-		Text: "model text claims completed",
-		Metadata: provider.ResponseMetadata{
-			DeliveryState: provider.DeliverySentUnconfirmed,
+	client := provider.NewFake(provider.ProviderResponse{
+		Content: "model text claims completed",
+		Metadata: provider.ProviderResponseMetadata{
+			StatusCode: 200,
 		},
 	})
 	classifier := func(provider.Response, error) policy.Outcome {
@@ -57,9 +57,9 @@ func TestExecuteClassifierCannotFabricateDeliveryState(t *testing.T) {
 
 func TestAuthoritativeFakeConfirmationCanProduceSentConfirmed(t *testing.T) {
 	accountGovernor, _, _ := instantGovernor(t)
-	client := provider.NewFake(provider.Response{
-		Text:     "response",
-		Metadata: provider.ResponseMetadata{DeliveryState: provider.DeliverySentConfirmed},
+	client := provider.NewFake(provider.ProviderResponse{
+		Content:     "response",
+		Metadata:    provider.ProviderResponseMetadata{StatusCode: 200},
 	})
 	result := accountGovernor.Execute(context.Background(), policy.AttemptRequest{
 		TaskID: "task-1", ClientRequestID: "request-1",
@@ -74,7 +74,7 @@ func TestAuthoritativeFakeConfirmationCanProduceSentConfirmed(t *testing.T) {
 
 func TestUnobservedDeliveryRemainsUnobservedButIsConservative(t *testing.T) {
 	governor, _, _ := instantGovernor(t)
-	client := provider.NewFake(provider.Response{Text: "response"})
+	client := provider.NewFake(provider.ProviderResponse{Content: "response", Metadata: provider.ProviderResponseMetadata{StatusCode: 200}})
 	result := governor.Execute(context.Background(), policy.AttemptRequest{
 		TaskID:          "task-1",
 		ClientRequestID: "request-1",
@@ -151,9 +151,12 @@ func TestAmbiguousDeliveryDoesNotBypassNewAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := provider.NewFake(provider.Response{Metadata: provider.ResponseMetadata{
-		DeliveryState: provider.DeliverySentUnconfirmed,
-	}})
+	client := provider.NewFake(provider.ProviderResponse{
+		Content: "response",
+		Metadata: provider.ProviderResponseMetadata{
+			StatusCode: 200,
+		},
+	})
 	first := governor.Execute(context.Background(), policy.AttemptRequest{
 		TaskID:          "task-1",
 		ClientRequestID: "request-1",

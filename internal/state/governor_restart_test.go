@@ -45,14 +45,14 @@ func mustGovernorTask(t *testing.T, store *Store) {
 // fakeResponses builds a fake provider with count identical responses so
 // every governed execution consumes one.
 func fakeResponses(count int) *provider.Fake {
-	responses := make([]provider.Response, count)
+	responses := make([]provider.ProviderResponse, count)
 	for index := range responses {
-		responses[index] = provider.Response{Text: "ok"}
+		responses[index] = provider.ProviderResponse{Content: "ok"}
 	}
 	return provider.NewFake(responses...)
 }
 
-func executeOnce(t *testing.T, accountGovernor *governor.Governor, client provider.Client, classifier governor.OutcomeClassifier) governor.ExecutionResult {
+func executeOnce(t *testing.T, accountGovernor *governor.Governor, client provider.LegacyClient, classifier governor.OutcomeClassifier) governor.ExecutionResult {
 	t.Helper()
 	return accountGovernor.Execute(context.Background(), governor.AttemptRequest{
 		TaskID:          "task-1",

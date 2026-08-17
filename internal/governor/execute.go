@@ -10,7 +10,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
-func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client provider.Client, classifier OutcomeClassifier) ExecutionResult {
+func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client provider.LegacyClient, classifier OutcomeClassifier) ExecutionResult {
 	if client == nil {
 		return ExecutionResult{Admission: g.result(AdmissionUnsafeConfiguration, AdmissionUnsafeConfiguration, time.Time{}, errors.New("provider client is required"))}
 	}

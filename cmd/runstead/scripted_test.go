@@ -22,8 +22,8 @@ func TestLoadScriptedResponsesReplaysInOrder(t *testing.T) {
 		t.Fatalf("responses = %d, want 3", len(responses))
 	}
 	for index, want := range []string{"first", "second", "third"} {
-		if responses[index].Text != want {
-			t.Errorf("response %d = %q, want %q", index, responses[index].Text, want)
+		if responses[index].Content != want {
+			t.Errorf("response %d = %q, want %q", index, responses[index].Content, want)
 		}
 	}
 }

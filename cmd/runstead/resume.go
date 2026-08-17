@@ -360,7 +360,8 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	// Wire the resumed task with the same control boundaries as a normal run:
 	// the restored account governor, the read-only registry, the protocol
 	// parser and the persistence boundary.
-	client := provider.NewFake(responses...)
+	fakeClient := provider.NewFake(responses...)
+	client := fakeClient
 	executor, err := agent.NewExecutor(accountGovernor, client, nil)
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: executor unavailable: %v\n", err)

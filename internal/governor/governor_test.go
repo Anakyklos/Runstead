@@ -899,7 +899,7 @@ func TestBlockedEventSinkDoesNotBlockExecutionOrLane(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := provider.NewFake(provider.Response{Text: "response"})
+	client := provider.NewFake(provider.ProviderResponse{Content: "response", Metadata: provider.ProviderResponseMetadata{StatusCode: 200}})
 	executionDone := make(chan policy.ExecutionResult, 1)
 	go func() {
 		executionDone <- governor.Execute(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "request"}, client, nil)
@@ -951,7 +951,7 @@ func TestUpstreamOpenCircuitRemainsBlockedAfterCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := provider.NewFake(provider.Response{Text: "response"})
+	client := provider.NewFake(provider.ProviderResponse{Content: "response", Metadata: provider.ProviderResponseMetadata{StatusCode: 200}})
 	blocked := governor.Execute(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "request"}, client, nil)
 	if blocked.Admission.Code != policy.AdmissionCircuitOpen {
 		t.Fatalf("expired upstream cooldown admission = %#v, want circuit open", blocked.Admission)
@@ -978,7 +978,7 @@ func TestAttemptEventsPreserveTelemetryHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := provider.NewFake(provider.Response{Text: "response"})
+	client := provider.NewFake(provider.ProviderResponse{Content: "response", Metadata: provider.ProviderResponseMetadata{StatusCode: 200}})
 	result := governor.Execute(context.Background(), policy.AttemptRequest{TaskID: "task", ClientRequestID: "request"}, client, nil)
 	if !result.Admission.Admitted() || result.Err != nil {
 		t.Fatalf("execution with telemetry failure = %#v", result)
@@ -1197,7 +1197,7 @@ type safetyClient struct {
 
 func (c *safetyClient) Complete(context.Context, provider.Request) (provider.Response, error) {
 	c.calls++
-	return provider.Response{Text: "secret response"}, nil
+	return provider.Response{Text: "secret response", Metadata: provider.ResponseMetadata{StatusCode: 200}}, nil
 }
 
 func (c *safetyClient) RouteSafety() provider.RouteSafety { return c.safety }
@@ -1208,7 +1208,7 @@ type plainClient struct {
 
 func (c *plainClient) Complete(context.Context, provider.Request) (provider.Response, error) {
 	c.calls++
-	return provider.Response{Text: "private model response"}, nil
+	return provider.Response{Text: "private model response", Metadata: provider.ResponseMetadata{StatusCode: 200}}, nil
 }
 
 func TestExecuteRejectsProviderWithoutExplicitRouteSafety(t *testing.T) {
@@ -1225,7 +1225,7 @@ func TestExecuteRejectsProviderWithoutExplicitRouteSafety(t *testing.T) {
 
 func TestSingleAttemptExecutionChargesExactlyOnceAndSanitizesEvents(t *testing.T) {
 	governor, _, events := instantGovernor(t)
-	fake := provider.NewFake(provider.Response{Text: "private model response"})
+	fake := provider.NewFake(provider.ProviderResponse{Content: "private model response", Metadata: provider.ProviderResponseMetadata{StatusCode: 200}})
 	result := governor.Execute(context.Background(), policy.AttemptRequest{
 		TaskID:          "task-1",
 		ClientRequestID: "request-1",
@@ -1256,7 +1256,7 @@ func TestDuplicateClientRequestIDIsRejectedAfterFirstAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := provider.NewFake(provider.Response{Text: "private model response"})
+	client := provider.NewFake(provider.ProviderResponse{Content: "private model response", Metadata: provider.ProviderResponseMetadata{StatusCode: 200}})
 	request := policy.AttemptRequest{TaskID: "task", ClientRequestID: "request"}
 	first := governor.Execute(context.Background(), request, client, nil)
 	if !first.Admission.Admitted() || first.Err != nil {

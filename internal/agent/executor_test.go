@@ -22,7 +22,7 @@ func TestExecutorUsesGovernorAdmissionBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := provider.NewFake(provider.Response{Text: "response"})
+	client := provider.NewFake(provider.ProviderResponse{Content: "response", Metadata: provider.ProviderResponseMetadata{StatusCode: 200}})
 	executor, err := NewExecutor(accountGovernor, client, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +49,7 @@ func TestExecutorOwnsGovernorEventDrain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := provider.NewFake(provider.Response{Text: "response"})
+	client := provider.NewFake(provider.ProviderResponse{Content: "response", Metadata: provider.ProviderResponseMetadata{StatusCode: 200}})
 	executor, err := NewExecutor(accountGovernor, client, nil)
 	if err != nil {
 		t.Fatal(err)

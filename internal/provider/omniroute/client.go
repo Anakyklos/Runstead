@@ -87,7 +87,7 @@ type Client struct {
 	gatewayContractHealth provider.GatewayContractHealthResult
 }
 
-var _ provider.Client = (*Client)(nil)
+var _ provider.LegacyClient = (*Client)(nil)
 var _ provider.SafetyAware = (*Client)(nil)
 var _ provider.ContractHealthAware = (*Client)(nil)
 

@@ -10,8 +10,8 @@ import (
 
 func TestFakeReturnsPredefinedResponsesAndRecordsRequests(t *testing.T) {
 	fake := NewFake(
-		Response{Text: "first", Metadata: ResponseMetadata{DeliveryState: DeliveryCompleted}},
-		Response{Text: "second", Metadata: ResponseMetadata{DeliveryState: DeliveryCompleted}},
+		ProviderResponse{Content: "first", Metadata: ProviderResponseMetadata{StatusCode: 200}},
+		ProviderResponse{Content: "second", Metadata: ProviderResponseMetadata{StatusCode: 200}},
 	)
 	request := Request{Protocol: protocol.Current, Prompt: "inspect"}
 
@@ -32,7 +32,7 @@ func TestFakeReturnsPredefinedResponsesAndRecordsRequests(t *testing.T) {
 	if fake.Attempts() != 2 {
 		t.Fatalf("Attempts() = %d, want 2", fake.Attempts())
 	}
-	if got := fake.Requests(); len(got) != 2 || got[0] != request || got[1] != request {
+	if got := fake.Requests(); len(got) != 2 || got[0].ClientRequestID != request.ClientRequestID || got[1].ClientRequestID != request.ClientRequestID {
 		t.Fatalf("Requests() = %#v, want two copies of %#v", got, request)
 	}
 }

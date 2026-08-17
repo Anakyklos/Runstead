@@ -13,7 +13,7 @@ var ErrExecutorUnavailable = errors.New("agent executor is unavailable")
 
 // AttemptRunner is the loop-facing provider boundary implemented by Executor.
 // The compile-time assertion below guarantees the executor satisfies it; the
-// provider.Client is retained privately so the loop can never bypass account
+// provider.LegacyClient is retained privately so the loop can never bypass account
 // admission.
 var _ AttemptRunner = (*Executor)(nil)
 
@@ -23,11 +23,11 @@ var _ AttemptRunner = (*Executor)(nil)
 // dispatcher is required to deliver the governor's mandatory events.
 type Executor struct {
 	governor   *governor.Governor
-	provider   provider.Client
+	provider   provider.LegacyClient
 	classifier governor.OutcomeClassifier
 }
 
-func NewExecutor(accountGovernor *governor.Governor, client provider.Client, classifier governor.OutcomeClassifier) (*Executor, error) {
+func NewExecutor(accountGovernor *governor.Governor, client provider.LegacyClient, classifier governor.OutcomeClassifier) (*Executor, error) {
 	if accountGovernor == nil || client == nil {
 		return nil, ErrExecutorUnavailable
 	}

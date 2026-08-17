@@ -33,7 +33,7 @@ type seedBuilder struct {
 	plan  *verifier.Plan
 }
 
-func (b seedBuilder) loop(t *testing.T, client provider.Client, seed *agent.RecoverySeed, workspace string) *agent.Loop {
+func (b seedBuilder) loop(t *testing.T, client provider.LegacyClient, seed *agent.RecoverySeed, workspace string) *agent.Loop {
 	t.Helper()
 	config := governor.DefaultInstantConfig("policy-seed-test", "fake", "instant", provider.SafeRouteSafety())
 	config.MinimumStartInterval = time.Nanosecond

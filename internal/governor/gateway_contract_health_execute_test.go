@@ -56,7 +56,7 @@ func receiptRequiredGovernor(t *testing.T, events policy.EventSink) *policy.Gove
 	return governor
 }
 
-func executeHealthRequest(governor *policy.Governor, client provider.Client) policy.ExecutionResult {
+func executeHealthRequest(governor *policy.Governor, client provider.LegacyClient) policy.ExecutionResult {
 	return governor.Execute(context.Background(), policy.AttemptRequest{
 		TaskID:          "task-1",
 		ClientRequestID: "request-1",

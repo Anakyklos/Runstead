@@ -275,7 +275,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return exitUsage
 	}
 
-	var client provider.Client
+	var client provider.LegacyClient
 	var model string
 	if scriptedSet {
 		responses, loadErr := loadScriptedResponses(scriptedPath)
@@ -283,7 +283,8 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 			fmt.Fprintf(errOut, "run: %v\n", loadErr)
 			return exitUsage
 		}
-		client = provider.NewFake(responses...)
+		fakeClient := provider.NewFake(responses...)
+		client = fakeClient
 		model = "scripted"
 	} else {
 		// The protected lane client was constructed and verified above

@@ -11,6 +11,7 @@ import (
 
 var ErrUnsafeRoute = errors.New("provider route cannot guarantee authoritative upstream attempt accounting")
 var ErrGatewayContractUnhealthy = errors.New("provider gateway contract is not healthy")
+var ErrAttemptReceiptsUnavailable = errors.New("attempt receipts not available on this provider")
 
 // GatewayContractHealth is the health of the provider's management gateway
 // contract. It is deliberately distinct from upstream or model-service
@@ -169,6 +170,8 @@ type AttemptReceiptAware interface {
 	AttemptReceiptsEnabled() bool
 }
 
+// Legacy request/response types used by the governor executor.
+// These are kept for backward compatibility with the governor's Execute path.
 type Request struct {
 	Protocol        protocol.Version
 	Prompt          string
@@ -197,9 +200,8 @@ type ResponseMetadata struct {
 	AttemptReceipts *AttemptReceiptSet
 }
 
-// Client performs one logical completion. Legacy clients configured with
-// SafeRouteSafety account for one attempt; receipt-aware clients may produce
-// one or more authoritative attempts in ResponseMetadata.
-type Client interface {
+// LegacyClient is the legacy provider interface used by the governor executor.
+// New providers should implement the ProviderClient interface from client.go instead.
+type LegacyClient interface {
 	Complete(context.Context, Request) (Response, error)
 }
