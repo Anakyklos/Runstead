@@ -191,32 +191,32 @@ class BrowserSession:
         return False
 
     async def has_valid_session(self) -> bool:
-            """Check if browser has valid session via CDP network check without extracting cookies."""
-            if not self.page:
-                return False
-            try:
-                # Use CDP to check auth state without materializing cookies in Python
-                script = (
-                    "(async () => {"
-                    "  try {"
-                    "    const response = await fetch('https://chatgpt.com/api/auth/session', {"
-                    "      method: 'GET',"
-                    "      credentials: 'include',"
-                    "    });"
-                    "    if (!response.ok) return {authenticated: false};"
-                    "    const data = await response.json();"
-                    "    return {authenticated: !!data.accessToken};"
-                    "  } catch (e) {"
-                    "    return {authenticated: false};"
-                    "  }"
-                    "})()"
-                )
-                result = await self.page.evaluate(script, await_promise=True)
-                if isinstance(result, tuple):
-                    result = result[0]
-                return result.get("authenticated", False)
-            except Exception:
-                return False
+        """Check if browser has valid session via CDP network check without extracting cookies."""
+        if not self.page:
+            return False
+        try:
+            # Use CDP to check auth state without materializing cookies in Python
+            script = (
+                "(async () => {"
+                "  try {"
+                "    const response = await fetch('https://chatgpt.com/api/auth/session', {"
+                "      method: 'GET',"
+                "      credentials: 'include',"
+                "    });"
+                "    if (!response.ok) return {authenticated: false};"
+                "    const data = await response.json();"
+                "    return {authenticated: !!data.accessToken};"
+                "  } catch (e) {"
+                "    return {authenticated: false};"
+                "  }"
+                "})()"
+            )
+            result = await self.page.evaluate(script, await_promise=True)
+            if isinstance(result, tuple):
+                result = result[0]
+            return result.get("authenticated", False)
+        except Exception:
+            return False
 
     async def cdp_fetch(self, url: str, method: str = "GET", json_data: dict = None, headers: dict = None, timeout: int = 120) -> tuple[int, str, dict]:
         """
@@ -252,13 +252,12 @@ class BrowserSession:
     async def cdp_fetch_stream(self, url: str, method: str = "POST", json_data: dict = None, headers: dict = None, timeout: int = 120):
         """
         Execute streaming HTTP request via browser's CDP fetch.
-        Yields (line, status, headers) as they arrive for observable transport evidence.
+        Single POST; yields headers event, then body lines as they arrive.
         """
         if not self.page:
             raise RuntimeError("Browser not started")
 
-        # Use CDP to initiate streaming fetch via browser context
-        # We return status/headers immediately, then stream lines
+        # Single POST that yields headers immediately, then streams body
         script = (
             "(async () => {"
             "  const response = await fetch(" + json.dumps(url) + ", {"
@@ -268,16 +267,18 @@ class BrowserSession:
                 "accept": "text/event-stream",
                 "content-type": "application/json",
             }) + ","
-            "    body: " + json.dumps(json_data) +
+            "    body: JSON.stringify(" + json.dumps(json_data) + ")"
             "  });"
             "  return {"
             "    status: response.status,"
             "    headers: Object.fromEntries(response.headers.entries()),"
-            "    ok: response.ok"
+            "    ok: response.ok,"
+            "    bodyReader: response.body"
             "  };"
             "})()"
         )
 
+        # First evaluate to get response and reader
         result = await self.page.evaluate(script, await_promise=True)
 
         if isinstance(result, dict) and "error" in result:
@@ -295,10 +296,10 @@ class BrowserSession:
         yield {"type": "headers", "status": status, "headers": headers}
 
         if not ok:
-            # Still try to read error body
+            # Still try to read error body via a second fetch for the same URL
             pass
 
-        # Now stream the body
+        # Now stream the body using the response body reader
         stream_script = (
             "(async () => {"
             "  const response = await fetch(" + json.dumps(url) + ", {"
@@ -308,7 +309,7 @@ class BrowserSession:
                 "accept": "text/event-stream",
                 "content-type": "application/json",
             }) + ","
-            "    body: " + json.dumps(json_data) +
+            "    body: JSON.stringify(" + json.dumps(json_data) + ")"
             "  });"
             "  const reader = response.body.getReader();"
             "  const decoder = new TextDecoder();"
@@ -476,15 +477,19 @@ class AccountSession:
         # Single implementation - no duplicate
         current = await self._probe_drift_hash()
         if current is None:
-            return False, None
+            # Fail-closed: if we can't probe drift, treat as potential drift
+            return True, "Drift probe failed - cannot verify SDK integrity"
         if self._drift_hash and current != self._drift_hash:
-            # Update hash but report drift with both values
-            old_hash = self._drift_hash
-            self._drift_hash = current
-            return True, f"Drift detected: {old_hash[:16]} -> {current[:16]}"
+            # Report drift with both values, but DON'T update hash yet (preserve baseline)
+            return True, f"Drift detected: {self._drift_hash[:16]} -> {current[:16]}"
         # First time seeing hash - just store it
         self._drift_hash = current
         return False, None
+
+    async def _persist_drift_hash(self) -> None:
+        """Persist the current drift hash to disk."""
+        if self._drift_hash:
+            self.drift_hash_file.write_text(self._drift_hash)
 
     async def _drift_gate(self) -> None:
         """Fail-closed drift gate before any model-effect send."""
@@ -540,7 +545,9 @@ class AccountSession:
                     if status == 401 or status == 403:
                         evidence.state = TransportState.TRANSPORT_FAILED
                         evidence.error_code = ErrorCode.AUTHENTICATION_REQUIRED
-                        raise SessionNotReady(reason=f"Authentication failed: HTTP {status}")
+                        # Yield error evidence before raising
+                        yield {"error": {"message": f"Authentication failed: HTTP {status}", "evidence": evidence}}
+                        return
                     elif status == 429:
                         evidence.state = TransportState.TRANSPORT_FAILED
                         evidence.error_code = ErrorCode.RATE_LIMITED
@@ -550,11 +557,13 @@ class AccountSession:
                                 evidence.retry_after = float(retry_after)
                             except (TypeError, ValueError):
                                 pass
-                        raise SessionNotReady(reason="Rate limited")
+                        yield {"error": {"message": "Rate limited", "evidence": evidence}}
+                        return
                     elif status >= 500:
                         evidence.state = TransportState.TRANSPORT_FAILED
                         evidence.error_code = ErrorCode.TRANSPORT_FAILED
-                        raise RuntimeError(f"HTTP {status}")
+                        yield {"error": {"message": f"HTTP {status}", "evidence": evidence}}
+                        return
 
                     evidence.state = TransportState.RESPONSE_STARTED
                     continue
@@ -579,7 +588,8 @@ class AccountSession:
                 evidence.state = TransportState.TIMEOUT_UNCERTAIN
                 evidence.error_code = ErrorCode.TIMEOUT_UNCERTAIN
                 evidence.duration_ms = int((time.time() - start_time) * 1000)
-                raise RuntimeError("Stream ended without [DONE] marker - possible truncation")
+                yield {"error": {"message": "Stream ended without [DONE] marker - possible truncation", "evidence": evidence}}
+                return
 
             evidence.state = TransportState.COMPLETED
             evidence.duration_ms = int((time.time() - start_time) * 1000)
@@ -594,7 +604,8 @@ class AccountSession:
             evidence.state = TransportState.TIMEOUT_UNCERTAIN
             evidence.error_code = ErrorCode.TIMEOUT_UNCERTAIN
             evidence.duration_ms = int((time.time() - start_time) * 1000)
-            raise
+            yield {"error": {"message": "Timeout", "evidence": evidence}}
+            return
         except Exception:
             if evidence.state in (TransportState.NO_SEND_OBSERVED, TransportState.SEND_OBSERVED):
                 evidence.state = TransportState.TRANSPORT_FAILED
@@ -603,7 +614,8 @@ class AccountSession:
                 evidence.state = TransportState.TIMEOUT_UNCERTAIN
                 evidence.error_code = ErrorCode.TIMEOUT_UNCERTAIN
             evidence.duration_ms = int((time.time() - start_time) * 1000)
-            raise
+            yield {"error": {"message": "Transport error", "evidence": evidence}}
+            return
 
     def _build_payload(self, model: str, messages: list[dict]) -> dict:
         return {
@@ -637,12 +649,11 @@ class AccountSession:
         # Single implementation - no duplicate
         current = await self._probe_drift_hash()
         if current is None:
-            return False, None
+            # Fail-closed: if we can't probe drift, treat as potential drift
+            return True, "Drift probe failed - cannot verify SDK integrity"
         if self._drift_hash and current != self._drift_hash:
-            # Update hash but report drift with both values
-            old_hash = self._drift_hash
-            self._drift_hash = current
-            return True, f"Drift detected: {old_hash[:16]} -> {current[:16]}"
+            # Report drift with both values, but DON'T update hash yet (preserve baseline)
+            return True, f"Drift detected: {self._drift_hash[:16]} -> {current[:16]}"
         # First time seeing hash - just store it
         self._drift_hash = current
         return False, None
