@@ -17,6 +17,24 @@ from chatgptweb.session import (
 )
 
 
+def _evidence_to_dict(evidence: TransportEvidence | None) -> dict:
+    """Convert TransportEvidence dataclass to JSON-serializable dict."""
+    if evidence is None:
+        return {}
+    return {
+        "state": evidence.state.value if isinstance(evidence.state, TransportState) else evidence.state,
+        "upstream_request_id": evidence.upstream_request_id,
+        "upstream_session_id": evidence.upstream_session_id,
+        "http_status": evidence.http_status,
+        "retry_after": evidence.retry_after,
+        "reset_at": evidence.reset_at,
+        "error_code": evidence.error_code.value if isinstance(evidence.error_code, ErrorCode) else evidence.error_code,
+        "challenge_type": evidence.challenge_type,
+        "duration_ms": evidence.duration_ms,
+        "send_count": evidence.send_count,
+    }
+
+
 class JSONRPCError(Exception):
     """JSON-RPC typed error."""
     def __init__(self, code: int, message: str, data: dict | None = None):
@@ -122,24 +140,22 @@ class JSONRPCServer:
                 )
 
         # Build response with transport evidence (NO secrets)
-        # evidence is a TransportEvidence dataclass
-        if evidence is None:
-            evidence = {}
+        evidence_dict = _evidence_to_dict(evidence) if evidence else {}
 
         return {
             "content": "".join(content_parts),
             "metadata": {
                 "client_request_id": client_request_id,  # Echo back local ID
-                "status_code": getattr(evidence, "http_status", None),
-                "request_id": getattr(evidence, "upstream_request_id", None),  # May be None
+                "status_code": evidence.http_status if evidence else None,
+                "request_id": evidence.upstream_request_id if evidence else None,  # May be None
                 "session_id": None,  # Never return session IDs/secrets
-                "duration_ms": getattr(evidence, "duration_ms", 0),
+                "duration_ms": evidence.duration_ms if evidence else 0,
                 "model": params.get("model"),
-                "transport_state": getattr(evidence, "state", None),
-                "send_count": getattr(evidence, "send_count", 0),
-                "retry_after": getattr(evidence, "retry_after", None),
-                "reset_at": getattr(evidence, "reset_at", None),
-                "challenge_type": getattr(evidence, "challenge_type", None),
+                "transport_state": evidence.state.value if evidence and isinstance(evidence.state, TransportState) else (evidence.state if evidence else None),
+                "send_count": evidence.send_count if evidence else 0,
+                "retry_after": evidence.retry_after if evidence else None,
+                "reset_at": evidence.reset_at if evidence else None,
+                "challenge_type": evidence.challenge_type if evidence else None,
             }
         }
 
@@ -178,6 +194,8 @@ class JSONRPCServer:
                 f"Session not ready: {e.reason}",
                 {"challenge_type": e.challenge_type, "reason": e.reason}
             )
+        except DriftDetected as e:
+            raise JSONRPCError(self.CONTRACT_DRIFT, f"Drift detected: {e.message}")
 
     def _send_notification(self, method: str, params: dict):
         """Send JSON-RPC notification (no id, no response expected)."""
