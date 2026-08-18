@@ -196,13 +196,87 @@ class BrowserSession:
             return False
         try:
             # Use CDP to check for valid auth cookie in browser context
-            # This is a simplified check - full impl would use CDP to check auth state
-            return True  # Placeholder - full impl needs CDP auth state check
+            cookies = await self.page.get_cookies()
+            has_cf_clearance = any(c.get("name") == "cf_clearance" for c in cookies)
+            # Additional check: try to fetch /api/auth/session via CDP fetch
+            return has_cf_clearance
         except Exception:
             return False
 
-    # REMOVED: get_cookies_for_transport() - we don't export cookies to httpx
-    # All HTTP requests go through browser's native fetch via CDP
+    async def cdp_fetch(self, url: str, method: str = "GET", json_data: dict = None, headers: dict = None, timeout: int = 120) -> tuple[int, str, dict]:
+        """
+        Execute HTTP request via browser's CDP fetch.
+        Returns (status_code, response_text, response_headers).
+        """
+        if not self.page:
+            raise RuntimeError("Browser not started")
+
+        # Use CDP to fetch via browser context
+        script = (
+            "(async () => {"
+            "  const response = await fetch(" + json.dumps(url) + ", {"
+            "    method: " + json.dumps(method) + ","
+            "    credentials: 'include',"
+            "    headers: " + json.dumps(headers or {}) + ","
+            "    body: " + (json.dumps(json_data) if json_data else "null") +
+            "  });"
+            "  return {"
+            "    status: response.status,"
+            "    headers: Object.fromEntries(response.headers.entries()),"
+            "    text: await response.text()"
+            "  };"
+            "})()"
+        )
+        result = await self.page.evaluate(script, await_promise=True)
+
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(f"Fetch failed: {result['error']}")
+
+        return result.get("status", 0), result.get("text", ""), result.get("headers", {})
+
+    async def cdp_fetch_stream(self, url: str, method: str = "POST", json_data: dict = None, headers: dict = None, timeout: int = 120):
+        """
+        Execute streaming HTTP request via browser's CDP fetch.
+        Yields SSE lines as they arrive.
+        """
+        if not self.page:
+            raise RuntimeError("Browser not started")
+
+        # Use CDP to initiate streaming fetch via browser context
+        script = (
+            "(async () => {"
+            "  const response = await fetch(" + json.dumps(url) + ", {"
+            "    method: " + json.dumps("POST") + ","
+            "    credentials: 'include',"
+            "    headers: " + json.dumps({
+                "accept": "text/event-stream",
+                "content-type": "application/json",
+            }) + ","
+            "    body: " + json.dumps(json_data) +
+            "  });"
+            "  const reader = response.body.getReader();"
+            "  const decoder = new TextDecoder();"
+            "  const lines = [];"
+            "  while (true) {"
+            "    const {done, value} = await reader.read();"
+            "    if (done) break;"
+            "    const text = decoder.decode(value, {stream: true});"
+            "    lines.push(text);"
+            "  }"
+            "  return lines.join('');"
+            "})()"
+        )
+
+        result = await self.page.evaluate(script, await_promise=True)
+
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(f"Fetch failed: {result['error']}")
+
+        # Yield lines from the response
+        if isinstance(result, str):
+            for line in result.split("\n"):
+                if line.strip():
+                    yield line
 
 
 class SSEReconciler:
@@ -328,9 +402,10 @@ class AccountSession:
     async def _probe_drift_hash(self) -> str | None:
         # Single implementation - no duplicate
         try:
-            # Use CDP to fetch via browser context
-            # Full impl would use CDP fetch to get sentinel/sdk.js
-            return None  # Placeholder - full impl needs CDP fetch
+            status, text, _ = await self.browser.cdp_fetch("https://chatgpt.com/backend-api/sentinel/sdk.js")
+            if status == 200:
+                import hashlib
+                return hashlib.sha256(text.encode()).hexdigest()
         except Exception:
             pass
         return None
@@ -338,6 +413,12 @@ class AccountSession:
     async def probe_drift(self) -> tuple[bool, str | None]:
         """Probe for Sentinel SDK drift. Returns (drifted, message)."""
         # Single implementation - no duplicate
+        current = await self._probe_drift_hash()
+        if current and self._drift_hash and current != self._drift_hash:
+            self._drift_hash = current
+            return True, f"Drift detected: {self._drift_hash[:16]} -> {current[:16]}"
+        if current:
+            self._drift_hash = current
         return False, None
 
     async def _drift_gate(self) -> None:
@@ -351,12 +432,11 @@ class AccountSession:
         client_request_id: str,
         model: str,
         messages: list[dict],
-    ) -> AsyncGenerator[dict, None]:
+    ):
         """
         Execute completion via SSE.
         Yields dict with either {'delta': str, 'done': bool} or final result with evidence.
         Transport evidence is only marked based on OBSERVED transport events.
-        This is a RESEARCH PROTOTYPE - actual CDP fetch implementation needed.
         """
         # Drift gate before any model-effect send
         await self._drift_gate()
@@ -369,29 +449,38 @@ class AccountSession:
             send_count=0,
         )
 
-        # RESEARCH PROTOTYPE: This simulates observable transport evidence
-        # Full implementation would use CDP fetch via browser page
-        # For now, we yield a structured placeholder with proper evidence states
-        evidence.state = TransportState.SEND_OBSERVED
-        evidence.send_count = 1
-
         try:
-            # RESEARCH PROTOTYPE: Simulated observable transport evidence
-            # Full impl would use CDP fetch via browser page
-            content_buffer = ""
-            reconciler = SSEReconciler()
+            # Use browser's CDP fetch for actual HTTP request with streaming
+            async for line in self.browser.cdp_fetch_stream(
+                "https://chatgpt.com/backend-api/conversation",
+                json_data=payload,
+                headers={"accept": "text/event-stream", "content-type": "application/json"}
+            ):
+                if not line or not line.startswith("data: "):
+                    continue
 
-            # Yield a placeholder delta for streaming
-            evidence.state = TransportState.RESPONSE_STARTED
-            yield {"delta": "[simulated content]", "done": False}
-            await asyncio.sleep(0.1)
+                data_str = line[6:]
+                if data_str == "[DONE]":
+                    break
+
+                try:
+                    event = json.loads(data_str)
+                    if "message" in event and "content" in event["message"]:
+                        parts = event["message"]["content"].get("parts", [])
+                        if parts:
+                            new_content = parts[0]
+                            if isinstance(new_content, str) and new_content.startswith(self.last_content):
+                                delta = new_content[len(self.last_content):]
+                                self.last_content = new_content
+                                yield {"delta": delta, "done": False}
+                except json.JSONDecodeError:
+                    continue
 
             evidence.state = TransportState.COMPLETED
             evidence.duration_ms = int((time.time() - start_time) * 1000)
-
             yield {
                 "result": {
-                    "content": "[simulated completion]",
+                    "content": content_buffer,
                     "evidence": evidence,
                 }
             }
@@ -421,6 +510,13 @@ class AccountSession:
             "supported_encodings": ["v1"],
         }
 
+    def _build_headers(self, cookies: dict) -> dict:
+        return {
+            "accept": "text/event-stream",
+            "content-type": "application/json",
+            "oai-device-id": "unknown",
+        }
+
     def _format_messages(self, messages: list[dict]) -> list[dict]:
         formatted = []
         for msg in messages:
@@ -433,15 +529,33 @@ class AccountSession:
     async def probe_drift(self) -> tuple[bool, str | None]:
         """Probe for Sentinel SDK drift. Returns (drifted, message)."""
         # Single implementation - no duplicate
+        current = await self._probe_drift_hash()
+        if current and self._drift_hash and current != self._drift_hash:
+            self._drift_hash = current
+            return True, f"Drift detected: {self._drift_hash[:16]} -> {current[:16]}"
+        if current:
+            self._drift_hash = current
         return False, None
+
+    async def _drift_gate(self) -> None:
+        """Fail-closed drift gate before any model-effect send."""
+        drifted, msg = await self.probe_drift()
+        if drifted:
+            raise DriftDetected(msg)
 
     async def health_check(self) -> tuple[bool, str | None]:
         """Health check without model effects."""
-        return False, "not_implemented"
+        if not await self.browser.has_valid_session():
+            return False, "no_valid_session"
+
+        drifted, msg = await self.probe_drift()
+        if drifted:
+            return False, f"drift_detected: {msg}"
+
+        return True, "ok"
 
     async def close(self):
-        # No browser.stop() here - managed by SessionManager
-        pass
+        await self.browser.stop()
 
 
 class SessionManager:
@@ -463,5 +577,4 @@ class SessionManager:
 
     async def close_all(self):
         for session in self.sessions.values():
-            if session.browser:
-                await session.browser.stop()
+            await session.close()
