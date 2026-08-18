@@ -85,6 +85,22 @@ type ProviderResponseMetadata struct {
 
 	// Model is the model that actually generated the response.
 	Model string
+
+	// TransportState is the observable transport evidence state.
+	// Values: "no_send_observed", "send_observed", "response_started",
+	// "completed", "canceled", "timeout_uncertain", "transport_failed", "unknown"
+	TransportState string
+
+	// SendCount is the physical model-effect send count observed.
+	SendCount int
+
+	// ErrorCode is the typed error classification if transport failed.
+	// Values: "authentication_required", "human_challenge_required", "rate_limited",
+	// "contract_drift", "transport_failed", "timeout_uncertain", "configuration_error"
+	ErrorCode string
+
+	// ChallengeType is the challenge type if auth/challenge was detected.
+	ChallengeType string
 }
 
 // HealthResult is the result of a provider health check.
