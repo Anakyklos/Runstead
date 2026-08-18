@@ -10,6 +10,10 @@ from chatgptweb.config import settings
 from chatgptweb.session import (
     SessionManager,
     SessionNotReady,
+    DriftDetected,
+    TransportEvidence,
+    TransportState,
+    ErrorCode,
 )
 
 
@@ -84,10 +88,12 @@ class JSONRPCServer:
                 f"Session not ready: {e.reason}",
                 {"challenge_type": e.challenge_type, "reason": e.reason}
             )
+        except DriftDetected as e:
+            raise JSONRPCError(self.CONTRACT_DRIFT, f"Drift detected: {e.message}")
 
         # Execute completion with streaming
         content_parts = []
-        evidence = {}
+        evidence = None
 
         async for chunk in session.complete(
             client_request_id=client_request_id,
@@ -105,7 +111,7 @@ class JSONRPCServer:
             elif "result" in chunk:
                 # Final result with transport evidence
                 result = chunk["result"]
-                evidence = result.get("evidence", {})
+                evidence = result.get("evidence", None)
                 "".join(content_parts)
             elif "error" in chunk:
                 # Transport error
@@ -116,20 +122,24 @@ class JSONRPCServer:
                 )
 
         # Build response with transport evidence (NO secrets)
+        # evidence is a TransportEvidence dataclass
+        if evidence is None:
+            evidence = {}
+
         return {
             "content": "".join(content_parts),
             "metadata": {
                 "client_request_id": client_request_id,  # Echo back local ID
-                "status_code": evidence.get("http_status", 200),
-                "request_id": evidence.get("upstream_request_id"),  # May be None
+                "status_code": getattr(evidence, "http_status", None),
+                "request_id": getattr(evidence, "upstream_request_id", None),  # May be None
                 "session_id": None,  # Never return session IDs/secrets
-                "duration_ms": evidence.get("duration_ms", 0),
+                "duration_ms": getattr(evidence, "duration_ms", 0),
                 "model": params.get("model"),
-                "transport_state": evidence.get("state"),
-                "send_count": evidence.get("send_count", 0),
-                "retry_after": evidence.get("retry_after"),
-                "reset_at": evidence.get("reset_at"),
-                "challenge_type": evidence.get("challenge_type"),
+                "transport_state": getattr(evidence, "state", None),
+                "send_count": getattr(evidence, "send_count", 0),
+                "retry_after": getattr(evidence, "retry_after", None),
+                "reset_at": getattr(evidence, "reset_at", None),
+                "challenge_type": getattr(evidence, "challenge_type", None),
             }
         }
 
@@ -153,15 +163,15 @@ class JSONRPCServer:
         }
 
     async def handle_warm_session(self, params: dict) -> dict:
-        """Warm session - may return challenge requirement."""
+        """Warm session - may raise SessionNotReady with challenge."""
         account_id = params.get("account_id") or settings.default_account
         if not account_id:
             raise JSONRPCError(self.INVALID_PARAMS, "No account_id provided")
 
         session = self.session_manager.get_session(account_id)
         try:
-            warm, challenge = await session.warm()
-            return {"warmed": warm, "challenge_type": challenge}
+            await session.warm()
+            return {"warmed": True, "challenge_type": None}
         except SessionNotReady as e:
             raise JSONRPCError(
                 self.HUMAN_CHALLENGE_REQUIRED if e.challenge_type else self.AUTHENTICATION_REQUIRED,
