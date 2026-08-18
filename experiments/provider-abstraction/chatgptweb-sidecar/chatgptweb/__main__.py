@@ -14,25 +14,8 @@ from chatgptweb.session import (
     TransportEvidence,
     TransportState,
     ErrorCode,
+    _evidence_to_dict,
 )
-
-
-def _evidence_to_dict(evidence: TransportEvidence | None) -> dict:
-    """Convert TransportEvidence dataclass to JSON-serializable dict."""
-    if evidence is None:
-        return {}
-    return {
-        "state": evidence.state.value if isinstance(evidence.state, TransportState) else evidence.state,
-        "upstream_request_id": evidence.upstream_request_id,
-        "upstream_session_id": evidence.upstream_session_id,
-        "http_status": evidence.http_status,
-        "retry_after": evidence.retry_after,
-        "reset_at": evidence.reset_at,
-        "error_code": evidence.error_code.value if isinstance(evidence.error_code, ErrorCode) else evidence.error_code,
-        "challenge_type": evidence.challenge_type,
-        "duration_ms": evidence.duration_ms,
-        "send_count": evidence.send_count,
-    }
 
 
 class JSONRPCError(Exception):
@@ -132,7 +115,7 @@ class JSONRPCServer:
                 evidence = result.get("evidence", None)
                 "".join(content_parts)
             elif "error" in chunk:
-                # Transport error
+                # Transport error - evidence already serialized in chunk
                 raise JSONRPCError(
                     self.TRANSPORT_FAILED,
                     chunk["error"].get("message", "Transport error"),
