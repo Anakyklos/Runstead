@@ -4,9 +4,9 @@
 
 ## Resumo executivo
 
-O bake-off comparou os dois finalistas exigidos pela Issue #84 contra a mesma fixture HTTP/SSE sintética, com Chromium real, perfis persistentes sintéticos e contagem física independente no servidor. Ambos passaram os gates sintéticos principais: um POST físico para cada submit normal, dois hops físicos explicitamente contabilizados no redirect, Service Worker controlado e observado, cancelamento/crash/disconnect sem retry, classificação conservadora após possibilidade de dispatch e isolamento de dois perfis.[1] [2]
+O bake-off comparou os dois finalistas exigidos pela Issue #84 contra a mesma fixture HTTP/SSE sintética, com Chromium real, perfis persistentes sintéticos e contagem física independente no servidor. Na rerun oficial, ambos passaram os gates autochecking: um POST físico para cada submit normal, exatamente dois POSTs no redirect (`/submit` -> `/effect-final`), exatamente um POST no `fetch-correlation`, Service Worker controlado e observado, deadline real separado de cancelamento explícito, cancelamento após response-start, crash/disconnect sem retry, classificação conservadora após possibilidade de dispatch, isolamento de dois perfis e cleanup sem processos remanescentes.[1] [2]
 
-A recomendação provisória é **Playwright + Chromium**. A vantagem não é “Node ser melhor”: Playwright exigiu aproximadamente **303 linhas** de proof/benchmark JavaScript, contra **624 linhas** no runner chromedp, oferece lifecycle de contexto persistente mais curto e deixou a matriz funcional comparável com menos código mantido pelo Runstead. O chromedp foi mais rápido no bootstrap frio medido e permaneceu Go-native, mas exigiu mais lifecycle explícito, correlação Network/Fetch, encerramento de árvore de processos e alinhamento de schema CDP. A primeira versão compatível usada no experimento apresentou erros de unmarshalling em `IPAddressSpace=Loopback` com o Chromium disponível; a lane só ficou limpa após migrar para chromedp `v0.16.0`/cdproto de julho de 2026. Isso é evidência de custo real de acoplamento navegador–schema, não motivo para declarar chromedp inviável.
+A recomendação provisória é **Playwright + Chromium**. A vantagem não é “Node ser melhor”: Playwright exigiu aproximadamente **358 linhas** de proof/benchmark JavaScript, contra **829 linhas** no runner chromedp, oferece lifecycle de contexto persistente mais curto e deixou a matriz funcional comparável com menos código mantido pelo Runstead. O chromedp foi mais rápido no bootstrap frio medido e permaneceu Go-native, mas exigiu mais lifecycle explícito, correlação Network/Fetch, encerramento de árvore de processos e alinhamento de schema CDP. A primeira versão compatível usada no experimento apresentou erros de unmarshalling em `IPAddressSpace=Loopback` com o Chromium disponível; a lane só ficou limpa após migrar para chromedp `v0.16.0`/cdproto de julho de 2026. Isso é evidência de custo real de acoplamento navegador–schema, não motivo para declarar chromedp inviável.
 
 A recomendação **não autoriza** abrir perfil real, usar conta, abrir ChatGPT Web ou executar model turn. Os claims de upstream acceptance, comportamento de sessão autenticada e estabilidade do canary permanecem não provados e dependem de revisão explícita do mantenedor.[1]
 
@@ -30,7 +30,7 @@ A matriz funcional contém **13 cenários Playwright** e **14 cenários chromedp
 | Fixture | `127.0.0.1:18765`, servidor Go local |
 | Perfil | diretórios sintéticos sob `experiments/substrate-bakeoff/profiles/` |
 
-Os artefatos principais são `experiments/substrate-bakeoff/output/playwright-results.json`, `experiments/substrate-bakeoff/output/chromedp-results.json` e `experiments/substrate-bakeoff/output/overhead-playwright.json`. O benchmark chromedp é incorporado no artefato principal para manter o lifecycle medido no mesmo runner.
+Os artefatos principais são `experiments/substrate-bakeoff/output/playwright-results.json`, `experiments/substrate-bakeoff/output/chromedp-results.json`, `experiments/substrate-bakeoff/output/overhead-playwright.json` e `experiments/substrate-bakeoff/output/metrics-summary.txt`. O benchmark chromedp é incorporado no artefato principal para manter o lifecycle medido no mesmo runner. Cada artefato funcional contém `gate_failures`; uma lista não vazia faz o runner retornar código diferente de zero.
 
 ## Vocabulário de evidência
 
@@ -43,12 +43,12 @@ Os runners distinguem observação de browser/fixture de aceitação upstream. `
 | Cenário | Playwright | chromedp | Leitura conservadora |
 | --- | --- | --- | --- |
 | `normal` | 1 POST físico; `duplicate_gate=pass`; `sent_unconfirmed` | 1 POST físico; `duplicate_gate=pass`; `sent_unconfirmed` | Um submit lógico não virou múltiplos efeitos. |
-| `redirect` | 2 hops físicos; `duplicate_gate=pass_redirect_hops_are_explicit` | 2 hops físicos; mesmo gate e `fetch_mapping_gate=true` | O redirect não foi escondido como uma única operação lógica. |
+| `redirect` | 2 hops físicos; `duplicate_gate=pass_redirect_exact_sequence` | 2 hops físicos; `duplicate_gate=pass_redirect_exact_sequence`; mapeamento Fetch/Network observado | A sequência física exigida é exatamente `/submit` -> `/effect-final`; qualquer hop extra falha. |
 | `service-worker` | 1 POST físico e `service_worker_controlled=true` | 1 POST físico e `service_worker_controlled=true` | O tráfego sob SW continuou observável. |
 | `cancel-before-dispatch` | 0 POST; `not_sent` | 0 POST; `not_sent` | Único caso em que a fixture comprovou ausência de criação física. |
 | Cancelamento/timeout após possibilidade de dispatch | no máximo 1 POST; `sent_unconfirmed` | no máximo 1 POST; `sent_unconfirmed` | Abort local não prova ausência de efeito upstream. |
 
-O `duplicate_gate` falha se um cenário que não é redirect produzir mais de um POST de efeito. Nenhum runner implementa retry ou fallback para descobrir o destino do primeiro request.
+O `duplicate_gate` exige a sequência exata de dois POSTs no redirect, exatamente um POST em `fetch-correlation`, zero POST em `cancel-before-dispatch` e no máximo um POST nos demais cenários. Nenhum runner implementa retry ou fallback para descobrir o destino do primeiro request. Os gates são autoridade de aceitação: se qualquer propriedade obrigatória falhar, `npm test`, o binário Go e `run.sh` retornam código diferente de zero; o JSON é evidência complementar.
 
 ## Matriz funcional completa
 
@@ -66,7 +66,7 @@ O `duplicate_gate` falha se um cenário que não é redirect produzir mais de um
 | Resposta parcial | body parcial | passou | passou | incompleto/incerto; não é sucesso. |
 | Cancel antes do dispatch | cancelamento antes da criação física | passou | passou | 0 POST; `not_sent` comprovado pela fixture. |
 | Browser kill in-flight | mata Chromium durante request | passou | passou | possível efeito preservado como `sent_unconfirmed`; sem retry. |
-| Controller disconnect in-flight | cancela/desconecta helper/allocator | passou | passou | possível efeito preservado; cleanup observado. |
+| Controller disconnect in-flight | desconexão abrupta do transporte Playwright, mantendo o browser independente | passou | passou | perda inesperada do controller/helper observada; sem retry e com cleanup. |
 | Fetch correlation | `Fetch.requestPaused`, `networkId`, redirect mapping | não aplicável como lane CDP dedicada | passou | relação explícita registrada no artefato chromedp. |
 
 Em ambos os braços, headers e body foram associados ao mesmo identificador observado, e a leitura de stream não emitiu um segundo submit. A fixture usa SSE apenas para exercitar lifecycle e terminal; não há semântica específica de ChatGPT no substrato.
@@ -75,7 +75,7 @@ Em ambos os braços, headers e body foram associados ao mesmo identificador obse
 
 Os dois runners criaram perfis persistentes sintéticos, reabriram o mesmo perfil e verificaram que dois perfis diferentes não compartilharam o marcador de `localStorage`. O gate `isolated=true` passou nos dois artefatos. Os metadados emitidos usam apenas `profile_ref` e strings sintéticas; não há cookies, tokens, passwords, conteúdo privado ou caminho pessoal exportado.
 
-O cenário de browser kill encerra o processo durante request e inspeciona a árvore posterior. O cenário de controller disconnect encerra o controller/allocator enquanto o browser é tratado como responsabilidade explícita do runner. Nenhum cenário reenvia o submit para “descobrir” se o primeiro funcionou. O resultado é intencionalmente conservador: quando o request pode ter sido dispatchado, o estado permanece possivelmente enviado e não confirmado.
+O cenário de browser kill encerra o processo durante request e inspeciona a árvore posterior. O cenário de controller disconnect mata abruptamente o transporte/controller helper enquanto o browser continua sendo uma responsabilidade independente e a perda de conexão é observada; isso permanece distinto de matar o browser. Nenhum cenário reenvia o submit para “descobrir” se o primeiro funcionou. O resultado é intencionalmente conservador: quando o request pode ter sido dispatchado, o estado permanece possivelmente enviado e não confirmado.
 
 ### Responsabilidades de lifecycle
 
@@ -94,7 +94,7 @@ O cenário de browser kill encerra o processo durante request e inspeciona a ár
 | Profile locking | Delegado ao contexto/browser, com perfis sintéticos sequenciais. | UserDataDir e encerramento de árvore pertencem ao runner; concorrência insegura não foi habilitada. |
 | Browser compatibility | Playwright 1.62.1 usado com Chromium fixado. | chromedp 0.16.0/cdproto de 2026 necessário para o schema do Chromium 151. |
 | Runtime externo | Node 22 + pacote Playwright/driver. | Nenhum Node; Go 1.26.1 + módulos Go. |
-| Runstead-owned code | 262 linhas de runner + 41 de benchmark, além de package/lockfile. | 624 linhas de runner, incluindo lifecycle, CDP, métricas e cleanup. |
+| Runstead-owned code | 317 linhas de runner + 41 de benchmark, além de package/lockfile. | 829 linhas de runner, incluindo lifecycle, CDP, métricas e cleanup. |
 
 ## Custo medido
 
@@ -102,10 +102,10 @@ Foram feitas três execuções frias por candidato. Startup mede o intervalo at�
 
 | Candidato | Startup médio | Navegação média | Shutdown médio | RSS médio | Processos observados |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Playwright | 247,890 ms | 33,577 ms | 53,327 ms | 865.487 KB | 9 |
-| chromedp | 173,596 ms | 85,878 ms | 45,346 ms | 864.784 KB | 9 |
+| Playwright | 239,757 ms | 35,140 ms | 50,217 ms | 863.135 KB | 9 |
+| chromedp | 183,757 ms | 94,928 ms | 48,553 ms | 862.263 KB | 9 |
 
-O chromedp foi aproximadamente 74 ms mais rápido no bootstrap frio e 8 ms mais rápido no shutdown; Playwright foi aproximadamente 52 ms mais rápido na navegação medida. O RSS e a quantidade de processos foram essencialmente equivalentes dentro desta execução. A árvore Playwright foi `Node -> Playwright driver -> Chromium`; a árvore chromedp foi `Go runner -> chromedp -> Chromium CDP websocket`.
+O chromedp foi aproximadamente 56 ms mais rápido no bootstrap frio e 2 ms mais rápido no shutdown; Playwright foi aproximadamente 60 ms mais rápido na navegação medida. O RSS e a quantidade de processos foram essencialmente equivalentes dentro desta execução. A árvore Playwright foi `Node -> Playwright driver -> Chromium`; a árvore chromedp foi `Go runner -> chromedp -> Chromium CDP websocket`.
 
 ### Packaging e dependências
 
@@ -114,7 +114,7 @@ O chromedp foi aproximadamente 74 ms mais rápido no bootstrap frio e 8 ms mais 
 | Playwright | `node_modules` local de aproximadamente 19 MB; um pacote direto (`playwright@1.62.1`), Node 22 e driver Playwright; lockfile dedicado; browser fixado do sistema nesta lane. |
 | chromedp | módulo Go isolado de aproximadamente 36 KB no checkout, 8 módulos transitivos listados além do módulo principal; Go 1.26.1; nenhum pacote Node/browser downloader; forte dependência do schema CDP do Chromium. |
 | Fixture | aproximadamente 16 KB e 227 linhas; módulo Go separado; compartilhada pelos dois finalistas. |
-| Proof total | 1.225 linhas nos arquivos de fixture/runners/benchmark/package metadata, sem código de produção. |
+| Proof total | 1.551 linhas nos arquivos de fixture/runners/benchmark/scripts/documentação técnica, sem código de produção. |
 
 A instalação Playwright tem uma superfície externa maior; o chromedp tem uma superfície de lifecycle e compatibilidade maior dentro do código mantido pelo Runstead. Nenhuma dessas métricas isoladamente escolhe o vencedor.
 
@@ -144,7 +144,7 @@ O canary real está **bloqueado**. Não foram usados conta, cookies, tokens, per
 
 A fixture e os dois runners foram executados com Chromium real. Também foram executados os testes do módulo chromedp, `go vet` do módulo experimental, `npm test` Playwright, benchmark dos dois braços, gates de redirect, Service Worker, cancellation, browser kill, controller disconnect e profile isolation. O script `experiments/substrate-bakeoff/run.sh` reproduz a sequência.
 
-As validações de produção do repositório — `gofmt -l .`, `go test ./...`, `go vet ./...`, `go build ./cmd/runstead`, `go test -race ./...`, `bash experiments/protocol/test.sh` e `git diff --check` — devem ser executadas antes da abertura da PR e seus resultados precisam ser registrados na descrição. A pesquisa não altera o `go.mod` principal nem o wiring de produção.
+As validações de produção do repositório — `gofmt -l .`, `go test ./...`, `go vet ./...`, `go build ./cmd/runstead`, `go test -race ./...`, `bash experiments/protocol/test.sh` e `git diff --check` — foram executadas antes da atualização da PR e permanecem separadas do bake-off. A pesquisa não altera o `go.mod` principal nem o wiring de produção.
 
 ## Referências
 

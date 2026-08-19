@@ -14,19 +14,38 @@ Este diretório contém uma pesquisa isolada para comparar **Playwright 1.62.1 +
 
 ## Execução
 
-O ambiente de referência usa Chromium `/usr/bin/chromium` versão `151.0.7922.71`, Node `v22.13.0`, Playwright `1.62.1`, Go `1.26.1`, chromedp `v0.16.0` e cdproto `v0.0.0-20260714215040-dc233986426f`. Para repetir a matriz, execute:
+O ambiente de referência usou Chromium `151.0.7922.71`, Node `v22.13.0`, Playwright `1.62.1`, Go `1.26.1`, chromedp `v0.16.0` e cdproto `v0.0.0-20260714215040-dc233986426f`. O script não assume caminhos locais: detecta `go`/Chromium no `PATH` e permite sobrescrever tudo por ambiente.
+
+Para repetir a matriz com a fixture local:
 
 ```bash
 ./run.sh
 ```
 
-Para os gates separados, use:
+Inputs opcionais:
+
+```bash
+GO_BIN=/caminho/para/go \
+CHROMIUM_PATH=/caminho/para/chromium \
+RUNSTEAD_FIXTURE_ADDR=127.0.0.1:18765 \
+./run.sh
+```
+
+Para usar uma fixture já em execução, sem iniciar a fixture local:
+
+```bash
+START_FIXTURE=0 RUNSTEAD_FIXTURE_URL=http://127.0.0.1:18765 ./run.sh
+```
+
+O script usa `npm ci` a partir do `package-lock.json`, não executa `go mod tidy` e retorna código não-zero se qualquer gate autochecking falhar. Os gates incluem cleanup completo do Chromium, isolamento de perfil, controle/observação do Service Worker, deadline real, ordem de cancelamento pós-response-start, sequência exata do redirect (`/submit` → `/effect-final`), correlação Fetch/Network, single-send e disconnect abrupto do transporte.
+
+Para os checks separados, use:
 
 ```bash
 (cd fixture && go test ./...)
-(cd playwright && npm test)
-(cd chromedp && /home/ubuntu/go1.26.1/bin/go test ./...)
-(cd chromedp && /home/ubuntu/go1.26.1/bin/go vet ./...)
+(cd playwright && npm ci --ignore-scripts && npm test)
+(cd chromedp && "$GO_BIN" test ./...)
+(cd chromedp && "$GO_BIN" vet ./...)
 ```
 
 O script usa um Chromium já instalado e, portanto, não baixa um browser a cada execução. A lane Playwright registra essa escolha e a dependência do runtime Node/driver; a lane chromedp registra a dependência do toolchain Go e do schema CDP observado. A instalação de browser, atualização, rollback e sincronização de versões permanecem parte do custo operacional descrito em `docs/research/issue-84-substrate-bakeoff.md`.

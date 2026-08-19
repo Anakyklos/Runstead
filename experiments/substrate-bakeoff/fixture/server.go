@@ -106,6 +106,7 @@ func (f *fixture) page(w http.ResponseWriter, _ *http.Request) {
       const state = results.get(id) || {id, scenario};
       state.phase = error && error.name === 'AbortError' ? 'physical_abort_observed' : 'response_incomplete';
       state.error_name = error && error.name ? error.name : 'unknown';
+      state.abort_cause = state.timeout_cause || 'explicit_cancel_or_transport';
       state.error_message = String(error && error.message ? error.message : error);
       results.set(id, state);
     }).finally(() => active.delete(id));
@@ -114,6 +115,16 @@ func (f *fixture) page(w http.ResponseWriter, _ *http.Request) {
   window.cancelSubmit = id => {
     const controller = active.get(id) || active.values().next().value;
     if (controller) controller.abort();
+  };
+  window.deadlineSubmit = (id, milliseconds) => {
+    setTimeout(() => {
+      const state = results.get(id) || {id};
+      state.deadline_elapsed = true;
+      state.timeout_cause = 'caller_deadline';
+      results.set(id, state);
+      const controller = active.get(id);
+      if (controller) controller.abort();
+    }, milliseconds);
   };
   window.getSubmitResult = id => results.get(id) || null;
   window.serviceWorkerControlled = () => Boolean(navigator.serviceWorker && navigator.serviceWorker.controller);
@@ -151,7 +162,7 @@ func (f *fixture) submit(w http.ResponseWriter, r *http.Request) {
 
 	index := f.appendEvent(r, scenario, "received", body)
 	if scenario == "headers-delay" {
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(1000 * time.Millisecond)
 	}
 	if scenario == "open" {
 		w.Header().Set("Content-Type", "text/plain")
@@ -179,7 +190,7 @@ func (f *fixture) submit(w http.ResponseWriter, r *http.Request) {
 			_, _ = fmt.Fprint(w, "headers-sent\n")
 			flusher.Flush()
 		}
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(1000 * time.Millisecond)
 		_, _ = fmt.Fprint(w, "body-after-delay\n")
 		return
 	}

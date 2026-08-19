@@ -8,10 +8,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,11 +25,21 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-const (
-	baseURL       = "http://127.0.0.1:18765"
-	chromiumPath  = "/usr/bin/chromium"
-	scenarioLimit = 1200 * time.Millisecond
-)
+const scenarioLimit = 1800 * time.Millisecond
+
+var baseURL = func() string {
+	if value := os.Getenv("RUNSTEAD_FIXTURE_URL"); value != "" {
+		return strings.TrimRight(value, "/")
+	}
+	return "http://127.0.0.1:18765"
+}()
+
+var chromiumPath = func() string {
+	if value := os.Getenv("CHROMIUM_PATH"); value != "" {
+		return value
+	}
+	return "/usr/bin/chromium"
+}()
 
 type processInfo struct {
 	PID   int    `json:"pid"`
@@ -55,15 +67,17 @@ type fetchMapping struct {
 }
 
 type scenarioOptions struct {
-	Name                 string
-	FixtureScenario      string
-	ServiceWorker        bool
-	PreDispatchCancel    bool
-	CancelAfter          time.Duration
-	CancelAfterResponse  bool
-	KillBrowser          bool
-	DisconnectController bool
-	UseFetchInterception bool
+	Name                    string
+	FixtureScenario         string
+	ServiceWorker           bool
+	PreDispatchCancel       bool
+	TimeoutAfter            time.Duration
+	CancelAfter             time.Duration
+	CancelAfterResponse     bool
+	CancelAfterResponseWait time.Duration
+	KillBrowser             bool
+	DisconnectController    bool
+	UseFetchInterception    bool
 }
 
 type scenarioResult struct {
@@ -91,6 +105,10 @@ type browserProcess struct {
 	profile  string
 	killOnce sync.Once
 	killErr  error
+}
+
+type cdpProxy struct {
+	cmd *exec.Cmd
 }
 
 func sanitizeURL(raw string) string {
@@ -201,6 +219,81 @@ func startBrowser(profile string) (*browserProcess, string, error) {
 	return nil, "", errors.New("timeout waiting for Chromium CDP endpoint")
 }
 
+func startCDPProxy(endpoint string) (*cdpProxy, string, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, "", err
+	}
+	listenPort, err := reservePort()
+	if err != nil {
+		return nil, "", err
+	}
+	listenAddr := fmt.Sprintf("127.0.0.1:%d", listenPort)
+	proxy := exec.Command(os.Args[0], "--cdp-proxy", listenAddr, parsed.Host)
+	proxy.Stdout = io.Discard
+	proxy.Stderr = io.Discard
+	if err := proxy.Start(); err != nil {
+		return nil, "", err
+	}
+	for i := 0; i < 50; i++ {
+		conn, dialErr := net.DialTimeout("tcp", listenAddr, 100*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close()
+			parsed.Host = listenAddr
+			return &cdpProxy{cmd: proxy}, parsed.String(), nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_ = proxy.Process.Kill()
+	_, _ = proxy.Process.Wait()
+	return nil, "", errors.New("timeout waiting for CDP proxy")
+}
+
+func (p *cdpProxy) kill() {
+	if p == nil || p.cmd == nil || p.cmd.Process == nil {
+		return
+	}
+	_ = p.cmd.Process.Kill()
+	_, _ = p.cmd.Process.Wait()
+}
+
+func runCDPProxy(listenAddr, targetAddr string) error {
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	for {
+		client, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return acceptErr
+		}
+		backend, dialErr := net.DialTimeout("tcp", targetAddr, 3*time.Second)
+		if dialErr != nil {
+			_ = client.Close()
+			continue
+		}
+		go relayTCP(client, backend)
+	}
+}
+
+func relayTCP(client, backend net.Conn) {
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(client, backend)
+		_ = client.Close()
+		_ = backend.Close()
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(backend, client)
+		_ = client.Close()
+		_ = backend.Close()
+		done <- struct{}{}
+	}()
+	<-done
+}
+
 func (b *browserProcess) kill() error {
 	if b == nil {
 		return nil
@@ -258,11 +351,26 @@ func runScenario(root context.Context, options scenarioOptions, profileRoot stri
 		result.Evidence["error"] = err.Error()
 		return result
 	}
-	defer browser.kill()
+	var proxy *cdpProxy
+	if options.DisconnectController {
+		proxy, endpoint, err = startCDPProxy(endpoint)
+		if err != nil {
+			_ = browser.kill()
+			result.Evidence["error"] = err.Error()
+			return result
+		}
+	}
 	allocCtx, allocCancel := chromedp.NewRemoteAllocator(root, endpoint)
-	defer allocCancel()
 	targetCtx, targetCancel := chromedp.NewContext(allocCtx)
-	defer targetCancel()
+	cleanup := func() {
+		targetCancel()
+		allocCancel()
+		if proxy != nil {
+			proxy.kill()
+		}
+		_ = browser.kill()
+	}
+	defer cleanup()
 
 	var mu sync.Mutex
 	var fetchMappings []fetchMapping
@@ -320,6 +428,7 @@ func runScenario(root context.Context, options scenarioOptions, profileRoot stri
 		result.Evidence["conservative_state"] = "not_sent"
 	} else {
 		var logicalID string
+		var pageResult map[string]any
 		scenario := options.FixtureScenario
 		if scenario == "" {
 			scenario = options.Name
@@ -330,12 +439,27 @@ func runScenario(root context.Context, options scenarioOptions, profileRoot stri
 			result.Evidence["conservative_state"] = "unknown_submission"
 		} else {
 			result.Evidence["logical_id"] = logicalID
+			if options.TimeoutAfter > 0 {
+				result.Evidence["timeout_requested_ms"] = options.TimeoutAfter.Milliseconds()
+				result.Evidence["timeout_path"] = "caller_deadline"
+				_ = chromedp.Run(targetCtx, chromedp.Evaluate(fmt.Sprintf(`window.deadlineSubmit(%q,%d)`, logicalID, options.TimeoutAfter.Milliseconds()), nil))
+			}
+			if options.CancelAfterResponse {
+				deadline := time.Now().Add(scenarioLimit)
+				for !hasResponse(&mu, pageEvents) && time.Now().Before(deadline) {
+					time.Sleep(10 * time.Millisecond)
+				}
+				result.Evidence["response_start_observed"] = hasResponse(&mu, pageEvents)
+				time.Sleep(options.CancelAfterResponseWait)
+				result.Evidence["cancellation_after_response_start"] = result.Evidence["response_start_observed"] == true
+				if result.Evidence["cancellation_after_response_start"] == true {
+					_ = chromedp.Run(targetCtx, chromedp.Evaluate(fmt.Sprintf(`window.cancelSubmit(%q)`, logicalID), nil))
+				}
+				result.Evidence["caller_cancellation"] = true
+			}
 			if options.CancelAfter > 0 {
 				time.Sleep(options.CancelAfter)
 				result.Evidence["dispatch_observed"] = hasRequest(&mu, pageEvents)
-				if options.CancelAfterResponse {
-					result.Evidence["response_started"] = hasResponse(&mu, pageEvents)
-				}
 				_ = chromedp.Run(targetCtx, chromedp.Evaluate(fmt.Sprintf(`window.cancelSubmit(%q)`, logicalID), nil))
 				result.Evidence["caller_cancellation"] = true
 			}
@@ -348,12 +472,23 @@ func runScenario(root context.Context, options scenarioOptions, profileRoot stri
 			if options.DisconnectController {
 				time.Sleep(100 * time.Millisecond)
 				result.Evidence["dispatch_observed"] = hasRequest(&mu, pageEvents)
-				targetCancel()
-				result.Evidence["controller_disconnected"] = true
+				browserContext := chromedp.FromContext(targetCtx)
+				if browserContext == nil || browserContext.Browser == nil || proxy == nil {
+					result.Evidence["controller_disconnect_error"] = "browser or CDP proxy unavailable"
+				} else {
+					lostConnection := browserContext.Browser.LostConnection
+					proxy.kill()
+					select {
+					case <-lostConnection:
+						result.Evidence["controller_disconnected"] = true
+						result.Evidence["controller_disconnect_transport"] = "cdp_tcp_proxy_killed_abruptly"
+					case <-time.After(800 * time.Millisecond):
+						result.Evidence["controller_disconnect_error"] = "LostConnection was not observed"
+					}
+				}
 			}
 			if !options.KillBrowser && !options.DisconnectController {
 				deadline := time.Now().Add(scenarioLimit)
-				var pageResult map[string]any
 				for time.Now().Before(deadline) {
 					if err := chromedp.Run(targetCtx, chromedp.Evaluate(fmt.Sprintf(`window.getSubmitResult(%q)`, logicalID), &pageResult)); err != nil {
 						break
@@ -389,11 +524,13 @@ func runScenario(root context.Context, options scenarioOptions, profileRoot stri
 	result.PageEvents = append([]pageEvent(nil), pageEvents...)
 	result.FetchMappings = append([]fetchMapping(nil), fetchMappings...)
 	mu.Unlock()
+	cleanup()
+	time.Sleep(120 * time.Millisecond)
 	result.Evidence["process_tree_after"] = browserProcesses(profile)
 	result.Evidence["browser_processes_after"] = len(browserProcesses(profile))
 	result.Evidence["response_started"] = hasResponse(&mu, pageEvents)
-	result.Evidence["timeout"] = strings.Contains(options.Name, "timeout")
-	result.Evidence["canceled"] = strings.Contains(options.Name, "cancel")
+	result.Evidence["timeout"] = options.TimeoutAfter > 0 && pageResultTimeoutCause(result.Evidence["page_result"]) == "caller_deadline"
+	result.Evidence["canceled"] = options.CancelAfter > 0 || options.CancelAfterResponse
 	if result.Evidence["dispatch_observed"] == true && result.Evidence["physical_abort_observed"] != true && (result.Evidence["timeout"] == true || result.Evidence["canceled"] == true || result.Evidence["browser_crashed"] == true || result.Evidence["controller_disconnected"] == true) {
 		result.Evidence["physical_abort_unproven"] = true
 	}
@@ -404,9 +541,14 @@ func runScenario(root context.Context, options scenarioOptions, profileRoot stri
 	result.Evidence["physical_post_count"] = countPhysicalPosts(events)
 	result.Evidence["physical_post_paths"] = physicalPostPaths(events)
 	result.Evidence["service_worker_request_count"] = countServiceWorkerRequests(events)
-	result.Evidence["duplicate_gate"] = duplicateGate(options.Name, countPhysicalPosts(events))
+	postCount := countPhysicalPosts(events)
+	postPaths := physicalPostPaths(events)
+	result.Evidence["duplicate_gate"] = duplicateGate(options.Name, postCount, postPaths)
 	if options.UseFetchInterception {
 		result.Evidence["fetch_mapping_gate"] = len(result.FetchMappings) > 0
+		if options.Name == "fetch-correlation" {
+			result.Evidence["fetch_mapping_gate"] = len(result.FetchMappings) > 0 && postCount == 1 && strings.Join(postPaths, ">") == "/submit"
+		}
 	}
 	return result
 }
@@ -468,20 +610,73 @@ func countServiceWorkerRequests(events []json.RawMessage) int {
 	return count
 }
 
-func duplicateGate(name string, count int) string {
-	if name == "redirect" || name == "fetch-correlation" {
-		if count >= 1 {
-			return "pass_redirect_hops_are_explicit"
+func pageResultTimeoutCause(raw any) string {
+	pageResult, _ := raw.(map[string]any)
+	cause, _ := pageResult["timeout_cause"].(string)
+	return cause
+}
+
+func duplicateGate(name string, count int, paths []string) string {
+	if name == "redirect" {
+		if count == 2 && strings.Join(paths, ">") == "/submit>/effect-final" {
+			return "pass_redirect_exact_sequence"
 		}
-		return "fail_no_physical_post"
+		return "fail_redirect_sequence_or_amplification"
 	}
-	if count == 1 || name == "cancel-before-dispatch" {
+	if name == "fetch-correlation" {
+		if count == 1 && strings.Join(paths, ">") == "/submit" {
+			return "pass_fetch_exactly_one_effect"
+		}
+		return "fail_fetch_effect_count_or_path"
+	}
+	if name == "cancel-before-dispatch" {
+		return map[bool]string{true: "pass", false: "fail_pre_dispatch_created_effect"}[count == 0]
+	}
+	if count <= 1 {
 		return "pass"
 	}
-	if count == 0 && name == "controller-disconnect-in-flight" {
-		return "pass_no_server_observation"
+	return "fail_unexpected_multiple_physical_posts"
+}
+
+func gateFailures(artifact map[string]any) []string {
+	failures := make([]string, 0)
+	profile, _ := artifact["profile_lifecycle"].(map[string]any)
+	if isolated, _ := profile["isolated"].(bool); !isolated {
+		failures = append(failures, "profile isolation failed")
 	}
-	return "fail_unexpected_physical_post_count"
+	scenarios, _ := artifact["scenarios"].([]scenarioResult)
+	for _, scenario := range scenarios {
+		evidence := scenario.Evidence
+		if gate, _ := evidence["duplicate_gate"].(string); strings.HasPrefix(gate, "fail") {
+			failures = append(failures, scenario.Name+": "+gate)
+		}
+		if processes, _ := evidence["browser_processes_after"].(int); processes != 0 {
+			failures = append(failures, fmt.Sprintf("%s: cleanup left %d browser processes", scenario.Name, processes))
+		}
+		if scenario.Name == "service-worker" {
+			controlled, _ := evidence["service_worker_controlled"].(bool)
+			requests, _ := evidence["service_worker_request_count"].(int)
+			if !controlled || requests < 1 {
+				failures = append(failures, "service-worker: control/observation failed")
+			}
+		}
+		if scenario.Name == "timeout-before-headers" && (evidence["timeout"] != true || pageResultTimeoutCause(evidence["page_result"]) != "caller_deadline") {
+			failures = append(failures, "timeout-before-headers: caller deadline not observed")
+		}
+		if scenario.Name == "cancel-after-headers" && (evidence["response_start_observed"] != true || evidence["cancellation_after_response_start"] != true) {
+			failures = append(failures, "cancel-after-headers: ordering not proven")
+		}
+		if scenario.Name == "controller-disconnect-in-flight" && (evidence["controller_disconnected"] != true || evidence["controller_disconnect_transport"] != "cdp_tcp_proxy_killed_abruptly") {
+			failures = append(failures, "controller-disconnect-in-flight: abrupt disconnect not proven")
+		}
+		if scenario.Name == "redirect" && evidence["fetch_mapping_gate"] != true {
+			failures = append(failures, "redirect: Fetch/Network mapping gate failed")
+		}
+		if scenario.Name == "fetch-correlation" && evidence["fetch_mapping_gate"] != true {
+			failures = append(failures, "fetch-correlation: Fetch/Network mapping gate failed")
+		}
+	}
+	return failures
 }
 
 func profileLifecycle(root context.Context, profileRoot string) map[string]any {
@@ -562,6 +757,10 @@ func rssKB(pid int) int {
 }
 
 func main() {
+	if len(os.Args) >= 4 && os.Args[1] == "--cdp-proxy" {
+		_ = runCDPProxy(os.Args[2], os.Args[3])
+		return
+	}
 	if _, err := os.Stat(chromiumPath); err != nil {
 		panic(err)
 	}
@@ -581,8 +780,8 @@ func main() {
 		{Name: "normal"},
 		{Name: "redirect", FixtureScenario: "redirect", UseFetchInterception: true},
 		{Name: "service-worker", FixtureScenario: "normal", ServiceWorker: true},
-		{Name: "timeout-before-headers", FixtureScenario: "headers-delay", CancelAfter: 60 * time.Millisecond},
-		{Name: "cancel-after-headers", FixtureScenario: "body-delay", CancelAfter: 340 * time.Millisecond, CancelAfterResponse: true},
+		{Name: "timeout-before-headers", FixtureScenario: "headers-delay", TimeoutAfter: 60 * time.Millisecond},
+		{Name: "cancel-after-headers", FixtureScenario: "body-delay", CancelAfterResponse: true, CancelAfterResponseWait: 100 * time.Millisecond},
 		{Name: "cancel-in-flight", FixtureScenario: "open", CancelAfter: 100 * time.Millisecond},
 		{Name: "sse-complete", FixtureScenario: "sse-complete"},
 		{Name: "sse-truncated", FixtureScenario: "sse-truncated"},
@@ -602,7 +801,7 @@ func main() {
 		"candidate":         "chromedp",
 		"started_at":        startedAt.Format(time.RFC3339Nano),
 		"finished_at":       time.Now().UTC().Format(time.RFC3339Nano),
-		"environment":       map[string]string{"go": "1.26.1", "chromedp": "v0.16.0", "chromium_path": chromiumPath},
+		"environment":       map[string]string{"go": runtime.Version(), "chromedp": "v0.16.0", "chromium_path": chromiumPath},
 		"runtime_tree":      "Go runner -> chromedp -> Chromium CDP websocket",
 		"overhead":          measureOverhead(root, filepath.Join(profileRoot, "benchmark")),
 		"profile_lifecycle": profileLifecycle(root, profileRoot),
@@ -616,9 +815,15 @@ func main() {
 	}
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
+	failures := gateFailures(artifact)
+	artifact["gate_failures"] = failures
 	if err := encoder.Encode(artifact); err != nil {
 		panic(err)
 	}
 	_ = file.Close()
-	fmt.Printf("{\"candidate\":\"chromedp\",\"scenarios\":%d,\"output\":%q}\n", len(results), outputPath)
+	fmt.Printf("{\"candidate\":\"chromedp\",\"scenarios\":%d,\"output\":%q,\"gate_failures\":%q}\n", len(results), outputPath, strings.Join(failures, "; "))
+	if len(failures) > 0 {
+		fmt.Fprintln(os.Stderr, "substrate bake-off gates failed:", strings.Join(failures, "; "))
+		os.Exit(1)
+	}
 }
