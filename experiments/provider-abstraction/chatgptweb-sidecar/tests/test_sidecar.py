@@ -51,6 +51,8 @@ class FakePage:
             self.fetch_starts += 1
             if self.ack_lost:
                 raise ConnectionError("CDP ACK lost after fetch dispatch")
+            if self.mode == "invalid_ack":
+                return {"started": False}
             return {"started": True}
         if "controller.abort()" in script:
             self.abort_calls += 1
@@ -319,6 +321,49 @@ class TestPhysicalTransportCancellation:
             ]
 
         assert page.fetch_starts == 1
+        assert page.abort_calls == 1
+        assert page.cleanup_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_invalid_start_ack_aborts_same_request_before_cleanup(self):
+        page = FakePage(mode="invalid_ack")
+        browser = BrowserSession("acct-test", Path("/tmp/unused-profile"))
+        browser.page = page
+
+        with pytest.raises(PhysicalDispatchUncertain) as exc_info:
+            [
+                item
+                async for item in browser.cdp_fetch_stream(
+                    "http://127.0.0.1:9/conversation",
+                    json_data={"prompt": "fixture"},
+                    timeout=1,
+                )
+            ]
+
+        assert page.fetch_starts == 1
+        assert page.abort_calls == 1
+        assert page.cleanup_calls == 1
+        assert exc_info.value.terminal_state["state"] == "aborted"
+
+    @pytest.mark.asyncio
+    async def test_start_ack_loss_remains_uncertain_when_same_request_abort_is_unproven(self):
+        page = FakePage(mode="ack_lost")
+        browser = BrowserSession("acct-test", Path("/tmp/unused-profile"))
+        browser.page = page
+        browser._abort_and_wait = AsyncMock(return_value=(None, False))
+
+        with pytest.raises(PhysicalDispatchUncertain):
+            [
+                item
+                async for item in browser.cdp_fetch_stream(
+                    "http://127.0.0.1:9/conversation",
+                    json_data={"prompt": "fixture"},
+                    timeout=1,
+                )
+            ]
+
+        assert page.fetch_starts == 1
+        assert page.abort_calls == 0
         assert page.cleanup_calls == 1
 
     @pytest.mark.asyncio

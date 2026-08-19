@@ -48,7 +48,7 @@ O entrypoint aceita `initialize`, `complete`, `cancel`, `health_check`, `models`
 
 O transporte segue uma regra de request único. O browser cria um `AbortController`, inicia um único POST e publica um evento `sent` assim que o dispatch físico é confirmado, antes da chegada dos headers. Essa observação já incrementa `send_count`; portanto, timeout, erro ou cancelamento entre o dispatch e os headers não faz a tentativa desaparecer da contabilidade. Timeout e cancelamento nunca abrem um segundo POST.
 
-A conclusão só é declarada quando o SSE termina com `[DONE]`. Se o aborto físico não for observado, o ACK do script de start se perder depois que o browser pode ter iniciado o fetch, ou o stream terminar sem `[DONE]`, a resposta permanece em estado conservador `timeout_uncertain` e não volta a `send_count=0`. Drift, falha de probe e desafio humano bloqueiam o efeito de modelo sem sobrescrever o baseline persistido.
+A conclusão só é declarada quando o SSE termina com `[DONE]`. Se o aborto físico não for observado, o ACK do script de start se perder depois que o browser pode ter iniciado o fetch, ou o stream terminar sem `[DONE]`, a resposta permanece em estado conservador `timeout_uncertain` e não volta a `send_count=0`. No caso de ACK perdido, o sidecar tenta boundedly abortar e reconciliar o mesmo controller/request antes de remover o estado; nunca inicia retry ou segundo POST. Drift, falha de probe e desafio humano bloqueiam o efeito de modelo sem sobrescrever o baseline persistido.
 
 | Método | Finalidade |
 |---|---|

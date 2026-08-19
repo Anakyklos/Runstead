@@ -134,6 +134,10 @@ class PreDispatchCanceled(Exception):
 class PhysicalDispatchUncertain(Exception):
     """Raised when the browser may have dispatched a POST but its start ACK was lost."""
 
+    def __init__(self, message: str, terminal_state: dict | None = None):
+        self.terminal_state = terminal_state
+        super().__init__(message)
+
 
 class PhysicalAbortUnproven(Exception):
     """Raised when the browser does not report a terminal abort outcome."""
@@ -384,6 +388,20 @@ class BrowserSession:
             await asyncio.sleep(0.01)
         return last_state, False
 
+    async def _reconcile_uncertain_start(
+        self, request_key: str, grace_period: float = 0.25
+    ) -> tuple[dict | None, bool]:
+        """Best-effort bounded abort of the same request after a lost start ACK."""
+        try:
+            return await asyncio.wait_for(
+                self._abort_and_wait(request_key, grace_period=grace_period),
+                timeout=grace_period + 0.25,
+            )
+        except Exception:
+            # A lost CDP boundary must remain fail-closed even when the
+            # controller/state cannot be queried or aborted anymore.
+            return None, False
+
     async def cdp_fetch_stream(
         self,
         url: str,
@@ -495,14 +513,20 @@ class BrowserSession:
                 )
             except Exception as error:
                 # The script may have executed fetch() before CDP delivered its
-                # {started: true} ACK. Never convert this lost boundary signal
-                # into deterministic no-send evidence.
+                # {started: true} ACK. First attempt a bounded abort of that
+                # same controller/request, then let finally remove its state.
+                terminal, _confirmed = await self._reconcile_uncertain_start(request_key)
                 raise PhysicalDispatchUncertain(
-                    "physical fetch dispatch is uncertain after start ACK failure"
+                    "physical fetch dispatch is uncertain after start ACK failure",
+                    terminal_state=terminal,
                 ) from error
             if not isinstance(result, dict) or result.get("started") is not True:
+                # An invalid start return is the same uncertain boundary: the
+                # browser may already own a live fetch, so reconcile before cleanup.
+                terminal, _confirmed = await self._reconcile_uncertain_start(request_key)
                 raise PhysicalDispatchUncertain(
-                    "browser did not confirm fetch start; physical dispatch is uncertain"
+                    "browser did not confirm fetch start; physical dispatch is uncertain",
+                    terminal_state=terminal,
                 )
 
             # The browser has accepted and dispatched this physical fetch. It
