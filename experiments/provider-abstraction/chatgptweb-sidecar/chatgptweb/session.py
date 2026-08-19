@@ -411,7 +411,8 @@ class AccountSession:
         self.drift_hash_file = self.account_dir / "sentinel_hash.txt"
         self.browser = BrowserSession(account_id, user_data_dir)
         self._drift_hash: str | None = None
-        self.reconciler = SSEReconciler()
+        self._warm = False
+        self._warm_lock = asyncio.Lock()
         self._load_drift_hash()
 
     def _load_drift_hash(self):
@@ -422,37 +423,44 @@ class AccountSession:
         """
         Warm session using browser profile.
         Raises SessionNotReady on any failure (challenge, auth, nav, drift).
+        Idempotent: if already warm, returns immediately.
         """
-        if not UC_AVAILABLE:
-            raise SessionNotReady(reason="nodriver_unavailable")
+        async with self._warm_lock:
+            if self._warm:
+                return
 
-        await self.browser.start()
+            if not UC_AVAILABLE:
+                raise SessionNotReady(reason="nodriver_unavailable")
 
-        try:
-            if not await self.browser.navigate_and_wait("https://chatgpt.com"):
+            await self.browser.start()
+
+            try:
+                if not await self.browser.navigate_and_wait("https://chatgpt.com"):
+                    await self.browser.stop()
+                    raise SessionNotReady(reason="navigation_failed")
+
+                await asyncio.sleep(5)
+
+                challenge = await self.browser.detect_challenge()
+                if challenge:
+                    raise SessionNotReady(challenge_type=challenge, reason=f"Challenge detected: {challenge}")
+
+                if not await self.browser.has_valid_session():
+                    raise SessionNotReady(reason="no_valid_session_after_nav")
+
+                # Load baseline drift hash - DO NOT OVERWRITE with current
+                baseline = await self._probe_drift_hash()
+                if baseline:
+                    self._drift_hash = baseline
+
+                self._warm = True
+
+            except SessionNotReady:
                 await self.browser.stop()
-                raise SessionNotReady(reason="navigation_failed")
-
-            await asyncio.sleep(5)
-
-            challenge = await self.browser.detect_challenge()
-            if challenge:
-                raise SessionNotReady(challenge_type=challenge, reason=f"Challenge detected: {challenge}")
-
-            if not await self.browser.has_valid_session():
-                raise SessionNotReady(reason="no_valid_session_after_nav")
-
-            # Load baseline drift hash - DO NOT OVERWRITE with current
-            baseline = await self._probe_drift_hash()
-            if baseline:
-                self._drift_hash = baseline
-
-        except SessionNotReady:
-            await self.browser.stop()
-            raise
-        except Exception as e:
-            await self.browser.stop()
-            raise SessionNotReady(reason=f"warm_failed: {e}")
+                raise
+            except Exception as e:
+                await self.browser.stop()
+                raise SessionNotReady(reason=f"warm_failed: {e}")
 
     async def wait_for_human(self, timeout: int = 120) -> bool:
         """Wait for human to resolve challenge. Returns True if resolved."""
@@ -502,6 +510,7 @@ class AccountSession:
         Execute completion via SSE.
         Yields dict with either {'delta': str, 'done': bool} or final result with evidence.
         Transport evidence is only marked based on OBSERVED transport events.
+        Uses a fresh SSEReconciler per completion to avoid state leak (P1).
         """
         # Drift gate before any model-effect send
         await self._drift_gate()
@@ -515,6 +524,9 @@ class AccountSession:
         )
         content_buffer = ""
         done_seen = False
+
+        # Fresh reconciler per completion (P1: SSE state leak)
+        reconciler = SSEReconciler()
 
         try:
             # Use browser's CDP fetch for actual HTTP request with streaming
@@ -532,7 +544,7 @@ class AccountSession:
                     except (TypeError, ValueError):
                         evidence.http_status = 0
 
-                    # Check for auth/rate-limit errors immediately
+                    # Check for auth/rate-limit errors immediately - map to proper JSON-RPC codes
                     try:
                         status = int(chunk["status"])
                     except (TypeError, ValueError):
@@ -540,8 +552,7 @@ class AccountSession:
                     if status == 401 or status == 403:
                         evidence.state = TransportState.TRANSPORT_FAILED
                         evidence.error_code = ErrorCode.AUTHENTICATION_REQUIRED
-                        # Yield error evidence before returning - as dict for JSON serialization
-                        yield {"error": {"message": f"Authentication failed: HTTP {status}", "evidence": _evidence_to_dict(evidence)}}
+                        yield {"error": {"message": f"Authentication failed: HTTP {status}", "evidence": _evidence_to_dict(evidence), "jsonrpc_code": -32001}}
                         return
                     elif status == 429:
                         evidence.state = TransportState.TRANSPORT_FAILED
@@ -552,12 +563,12 @@ class AccountSession:
                                 evidence.retry_after = float(retry_after)
                             except (TypeError, ValueError):
                                 pass
-                        yield {"error": {"message": "Rate limited", "evidence": _evidence_to_dict(evidence)}}
+                        yield {"error": {"message": "Rate limited", "evidence": _evidence_to_dict(evidence), "jsonrpc_code": -32003}}
                         return
                     elif status >= 500:
                         evidence.state = TransportState.TRANSPORT_FAILED
                         evidence.error_code = ErrorCode.TRANSPORT_FAILED
-                        yield {"error": {"message": f"HTTP {status}", "evidence": _evidence_to_dict(evidence)}}
+                        yield {"error": {"message": f"HTTP {status}", "evidence": _evidence_to_dict(evidence), "jsonrpc_code": -32005}}
                         return
 
                     evidence.state = TransportState.RESPONSE_STARTED
@@ -573,7 +584,7 @@ class AccountSession:
                         done_seen = True
                         break
 
-                    delta = self.reconciler.process_chunk(data_str)
+                    delta = reconciler.process_chunk(data_str)  # Use local reconciler (P1: SSE state leak)
                     if delta is not None:
                         content_buffer += delta
                         yield {"delta": delta, "done": False}
@@ -583,7 +594,7 @@ class AccountSession:
                 evidence.state = TransportState.TIMEOUT_UNCERTAIN
                 evidence.error_code = ErrorCode.TIMEOUT_UNCERTAIN
                 evidence.duration_ms = int((time.time() - start_time) * 1000)
-                yield {"error": {"message": "Stream ended without [DONE] marker - possible truncation", "evidence": _evidence_to_dict(evidence)}}
+                yield {"error": {"message": "Stream ended without [DONE] marker - possible truncation", "evidence": _evidence_to_dict(evidence), "jsonrpc_code": -32006}}
                 return
 
             evidence.state = TransportState.COMPLETED
@@ -599,7 +610,7 @@ class AccountSession:
             evidence.state = TransportState.TIMEOUT_UNCERTAIN
             evidence.error_code = ErrorCode.TIMEOUT_UNCERTAIN
             evidence.duration_ms = int((time.time() - start_time) * 1000)
-            yield {"error": {"message": "Timeout", "evidence": _evidence_to_dict(evidence)}}
+            yield {"error": {"message": "Timeout", "evidence": _evidence_to_dict(evidence), "jsonrpc_code": -32006}}
             return
         except Exception:
             if evidence.state in (TransportState.NO_SEND_OBSERVED, TransportState.SEND_OBSERVED):
@@ -609,7 +620,7 @@ class AccountSession:
                 evidence.state = TransportState.TIMEOUT_UNCERTAIN
                 evidence.error_code = ErrorCode.TIMEOUT_UNCERTAIN
             evidence.duration_ms = int((time.time() - start_time) * 1000)
-            yield {"error": {"message": "Transport error", "evidence": _evidence_to_dict(evidence)}}
+            yield {"error": {"message": "Transport error", "evidence": _evidence_to_dict(evidence), "jsonrpc_code": -32005}}
             return
 
     def _build_payload(self, model: str, messages: list[dict]) -> dict:
