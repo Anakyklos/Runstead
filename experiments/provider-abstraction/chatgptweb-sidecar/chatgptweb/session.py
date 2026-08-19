@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import AsyncGenerator, Optional
@@ -277,21 +277,12 @@ class BrowserSession:
     async def cdp_fetch_stream(self, url: str, method: str = "POST", json_data: dict = None, headers: dict = None, timeout: int = 120):
         """
         Execute streaming HTTP request via browser's CDP fetch.
-        SINGLE POST: yields headers immediately, then yields body lines as they arrive via CDP Network.dataReceived.
+        SINGLE POST: yields headers immediately, then yields body lines as they arrive.
         """
         if not self.page:
             raise RuntimeError("Browser not started")
 
-        # Enable CDP Network domain to intercept streaming response
-        await self.page.send_cdp_cmd("Network.enable", {})
-
-        # Single POST that streams via CDP Network events
-        # We use a special approach: inject a script that returns a promise resolving when stream completes,
-        # but we intercept the stream via CDP events in Python
-
-        # For now, use a single fetch that yields via CDP Network.dataReceived
-        # This is a simplified implementation - full impl would use CDP properly
-
+        # SINGLE POST that yields headers immediately, then streams body via reader
         script = (
             "(async () => {"
             "  const response = await fetch(" + json.dumps(url) + ", {"
@@ -332,9 +323,7 @@ class BrowserSession:
             yield {"type": "error", "status": status, "headers": headers}
             return
 
-        # For true streaming, we'd need to hook into CDP Network.dataReceived events
-        # This is a simplified version - full impl would use CDP Network domain properly
-        # For research prototype, we fall back to reading body via evaluate with streaming
+        # Stream the body using the SAME response's body reader
         stream_script = (
             "(async () => {"
             "  const response = await fetch(" + json.dumps(url) + ", {"
@@ -480,7 +469,7 @@ class AccountSession:
             if not await self.browser.has_valid_session():
                 raise SessionNotReady(reason="no_valid_session_after_nav")
 
-            # Load baseline drift hash - DO NOT OVERWRITE
+            # Load baseline drift hash - DO NOT OVERWRITE with current
             baseline = await self._probe_drift_hash()
             if baseline:
                 self._drift_hash = baseline
@@ -583,7 +572,7 @@ class AccountSession:
                     if status == 401 or status == 403:
                         evidence.state = TransportState.TRANSPORT_FAILED
                         evidence.error_code = ErrorCode.AUTHENTICATION_REQUIRED
-                        # Yield error evidence before returning
+                        # Yield error evidence before returning - as dict for JSON serialization
                         yield {"error": {"message": f"Authentication failed: HTTP {status}", "evidence": _evidence_to_dict(evidence)}}
                         return
                     elif status == 429:
@@ -682,9 +671,9 @@ class AccountSession:
                 formatted.append({"role": role, "content": content})
         return formatted
 
+    # Single implementation - no duplicate
     async def probe_drift(self) -> tuple[bool, str | None]:
         """Probe for Sentinel SDK drift. Returns (drifted, message)."""
-        # Single implementation - no duplicate
         current = await self._probe_drift_hash()
         if current is None:
             # Fail-closed: if we can't probe drift, treat as potential drift

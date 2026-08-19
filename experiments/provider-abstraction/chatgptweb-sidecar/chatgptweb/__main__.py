@@ -110,7 +110,7 @@ class JSONRPCServer:
                         "done": chunk.get("done", False),
                     })
             elif "result" in chunk:
-                # Final result with transport evidence
+                # Final result with transport evidence (already serialized as dict)
                 result = chunk["result"]
                 evidence = result.get("evidence", None)
                 "".join(content_parts)
@@ -123,22 +123,24 @@ class JSONRPCServer:
                 )
 
         # Build response with transport evidence (NO secrets)
-        evidence_dict = _evidence_to_dict(evidence) if evidence else {}
+        # evidence is already a dict from _evidence_to_dict()
+        if evidence is None:
+            evidence = {}
 
         return {
             "content": "".join(content_parts),
             "metadata": {
                 "client_request_id": client_request_id,  # Echo back local ID
-                "status_code": evidence.http_status if evidence else None,
-                "request_id": evidence.upstream_request_id if evidence else None,  # May be None
+                "status_code": evidence.get("http_status"),
+                "request_id": evidence.get("upstream_request_id"),  # May be None
                 "session_id": None,  # Never return session IDs/secrets
-                "duration_ms": evidence.duration_ms if evidence else 0,
+                "duration_ms": evidence.get("duration_ms", 0),
                 "model": params.get("model"),
-                "transport_state": evidence.state.value if evidence and isinstance(evidence.state, TransportState) else (evidence.state if evidence else None),
-                "send_count": evidence.send_count if evidence else 0,
-                "retry_after": evidence.retry_after if evidence else None,
-                "reset_at": evidence.reset_at if evidence else None,
-                "challenge_type": evidence.challenge_type if evidence else None,
+                "transport_state": evidence.get("state"),
+                "send_count": evidence.get("send_count", 0),
+                "retry_after": evidence.get("retry_after"),
+                "reset_at": evidence.get("reset_at"),
+                "challenge_type": evidence.get("challenge_type"),
             }
         }
 
