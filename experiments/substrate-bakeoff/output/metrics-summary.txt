@@ -1,0 +1,2 @@
+playwright samples=3 startup_avg_ms=247.890 navigation_avg_ms=33.577 shutdown_avg_ms=53.327 rss_avg_kb=865487
+chromedp samples=3 startup_avg_ms=173.596 navigation_avg_ms=85.878 shutdown_avg_ms=45.346 rss_avg_kb=864784

@@ -1,0 +1,12 @@
+{
+  "name": "runstead-substrate-bakeoff-playwright",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Research-only Playwright/Chromium lane for Runstead issue #84",
+  "scripts": {
+    "test": "node runner.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.62.1"
+  }
+}

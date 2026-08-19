@@ -1,0 +1,10 @@
+node_modules/
+output/*
+!output/
+!output/*.json
+!output/*.txt
+profiles/
+*.log
+*.tmp
+chromedp-runner
+fixture-server

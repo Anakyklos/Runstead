@@ -1,0 +1,1577 @@
+{
+  "schema": "runstead.substrate-bakeoff.v1",
+  "candidate": "playwright",
+  "started_at": "2026-08-19T20:27:18.709Z",
+  "finished_at": "2026-08-19T20:27:28.209Z",
+  "environment": {
+    "node": "v22.13.0",
+    "playwright": "1.62.1",
+    "chromium_path": "/usr/bin/chromium"
+  },
+  "runtime_tree": {
+    "runner": "node -> Playwright driver -> Chromium",
+    "browser_processes_sample": [
+      {
+        "pid": 72472,
+        "ppid": 72461,
+        "depth": 0,
+        "args": "/usr/lib/chromium/chromium --show-component-extension-options --enable-gpu-rasterization --no-default-browser-check --disable-pings --media-router=0 --disable-dev-shm-usage --enable-remote-extensions --load-extension --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --no-sandbox --disable-dev-shm-usage --disable-background-networking --disable-component-update --user-data-dir=<profile> --remote-debugging-pipe --noerrdialogs --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl about:blank"
+      },
+      {
+        "pid": 72493,
+        "ppid": 72472,
+        "depth": 1,
+        "args": "/usr/lib/chromium/chromium --type=zygote --no-zygote-sandbox --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+      },
+      {
+        "pid": 72514,
+        "ppid": 72493,
+        "depth": 2,
+        "args": "/usr/lib/chromium/chromium --type=gpu-process --no-sandbox --disable-dev-shm-usage --disable-breakpad --enable-gpu-rasterization --headless --ozone-platform=headless --use-angle=swiftshader-webgl --enable-unsafe-swiftshader --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --gpu-preferences=YAAAAAAAAAAgAAAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAMAAAAAQAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAA== --shared-files --field-trial-handle=3,i,15765508453382723599,6394670613177819573,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,15228641766546119303,9523755925360181248,4 --trace-process-track-uuid=3190708988185955192"
+      },
+      {
+        "pid": 72494,
+        "ppid": 72472,
+        "depth": 1,
+        "args": "/usr/lib/chromium/chromium --type=zygote --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+      },
+      {
+        "pid": 72527,
+        "ppid": 72494,
+        "depth": 2,
+        "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,15765508453382723599,6394670613177819573,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,15228641766546119303,9523755925360181248,4 --trace-process-track-uuid=3190708990060038890"
+      },
+      {
+        "pid": 72564,
+        "ppid": 72494,
+        "depth": 2,
+        "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=6 --time-ticks-at-unix-epoch=-1786600207993278 --launch-time-ticks=571030894049 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,15765508453382723599,6394670613177819573,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,15228641766546119303,9523755925360181248,4 --trace-process-track-uuid=3190708991934122588"
+      },
+      {
+        "pid": 72565,
+        "ppid": 72494,
+        "depth": 2,
+        "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=5 --time-ticks-at-unix-epoch=-1786600207993278 --launch-time-ticks=571030895382 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,15765508453382723599,6394670613177819573,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,15228641766546119303,9523755925360181248,4 --trace-process-track-uuid=3190708990997080739"
+      },
+      {
+        "pid": 72584,
+        "ppid": 72494,
+        "depth": 2,
+        "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=7 --time-ticks-at-unix-epoch=-1786600207993278 --launch-time-ticks=571030968872 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,15765508453382723599,6394670613177819573,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,15228641766546119303,9523755925360181248,4 --trace-process-track-uuid=3190708992871164437"
+      },
+      {
+        "pid": 72517,
+        "ppid": 72472,
+        "depth": 1,
+        "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,15765508453382723599,6394670613177819573,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,15228641766546119303,9523755925360181248,4 --trace-process-track-uuid=3190708989122997041"
+      }
+    ]
+  },
+  "profile_lifecycle": {
+    "first_open_markers": {
+      "profile_a": null,
+      "profile_b": null
+    },
+    "reused_markers": {
+      "profile_a": "profile-a-marker",
+      "profile_b": "profile-b-marker"
+    },
+    "isolated": true
+  },
+  "scenarios": [
+    {
+      "name": "normal",
+      "candidate": "playwright",
+      "profile_ref": "scenario",
+      "evidence": {
+        "process_tree_before": [
+          {
+            "pid": 72472,
+            "ppid": 72461,
+            "depth": 0,
+            "args": "/usr/lib/chromium/chromium --show-component-extension-options --enable-gpu-rasterization --no-default-browser-check --disable-pings --media-router=0 --disable-dev-shm-usage --enable-remote-extensions --load-extension --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --no-sandbox --disable-dev-shm-usage --disable-background-networking --disable-component-update --user-data-dir=<profile> --remote-debugging-pipe --noerrdialogs --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl about:blank"
+          },
+          {
+            "pid": 72493,
+            "ppid": 72472,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-zygote-sandbox --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 72514,
+            "ppid": 72493,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=gpu-process --no-sandbox --disable-dev-shm-usage --disable-breakpad --enable-gpu-rasterization --headless --ozone-platform=headless --use-angle=swiftshader-webgl --enable-unsafe-swiftshader --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --gpu-preferences=YAAAAAAAAAAgAAAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAMAAAAAQAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAA== --shared-files --field-trial-handle=3,i,15765508453382723599,6394670613177819573,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,15228641766546119303,9523755925360181248,4 --trace-process-track-uuid=3190708988185955192"
+          },
+          {
+            "pid": 72494,
+            "ppid": 72472,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 72527,
+            "ppid": 72494,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,15765508453382723599,6394670613177819573,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,15228641766546119303,9523755925360181248,4 --trace-process-track-uuid=3190708990060038890"
+          },
+          {
+            "pid": 72564,
+            "ppid": 72494,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=6 --time-ticks-at-unix-epoch=-1786600207993278 --launch-time-ticks=571030894049 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,15765508453382723599,6394670613177819573,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,15228641766546119303,9523755925360181248,4 --trace-process-track-uuid=3190708991934122588"
+          },
+          {
+            "pid": 72565,
+            "ppid": 72494,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=5 --time-ticks-at-unix-epoch=-1786600207993278 --launch-time-ticks=571030895382 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,15765508453382723599,6394670613177819573,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,15228641766546119303,9523755925360181248,4 --trace-process-track-uuid=3190708990997080739"
+          },
+          {
+            "pid": 72584,
+            "ppid": 72494,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=7 --time-ticks-at-unix-epoch=-1786600207993278 --launch-time-ticks=571030968872 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,15765508453382723599,6394670613177819573,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,15228641766546119303,9523755925360181248,4 --trace-process-track-uuid=3190708992871164437"
+          },
+          {
+            "pid": 72517,
+            "ppid": 72472,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,15765508453382723599,6394670613177819573,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,15228641766546119303,9523755925360181248,4 --trace-process-track-uuid=3190708989122997041"
+          }
+        ],
+        "logical_id": "logical-1",
+        "page_result": {
+          "id": "logical-1",
+          "scenario": "normal",
+          "phase": "response_incomplete",
+          "status": 200,
+          "redirected": false,
+          "url": "/submit",
+          "body_bytes": 49,
+          "terminal": false
+        },
+        "dispatch_observed": true,
+        "conservative_state": "sent_unconfirmed",
+        "response_incomplete": true,
+        "process_tree_after": [],
+        "browser_processes_after": 0,
+        "response_started": true,
+        "timeout": false,
+        "canceled": false,
+        "physical_post_count": 1,
+        "duplicate_gate": "pass",
+        "physical_post_paths": [
+          "/submit"
+        ],
+        "service_worker_request_count": 0
+      },
+      "page_events": [
+        {
+          "type": "request",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "normal",
+          "redirected_from": null
+        },
+        {
+          "type": "response",
+          "status": 200,
+          "path": "/submit"
+        }
+      ],
+      "fixture_events": [
+        {
+          "index": 1,
+          "received_at": "2026-08-19T20:27:19.01647052Z",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "normal",
+          "body_sha256": "97611c3cffdeac278a67f0032e523b686111e285e72ae3c3ea27d3e27547d35e",
+          "body_bytes": 65,
+          "service_worker": false,
+          "outcome": "received",
+          "canceled": false
+        }
+      ]
+    },
+    {
+      "name": "redirect",
+      "candidate": "playwright",
+      "profile_ref": "scenario",
+      "evidence": {
+        "process_tree_before": [
+          {
+            "pid": 72600,
+            "ppid": 72461,
+            "depth": 0,
+            "args": "/usr/lib/chromium/chromium --show-component-extension-options --enable-gpu-rasterization --no-default-browser-check --disable-pings --media-router=0 --disable-dev-shm-usage --enable-remote-extensions --load-extension --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --no-sandbox --disable-dev-shm-usage --disable-background-networking --disable-component-update --user-data-dir=<profile> --remote-debugging-pipe --noerrdialogs --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl about:blank"
+          },
+          {
+            "pid": 72621,
+            "ppid": 72600,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-zygote-sandbox --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 72643,
+            "ppid": 72621,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=gpu-process --no-sandbox --disable-dev-shm-usage --disable-breakpad --enable-gpu-rasterization --headless --ozone-platform=headless --use-angle=swiftshader-webgl --enable-unsafe-swiftshader --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --gpu-preferences=YAAAAAAAAAAgAAAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAMAAAAAQAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAA== --shared-files --field-trial-handle=3,i,16728008623246451333,11500632161436895287,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,1494386266455289476,8249258879203311119,4 --trace-process-track-uuid=3190708988185955192"
+          },
+          {
+            "pid": 72622,
+            "ppid": 72600,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 72669,
+            "ppid": 72622,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,16728008623246451333,11500632161436895287,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,1494386266455289476,8249258879203311119,4 --trace-process-track-uuid=3190708990060038890"
+          },
+          {
+            "pid": 72692,
+            "ppid": 72622,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=6 --time-ticks-at-unix-epoch=-1786600207993278 --launch-time-ticks=571031260173 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,16728008623246451333,11500632161436895287,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,1494386266455289476,8249258879203311119,4 --trace-process-track-uuid=3190708991934122588"
+          },
+          {
+            "pid": 72693,
+            "ppid": 72622,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=5 --time-ticks-at-unix-epoch=-1786600207993278 --launch-time-ticks=571031261585 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,16728008623246451333,11500632161436895287,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,1494386266455289476,8249258879203311119,4 --trace-process-track-uuid=3190708990997080739"
+          },
+          {
+            "pid": 72712,
+            "ppid": 72622,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=7 --time-ticks-at-unix-epoch=-1786600207993278 --launch-time-ticks=571031325600 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,16728008623246451333,11500632161436895287,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,1494386266455289476,8249258879203311119,4 --trace-process-track-uuid=3190708992871164437"
+          },
+          {
+            "pid": 72646,
+            "ppid": 72600,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,16728008623246451333,11500632161436895287,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,1494386266455289476,8249258879203311119,4 --trace-process-track-uuid=3190708989122997041"
+          }
+        ],
+        "logical_id": "logical-1",
+        "page_result": {
+          "id": "logical-1",
+          "scenario": "redirect",
+          "phase": "response_incomplete",
+          "status": 200,
+          "redirected": true,
+          "url": "/effect-final",
+          "body_bytes": 51,
+          "terminal": false
+        },
+        "dispatch_observed": true,
+        "conservative_state": "sent_unconfirmed",
+        "response_incomplete": true,
+        "process_tree_after": [],
+        "browser_processes_after": 0,
+        "response_started": true,
+        "timeout": false,
+        "canceled": false,
+        "physical_post_count": 2,
+        "duplicate_gate": "pass_redirect_hops_are_explicit",
+        "physical_post_paths": [
+          "/submit",
+          "/effect-final"
+        ],
+        "service_worker_request_count": 0
+      },
+      "page_events": [
+        {
+          "type": "request",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "redirect",
+          "redirected_from": null
+        },
+        {
+          "type": "response",
+          "status": 307,
+          "path": "/submit"
+        }
+      ],
+      "fixture_events": [
+        {
+          "index": 1,
+          "received_at": "2026-08-19T20:27:19.371559144Z",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "redirect",
+          "body_sha256": "97611c3cffdeac278a67f0032e523b686111e285e72ae3c3ea27d3e27547d35e",
+          "body_bytes": 65,
+          "service_worker": false,
+          "outcome": "redirect_hop",
+          "canceled": false
+        },
+        {
+          "index": 2,
+          "received_at": "2026-08-19T20:27:19.372282516Z",
+          "method": "POST",
+          "path": "/effect-final",
+          "scenario": "redirect",
+          "body_sha256": "97611c3cffdeac278a67f0032e523b686111e285e72ae3c3ea27d3e27547d35e",
+          "body_bytes": 65,
+          "service_worker": false,
+          "outcome": "received",
+          "canceled": false
+        }
+      ]
+    },
+    {
+      "name": "service-worker",
+      "candidate": "playwright",
+      "profile_ref": "scenario",
+      "evidence": {
+        "service_worker_controlled": true,
+        "process_tree_before": [
+          {
+            "pid": 72728,
+            "ppid": 72461,
+            "depth": 0,
+            "args": "/usr/lib/chromium/chromium --show-component-extension-options --enable-gpu-rasterization --no-default-browser-check --disable-pings --media-router=0 --disable-dev-shm-usage --enable-remote-extensions --load-extension --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --no-sandbox --disable-dev-shm-usage --disable-background-networking --disable-component-update --user-data-dir=<profile> --remote-debugging-pipe --noerrdialogs --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl about:blank"
+          },
+          {
+            "pid": 72749,
+            "ppid": 72728,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-zygote-sandbox --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 72771,
+            "ppid": 72749,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=gpu-process --no-sandbox --disable-dev-shm-usage --disable-breakpad --enable-gpu-rasterization --headless --ozone-platform=headless --use-angle=swiftshader-webgl --enable-unsafe-swiftshader --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --gpu-preferences=YAAAAAAAAAAgAAAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAMAAAAAQAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAA== --shared-files --field-trial-handle=3,i,8739973587083698833,6681005321202845107,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,10334391678390725421,14035415600497575289,4 --trace-process-track-uuid=3190708988185955192"
+          },
+          {
+            "pid": 72750,
+            "ppid": 72728,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 72798,
+            "ppid": 72750,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,8739973587083698833,6681005321202845107,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,10334391678390725421,14035415600497575289,4 --trace-process-track-uuid=3190708990060038890"
+          },
+          {
+            "pid": 72820,
+            "ppid": 72750,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=6 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571031637400 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,8739973587083698833,6681005321202845107,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,10334391678390725421,14035415600497575289,4 --trace-process-track-uuid=3190708991934122588"
+          },
+          {
+            "pid": 72821,
+            "ppid": 72750,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=5 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571031639057 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,8739973587083698833,6681005321202845107,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,10334391678390725421,14035415600497575289,4 --trace-process-track-uuid=3190708990997080739"
+          },
+          {
+            "pid": 72840,
+            "ppid": 72750,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=7 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571031732050 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,8739973587083698833,6681005321202845107,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,10334391678390725421,14035415600497575289,4 --trace-process-track-uuid=3190708992871164437"
+          },
+          {
+            "pid": 72774,
+            "ppid": 72728,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,8739973587083698833,6681005321202845107,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,10334391678390725421,14035415600497575289,4 --trace-process-track-uuid=3190708989122997041"
+          }
+        ],
+        "logical_id": "logical-1",
+        "page_result": {
+          "id": "logical-1",
+          "scenario": "normal",
+          "phase": "response_incomplete",
+          "status": 200,
+          "redirected": false,
+          "url": "/submit",
+          "body_bytes": 49,
+          "terminal": false
+        },
+        "dispatch_observed": true,
+        "conservative_state": "sent_unconfirmed",
+        "response_incomplete": true,
+        "process_tree_after": [],
+        "browser_processes_after": 0,
+        "response_started": true,
+        "timeout": false,
+        "canceled": false,
+        "physical_post_count": 1,
+        "duplicate_gate": "pass",
+        "physical_post_paths": [
+          "/submit"
+        ],
+        "service_worker_request_count": 1
+      },
+      "page_events": [
+        {
+          "type": "request",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "normal",
+          "redirected_from": null
+        },
+        {
+          "type": "response",
+          "status": 200,
+          "path": "/submit"
+        }
+      ],
+      "fixture_events": [
+        {
+          "index": 1,
+          "received_at": "2026-08-19T20:27:19.820265661Z",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "normal",
+          "body_sha256": "97611c3cffdeac278a67f0032e523b686111e285e72ae3c3ea27d3e27547d35e",
+          "body_bytes": 65,
+          "service_worker": true,
+          "outcome": "received",
+          "canceled": false
+        }
+      ]
+    },
+    {
+      "name": "timeout-before-headers",
+      "candidate": "playwright",
+      "profile_ref": "scenario",
+      "evidence": {
+        "process_tree_before": [
+          {
+            "pid": 72857,
+            "ppid": 72461,
+            "depth": 0,
+            "args": "/usr/lib/chromium/chromium --show-component-extension-options --enable-gpu-rasterization --no-default-browser-check --disable-pings --media-router=0 --disable-dev-shm-usage --enable-remote-extensions --load-extension --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --no-sandbox --disable-dev-shm-usage --disable-background-networking --disable-component-update --user-data-dir=<profile> --remote-debugging-pipe --noerrdialogs --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl about:blank"
+          },
+          {
+            "pid": 72878,
+            "ppid": 72857,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-zygote-sandbox --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 72899,
+            "ppid": 72878,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=gpu-process --no-sandbox --disable-dev-shm-usage --disable-breakpad --enable-gpu-rasterization --headless --ozone-platform=headless --use-angle=swiftshader-webgl --enable-unsafe-swiftshader --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --gpu-preferences=YAAAAAAAAAAgAAAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAMAAAAAQAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAA== --shared-files --field-trial-handle=3,i,7394731278342297204,17691573918424637605,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,8941689289991189912,1351311701521350471,4 --trace-process-track-uuid=3190708988185955192"
+          },
+          {
+            "pid": 72879,
+            "ppid": 72857,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 72925,
+            "ppid": 72879,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,7394731278342297204,17691573918424637605,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,8941689289991189912,1351311701521350471,4 --trace-process-track-uuid=3190708990060038890"
+          },
+          {
+            "pid": 72949,
+            "ppid": 72879,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=6 --time-ticks-at-unix-epoch=-1786600207993278 --launch-time-ticks=571032092896 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,7394731278342297204,17691573918424637605,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,8941689289991189912,1351311701521350471,4 --trace-process-track-uuid=3190708991934122588"
+          },
+          {
+            "pid": 72951,
+            "ppid": 72879,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=5 --time-ticks-at-unix-epoch=-1786600207993278 --launch-time-ticks=571032094343 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,7394731278342297204,17691573918424637605,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,8941689289991189912,1351311701521350471,4 --trace-process-track-uuid=3190708990997080739"
+          },
+          {
+            "pid": 72969,
+            "ppid": 72879,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=7 --time-ticks-at-unix-epoch=-1786600207993278 --launch-time-ticks=571032178150 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,7394731278342297204,17691573918424637605,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,8941689289991189912,1351311701521350471,4 --trace-process-track-uuid=3190708992871164437"
+          },
+          {
+            "pid": 72902,
+            "ppid": 72857,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,7394731278342297204,17691573918424637605,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,8941689289991189912,1351311701521350471,4 --trace-process-track-uuid=3190708989122997041"
+          }
+        ],
+        "logical_id": "logical-1",
+        "dispatch_observed": true,
+        "caller_cancellation": true,
+        "page_result": {
+          "id": "logical-1",
+          "scenario": "headers-delay",
+          "phase": "physical_abort_observed",
+          "error_name": "AbortError",
+          "error_message": "signal is aborted without reason"
+        },
+        "conservative_state": "sent_unconfirmed",
+        "physical_abort_observed": true,
+        "process_tree_after": [],
+        "browser_processes_after": 0,
+        "response_started": false,
+        "timeout": true,
+        "canceled": false,
+        "physical_post_count": 1,
+        "duplicate_gate": "pass",
+        "physical_post_paths": [
+          "/submit"
+        ],
+        "service_worker_request_count": 0
+      },
+      "page_events": [
+        {
+          "type": "request",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "headers-delay",
+          "redirected_from": null
+        },
+        {
+          "type": "request_failed",
+          "error": "net::ERR_ABORTED",
+          "path": "/submit"
+        }
+      ],
+      "fixture_events": [
+        {
+          "index": 1,
+          "received_at": "2026-08-19T20:27:20.227687333Z",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "headers-delay",
+          "body_sha256": "97611c3cffdeac278a67f0032e523b686111e285e72ae3c3ea27d3e27547d35e",
+          "body_bytes": 65,
+          "service_worker": false,
+          "outcome": "received",
+          "canceled": false
+        }
+      ]
+    },
+    {
+      "name": "cancel-after-headers",
+      "candidate": "playwright",
+      "profile_ref": "scenario",
+      "evidence": {
+        "process_tree_before": [
+          {
+            "pid": 72985,
+            "ppid": 72461,
+            "depth": 0,
+            "args": "/usr/lib/chromium/chromium --show-component-extension-options --enable-gpu-rasterization --no-default-browser-check --disable-pings --media-router=0 --disable-dev-shm-usage --enable-remote-extensions --load-extension --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --no-sandbox --disable-dev-shm-usage --disable-background-networking --disable-component-update --user-data-dir=<profile> --remote-debugging-pipe --noerrdialogs --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl about:blank"
+          },
+          {
+            "pid": 73006,
+            "ppid": 72985,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-zygote-sandbox --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 73027,
+            "ppid": 73006,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=gpu-process --no-sandbox --disable-dev-shm-usage --disable-breakpad --enable-gpu-rasterization --headless --ozone-platform=headless --use-angle=swiftshader-webgl --enable-unsafe-swiftshader --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --gpu-preferences=YAAAAAAAAAAgAAAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAMAAAAAQAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAA== --shared-files --field-trial-handle=3,i,12990718657204352404,9668084418129116791,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,6751890036815153116,10067973137055053655,4 --trace-process-track-uuid=3190708988185955192"
+          },
+          {
+            "pid": 73007,
+            "ppid": 72985,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 73039,
+            "ppid": 73007,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,12990718657204352404,9668084418129116791,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,6751890036815153116,10067973137055053655,4 --trace-process-track-uuid=3190708990060038890"
+          },
+          {
+            "pid": 73076,
+            "ppid": 73007,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=6 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571032535818 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,12990718657204352404,9668084418129116791,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,6751890036815153116,10067973137055053655,4 --trace-process-track-uuid=3190708991934122588"
+          },
+          {
+            "pid": 73077,
+            "ppid": 73007,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=5 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571032537180 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,12990718657204352404,9668084418129116791,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,6751890036815153116,10067973137055053655,4 --trace-process-track-uuid=3190708990997080739"
+          },
+          {
+            "pid": 73097,
+            "ppid": 73007,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=7 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571032613344 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,12990718657204352404,9668084418129116791,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,6751890036815153116,10067973137055053655,4 --trace-process-track-uuid=3190708992871164437"
+          },
+          {
+            "pid": 73030,
+            "ppid": 72985,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,12990718657204352404,9668084418129116791,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,6751890036815153116,10067973137055053655,4 --trace-process-track-uuid=3190708989122997041"
+          }
+        ],
+        "logical_id": "logical-1",
+        "dispatch_observed": true,
+        "caller_cancellation": true,
+        "page_result": {
+          "id": "logical-1",
+          "scenario": "body-delay",
+          "phase": "response_incomplete",
+          "status": 200,
+          "redirected": false,
+          "url": "/submit",
+          "body_bytes": 30,
+          "terminal": false
+        },
+        "conservative_state": "sent_unconfirmed",
+        "response_incomplete": true,
+        "process_tree_after": [],
+        "browser_processes_after": 0,
+        "response_started": true,
+        "timeout": false,
+        "canceled": true,
+        "physical_abort_unproven": true,
+        "physical_post_count": 1,
+        "duplicate_gate": "pass",
+        "physical_post_paths": [
+          "/submit"
+        ],
+        "service_worker_request_count": 0
+      },
+      "page_events": [
+        {
+          "type": "request",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "body-delay",
+          "redirected_from": null
+        },
+        {
+          "type": "response",
+          "status": 200,
+          "path": "/submit"
+        }
+      ],
+      "fixture_events": [
+        {
+          "index": 1,
+          "received_at": "2026-08-19T20:27:20.658736499Z",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "body-delay",
+          "body_sha256": "97611c3cffdeac278a67f0032e523b686111e285e72ae3c3ea27d3e27547d35e",
+          "body_bytes": 65,
+          "service_worker": false,
+          "outcome": "received",
+          "canceled": false
+        }
+      ]
+    },
+    {
+      "name": "cancel-in-flight",
+      "candidate": "playwright",
+      "profile_ref": "scenario",
+      "evidence": {
+        "process_tree_before": [
+          {
+            "pid": 73113,
+            "ppid": 72461,
+            "depth": 0,
+            "args": "/usr/lib/chromium/chromium --show-component-extension-options --enable-gpu-rasterization --no-default-browser-check --disable-pings --media-router=0 --disable-dev-shm-usage --enable-remote-extensions --load-extension --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --no-sandbox --disable-dev-shm-usage --disable-background-networking --disable-component-update --user-data-dir=<profile> --remote-debugging-pipe --noerrdialogs --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl about:blank"
+          },
+          {
+            "pid": 73133,
+            "ppid": 73113,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-zygote-sandbox --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 73155,
+            "ppid": 73133,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=gpu-process --no-sandbox --disable-dev-shm-usage --disable-breakpad --enable-gpu-rasterization --headless --ozone-platform=headless --use-angle=swiftshader-webgl --enable-unsafe-swiftshader --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --gpu-preferences=YAAAAAAAAAAgAAAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAMAAAAAQAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAA== --shared-files --field-trial-handle=3,i,1654072244763388069,3849682734070244872,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,13474715379131493962,16340582230909425524,4 --trace-process-track-uuid=3190708988185955192"
+          },
+          {
+            "pid": 73135,
+            "ppid": 73113,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 73181,
+            "ppid": 73135,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,1654072244763388069,3849682734070244872,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,13474715379131493962,16340582230909425524,4 --trace-process-track-uuid=3190708990060038890"
+          },
+          {
+            "pid": 73205,
+            "ppid": 73135,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=6 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571033256660 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,1654072244763388069,3849682734070244872,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,13474715379131493962,16340582230909425524,4 --trace-process-track-uuid=3190708991934122588"
+          },
+          {
+            "pid": 73206,
+            "ppid": 73135,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=5 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571033258100 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,1654072244763388069,3849682734070244872,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,13474715379131493962,16340582230909425524,4 --trace-process-track-uuid=3190708990997080739"
+          },
+          {
+            "pid": 73225,
+            "ppid": 73135,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=7 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571033328991 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,1654072244763388069,3849682734070244872,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,13474715379131493962,16340582230909425524,4 --trace-process-track-uuid=3190708992871164437"
+          },
+          {
+            "pid": 73158,
+            "ppid": 73113,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,1654072244763388069,3849682734070244872,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,13474715379131493962,16340582230909425524,4 --trace-process-track-uuid=3190708989122997041"
+          }
+        ],
+        "logical_id": "logical-1",
+        "dispatch_observed": true,
+        "caller_cancellation": true,
+        "page_result": {
+          "id": "logical-1",
+          "scenario": "open",
+          "phase": "physical_abort_observed",
+          "status": 200,
+          "redirected": false,
+          "url": "/submit",
+          "error_name": "AbortError",
+          "error_message": "The user aborted a request."
+        },
+        "conservative_state": "sent_unconfirmed",
+        "physical_abort_observed": true,
+        "process_tree_after": [],
+        "browser_processes_after": 0,
+        "response_started": true,
+        "timeout": false,
+        "canceled": true,
+        "physical_post_count": 1,
+        "duplicate_gate": "pass",
+        "physical_post_paths": [
+          "/submit"
+        ],
+        "service_worker_request_count": 0
+      },
+      "page_events": [
+        {
+          "type": "request",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "open",
+          "redirected_from": null
+        },
+        {
+          "type": "response",
+          "status": 200,
+          "path": "/submit"
+        },
+        {
+          "type": "request_failed",
+          "error": "net::ERR_ABORTED",
+          "path": "/submit"
+        }
+      ],
+      "fixture_events": [
+        {
+          "index": 1,
+          "received_at": "2026-08-19T20:27:21.382258345Z",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "open",
+          "body_sha256": "97611c3cffdeac278a67f0032e523b686111e285e72ae3c3ea27d3e27547d35e",
+          "body_bytes": 65,
+          "service_worker": false,
+          "outcome": "client_disconnected",
+          "canceled": true
+        }
+      ]
+    },
+    {
+      "name": "sse-complete",
+      "candidate": "playwright",
+      "profile_ref": "scenario",
+      "evidence": {
+        "process_tree_before": [
+          {
+            "pid": 73241,
+            "ppid": 72461,
+            "depth": 0,
+            "args": "/usr/lib/chromium/chromium --show-component-extension-options --enable-gpu-rasterization --no-default-browser-check --disable-pings --media-router=0 --disable-dev-shm-usage --enable-remote-extensions --load-extension --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --no-sandbox --disable-dev-shm-usage --disable-background-networking --disable-component-update --user-data-dir=<profile> --remote-debugging-pipe --noerrdialogs --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl about:blank"
+          },
+          {
+            "pid": 73261,
+            "ppid": 73241,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-zygote-sandbox --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 73283,
+            "ppid": 73261,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=gpu-process --no-sandbox --disable-dev-shm-usage --disable-breakpad --enable-gpu-rasterization --headless --ozone-platform=headless --use-angle=swiftshader-webgl --enable-unsafe-swiftshader --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --gpu-preferences=YAAAAAAAAAAgAAAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAMAAAAAQAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAA== --shared-files --field-trial-handle=3,i,6958269427742620997,8400144075262770083,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,11972471096127958308,15630423244206032186,4 --trace-process-track-uuid=3190708988185955192"
+          },
+          {
+            "pid": 73263,
+            "ppid": 73241,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 73309,
+            "ppid": 73263,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,6958269427742620997,8400144075262770083,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,11972471096127958308,15630423244206032186,4 --trace-process-track-uuid=3190708990060038890"
+          },
+          {
+            "pid": 73332,
+            "ppid": 73263,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=6 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571033727506 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,6958269427742620997,8400144075262770083,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,11972471096127958308,15630423244206032186,4 --trace-process-track-uuid=3190708991934122588"
+          },
+          {
+            "pid": 73333,
+            "ppid": 73263,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=5 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571033729078 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,6958269427742620997,8400144075262770083,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,11972471096127958308,15630423244206032186,4 --trace-process-track-uuid=3190708990997080739"
+          },
+          {
+            "pid": 73352,
+            "ppid": 73263,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=7 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571033793718 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,6958269427742620997,8400144075262770083,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,11972471096127958308,15630423244206032186,4 --trace-process-track-uuid=3190708992871164437"
+          },
+          {
+            "pid": 73286,
+            "ppid": 73241,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,6958269427742620997,8400144075262770083,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,11972471096127958308,15630423244206032186,4 --trace-process-track-uuid=3190708989122997041"
+          }
+        ],
+        "logical_id": "logical-1",
+        "page_result": {
+          "id": "logical-1",
+          "scenario": "sse-complete",
+          "phase": "response_completed",
+          "status": 200,
+          "redirected": false,
+          "url": "/submit",
+          "body_bytes": 60,
+          "terminal": true
+        },
+        "dispatch_observed": true,
+        "conservative_state": "completed",
+        "process_tree_after": [],
+        "browser_processes_after": 0,
+        "response_started": true,
+        "timeout": false,
+        "canceled": false,
+        "physical_post_count": 1,
+        "duplicate_gate": "pass",
+        "physical_post_paths": [
+          "/submit"
+        ],
+        "service_worker_request_count": 0
+      },
+      "page_events": [
+        {
+          "type": "request",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "sse-complete",
+          "redirected_from": null
+        },
+        {
+          "type": "response",
+          "status": 200,
+          "path": "/submit"
+        }
+      ],
+      "fixture_events": [
+        {
+          "index": 1,
+          "received_at": "2026-08-19T20:27:21.84019197Z",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "sse-complete",
+          "body_sha256": "97611c3cffdeac278a67f0032e523b686111e285e72ae3c3ea27d3e27547d35e",
+          "body_bytes": 65,
+          "service_worker": false,
+          "outcome": "received",
+          "canceled": false
+        }
+      ]
+    },
+    {
+      "name": "sse-truncated",
+      "candidate": "playwright",
+      "profile_ref": "scenario",
+      "evidence": {
+        "process_tree_before": [
+          {
+            "pid": 73369,
+            "ppid": 72461,
+            "depth": 0,
+            "args": "/usr/lib/chromium/chromium --show-component-extension-options --enable-gpu-rasterization --no-default-browser-check --disable-pings --media-router=0 --disable-dev-shm-usage --enable-remote-extensions --load-extension --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --no-sandbox --disable-dev-shm-usage --disable-background-networking --disable-component-update --user-data-dir=<profile> --remote-debugging-pipe --noerrdialogs --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl about:blank"
+          },
+          {
+            "pid": 73390,
+            "ppid": 73369,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-zygote-sandbox --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 73412,
+            "ppid": 73390,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=gpu-process --no-sandbox --disable-dev-shm-usage --disable-breakpad --enable-gpu-rasterization --headless --ozone-platform=headless --use-angle=swiftshader-webgl --enable-unsafe-swiftshader --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --gpu-preferences=YAAAAAAAAAAgAAAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAMAAAAAQAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAA== --shared-files --field-trial-handle=3,i,16304145674686171759,10880939686889317214,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,9584753474869364629,8753957294154222354,4 --trace-process-track-uuid=3190708988185955192"
+          },
+          {
+            "pid": 73391,
+            "ppid": 73369,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 73438,
+            "ppid": 73391,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,16304145674686171759,10880939686889317214,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,9584753474869364629,8753957294154222354,4 --trace-process-track-uuid=3190708990060038890"
+          },
+          {
+            "pid": 73461,
+            "ppid": 73391,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=6 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571034119279 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,16304145674686171759,10880939686889317214,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,9584753474869364629,8753957294154222354,4 --trace-process-track-uuid=3190708991934122588"
+          },
+          {
+            "pid": 73463,
+            "ppid": 73391,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=5 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571034120696 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,16304145674686171759,10880939686889317214,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,9584753474869364629,8753957294154222354,4 --trace-process-track-uuid=3190708990997080739"
+          },
+          {
+            "pid": 73481,
+            "ppid": 73391,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=7 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571034188406 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,16304145674686171759,10880939686889317214,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,9584753474869364629,8753957294154222354,4 --trace-process-track-uuid=3190708992871164437"
+          },
+          {
+            "pid": 73415,
+            "ppid": 73369,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,16304145674686171759,10880939686889317214,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,9584753474869364629,8753957294154222354,4 --trace-process-track-uuid=3190708989122997041"
+          }
+        ],
+        "logical_id": "logical-1",
+        "page_result": {
+          "id": "logical-1",
+          "scenario": "sse-truncated",
+          "phase": "response_incomplete",
+          "status": 200,
+          "redirected": false,
+          "url": "/submit",
+          "body_bytes": 46,
+          "terminal": false
+        },
+        "dispatch_observed": true,
+        "conservative_state": "sent_unconfirmed",
+        "response_incomplete": true,
+        "process_tree_after": [],
+        "browser_processes_after": 0,
+        "response_started": true,
+        "timeout": false,
+        "canceled": false,
+        "physical_post_count": 1,
+        "duplicate_gate": "pass",
+        "physical_post_paths": [
+          "/submit"
+        ],
+        "service_worker_request_count": 0
+      },
+      "page_events": [
+        {
+          "type": "request",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "sse-truncated",
+          "redirected_from": null
+        },
+        {
+          "type": "response",
+          "status": 200,
+          "path": "/submit"
+        }
+      ],
+      "fixture_events": [
+        {
+          "index": 1,
+          "received_at": "2026-08-19T20:27:22.243687458Z",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "sse-truncated",
+          "body_sha256": "97611c3cffdeac278a67f0032e523b686111e285e72ae3c3ea27d3e27547d35e",
+          "body_bytes": 65,
+          "service_worker": false,
+          "outcome": "received",
+          "canceled": false
+        }
+      ]
+    },
+    {
+      "name": "sse-eof",
+      "candidate": "playwright",
+      "profile_ref": "scenario",
+      "evidence": {
+        "process_tree_before": [
+          {
+            "pid": 73497,
+            "ppid": 72461,
+            "depth": 0,
+            "args": "/usr/lib/chromium/chromium --show-component-extension-options --enable-gpu-rasterization --no-default-browser-check --disable-pings --media-router=0 --disable-dev-shm-usage --enable-remote-extensions --load-extension --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --no-sandbox --disable-dev-shm-usage --disable-background-networking --disable-component-update --user-data-dir=<profile> --remote-debugging-pipe --noerrdialogs --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl about:blank"
+          },
+          {
+            "pid": 73518,
+            "ppid": 73497,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-zygote-sandbox --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 73540,
+            "ppid": 73518,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=gpu-process --no-sandbox --disable-dev-shm-usage --disable-breakpad --enable-gpu-rasterization --headless --ozone-platform=headless --use-angle=swiftshader-webgl --enable-unsafe-swiftshader --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --gpu-preferences=YAAAAAAAAAAgAAAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAMAAAAAQAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAA== --shared-files --field-trial-handle=3,i,1995973752811764470,12512907785661952175,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,8409674449783575365,16342689396875018577,4 --trace-process-track-uuid=3190708988185955192"
+          },
+          {
+            "pid": 73519,
+            "ppid": 73497,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 73566,
+            "ppid": 73519,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,1995973752811764470,12512907785661952175,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,8409674449783575365,16342689396875018577,4 --trace-process-track-uuid=3190708990060038890"
+          },
+          {
+            "pid": 73589,
+            "ppid": 73519,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=6 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571034505005 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,1995973752811764470,12512907785661952175,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,8409674449783575365,16342689396875018577,4 --trace-process-track-uuid=3190708991934122588"
+          },
+          {
+            "pid": 73590,
+            "ppid": 73519,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=5 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571034506848 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,1995973752811764470,12512907785661952175,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,8409674449783575365,16342689396875018577,4 --trace-process-track-uuid=3190708990997080739"
+          },
+          {
+            "pid": 73609,
+            "ppid": 73519,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=7 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571034585577 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,1995973752811764470,12512907785661952175,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,8409674449783575365,16342689396875018577,4 --trace-process-track-uuid=3190708992871164437"
+          },
+          {
+            "pid": 73543,
+            "ppid": 73497,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,1995973752811764470,12512907785661952175,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,8409674449783575365,16342689396875018577,4 --trace-process-track-uuid=3190708989122997041"
+          }
+        ],
+        "logical_id": "logical-1",
+        "page_result": {
+          "id": "logical-1",
+          "scenario": "sse-eof",
+          "phase": "response_incomplete",
+          "status": 200,
+          "redirected": false,
+          "url": "/submit",
+          "body_bytes": 46,
+          "terminal": false
+        },
+        "dispatch_observed": true,
+        "conservative_state": "sent_unconfirmed",
+        "response_incomplete": true,
+        "process_tree_after": [],
+        "browser_processes_after": 0,
+        "response_started": true,
+        "timeout": false,
+        "canceled": false,
+        "physical_post_count": 1,
+        "duplicate_gate": "pass",
+        "physical_post_paths": [
+          "/submit"
+        ],
+        "service_worker_request_count": 0
+      },
+      "page_events": [
+        {
+          "type": "request",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "sse-eof",
+          "redirected_from": null
+        },
+        {
+          "type": "response",
+          "status": 200,
+          "path": "/submit"
+        }
+      ],
+      "fixture_events": [
+        {
+          "index": 1,
+          "received_at": "2026-08-19T20:27:22.633201327Z",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "sse-eof",
+          "body_sha256": "97611c3cffdeac278a67f0032e523b686111e285e72ae3c3ea27d3e27547d35e",
+          "body_bytes": 65,
+          "service_worker": false,
+          "outcome": "received",
+          "canceled": false
+        }
+      ]
+    },
+    {
+      "name": "sse-partial",
+      "candidate": "playwright",
+      "profile_ref": "scenario",
+      "evidence": {
+        "process_tree_before": [
+          {
+            "pid": 73625,
+            "ppid": 72461,
+            "depth": 0,
+            "args": "/usr/lib/chromium/chromium --show-component-extension-options --enable-gpu-rasterization --no-default-browser-check --disable-pings --media-router=0 --disable-dev-shm-usage --enable-remote-extensions --load-extension --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --no-sandbox --disable-dev-shm-usage --disable-background-networking --disable-component-update --user-data-dir=<profile> --remote-debugging-pipe --noerrdialogs --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl about:blank"
+          },
+          {
+            "pid": 73646,
+            "ppid": 73625,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-zygote-sandbox --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 73668,
+            "ppid": 73646,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=gpu-process --no-sandbox --disable-dev-shm-usage --disable-breakpad --enable-gpu-rasterization --headless --ozone-platform=headless --use-angle=swiftshader-webgl --enable-unsafe-swiftshader --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --gpu-preferences=YAAAAAAAAAAgAAAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAMAAAAAQAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAA== --shared-files --field-trial-handle=3,i,16161270381958912209,2591400146862785681,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,5828585146053106260,11237072937131054261,4 --trace-process-track-uuid=3190708988185955192"
+          },
+          {
+            "pid": 73647,
+            "ppid": 73625,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 73681,
+            "ppid": 73647,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,16161270381958912209,2591400146862785681,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,5828585146053106260,11237072937131054261,4 --trace-process-track-uuid=3190708990060038890"
+          },
+          {
+            "pid": 73716,
+            "ppid": 73647,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=6 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571034889560 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,16161270381958912209,2591400146862785681,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,5828585146053106260,11237072937131054261,4 --trace-process-track-uuid=3190708991934122588"
+          },
+          {
+            "pid": 73717,
+            "ppid": 73647,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=5 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571034891118 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,16161270381958912209,2591400146862785681,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,5828585146053106260,11237072937131054261,4 --trace-process-track-uuid=3190708990997080739"
+          },
+          {
+            "pid": 73736,
+            "ppid": 73647,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=7 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571034981639 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,16161270381958912209,2591400146862785681,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,5828585146053106260,11237072937131054261,4 --trace-process-track-uuid=3190708992871164437"
+          },
+          {
+            "pid": 73671,
+            "ppid": 73625,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,16161270381958912209,2591400146862785681,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,5828585146053106260,11237072937131054261,4 --trace-process-track-uuid=3190708989122997041"
+          }
+        ],
+        "logical_id": "logical-1",
+        "page_result": {
+          "id": "logical-1",
+          "scenario": "sse-partial",
+          "phase": "response_incomplete",
+          "status": 200,
+          "redirected": false,
+          "url": "/submit",
+          "body_bytes": 46,
+          "terminal": false
+        },
+        "dispatch_observed": true,
+        "conservative_state": "sent_unconfirmed",
+        "response_incomplete": true,
+        "process_tree_after": [],
+        "browser_processes_after": 0,
+        "response_started": true,
+        "timeout": false,
+        "canceled": false,
+        "physical_post_count": 1,
+        "duplicate_gate": "pass",
+        "physical_post_paths": [
+          "/submit"
+        ],
+        "service_worker_request_count": 0
+      },
+      "page_events": [
+        {
+          "type": "request",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "sse-partial",
+          "redirected_from": null
+        },
+        {
+          "type": "response",
+          "status": 200,
+          "path": "/submit"
+        }
+      ],
+      "fixture_events": [
+        {
+          "index": 1,
+          "received_at": "2026-08-19T20:27:23.034720449Z",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "sse-partial",
+          "body_sha256": "97611c3cffdeac278a67f0032e523b686111e285e72ae3c3ea27d3e27547d35e",
+          "body_bytes": 65,
+          "service_worker": false,
+          "outcome": "received",
+          "canceled": false
+        }
+      ]
+    },
+    {
+      "name": "cancel-before-dispatch",
+      "candidate": "playwright",
+      "profile_ref": "scenario",
+      "evidence": {
+        "process_tree_before": [
+          {
+            "pid": 73753,
+            "ppid": 72461,
+            "depth": 0,
+            "args": "/usr/lib/chromium/chromium --show-component-extension-options --enable-gpu-rasterization --no-default-browser-check --disable-pings --media-router=0 --disable-dev-shm-usage --enable-remote-extensions --load-extension --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --no-sandbox --disable-dev-shm-usage --disable-background-networking --disable-component-update --user-data-dir=<profile> --remote-debugging-pipe --noerrdialogs --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl about:blank"
+          },
+          {
+            "pid": 73774,
+            "ppid": 73753,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-zygote-sandbox --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 73796,
+            "ppid": 73774,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=gpu-process --no-sandbox --disable-dev-shm-usage --disable-breakpad --enable-gpu-rasterization --headless --ozone-platform=headless --use-angle=swiftshader-webgl --enable-unsafe-swiftshader --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --gpu-preferences=YAAAAAAAAAAgAAAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAMAAAAAQAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAA== --shared-files --field-trial-handle=3,i,15041311564384337301,3552728116788630439,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,12867386330957566358,5927016630998896892,4 --trace-process-track-uuid=3190708988185955192"
+          },
+          {
+            "pid": 73775,
+            "ppid": 73753,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 73822,
+            "ppid": 73775,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,15041311564384337301,3552728116788630439,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,12867386330957566358,5927016630998896892,4 --trace-process-track-uuid=3190708990060038890"
+          },
+          {
+            "pid": 73845,
+            "ppid": 73775,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=6 --time-ticks-at-unix-epoch=-1786600207993278 --launch-time-ticks=571035281429 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,15041311564384337301,3552728116788630439,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,12867386330957566358,5927016630998896892,4 --trace-process-track-uuid=3190708991934122588"
+          },
+          {
+            "pid": 73846,
+            "ppid": 73775,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=5 --time-ticks-at-unix-epoch=-1786600207993278 --launch-time-ticks=571035282983 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,15041311564384337301,3552728116788630439,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,12867386330957566358,5927016630998896892,4 --trace-process-track-uuid=3190708990997080739"
+          },
+          {
+            "pid": 73865,
+            "ppid": 73775,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=7 --time-ticks-at-unix-epoch=-1786600207993278 --launch-time-ticks=571035351194 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,15041311564384337301,3552728116788630439,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,12867386330957566358,5927016630998896892,4 --trace-process-track-uuid=3190708992871164437"
+          },
+          {
+            "pid": 73799,
+            "ppid": 73753,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,15041311564384337301,3552728116788630439,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,12867386330957566358,5927016630998896892,4 --trace-process-track-uuid=3190708989122997041"
+          }
+        ],
+        "dispatch_observed": false,
+        "canceled_pre_dispatch": true,
+        "conservative_state": "not_sent",
+        "process_tree_after": [],
+        "browser_processes_after": 0,
+        "response_started": false,
+        "timeout": false,
+        "canceled": true,
+        "physical_post_count": 0,
+        "duplicate_gate": "pass",
+        "physical_post_paths": [],
+        "service_worker_request_count": 0
+      },
+      "page_events": [],
+      "fixture_events": []
+    },
+    {
+      "name": "browser-kill-in-flight",
+      "candidate": "playwright",
+      "profile_ref": "scenario",
+      "evidence": {
+        "process_tree_before": [
+          {
+            "pid": 73881,
+            "ppid": 72461,
+            "depth": 0,
+            "args": "/usr/lib/chromium/chromium --show-component-extension-options --enable-gpu-rasterization --no-default-browser-check --disable-pings --media-router=0 --disable-dev-shm-usage --enable-remote-extensions --load-extension --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --no-sandbox --disable-dev-shm-usage --disable-background-networking --disable-component-update --user-data-dir=<profile> --remote-debugging-pipe --noerrdialogs --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl about:blank"
+          },
+          {
+            "pid": 73902,
+            "ppid": 73881,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-zygote-sandbox --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 73923,
+            "ppid": 73902,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=gpu-process --no-sandbox --disable-dev-shm-usage --disable-breakpad --enable-gpu-rasterization --headless --ozone-platform=headless --use-angle=swiftshader-webgl --enable-unsafe-swiftshader --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --gpu-preferences=YAAAAAAAAAAgAAAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAMAAAAAQAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAA== --shared-files --field-trial-handle=3,i,3276092034891716795,8417866809748477676,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,14914409219404549956,1386810310118385202,4 --trace-process-track-uuid=3190708988185955192"
+          },
+          {
+            "pid": 73903,
+            "ppid": 73881,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 73943,
+            "ppid": 73903,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,3276092034891716795,8417866809748477676,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,14914409219404549956,1386810310118385202,4 --trace-process-track-uuid=3190708990060038890"
+          },
+          {
+            "pid": 73972,
+            "ppid": 73903,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=6 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571035630058 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,3276092034891716795,8417866809748477676,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,14914409219404549956,1386810310118385202,4 --trace-process-track-uuid=3190708991934122588"
+          },
+          {
+            "pid": 73973,
+            "ppid": 73903,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=5 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571035631495 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,3276092034891716795,8417866809748477676,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,14914409219404549956,1386810310118385202,4 --trace-process-track-uuid=3190708990997080739"
+          },
+          {
+            "pid": 73992,
+            "ppid": 73903,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=7 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571035692689 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,3276092034891716795,8417866809748477676,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,14914409219404549956,1386810310118385202,4 --trace-process-track-uuid=3190708992871164437"
+          },
+          {
+            "pid": 73926,
+            "ppid": 73881,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,3276092034891716795,8417866809748477676,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,14914409219404549956,1386810310118385202,4 --trace-process-track-uuid=3190708989122997041"
+          }
+        ],
+        "logical_id": "logical-1",
+        "dispatch_observed": true,
+        "killed_pids": [
+          73992,
+          73973,
+          73972,
+          73943,
+          73926,
+          73923,
+          73903,
+          73902,
+          73881
+        ],
+        "browser_crashed": true,
+        "page_result": {
+          "id": "logical-1",
+          "scenario": "open",
+          "phase": "response_started",
+          "status": 200,
+          "redirected": false,
+          "url": "/submit"
+        },
+        "conservative_state": "sent_unconfirmed",
+        "process_tree_after": [],
+        "browser_processes_after": 0,
+        "response_started": true,
+        "timeout": false,
+        "canceled": false,
+        "physical_abort_unproven": true,
+        "physical_post_count": 1,
+        "duplicate_gate": "pass",
+        "physical_post_paths": [
+          "/submit"
+        ],
+        "service_worker_request_count": 0
+      },
+      "page_events": [
+        {
+          "type": "request",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "open",
+          "redirected_from": null
+        },
+        {
+          "type": "response",
+          "status": 200,
+          "path": "/submit"
+        }
+      ],
+      "fixture_events": [
+        {
+          "index": 1,
+          "received_at": "2026-08-19T20:27:23.738404844Z",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "open",
+          "body_sha256": "97611c3cffdeac278a67f0032e523b686111e285e72ae3c3ea27d3e27547d35e",
+          "body_bytes": 65,
+          "service_worker": false,
+          "outcome": "client_disconnected",
+          "canceled": true
+        }
+      ]
+    },
+    {
+      "name": "controller-disconnect-in-flight",
+      "candidate": "playwright",
+      "profile_ref": "scenario",
+      "evidence": {
+        "process_tree_before": [
+          {
+            "pid": 74010,
+            "ppid": 72461,
+            "depth": 0,
+            "args": "/usr/lib/chromium/chromium --show-component-extension-options --enable-gpu-rasterization --no-default-browser-check --disable-pings --media-router=0 --disable-dev-shm-usage --enable-remote-extensions --load-extension --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-edgeupdater --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --disable-updater-scheduler --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --headless --hide-scrollbars --mute-audio --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --no-sandbox --no-sandbox --disable-dev-shm-usage --disable-background-networking --disable-component-update --user-data-dir=<profile> --remote-debugging-pipe --noerrdialogs --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl about:blank"
+          },
+          {
+            "pid": 74031,
+            "ppid": 74010,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-zygote-sandbox --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 74053,
+            "ppid": 74031,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=gpu-process --no-sandbox --disable-dev-shm-usage --disable-breakpad --enable-gpu-rasterization --headless --ozone-platform=headless --use-angle=swiftshader-webgl --enable-unsafe-swiftshader --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --gpu-preferences=YAAAAAAAAAAgAAAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAMAAAAAQAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAA== --shared-files --field-trial-handle=3,i,10622108707968046510,6475243255020618373,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,16252402143286233909,4704390222533585777,4 --trace-process-track-uuid=3190708988185955192"
+          },
+          {
+            "pid": 74032,
+            "ppid": 74010,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=zygote --no-sandbox --headless --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl"
+          },
+          {
+            "pid": 74079,
+            "ppid": 74032,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,10622108707968046510,6475243255020618373,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,16252402143286233909,4704390222533585777,4 --trace-process-track-uuid=3190708990060038890"
+          },
+          {
+            "pid": 74102,
+            "ppid": 74032,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=6 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571037327387 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,10622108707968046510,6475243255020618373,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,16252402143286233909,4704390222533585777,4 --trace-process-track-uuid=3190708991934122588"
+          },
+          {
+            "pid": 74103,
+            "ppid": 74032,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=5 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571037328719 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,10622108707968046510,6475243255020618373,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,16252402143286233909,4704390222533585777,4 --trace-process-track-uuid=3190708990997080739"
+          },
+          {
+            "pid": 74122,
+            "ppid": 74032,
+            "depth": 2,
+            "args": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --no-sandbox --disable-dev-shm-usage --disable-back-forward-cache --disable-background-timer-throttling --disable-breakpad --force-color-profile=srgb --remote-debugging-pipe --allow-pre-commit-input --blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4 --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=3 --enable-main-frame-before-activation --renderer-client-id=7 --time-ticks-at-unix-epoch=-1786600207993279 --launch-time-ticks=571037409698 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,10622108707968046510,6475243255020618373,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,16252402143286233909,4704390222533585777,4 --trace-process-track-uuid=3190708992871164437"
+          },
+          {
+            "pid": 74056,
+            "ppid": 74010,
+            "depth": 1,
+            "args": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-shm-usage --use-angle=swiftshader-webgl --mute-audio --crashpad-handler-pid=0 --enable-crash-reporter=,built on Ubuntu 24.04.4 LTS --noerrdialogs --user-data-dir=<profile> --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,10622108707968046510,6475243255020618373,262144 --enable-features=CDPScreenshotNewSurface --disable-features=AutoDeElevate,AvoidUnnecessaryBeforeUnloadCheckSync,BlockOriginHeaderModificationOnRedirect,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,OptimizationHints,PaintHolding,ThirdPartyStoragePartitioning,Translate,msEdgeUpdateLaunchServicesPreferredVersion,msForceBrowserSignIn --variations-seed-version --pseudonymization-salt-handle=7,i,16252402143286233909,4704390222533585777,4 --trace-process-track-uuid=3190708989122997041"
+          }
+        ],
+        "logical_id": "logical-1",
+        "dispatch_observed": true,
+        "controller_disconnected": true,
+        "page_result": null,
+        "conservative_state": "sent_unconfirmed",
+        "process_tree_after": [],
+        "browser_processes_after": 0,
+        "response_started": true,
+        "timeout": false,
+        "canceled": false,
+        "physical_abort_unproven": true,
+        "physical_post_count": 1,
+        "duplicate_gate": "pass",
+        "physical_post_paths": [
+          "/submit"
+        ],
+        "service_worker_request_count": 0
+      },
+      "page_events": [
+        {
+          "type": "request",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "open",
+          "redirected_from": null
+        },
+        {
+          "type": "response",
+          "status": 200,
+          "path": "/submit"
+        }
+      ],
+      "fixture_events": [
+        {
+          "index": 1,
+          "received_at": "2026-08-19T20:27:25.455108788Z",
+          "method": "POST",
+          "path": "/submit",
+          "scenario": "open",
+          "body_sha256": "97611c3cffdeac278a67f0032e523b686111e285e72ae3c3ea27d3e27547d35e",
+          "body_bytes": 65,
+          "service_worker": false,
+          "outcome": "client_disconnected",
+          "canceled": true
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "The lane uses Playwright persistent contexts and ps-based process inspection; no real account or ChatGPT session is used.",
+    "Playwright page request events are browser-observation evidence, not proof of upstream acceptance after dispatch."
+  ]
+}
