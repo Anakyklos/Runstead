@@ -16,7 +16,7 @@ Runstead Core (Go)                    ChatGPT Web Sidecar (Python)
                                      * SSE incremental + reconciliação cumulative/echo
                                      * Detecção de challenge, sem auto-solve
                                      * Drift gate fail-closed antes de cada efeito de modelo
-                                     * JSON-RPC 2.0 sobre stdio
+                                     * JSON-RPC 2.0 sobre stdio (`complete` + `cancel`)
 ```
 
 ## Fronteiras de segurança
@@ -52,6 +52,8 @@ Não configure uma chave mestra. A ausência dessa configuração é intencional
 
 O método `complete` recebe `client_request_id`, `model`, `messages` e `stream`. `client_request_id` é uma identidade do chamador; ele não é usado como identidade do request upstream. A identidade upstream, quando disponível na evidência, permanece separada.
 
+O método `cancel` recebe somente `client_request_id` e pode ser enviado enquanto a completion está em andamento. A resposta `state: cancellation_requested` é apenas um ack da solicitação; a confirmação de cancelamento físico só aparece na resposta final da completion depois que o mesmo POST observa `AbortError`. Para uma ID que não está em voo, o método retorna `state: not_in_flight` sem alegar que algum request foi abortado.
+
 | Código | Significado | Condição conservadora |
 |---:|---|---|
 | `-32001` | autenticação necessária | HTTP 401/403 ou sessão inválida |
@@ -70,7 +72,7 @@ A máquina de estados não deriva entrega de `err == nil` nem de HTTP 200 isolad
 | Estado | Interpretação |
 |---|---|
 | `no_send_observed` | nenhum evento de transporte foi observado |
-| `send_observed` | headers da resposta do POST físico foram observados |
+| `send_observed` | o browser confirmou o dispatch do POST; headers podem ainda não ter chegado |
 | `response_started` | o corpo da resposta começou a ser observado |
 | `completed` | `[DONE]` foi observado e a resposta é declarada completa |
 | `transport_failed` | falha determinística sem evidência de entrega do efeito |
@@ -89,7 +91,7 @@ O transporte usa um único `fetch` físico no browser, com `ReadableStream` e um
 
 ## Testes e gates
 
-A suíte determinística não usa credenciais, não abre browser e não executa live model turns. Ela cobre reconciliação SSE sequencial e concorrente, baseline de drift persistente, falha do probe, aborto físico do mesmo POST, aborto não comprovado, mapeamento 401/403/429/5xx, truncamento sem `[DONE]`, separação entre erro antes e depois dos headers, serialização da evidência, códigos JSON-RPC, identidade dos requests e warm idempotente.
+A suíte determinística não usa credenciais, não abre browser e não executa live model turns. Ela cobre reconciliação SSE sequencial e concorrente, baseline de drift persistente, falha do probe, dispatch pré-headers, aborto físico do mesmo POST, aborto não comprovado, mapeamento 401/403/429/5xx, truncamento sem `[DONE]`, separação entre erro antes e depois do dispatch, serialização da evidência, códigos JSON-RPC, cancelamento concorrente pelo stdio, identidade dos requests e warm idempotente.
 
 ```bash
 cd experiments/provider-abstraction/chatgptweb-sidecar

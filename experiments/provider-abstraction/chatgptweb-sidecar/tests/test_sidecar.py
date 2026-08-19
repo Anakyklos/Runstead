@@ -55,6 +55,18 @@ class FakePage:
             self.cleanup_calls += 1
             return True
         if "globalThis.__runsteadFetchStates?.get" in script:
+            if self.mode == "pre_headers" and not self.aborted:
+                return {
+                    "state": "starting",
+                    "status": 0,
+                    "headers": {},
+                    "text": "",
+                    "done": False,
+                    "response_started": False,
+                    "error_name": None,
+                    "error_message": None,
+                    "abort_observed": False,
+                }
             if self.mode == "timeout" and not self.aborted:
                 return {
                     "state": "response_started",
@@ -208,6 +220,27 @@ class TestPhysicalTransportCancellation:
         assert page.cleanup_calls == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_dispatch_before_headers_is_counted_and_aborted_once(self):
+        page = FakePage(mode="pre_headers")
+        browser = BrowserSession("acct-test", Path("/tmp/unused-profile"))
+        browser.page = page
+
+        with pytest.raises(asyncio.TimeoutError):
+            [
+                item
+                async for item in browser.cdp_fetch_stream(
+                    "http://127.0.0.1:9/conversation",
+                    json_data={"prompt": "fixture"},
+                    timeout=0,
+                )
+            ]
+
+        assert page.fetch_starts == 1
+        assert page.abort_calls == 1
+        assert page.cleanup_calls == 1
+
+    @pytest.mark.asyncio
     async def test_unobserved_abort_is_not_reported_as_canceled(self):
         page = FakePage(mode="timeout")
         browser = BrowserSession("acct-test", Path("/tmp/unused-profile"))
@@ -284,17 +317,18 @@ class TestCompletionEvidence:
         assert chunks[-1]["error"]["evidence"]["state"] == "timeout_uncertain"
 
     @pytest.mark.asyncio
-    async def test_exception_before_headers_is_transport_failure(self, account_session):
+    async def test_exception_after_dispatch_before_headers_is_uncertain(self, account_session):
         account_session._drift_gate = AsyncMock()
 
         async def stream(*args, **kwargs):
-            raise RuntimeError("fixture transport failed")
-            yield  # pragma: no cover
+            yield {"type": "sent", "request_key": "fixture-request"}
+            raise RuntimeError("fixture transport failed before headers")
 
         account_session.browser.cdp_fetch_stream = stream
         chunks = await collect_completion(account_session)
-        assert chunks[-1]["error"]["jsonrpc_code"] == -32005
-        assert chunks[-1]["error"]["evidence"]["send_count"] == 0
+        assert chunks[-1]["error"]["jsonrpc_code"] == -32006
+        assert chunks[-1]["error"]["evidence"]["state"] == "timeout_uncertain"
+        assert chunks[-1]["error"]["evidence"]["send_count"] == 1
 
     @pytest.mark.asyncio
     async def test_evidence_is_json_serializable(self, account_session):
@@ -306,6 +340,29 @@ class TestCompletionEvidence:
         account_session.browser.cdp_fetch_stream = stream
         chunks = await collect_completion(account_session)
         json.dumps(chunks[-1]["error"]["evidence"])
+
+
+class BlockingSession:
+    def __init__(self):
+        self.cancel_event = None
+
+    async def warm(self):
+        return None
+
+    async def complete(self, **kwargs):
+        self.cancel_event = kwargs["cancel_event"]
+        while not self.cancel_event.is_set():
+            await asyncio.sleep(0)
+        yield {
+            "error": {
+                "message": "Request canceled after physical abort",
+                "evidence": {"state": "canceled", "send_count": 1},
+                "jsonrpc_code": -32006,
+            }
+        }
+
+    async def health_check(self):
+        return True, "ok"
 
 
 class FakeSession:
@@ -325,6 +382,64 @@ class FakeSession:
 
     async def health_check(self):
         return True, "ok"
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_cancel_reaches_in_flight_completion(capsys):
+    server = JSONRPCServer()
+    server.initialized = True
+    fake = BlockingSession()
+    server.session_manager.get_session = lambda account_id: fake
+
+    complete_request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "complete",
+        "params": {
+            "client_request_id": "client-cancel-1",
+            "account_id": "acct",
+            "model": "m",
+            "messages": [],
+        },
+    }
+    await server.handle_request(json.dumps(complete_request))
+    for _ in range(20):
+        if fake.cancel_event is not None:
+            break
+        await asyncio.sleep(0)
+    assert fake.cancel_event is not None
+
+    await server.handle_request(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "cancel",
+                "params": {"client_request_id": "client-cancel-1"},
+            }
+        )
+    )
+    await server.wait_for_background_tasks()
+
+    responses = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    by_id = {response["id"]: response for response in responses}
+    assert by_id[2]["result"] == {
+        "requested": True,
+        "client_request_id": "client-cancel-1",
+        "state": "cancellation_requested",
+    }
+    assert by_id[1]["error"]["code"] == -32006
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_cancel_unknown_request_is_conservative():
+    server = JSONRPCServer()
+    result = await server.handle_cancel({"client_request_id": "missing"})
+    assert result == {
+        "requested": False,
+        "client_request_id": "missing",
+        "state": "not_in_flight",
+    }
 
 
 @pytest.mark.asyncio

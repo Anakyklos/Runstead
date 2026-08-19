@@ -47,6 +47,18 @@ jobs:
       - name: Run protocol checks
         run: bash experiments/protocol/test.sh
 
+      - name: Test provider-abstraction Go module
+        working-directory: experiments/provider-abstraction
+        run: go test ./...
+
+      - name: Vet provider-abstraction Go module
+        working-directory: experiments/provider-abstraction
+        run: go vet ./...
+
+      - name: Build provider-abstraction Go module
+        working-directory: experiments/provider-abstraction
+        run: go build ./...
+
       - name: Install sidecar development dependencies
         working-directory: experiments/provider-abstraction/chatgptweb-sidecar
         run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'

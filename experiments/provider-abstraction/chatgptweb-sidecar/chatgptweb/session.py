@@ -141,7 +141,7 @@ class AccountConfig:
 class BrowserSession:
     """
     Wrapper around nodriver browser for session management.
-    Credentials remain in the browser profile; we never extract them to httpx.
+    Credentials remain in the browser profile; we never extract them to a Python HTTP client.
     All HTTP requests go through the browser's native fetch via CDP.
     """
 
@@ -398,6 +398,9 @@ class BrowserSession:
         if method != "POST":
             raise ValueError("cdp_fetch_stream only supports POST model effects")
 
+        if cancel_event is not None and cancel_event.is_set():
+            raise RequestCanceled("explicit cancellation requested before physical dispatch")
+
         request_key = f"runstead-stream-{uuid.uuid4().hex}"
         request_headers = {
             "accept": "text/event-stream",
@@ -482,6 +485,11 @@ class BrowserSession:
             )
             if not isinstance(result, dict) or result.get("started") is not True:
                 raise RuntimeError("Browser did not confirm fetch start")
+
+            # The browser has accepted and dispatched this physical fetch. It
+            # may not have produced response headers yet, but the attempt must
+            # already be reflected in accounting and uncertainty boundaries.
+            yield {"type": "sent", "request_key": request_key}
 
             while True:
                 if forced_state is not None:
@@ -777,8 +785,15 @@ class AccountSession:
                 timeout=timeout if timeout is not None else settings.request_timeout,
                 cancel_event=cancel_event,
             ):
+                if chunk["type"] == "sent":
+                    # Dispatch is observable before response headers. Preserve
+                    # the attempt even if the fetch later times out or fails.
+                    evidence.state = TransportState.SEND_OBSERVED
+                    evidence.send_count = 1
+                    continue
+
                 if chunk["type"] == "headers":
-                    # First observable transport event: request sent, response headers received
+                    # Response headers are a later transport observation.
                     evidence.state = TransportState.SEND_OBSERVED
                     evidence.send_count = 1
                     try:
