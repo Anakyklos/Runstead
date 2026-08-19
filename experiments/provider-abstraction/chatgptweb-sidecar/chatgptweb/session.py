@@ -279,6 +279,7 @@ class BrowserSession:
         Execute streaming HTTP request via browser's CDP fetch.
         SINGLE POST: returns headers + full body from ONE fetch; we then split into lines.
         This is a research prototype - true streaming would require CDP Network domain.
+        Timeout is applied at Python level via asyncio.wait_for.
         """
         if not self.page:
             raise RuntimeError("Browser not started")
@@ -305,7 +306,14 @@ class BrowserSession:
             "})()"
         )
 
-        result = await self.page.evaluate(script, await_promise=True)
+        # Apply timeout at Python level (P1: timeout bounded)
+        try:
+            result = await asyncio.wait_for(
+                self.page.evaluate(script, await_promise=True),
+                timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"cdp_fetch_stream timeout after {timeout}s")
 
         if isinstance(result, dict) and "error" in result:
             raise RuntimeError(f"Fetch failed: {result['error']}")
@@ -424,6 +432,7 @@ class AccountSession:
         Warm session using browser profile.
         Raises SessionNotReady on any failure (challenge, auth, nav, drift).
         Idempotent: if already warm, returns immediately.
+        Preserves persisted drift baseline - does NOT overwrite with current.
         """
         async with self._warm_lock:
             if self._warm:
@@ -448,14 +457,25 @@ class AccountSession:
                 if not await self.browser.has_valid_session():
                     raise SessionNotReady(reason="no_valid_session_after_nav")
 
-                # Load baseline drift hash - DO NOT OVERWRITE with current
-                baseline = await self._probe_drift_hash()
-                if baseline:
-                    self._drift_hash = baseline
+                # Load baseline drift hash - PRESERVE persisted baseline
+                # _load_drift_hash() already loaded persisted hash into self._drift_hash
+                current = await self._probe_drift_hash()
+                if current:
+                    # Compare current against PERSISTED baseline (don't overwrite)
+                    if self._drift_hash and current != self._drift_hash:
+                        # Drift detected during warm-up - fail closed
+                        raise DriftDetected(f"Drift detected during warm-up: {self._drift_hash[:16]} -> {current[:16]}")
+                    # No persisted baseline yet (first warm) - store current as baseline
+                    if not self._drift_hash:
+                        self._drift_hash = current
+                        self.drift_hash_file.write_text(self._drift_hash)
 
                 self._warm = True
 
             except SessionNotReady:
+                await self.browser.stop()
+                raise
+            except DriftDetected:
                 await self.browser.stop()
                 raise
             except Exception as e:
@@ -489,7 +509,7 @@ class AccountSession:
         if self._drift_hash and current != self._drift_hash:
             # Report drift with both values, but DON'T update hash (preserve baseline)
             return True, f"Drift detected: {self._drift_hash[:16]} -> {current[:16]}"
-        # First time seeing hash - just store it
+        # First time seeing hash - just store it (shouldn't happen if warm() ran first)
         if not self._drift_hash:
             self._drift_hash = current
         return False, None
@@ -511,6 +531,7 @@ class AccountSession:
         Yields dict with either {'delta': str, 'done': bool} or final result with evidence.
         Transport evidence is only marked based on OBSERVED transport events.
         Uses a fresh SSEReconciler per completion to avoid state leak (P1).
+        Errors include jsonrpc_code for proper JSON-RPC error mapping (P2).
         """
         # Drift gate before any model-effect send
         await self._drift_gate()
@@ -606,7 +627,7 @@ class AccountSession:
                 }
             }
 
-        except TimeoutError:
+        except asyncio.TimeoutError:
             evidence.state = TransportState.TIMEOUT_UNCERTAIN
             evidence.error_code = ErrorCode.TIMEOUT_UNCERTAIN
             evidence.duration_ms = int((time.time() - start_time) * 1000)

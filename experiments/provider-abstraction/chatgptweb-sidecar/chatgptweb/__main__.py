@@ -115,11 +115,13 @@ class JSONRPCServer:
                 evidence = result.get("evidence", None)
                 "".join(content_parts)
             elif "error" in chunk:
-                # Transport error - evidence already serialized in chunk
+                # Transport error - use jsonrpc_code from evidence for proper mapping (P2)
+                error_data = chunk["error"]
+                jsonrpc_code = error_data.get("jsonrpc_code", self.TRANSPORT_FAILED)
                 raise JSONRPCError(
-                    self.TRANSPORT_FAILED,
-                    chunk["error"].get("message", "Transport error"),
-                    chunk["error"]
+                    jsonrpc_code,
+                    error_data.get("message", "Transport error"),
+                    error_data
                 )
 
         # Build response with transport evidence (NO secrets)

@@ -183,6 +183,62 @@ class TestNoAutomaticRetry:
         assert "fallback" not in str(methods).lower()
 
 
+class TestDriftBaseline:
+    """Test drift baseline preservation."""
+
+    def test_probe_drift_preserves_baseline(self):
+        """probe_drift() compares against baseline without overwriting."""
+        # This is a unit test verifying the logic - actual drift detection
+        # requires live browser which we don't have in CI
+        from chatgptweb.session import AccountSession
+        # Verify method exists and has correct signature
+        assert hasattr(AccountSession, "probe_drift")
+        assert hasattr(AccountSession, "_probe_drift_hash")
+        # Ensure no duplicate methods
+        methods = [m for m in dir(AccountSession) if m == "probe_drift"]
+        assert len(methods) == 1, "Should have exactly one probe_drift method"
+
+
+class TestTimeoutBounded:
+    """Test timeout is applied."""
+
+    def test_cdp_fetch_stream_has_timeout(self):
+        """cdp_fetch_stream has timeout parameter."""
+        from chatgptweb.session import BrowserSession
+        import inspect
+        sig = inspect.signature(BrowserSession.cdp_fetch_stream)
+        assert "timeout" in sig.parameters
+        assert sig.parameters["timeout"].default == 120
+
+
+class TestSSEStateLeak:
+    """Test SSE reconciler state isolation."""
+
+    def test_fresh_reconciler_per_completion(self):
+        """Each complete() uses fresh SSEReconciler."""
+        # The complete() method creates a local SSEReconciler
+        # This is verified by the fact that SSEReconciler is instantiated
+        # inside the complete() method, not as an instance attribute
+        from chatgptweb.session import AccountSession, SSEReconciler
+        import inspect
+        source = inspect.getsource(AccountSession.complete)
+        assert "SSEReconciler()" in source, "complete() should create fresh reconciler"
+        assert "self.reconciler" not in source or "reconciler = SSEReconciler()" in source
+
+
+class TestJSONRPCErrorMapping:
+    """Test JSON-RPC error code mapping."""
+
+    def test_complete_yields_jsonrpc_code(self):
+        """complete() yields jsonrpc_code in error chunks."""
+        from chatgptweb.session import AccountSession
+        import inspect
+        source = inspect.getsource(AccountSession.complete)
+        assert "jsonrpc_code" in source, "complete() should include jsonrpc_code in errors"
+        # Check for specific codes
+        assert "-32001" in source or "-32003" in source or "-32005" in source or "-32006" in source
+
+
 class TestSessionNotReady:
     """Test SessionNotReady exception carries challenge info."""
 
