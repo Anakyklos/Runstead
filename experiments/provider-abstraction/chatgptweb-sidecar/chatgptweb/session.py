@@ -277,12 +277,13 @@ class BrowserSession:
     async def cdp_fetch_stream(self, url: str, method: str = "POST", json_data: dict = None, headers: dict = None, timeout: int = 120):
         """
         Execute streaming HTTP request via browser's CDP fetch.
-        SINGLE POST: yields headers immediately, then yields body lines as they arrive.
+        SINGLE POST: returns headers + full body from ONE fetch; we then split into lines.
+        This is a research prototype - true streaming would require CDP Network domain.
         """
         if not self.page:
             raise RuntimeError("Browser not started")
 
-        # SINGLE POST that yields headers immediately, then streams body via reader
+        # SINGLE POST: fetch once, get status/headers/body all at once
         script = (
             "(async () => {"
             "  const response = await fetch(" + json.dumps(url) + ", {"
@@ -294,11 +295,12 @@ class BrowserSession:
             }) + ","
             "    body: JSON.stringify(" + json.dumps(json_data) + ")"
             "  });"
+            "  const text = await response.text();"
             "  return {"
             "    status: response.status,"
             "    headers: Object.fromEntries(response.headers.entries()),"
             "    ok: response.ok,"
-            "    bodyPromise: response.body"
+            "    text: text"
             "  };"
             "})()"
         )
@@ -312,9 +314,14 @@ class BrowserSession:
         if isinstance(result, tuple):
             result = result[0]
 
+        # Ensure result is a dict
+        if not isinstance(result, dict):
+            result = {}
+
         status = result.get("status", 0)
         headers = result.get("headers", {})
         ok = result.get("ok", False)
+        text = result.get("text", "")
 
         # Yield status/headers first (transport evidence: send_observed -> response_started)
         yield {"type": "headers", "status": status, "headers": headers}
@@ -323,44 +330,10 @@ class BrowserSession:
             yield {"type": "error", "status": status, "headers": headers}
             return
 
-        # Stream the body using the SAME response's body reader
-        stream_script = (
-            "(async () => {"
-            "  const response = await fetch(" + json.dumps(url) + ", {"
-            "    method: " + json.dumps("POST") + ","
-            "    credentials: 'include',"
-            "    headers: " + json.dumps({
-                "accept": "text/event-stream",
-                "content-type": "application/json",
-            }) + ","
-            "    body: JSON.stringify(" + json.dumps(json_data) + ")"
-            "  });"
-            "  const reader = response.body.getReader();"
-            "  const decoder = new TextDecoder();"
-            "  const lines = [];"
-            "  while (true) {"
-            "    const {done, value} = await reader.read();"
-            "    if (done) break;"
-            "    const text = decoder.decode(value, {stream: true});"
-            "    lines.push(text);"
-            "  }"
-            "  return lines.join('');"
-            "})()"
-        )
-
-        stream_result = await self.page.evaluate(stream_script, await_promise=True)
-
-        if isinstance(stream_result, dict) and "error" in stream_result:
-            raise RuntimeError(f"Stream fetch failed: {stream_result['error']}")
-
-        # nodriver evaluate returns (value, exception_details) tuple
-        if isinstance(stream_result, tuple):
-            stream_result = stream_result[0]
-
-        if isinstance(stream_result, str):
-            for line in stream_result.split("\n"):
-                if line.strip():
-                    yield {"type": "line", "data": line}
+        # Split body into lines and yield each
+        for line in text.split("\n"):
+            if line.strip():
+                yield {"type": "line", "data": line}
 
 
 class SSEReconciler:
@@ -512,11 +485,6 @@ class AccountSession:
         if not self._drift_hash:
             self._drift_hash = current
         return False, None
-
-    async def _persist_drift_hash(self) -> None:
-        """Persist the current drift hash to disk."""
-        if self._drift_hash:
-            self.drift_hash_file.write_text(self._drift_hash)
 
     async def _drift_gate(self) -> None:
         """Fail-closed drift gate before any model-effect send."""
