@@ -111,15 +111,18 @@ async function runScenario(name, options = {}) {
     context = await launch(profile);
     page = await context.newPage();
     page.on('request', request => {
-      if (request.url().includes('/submit')) {
-        result.page_events.push({ type: 'request', method: request.method(), path: new URL(request.url()).pathname, scenario: new URL(request.url()).searchParams.get('scenario'), redirected_from: request.redirectedFrom() ? new URL(request.redirectedFrom().url()).pathname : null });
+      const path = new URL(request.url()).pathname;
+      if (path === '/submit' || path === '/effect-final') {
+        result.page_events.push({ type: 'request', method: request.method(), path, scenario: new URL(request.url()).searchParams.get('scenario'), redirected_from: request.redirectedFrom() ? new URL(request.redirectedFrom().url()).pathname : null });
       }
     });
     page.on('response', response => {
-      if (response.url().includes('/submit')) result.page_events.push({ type: 'response', status: response.status(), path: new URL(response.url()).pathname });
+      const path = new URL(response.url()).pathname;
+      if (path === '/submit' || path === '/effect-final') result.page_events.push({ type: 'response', status: response.status(), path });
     });
     page.on('requestfailed', request => {
-      if (request.url().includes('/submit')) result.page_events.push({ type: 'request_failed', error: request.failure()?.errorText || 'unknown', path: new URL(request.url()).pathname });
+      const path = new URL(request.url()).pathname;
+      if (path === '/submit' || path === '/effect-final') result.page_events.push({ type: 'request_failed', error: request.failure()?.errorText || 'unknown', path });
     });
 
     if (options.serviceWorker) {
@@ -209,14 +212,64 @@ async function runScenario(name, options = {}) {
   result.evidence.physical_post_paths = result.fixture_events.filter(event => event.method === 'POST').map(event => event.path);
   result.evidence.duplicate_gate = duplicateGate(name, result.evidence.physical_post_count, result.evidence.physical_post_paths);
   result.evidence.service_worker_request_count = result.fixture_events.filter(event => event.service_worker).length;
+  result.evidence.expected_contract = expectedScenarioContract(name);
+  result.evidence.contract_failures = contractFailures(result);
   return result;
+}
+
+function expectedScenarioContract(name) {
+  const base = { physical_post_count: 1, physical_post_paths: ['/submit'], dispatch_observed: true, conservative_state: 'sent_unconfirmed' };
+  const responseIncomplete = { ...base, response_started: true, required_page_phase: 'response_incomplete', terminal_must_not_be_true: true };
+  const contracts = {
+    normal: responseIncomplete,
+    redirect: { ...responseIncomplete, physical_post_count: 2, physical_post_paths: ['/submit', '/effect-final'] },
+    'service-worker': { ...responseIncomplete, service_worker_controlled: true, service_worker_request_count_min: 1 },
+    'timeout-before-headers': { ...base, response_started: false, required_page_phase: 'physical_abort_observed', timeout: true },
+    'cancel-after-headers': { ...base, response_started: true, required_page_phase: 'physical_abort_observed', canceled: true, response_start_observed: true, cancellation_after_response_start: true },
+    'cancel-in-flight': { ...base, canceled: true, required_page_phase: 'physical_abort_observed' },
+    'sse-complete': { ...base, response_started: true, required_page_phase: 'response_completed', required_terminal: true, conservative_state: 'completed' },
+    'sse-truncated': responseIncomplete,
+    'sse-eof': responseIncomplete,
+    'sse-partial': responseIncomplete,
+    'cancel-before-dispatch': { physical_post_count: 0, physical_post_paths: [], dispatch_observed: false, conservative_state: 'not_sent', response_started: false },
+    'browser-kill-in-flight': { ...base, browser_crashed: true },
+    'controller-disconnect-in-flight': { ...base, controller_disconnected: true, controller_disconnect_transport: 'playwright_protocol_connection_closed_abruptly' },
+    'fetch-correlation': responseIncomplete,
+  };
+  return contracts[name] || base;
+}
+
+function contractFailures(scenario) {
+  const evidence = scenario.evidence || {};
+  const expected = evidence.expected_contract || expectedScenarioContract(scenario.name);
+  const failures = [];
+  const actualPaths = (evidence.physical_post_paths || []).join('>');
+  const expectedPaths = (expected.physical_post_paths || []).join('>');
+  if (evidence.physical_post_count !== expected.physical_post_count) failures.push(`physical_post_count expected ${expected.physical_post_count}, got ${evidence.physical_post_count}`);
+  if (actualPaths !== expectedPaths) failures.push(`physical_post_paths expected ${expectedPaths || '<none>'}, got ${actualPaths || '<none>'}`);
+  if (evidence.dispatch_observed !== expected.dispatch_observed) failures.push(`dispatch_observed expected ${expected.dispatch_observed}, got ${evidence.dispatch_observed}`);
+  if (expected.conservative_state && evidence.conservative_state !== expected.conservative_state) failures.push(`conservative_state expected ${expected.conservative_state}, got ${evidence.conservative_state}`);
+  if (expected.response_started !== undefined && evidence.response_started !== expected.response_started) failures.push(`response_started expected ${expected.response_started}, got ${evidence.response_started}`);
+  if (expected.required_page_phase && evidence.page_result?.phase !== expected.required_page_phase) failures.push(`page phase expected ${expected.required_page_phase}, got ${evidence.page_result?.phase || '<none>'}`);
+  if (expected.terminal_must_not_be_true && evidence.page_result?.terminal === true) failures.push('terminal unexpectedly classified as complete');
+  if (expected.required_terminal !== undefined && evidence.page_result?.terminal !== expected.required_terminal) failures.push(`terminal expected ${expected.required_terminal}, got ${evidence.page_result?.terminal}`);
+  if (expected.timeout === true && evidence.timeout !== true) failures.push('caller deadline was not observed');
+  if (expected.canceled === true && evidence.canceled !== true) failures.push('explicit cancellation was not observed');
+  if (expected.response_start_observed === true && evidence.response_start_observed !== true) failures.push('response-start ordering was not observed');
+  if (expected.cancellation_after_response_start === true && evidence.cancellation_after_response_start !== true) failures.push('cancellation did not occur after response-start');
+  if (expected.service_worker_controlled === true && evidence.service_worker_controlled !== true) failures.push('Service Worker was not controlling the page');
+  if (expected.service_worker_request_count_min !== undefined && (evidence.service_worker_request_count || 0) < expected.service_worker_request_count_min) failures.push('Service Worker request observation was missing');
+  if (expected.browser_crashed === true && evidence.browser_crashed !== true) failures.push('browser kill was not observed');
+  if (expected.controller_disconnected === true && evidence.controller_disconnected !== true) failures.push('controller disconnect was not observed');
+  if (expected.controller_disconnect_transport && evidence.controller_disconnect_transport !== expected.controller_disconnect_transport) failures.push('controller disconnect transport was not abrupt');
+  return failures;
 }
 
 function duplicateGate(name, count, paths) {
   if (name === 'redirect') return count === 2 && paths.join('>') === '/submit>/effect-final' ? 'pass_redirect_exact_sequence' : 'fail_redirect_sequence_or_amplification';
   if (name === 'fetch-correlation') return count === 1 && paths.join('>') === '/submit' ? 'pass_fetch_exactly_one_effect' : 'fail_fetch_effect_count_or_path';
   if (name === 'cancel-before-dispatch') return count === 0 ? 'pass' : 'fail_pre_dispatch_created_effect';
-  return count <= 1 ? 'pass' : 'fail_unexpected_multiple_physical_posts';
+  return count === 1 && paths.join('>') === '/submit' ? 'pass_exactly_one_effect' : 'fail_expected_exactly_one_effect';
 }
 
 function gateFailures(artifact) {
@@ -224,6 +277,7 @@ function gateFailures(artifact) {
   if (artifact.profile_lifecycle?.isolated !== true) failures.push('profile isolation failed');
   for (const scenario of artifact.scenarios) {
     const evidence = scenario.evidence || {};
+    failures.push(...contractFailures(scenario).map(failure => `${scenario.name}: ${failure}`));
     if (String(evidence.duplicate_gate || '').startsWith('fail')) failures.push(`${scenario.name}: ${evidence.duplicate_gate}`);
     if (evidence.browser_processes_after !== 0) failures.push(`${scenario.name}: browser cleanup left ${evidence.browser_processes_after} processes`);
     if (scenario.name === 'service-worker' && (evidence.service_worker_controlled !== true || evidence.service_worker_request_count < 1)) failures.push(`${scenario.name}: Service Worker control/observation failed`);
@@ -306,10 +360,11 @@ const main = async () => {
     scenarios: results,
     limitations: ['The lane uses Playwright persistent contexts and ps-based process inspection; no real account or ChatGPT session is used.', 'Playwright page request events are browser-observation evidence, not proof of upstream acceptance after dispatch.'],
   };
+  const failures = gateFailures(artifact);
+  artifact.gate_failures = failures;
   const outputPath = join(outputDir, 'playwright-results.json');
   const { writeFile } = await import('node:fs/promises');
   await writeFile(outputPath, JSON.stringify(artifact, null, 2));
-  const failures = gateFailures(artifact);
   console.log(JSON.stringify({ candidate: artifact.candidate, scenarios: results.length, output: outputPath, profile_isolated: profile.isolated, gate_failures: failures }));
   if (failures.length > 0) throw new Error(`substrate bake-off gates failed: ${failures.join('; ')}`);
 };

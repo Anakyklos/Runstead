@@ -550,6 +550,8 @@ func runScenario(root context.Context, options scenarioOptions, profileRoot stri
 			result.Evidence["fetch_mapping_gate"] = len(result.FetchMappings) > 0 && postCount == 1 && strings.Join(postPaths, ">") == "/submit"
 		}
 	}
+	result.Evidence["expected_contract"] = expectedScenarioContract(options.Name)
+	result.Evidence["contract_failures"] = contractFailures(result)
 	return result
 }
 
@@ -568,7 +570,7 @@ func hasResponse(mu *sync.Mutex, events []pageEvent) bool {
 	mu.Lock()
 	defer mu.Unlock()
 	for _, event := range events {
-		if event.Type == "response" && strings.HasPrefix(event.URLPath, "/submit") {
+		if event.Type == "response" && (event.URLPath == "/submit" || event.URLPath == "/effect-final") {
 			return true
 		}
 	}
@@ -616,6 +618,147 @@ func pageResultTimeoutCause(raw any) string {
 	return cause
 }
 
+func cloneContract(base map[string]any, extra map[string]any) map[string]any {
+	cloned := make(map[string]any, len(base)+len(extra))
+	for key, value := range base {
+		cloned[key] = value
+	}
+	for key, value := range extra {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func expectedScenarioContract(name string) map[string]any {
+	base := map[string]any{
+		"physical_post_count": 1,
+		"physical_post_paths": []string{"/submit"},
+		"dispatch_observed":   true,
+		"conservative_state":  "sent_unconfirmed",
+	}
+	responseIncomplete := cloneContract(base, map[string]any{
+		"response_started":          true,
+		"required_page_phase":       "response_incomplete",
+		"terminal_must_not_be_true": true,
+	})
+	contracts := map[string]map[string]any{
+		"normal":                 responseIncomplete,
+		"redirect":               cloneContract(responseIncomplete, map[string]any{"physical_post_count": 2, "physical_post_paths": []string{"/submit", "/effect-final"}}),
+		"service-worker":         cloneContract(responseIncomplete, map[string]any{"service_worker_controlled": true, "service_worker_request_count_min": 1}),
+		"timeout-before-headers": cloneContract(base, map[string]any{"response_started": false, "required_page_phase": "physical_abort_observed", "timeout": true}),
+		"cancel-after-headers":   cloneContract(base, map[string]any{"response_started": true, "required_page_phase": "physical_abort_observed", "canceled": true, "response_start_observed": true, "cancellation_after_response_start": true}),
+		"cancel-in-flight":       cloneContract(base, map[string]any{"canceled": true, "required_page_phase": "physical_abort_observed"}),
+		"sse-complete":           cloneContract(base, map[string]any{"response_started": true, "required_page_phase": "response_completed", "required_terminal": true, "conservative_state": "completed"}),
+		"sse-truncated":          responseIncomplete,
+		"sse-eof":                responseIncomplete,
+		"sse-partial":            responseIncomplete,
+		"cancel-before-dispatch": {
+			"physical_post_count": 0,
+			"physical_post_paths": []string{},
+			"dispatch_observed":   false,
+			"conservative_state":  "not_sent",
+			"response_started":    false,
+		},
+		"browser-kill-in-flight":          cloneContract(base, map[string]any{"browser_crashed": true}),
+		"controller-disconnect-in-flight": cloneContract(base, map[string]any{"controller_disconnected": true, "controller_disconnect_transport": "cdp_tcp_proxy_killed_abruptly"}),
+		"fetch-correlation":               responseIncomplete,
+	}
+	if contract, ok := contracts[name]; ok {
+		return contract
+	}
+	return base
+}
+
+func pageResultMap(raw any) map[string]any {
+	result, _ := raw.(map[string]any)
+	return result
+}
+
+func pageResultPhase(raw any) string {
+	phase, _ := pageResultMap(raw)["phase"].(string)
+	return phase
+}
+
+func pageResultTerminal(raw any) (bool, bool) {
+	terminal, ok := pageResultMap(raw)["terminal"].(bool)
+	return terminal, ok
+}
+
+func contractFailures(scenario scenarioResult) []string {
+	evidence := scenario.Evidence
+	expected := expectedScenarioContract(scenario.Name)
+	failures := make([]string, 0)
+	expectedCount, _ := expected["physical_post_count"].(int)
+	actualCount, _ := evidence["physical_post_count"].(int)
+	if actualCount != expectedCount {
+		failures = append(failures, fmt.Sprintf("physical_post_count expected %d, got %d", expectedCount, actualCount))
+	}
+	expectedPaths, _ := expected["physical_post_paths"].([]string)
+	actualPaths, _ := evidence["physical_post_paths"].([]string)
+	if strings.Join(actualPaths, ">") != strings.Join(expectedPaths, ">") {
+		failures = append(failures, fmt.Sprintf("physical_post_paths expected %s, got %s", strings.Join(expectedPaths, ">"), strings.Join(actualPaths, ">")))
+	}
+	expectedDispatch, _ := expected["dispatch_observed"].(bool)
+	actualDispatch, _ := evidence["dispatch_observed"].(bool)
+	if actualDispatch != expectedDispatch {
+		failures = append(failures, fmt.Sprintf("dispatch_observed expected %t, got %t", expectedDispatch, actualDispatch))
+	}
+	if expectedState, ok := expected["conservative_state"].(string); ok {
+		if actualState, _ := evidence["conservative_state"].(string); actualState != expectedState {
+			failures = append(failures, fmt.Sprintf("conservative_state expected %s, got %s", expectedState, actualState))
+		}
+	}
+	if expectedResponseStarted, ok := expected["response_started"].(bool); ok {
+		if actualResponseStarted, _ := evidence["response_started"].(bool); actualResponseStarted != expectedResponseStarted {
+			failures = append(failures, fmt.Sprintf("response_started expected %t, got %t", expectedResponseStarted, actualResponseStarted))
+		}
+	}
+	if requiredPhase, ok := expected["required_page_phase"].(string); ok && pageResultPhase(evidence["page_result"]) != requiredPhase {
+		failures = append(failures, fmt.Sprintf("page phase expected %s, got %s", requiredPhase, pageResultPhase(evidence["page_result"])))
+	}
+	if mustNotBeTerminal, _ := expected["terminal_must_not_be_true"].(bool); mustNotBeTerminal {
+		if terminal, _ := pageResultTerminal(evidence["page_result"]); terminal {
+			failures = append(failures, "terminal unexpectedly classified as complete")
+		}
+	}
+	if requiredTerminal, ok := expected["required_terminal"].(bool); ok {
+		if terminal, present := pageResultTerminal(evidence["page_result"]); !present || terminal != requiredTerminal {
+			failures = append(failures, fmt.Sprintf("terminal expected %t", requiredTerminal))
+		}
+	}
+	if expectedTimeout, _ := expected["timeout"].(bool); expectedTimeout && evidence["timeout"] != true {
+		failures = append(failures, "caller deadline was not observed")
+	}
+	if expectedCanceled, _ := expected["canceled"].(bool); expectedCanceled && evidence["canceled"] != true {
+		failures = append(failures, "explicit cancellation was not observed")
+	}
+	if expectedResponseStart, _ := expected["response_start_observed"].(bool); expectedResponseStart && evidence["response_start_observed"] != true {
+		failures = append(failures, "response-start ordering was not observed")
+	}
+	if expectedCancellationOrder, _ := expected["cancellation_after_response_start"].(bool); expectedCancellationOrder && evidence["cancellation_after_response_start"] != true {
+		failures = append(failures, "cancellation did not occur after response-start")
+	}
+	if expectedControlled, _ := expected["service_worker_controlled"].(bool); expectedControlled && evidence["service_worker_controlled"] != true {
+		failures = append(failures, "Service Worker was not controlling the page")
+	}
+	if minimum, ok := expected["service_worker_request_count_min"].(int); ok {
+		actual, _ := evidence["service_worker_request_count"].(int)
+		if actual < minimum {
+			failures = append(failures, "Service Worker request observation was missing")
+		}
+	}
+	if expectedCrash, _ := expected["browser_crashed"].(bool); expectedCrash && evidence["browser_crashed"] != true {
+		failures = append(failures, "browser kill was not observed")
+	}
+	if expectedDisconnect, _ := expected["controller_disconnected"].(bool); expectedDisconnect && evidence["controller_disconnected"] != true {
+		failures = append(failures, "controller disconnect was not observed")
+	}
+	if expectedTransport, ok := expected["controller_disconnect_transport"].(string); ok && evidence["controller_disconnect_transport"] != expectedTransport {
+		failures = append(failures, "controller disconnect transport was not abrupt")
+	}
+	return failures
+}
+
 func duplicateGate(name string, count int, paths []string) string {
 	if name == "redirect" {
 		if count == 2 && strings.Join(paths, ">") == "/submit>/effect-final" {
@@ -632,10 +775,10 @@ func duplicateGate(name string, count int, paths []string) string {
 	if name == "cancel-before-dispatch" {
 		return map[bool]string{true: "pass", false: "fail_pre_dispatch_created_effect"}[count == 0]
 	}
-	if count <= 1 {
-		return "pass"
+	if count == 1 && strings.Join(paths, ">") == "/submit" {
+		return "pass_exactly_one_effect"
 	}
-	return "fail_unexpected_multiple_physical_posts"
+	return "fail_expected_exactly_one_effect"
 }
 
 func gateFailures(artifact map[string]any) []string {
@@ -647,33 +790,17 @@ func gateFailures(artifact map[string]any) []string {
 	scenarios, _ := artifact["scenarios"].([]scenarioResult)
 	for _, scenario := range scenarios {
 		evidence := scenario.Evidence
+		for _, failure := range contractFailures(scenario) {
+			failures = append(failures, scenario.Name+": "+failure)
+		}
 		if gate, _ := evidence["duplicate_gate"].(string); strings.HasPrefix(gate, "fail") {
 			failures = append(failures, scenario.Name+": "+gate)
 		}
 		if processes, _ := evidence["browser_processes_after"].(int); processes != 0 {
 			failures = append(failures, fmt.Sprintf("%s: cleanup left %d browser processes", scenario.Name, processes))
 		}
-		if scenario.Name == "service-worker" {
-			controlled, _ := evidence["service_worker_controlled"].(bool)
-			requests, _ := evidence["service_worker_request_count"].(int)
-			if !controlled || requests < 1 {
-				failures = append(failures, "service-worker: control/observation failed")
-			}
-		}
-		if scenario.Name == "timeout-before-headers" && (evidence["timeout"] != true || pageResultTimeoutCause(evidence["page_result"]) != "caller_deadline") {
-			failures = append(failures, "timeout-before-headers: caller deadline not observed")
-		}
-		if scenario.Name == "cancel-after-headers" && (evidence["response_start_observed"] != true || evidence["cancellation_after_response_start"] != true) {
-			failures = append(failures, "cancel-after-headers: ordering not proven")
-		}
-		if scenario.Name == "controller-disconnect-in-flight" && (evidence["controller_disconnected"] != true || evidence["controller_disconnect_transport"] != "cdp_tcp_proxy_killed_abruptly") {
-			failures = append(failures, "controller-disconnect-in-flight: abrupt disconnect not proven")
-		}
-		if scenario.Name == "redirect" && evidence["fetch_mapping_gate"] != true {
-			failures = append(failures, "redirect: Fetch/Network mapping gate failed")
-		}
-		if scenario.Name == "fetch-correlation" && evidence["fetch_mapping_gate"] != true {
-			failures = append(failures, "fetch-correlation: Fetch/Network mapping gate failed")
+		if (scenario.Name == "redirect" || scenario.Name == "fetch-correlation") && evidence["fetch_mapping_gate"] != true {
+			failures = append(failures, scenario.Name+": Fetch/Network mapping gate failed")
 		}
 	}
 	return failures

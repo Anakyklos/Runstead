@@ -1,14 +1,22 @@
-Issue #84 substrate bake-off — official rerun metrics
-
-Environment: Chromium 151.0.7922.71, Playwright 1.62.1, Node v22.13.0, Go 1.26.1, chromedp v0.16.0
-Samples per candidate: 3 cold launches
-
-candidate  startup_ms_avg  navigation_ms_avg  shutdown_ms_avg  rss_total_kb_avg  process_count_avg
-playwright 239.757          35.140              50.217            863134.667          9
-chromedp   183.757          94.928              48.553            862262.667          9
-
-All functional gates passed in the official reproduction:
-- Playwright: gate_failures=[]
-- chromedp: gate_failures=[]
-
-The values are local measurements, not production capacity or universal resource budgets.
+{
+  "playwright": {
+    "samples": 3,
+    "startup_ms": 235.86,
+    "navigation_ms": 32.14333333333334,
+    "shutdown_ms": 53.31,
+    "rss_kb": 866296.0,
+    "process_count": 9.0
+  },
+  "chromedp": {
+    "samples": 3,
+    "startup_ms": 170.75366666666665,
+    "navigation_ms": 83.65966666666667,
+    "shutdown_ms": 46.726333333333336,
+    "rss_kb": 862396.0,
+    "process_count": 9.0
+  },
+  "gate_failures": {
+    "playwright": [],
+    "chromedp": []
+  }
+}

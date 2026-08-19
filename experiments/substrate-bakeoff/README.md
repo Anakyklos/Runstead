@@ -37,7 +37,7 @@ Para usar uma fixture já em execução, sem iniciar a fixture local:
 START_FIXTURE=0 RUNSTEAD_FIXTURE_URL=http://127.0.0.1:18765 ./run.sh
 ```
 
-O script usa `npm ci` a partir do `package-lock.json`, não executa `go mod tidy` e retorna código não-zero se qualquer gate autochecking falhar. Os gates incluem cleanup completo do Chromium, isolamento de perfil, controle/observação do Service Worker, deadline real, ordem de cancelamento pós-response-start, sequência exata do redirect (`/submit` → `/effect-final`), correlação Fetch/Network, single-send e disconnect abrupto do transporte.
+O script usa `npm ci` a partir do `package-lock.json`, não executa `go mod tidy` e retorna código não-zero se qualquer gate autochecking falhar. Os contratos exigem exatamente um POST físico nos cenários que esperam dispatch, zero apenas em `cancel-before-dispatch`, e exatamente dois hops (`/submit` → `/effect-final`) no redirect. Também exigem dispatch, fase/terminal, estado conservador, deadline/cancelamento ordenados, cleanup, isolamento de perfil, controle/observação do Service Worker, correlação Fetch/Network e disconnect abrupto do transporte. `gate_failures` é calculado antes da gravação de cada artefato; qualquer lista não vazia falha a execução.
 
 Para os checks separados, use:
 
