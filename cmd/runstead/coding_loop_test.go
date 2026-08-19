@@ -72,6 +72,8 @@ func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
 	env := append(os.Environ(),
 		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_NOGLOBAL=1",
+		"GIT_CONFIG_COUNT=0",
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_AUTHOR_NAME=Runstead Test",
 		"GIT_AUTHOR_EMAIL=test@runstead.invalid",
@@ -191,7 +193,10 @@ func TestCodingLoopDeterministicScenarioEndToEnd(t *testing.T) {
 		t.Fatalf("workspace does not hold the corrected implementation")
 	}
 	// Real git observation: app/calc.go is modified against the baseline.
-	statusOutput, err := exec.Command("git", "-C", workspace, "status", "--short", "--no-renames", "--", ".").CombinedOutput()
+	statusCmd := exec.Command("git", "-C", workspace, "status", "--short", "--no-renames", "--", ".")
+	statusCmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_NOGLOBAL=1", "GIT_CONFIG_COUNT=0", "GIT_TERMINAL_PROMPT=0")
+	statusOutput, err := statusCmd.CombinedOutput()
+
 	if err != nil {
 		t.Fatal(err)
 	}

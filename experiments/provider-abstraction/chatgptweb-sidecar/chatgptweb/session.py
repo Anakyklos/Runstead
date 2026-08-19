@@ -1,30 +1,28 @@
 # Session management for ChatGPT Web — Research Prototype
 
 import asyncio
+import contextlib
 import json
 import time
-from collections.abc import AsyncGenerator
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import AsyncGenerator, Optional
-
-import httpx
 
 try:
     import nodriver as uc
+
     UC_AVAILABLE = True
 except ImportError:
     UC_AVAILABLE = False
     uc = None
-
-import contextlib
 
 from chatgptweb.config import settings
 
 
 class ChallengeType(Enum):
     """Types of challenges detected during session warming."""
+
     TURNSTILE = "turnstile"
     CAPTCHA = "captcha"
     MFA = "mfa"
@@ -35,6 +33,7 @@ class ChallengeType(Enum):
 
 class TransportState(Enum):
     """Observable transport evidence states."""
+
     NO_SEND_OBSERVED = "no_send_observed"
     SEND_OBSERVED = "send_observed"
     RESPONSE_STARTED = "response_started"
@@ -47,6 +46,7 @@ class TransportState(Enum):
 
 class ErrorCode(Enum):
     """Typed error taxonomy for JSON-RPC errors."""
+
     AUTHENTICATION_REQUIRED = "authentication_required"
     HUMAN_CHALLENGE_REQUIRED = "human_challenge_required"
     RATE_LIMITED = "rate_limited"
@@ -84,6 +84,7 @@ def _evidence_to_dict(evidence):
 @dataclass
 class TransportEvidence:
     """Observable transport evidence for one completion attempt."""
+
     state: TransportState
     upstream_request_id: str | None = None
     upstream_session_id: str | None = None
@@ -99,12 +100,14 @@ class TransportEvidence:
 @dataclass
 class CompletionResult:
     """Result of a completion attempt with transport evidence."""
+
     content: str
     evidence: TransportEvidence
 
 
 class SessionNotReady(Exception):
     """Raised when session is not warmed and cannot auto-warm."""
+
     def __init__(self, challenge_type: str | None = None, reason: str = ""):
         self.challenge_type = challenge_type
         self.reason = reason
@@ -113,14 +116,24 @@ class SessionNotReady(Exception):
 
 class DriftDetected(Exception):
     """Raised when Sentinel SDK drift is detected."""
+
     def __init__(self, message: str | None = None):
         self.message = message or "Drift detected"
         super().__init__(f"Drift detected: {self.message}")
 
 
+class RequestCanceled(Exception):
+    """Raised only after the physical request reports an AbortError."""
+
+
+class PhysicalAbortUnproven(Exception):
+    """Raised when the browser does not report a terminal abort outcome."""
+
+
 @dataclass
 class AccountConfig:
     """Immutable account configuration - secrets stay in browser profile."""
+
     account_id: str
     user_data_dir: Path
 
@@ -167,7 +180,9 @@ class BrowserSession:
             self.browser = None
             self.page = None
 
-    async def navigate_and_wait(self, url: str, wait_selector: str = "body", timeout: int = 30) -> bool:
+    async def navigate_and_wait(
+        self, url: str, wait_selector: str = "body", timeout: int = 30
+    ) -> bool:
         """Navigate and wait for selector. Returns True if loaded."""
         try:
             self.page = await self.browser.get(url)
@@ -190,11 +205,16 @@ class BrowserSession:
             if await self.page.query_selector("iframe[src*='captcha'], div.captcha, #captcha"):
                 return "captcha"
 
-            if await self.page.query_selector("form[action*='login'], input[name='email'], input[name='password']"):
+            if await self.page.query_selector(
+                "form[action*='login'], input[name='email'], input[name='password']"
+            ):
                 return "login_wall"
 
             content = await self.page.get_content()
-            if any(kw in content.lower() for kw in ["suspicious", "unusual activity", "verify your identity"]):
+            if any(
+                kw in content.lower()
+                for kw in ["suspicious", "unusual activity", "verify your identity"]
+            ):
                 return "suspicious_activity"
 
         except Exception:
@@ -243,7 +263,14 @@ class BrowserSession:
         except Exception:
             return False
 
-    async def cdp_fetch(self, url: str, method: str = "GET", json_data: dict = None, headers: dict = None, timeout: int = 120) -> tuple[int, str, dict]:
+    async def cdp_fetch(
+        self,
+        url: str,
+        method: str = "GET",
+        json_data: dict = None,
+        headers: dict = None,
+        timeout: int = 120,
+    ) -> tuple[int, str, dict]:
         """
         Execute HTTP request via browser's CDP fetch.
         Returns (status_code, response_text, response_headers).
@@ -258,8 +285,7 @@ class BrowserSession:
             "    method: " + json.dumps(method) + ","
             "    credentials: 'include',"
             "    headers: " + json.dumps(headers or {}) + ","
-            "    body: " + (json.dumps(json_data) if json_data else "null") +
-            "  });"
+            "    body: " + (json.dumps(json_data) if json_data else "null") + "  });"
             "  return {"
             "    status: response.status,"
             "    headers: Object.fromEntries(response.headers.entries()),"
@@ -274,74 +300,257 @@ class BrowserSession:
 
         return result.get("status", 0), result.get("text", ""), result.get("headers", {})
 
-    async def cdp_fetch_stream(self, url: str, method: str = "POST", json_data: dict = None, headers: dict = None, timeout: int = 120):
+    @staticmethod
+    def _unwrap_evaluate_result(result):
+        """Normalize nodriver's value/exception-details tuple."""
+        if isinstance(result, tuple):
+            return result[0]
+        return result
+
+    async def _read_stream_state(self, request_key: str) -> dict | None:
+        key = json.dumps(request_key)
+        script = f"""
+(() => {{
+  const state = globalThis.__runsteadFetchStates?.get({key});
+  if (!state) return null;
+  return {{
+    state: state.state,
+    status: state.status,
+    headers: state.headers,
+    text: state.text,
+    done: state.done,
+    response_started: state.response_started,
+    error_name: state.error_name,
+    error_message: state.error_message,
+    abort_observed: state.abort_observed
+  }};
+}})()
+"""
+        result = self._unwrap_evaluate_result(await self.page.evaluate(script, await_promise=True))
+        return result if isinstance(result, dict) else None
+
+    async def _abort_stream_request(self, request_key: str) -> dict:
+        """Abort the controller owned by exactly one previously-started fetch."""
+        key = json.dumps(request_key)
+        script = f"""
+(() => {{
+  const key = {key};
+  const state = globalThis.__runsteadFetchStates?.get(key);
+  const controller = globalThis.__runsteadFetchControllers?.get(key);
+  if (state) state.abort_requested = true;
+  if (!controller) return {{found: false}};
+  controller.abort();
+  return {{found: true}};
+}})()
+"""
+        result = self._unwrap_evaluate_result(await self.page.evaluate(script, await_promise=True))
+        return result if isinstance(result, dict) else {"found": False}
+
+    async def _cleanup_stream_request(self, request_key: str) -> None:
+        key = json.dumps(request_key)
+        script = f"""
+(() => {{
+  globalThis.__runsteadFetchControllers?.delete({key});
+  globalThis.__runsteadFetchStates?.delete({key});
+  return true;
+}})()
+"""
+        await self.page.evaluate(script, await_promise=True)
+
+    async def _abort_and_wait(
+        self, request_key: str, grace_period: float = 5.0
+    ) -> tuple[dict | None, bool]:
+        """Request physical abort and wait for the same fetch to report its terminal state."""
+        await self._abort_stream_request(request_key)
+        deadline = asyncio.get_running_loop().time() + grace_period
+        last_state = None
+        while asyncio.get_running_loop().time() < deadline:
+            last_state = await self._read_stream_state(request_key)
+            if last_state and last_state.get("done"):
+                aborted = (
+                    last_state.get("state") == "aborted"
+                    and last_state.get("abort_observed") is True
+                )
+                return last_state, aborted
+            await asyncio.sleep(0.01)
+        return last_state, False
+
+    async def cdp_fetch_stream(
+        self,
+        url: str,
+        method: str = "POST",
+        json_data: dict | None = None,
+        headers: dict | None = None,
+        timeout: float = 120,
+        cancel_event: asyncio.Event | None = None,
+    ):
         """
-        Execute streaming HTTP request via browser's CDP fetch.
-        SINGLE POST: returns headers + full body from ONE fetch; we then split into lines.
-        This is a research prototype - true streaming would require CDP Network domain.
-        Timeout is applied at Python level via asyncio.wait_for.
+        Execute one physical browser request and reconcile its observable state.
+
+        The page owns one AbortController per request. Python never starts a
+        second fetch on timeout or cancellation: it calls ``abort()`` on the
+        controller belonging to the original POST and waits for that same fetch
+        to report a terminal state. If the browser cannot report that terminal
+        state, the capability remains unproven and the caller fails closed.
         """
         if not self.page:
             raise RuntimeError("Browser not started")
+        if method != "POST":
+            raise ValueError("cdp_fetch_stream only supports POST model effects")
 
-        # SINGLE POST: fetch once, get status/headers/body all at once
-        script = (
-            "(async () => {"
-            "  const response = await fetch(" + json.dumps(url) + ", {"
-            "    method: " + json.dumps("POST") + ","
-            "    credentials: 'include',"
-            "    headers: " + json.dumps({
-                "accept": "text/event-stream",
-                "content-type": "application/json",
-            }) + ","
-            "    body: JSON.stringify(" + json.dumps(json_data) + ")"
-            "  });"
-            "  const text = await response.text();"
-            "  return {"
-            "    status: response.status,"
-            "    headers: Object.fromEntries(response.headers.entries()),"
-            "    ok: response.ok,"
-            "    text: text"
-            "  };"
-            "})()"
-        )
+        request_key = f"runstead-stream-{uuid.uuid4().hex}"
+        request_headers = {
+            "accept": "text/event-stream",
+            "content-type": "application/json",
+        }
+        request_headers.update(headers or {})
+        key = json.dumps(request_key)
+        payload = json.dumps(json_data or {}, separators=(",", ":"))
+        request_url = json.dumps(url)
+        request_headers_json = json.dumps(request_headers, separators=(",", ":"))
+        start_script = f"""
+(() => {{
+  const key = {key};
+  const controllers = globalThis.__runsteadFetchControllers ||= new Map();
+  const states = globalThis.__runsteadFetchStates ||= new Map();
+  const controller = new AbortController();
+  const state = {{
+    state: "starting",
+    status: 0,
+    headers: {{}},
+    text: "",
+    done: false,
+    response_started: false,
+    dispatch_started: false,
+    error_name: null,
+    error_message: null,
+    abort_requested: false,
+    abort_observed: false
+  }};
+  controllers.set(key, controller);
+  states.set(key, state);
+  void (async () => {{
+    try {{
+      state.dispatch_started = true;
+      const response = await fetch({request_url}, {{
+        method: "POST",
+        credentials: "include",
+        headers: {request_headers_json},
+        body: JSON.stringify({payload}),
+        signal: controller.signal
+      }});
+      state.response_started = true;
+      state.state = "response_started";
+      state.status = response.status;
+      state.headers = Object.fromEntries(response.headers.entries());
+      if (response.body) {{
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        while (true) {{
+          const item = await reader.read();
+          if (item.done) break;
+          state.text += decoder.decode(item.value, {{stream: true}});
+        }}
+        state.text += decoder.decode();
+      }} else {{
+        state.text = await response.text();
+      }}
+      state.state = "completed";
+      state.done = true;
+    }} catch (error) {{
+      state.error_name = String(error?.name || "Error");
+      state.error_message = String(error?.message || error);
+      state.state = state.error_name === "AbortError" ? "aborted" : "failed";
+      state.abort_observed = state.state === "aborted";
+      state.done = true;
+    }} finally {{
+      controllers.delete(key);
+    }}
+  }})();
+  return {{started: true}};
+}})()
+"""
 
-        # Apply timeout at Python level (P1: timeout bounded)
+        headers_yielded = False
+        emitted_text_length = 0
+        line_buffer = ""
+        deadline = asyncio.get_running_loop().time() + timeout
+        forced_state = None
         try:
-            result = await asyncio.wait_for(
-                self.page.evaluate(script, await_promise=True),
-                timeout=timeout
+            result = self._unwrap_evaluate_result(
+                await self.page.evaluate(start_script, await_promise=True)
             )
-        except asyncio.TimeoutError:
-            raise TimeoutError(f"cdp_fetch_stream timeout after {timeout}s")
+            if not isinstance(result, dict) or result.get("started") is not True:
+                raise RuntimeError("Browser did not confirm fetch start")
 
-        if isinstance(result, dict) and "error" in result:
-            raise RuntimeError(f"Fetch failed: {result['error']}")
+            while True:
+                if forced_state is not None:
+                    state = forced_state
+                    forced_state = None
+                else:
+                    state = await self._read_stream_state(request_key)
+                if state is None:
+                    raise RuntimeError("Browser fetch state disappeared before completion")
 
-        # nodriver evaluate returns (value, exception_details) tuple
-        if isinstance(result, tuple):
-            result = result[0]
+                if state.get("response_started") and not headers_yielded:
+                    headers_yielded = True
+                    yield {
+                        "type": "headers",
+                        "status": state.get("status", 0),
+                        "headers": state.get("headers", {}),
+                    }
 
-        # Ensure result is a dict
-        if not isinstance(result, dict):
-            result = {}
+                current_text = state.get("text", "")
+                if len(current_text) < emitted_text_length:
+                    raise RuntimeError("Browser stream text regressed")
+                if len(current_text) > emitted_text_length:
+                    line_buffer += current_text[emitted_text_length:]
+                    emitted_text_length = len(current_text)
+                while "\n" in line_buffer:
+                    line, line_buffer = line_buffer.split("\n", 1)
+                    if line.strip():
+                        yield {"type": "line", "data": line.rstrip("\r")}
 
-        status = result.get("status", 0)
-        headers = result.get("headers", {})
-        ok = result.get("ok", False)
-        text = result.get("text", "")
+                if state.get("done"):
+                    if line_buffer.strip():
+                        yield {"type": "line", "data": line_buffer.rstrip("\r")}
+                    if state.get("state") == "aborted":
+                        raise RequestCanceled("physical AbortController cancellation observed")
+                    if state.get("state") == "failed":
+                        message = state.get("error_message") or "Fetch failed"
+                        raise RuntimeError(message)
+                    if state.get("state") != "completed":
+                        raise RuntimeError("Fetch ended without terminal success or abort evidence")
+                    return
 
-        # Yield status/headers first (transport evidence: send_observed -> response_started)
-        yield {"type": "headers", "status": status, "headers": headers}
+                if cancel_event is not None and cancel_event.is_set():
+                    terminal, confirmed = await self._abort_and_wait(request_key)
+                    if not confirmed:
+                        raise PhysicalAbortUnproven(
+                            "explicit cancellation was not physically observed"
+                        )
+                    raise RequestCanceled("explicit physical cancellation observed")
 
-        if not ok:
-            yield {"type": "error", "status": status, "headers": headers}
-            return
+                if asyncio.get_running_loop().time() >= deadline:
+                    terminal, confirmed = await self._abort_and_wait(request_key)
+                    if terminal and terminal.get("state") == "completed":
+                        forced_state = terminal
+                        continue
+                    if not confirmed:
+                        raise PhysicalAbortUnproven("timeout abort was not physically observed")
+                    raise TimeoutError("physical request aborted at timeout")
 
-        # Split body into lines and yield each
-        for line in text.split("\n"):
-            if line.strip():
-                yield {"type": "line", "data": line}
+                await asyncio.sleep(0.01)
+        except asyncio.CancelledError as error:
+            _terminal, confirmed = await self._abort_and_wait(request_key)
+            if not confirmed:
+                raise PhysicalAbortUnproven(
+                    "caller cancellation was not physically observed"
+                ) from error
+            raise
+        finally:
+            with contextlib.suppress(Exception):
+                await self._cleanup_stream_request(request_key)
 
 
 class SSEReconciler:
@@ -383,7 +592,7 @@ class SSEReconciler:
             if new_content.startswith(self.last_content):
                 if len(new_content) > len(self.last_content):
                     # Growing cumulative content - new delta
-                    delta = new_content[len(self.last_content):]
+                    delta = new_content[len(self.last_content) :]
                     self.last_content = new_content
                     return delta
                 else:
@@ -452,7 +661,9 @@ class AccountSession:
 
                 challenge = await self.browser.detect_challenge()
                 if challenge:
-                    raise SessionNotReady(challenge_type=challenge, reason=f"Challenge detected: {challenge}")
+                    raise SessionNotReady(
+                        challenge_type=challenge, reason=f"Challenge detected: {challenge}"
+                    )
 
                 if not await self.browser.has_valid_session():
                     raise SessionNotReady(reason="no_valid_session_after_nav")
@@ -464,7 +675,10 @@ class AccountSession:
                     # Compare current against PERSISTED baseline (don't overwrite)
                     if self._drift_hash and current != self._drift_hash:
                         # Drift detected during warm-up - fail closed
-                        raise DriftDetected(f"Drift detected during warm-up: {self._drift_hash[:16]} -> {current[:16]}")
+                        raise DriftDetected(
+                            "Drift detected during warm-up: "
+                            f"{self._drift_hash[:16]} -> {current[:16]}"
+                        )
                     # No persisted baseline yet (first warm) - store current as baseline
                     if not self._drift_hash:
                         self._drift_hash = current
@@ -480,7 +694,7 @@ class AccountSession:
                 raise
             except Exception as e:
                 await self.browser.stop()
-                raise SessionNotReady(reason=f"warm_failed: {e}")
+                raise SessionNotReady(reason=f"warm_failed: {e}") from e
 
     async def wait_for_human(self, timeout: int = 120) -> bool:
         """Wait for human to resolve challenge. Returns True if resolved."""
@@ -491,9 +705,12 @@ class AccountSession:
     async def _probe_drift_hash(self) -> str | None:
         # Single implementation - no duplicate
         try:
-            status, text, _ = await self.browser.cdp_fetch("https://chatgpt.com/backend-api/sentinel/sdk.js")
+            status, text, _ = await self.browser.cdp_fetch(
+                "https://chatgpt.com/backend-api/sentinel/sdk.js"
+            )
             if status == 200:
                 import hashlib
+
                 return hashlib.sha256(text.encode()).hexdigest()
         except Exception:
             pass
@@ -525,6 +742,8 @@ class AccountSession:
         client_request_id: str,
         model: str,
         messages: list[dict],
+        timeout: float | None = None,
+        cancel_event: asyncio.Event | None = None,
     ):
         """
         Execute completion via SSE.
@@ -554,7 +773,9 @@ class AccountSession:
             async for chunk in self.browser.cdp_fetch_stream(
                 "https://chatgpt.com/backend-api/conversation",
                 json_data=payload,
-                headers={"accept": "text/event-stream", "content-type": "application/json"}
+                headers={"accept": "text/event-stream", "content-type": "application/json"},
+                timeout=timeout if timeout is not None else settings.request_timeout,
+                cancel_event=cancel_event,
             ):
                 if chunk["type"] == "headers":
                     # First observable transport event: request sent, response headers received
@@ -573,23 +794,39 @@ class AccountSession:
                     if status == 401 or status == 403:
                         evidence.state = TransportState.TRANSPORT_FAILED
                         evidence.error_code = ErrorCode.AUTHENTICATION_REQUIRED
-                        yield {"error": {"message": f"Authentication failed: HTTP {status}", "evidence": _evidence_to_dict(evidence), "jsonrpc_code": -32001}}
+                        yield {
+                            "error": {
+                                "message": f"Authentication failed: HTTP {status}",
+                                "evidence": _evidence_to_dict(evidence),
+                                "jsonrpc_code": -32001,
+                            }
+                        }
                         return
                     elif status == 429:
                         evidence.state = TransportState.TRANSPORT_FAILED
                         evidence.error_code = ErrorCode.RATE_LIMITED
                         retry_after = chunk["headers"].get("retry-after")
                         if retry_after:
-                            try:
+                            with contextlib.suppress(TypeError, ValueError):
                                 evidence.retry_after = float(retry_after)
-                            except (TypeError, ValueError):
-                                pass
-                        yield {"error": {"message": "Rate limited", "evidence": _evidence_to_dict(evidence), "jsonrpc_code": -32003}}
+                        yield {
+                            "error": {
+                                "message": "Rate limited",
+                                "evidence": _evidence_to_dict(evidence),
+                                "jsonrpc_code": -32003,
+                            }
+                        }
                         return
                     elif status >= 500:
                         evidence.state = TransportState.TRANSPORT_FAILED
                         evidence.error_code = ErrorCode.TRANSPORT_FAILED
-                        yield {"error": {"message": f"HTTP {status}", "evidence": _evidence_to_dict(evidence), "jsonrpc_code": -32005}}
+                        yield {
+                            "error": {
+                                "message": f"HTTP {status}",
+                                "evidence": _evidence_to_dict(evidence),
+                                "jsonrpc_code": -32005,
+                            }
+                        }
                         return
 
                     evidence.state = TransportState.RESPONSE_STARTED
@@ -605,7 +842,9 @@ class AccountSession:
                         done_seen = True
                         break
 
-                    delta = reconciler.process_chunk(data_str)  # Use local reconciler (P1: SSE state leak)
+                    delta = reconciler.process_chunk(
+                        data_str
+                    )  # Use local reconciler (P1: SSE state leak)
                     if delta is not None:
                         content_buffer += delta
                         yield {"delta": delta, "done": False}
@@ -615,7 +854,13 @@ class AccountSession:
                 evidence.state = TransportState.TIMEOUT_UNCERTAIN
                 evidence.error_code = ErrorCode.TIMEOUT_UNCERTAIN
                 evidence.duration_ms = int((time.time() - start_time) * 1000)
-                yield {"error": {"message": "Stream ended without [DONE] marker - possible truncation", "evidence": _evidence_to_dict(evidence), "jsonrpc_code": -32006}}
+                yield {
+                    "error": {
+                        "message": "Stream ended without [DONE] marker - possible truncation",
+                        "evidence": _evidence_to_dict(evidence),
+                        "jsonrpc_code": -32006,
+                    }
+                }
                 return
 
             evidence.state = TransportState.COMPLETED
@@ -627,21 +872,49 @@ class AccountSession:
                 }
             }
 
-        except asyncio.TimeoutError:
+        except RequestCanceled:
+            evidence.state = TransportState.CANCELED
+            evidence.duration_ms = int((time.time() - start_time) * 1000)
+            yield {
+                "error": {
+                    "message": "Request canceled after physical abort",
+                    "evidence": _evidence_to_dict(evidence),
+                    "jsonrpc_code": -32006,
+                }
+            }
+            return
+        except (TimeoutError, PhysicalAbortUnproven):
             evidence.state = TransportState.TIMEOUT_UNCERTAIN
             evidence.error_code = ErrorCode.TIMEOUT_UNCERTAIN
             evidence.duration_ms = int((time.time() - start_time) * 1000)
-            yield {"error": {"message": "Timeout", "evidence": _evidence_to_dict(evidence), "jsonrpc_code": -32006}}
+            yield {
+                "error": {
+                    "message": "Timeout",
+                    "evidence": _evidence_to_dict(evidence),
+                    "jsonrpc_code": -32006,
+                }
+            }
             return
         except Exception:
-            if evidence.state in (TransportState.NO_SEND_OBSERVED, TransportState.SEND_OBSERVED):
-                evidence.state = TransportState.TRANSPORT_FAILED
-                evidence.error_code = ErrorCode.TRANSPORT_FAILED
-            elif evidence.state == TransportState.RESPONSE_STARTED:
+            # Once headers have been observed, the physical POST may have
+            # reached the provider even if the next read fails. Preserve that
+            # uncertainty instead of claiming a deterministic transport failure.
+            if evidence.send_count > 0 or evidence.state == TransportState.RESPONSE_STARTED:
                 evidence.state = TransportState.TIMEOUT_UNCERTAIN
                 evidence.error_code = ErrorCode.TIMEOUT_UNCERTAIN
+            else:
+                evidence.state = TransportState.TRANSPORT_FAILED
+                evidence.error_code = ErrorCode.TRANSPORT_FAILED
             evidence.duration_ms = int((time.time() - start_time) * 1000)
-            yield {"error": {"message": "Transport error", "evidence": _evidence_to_dict(evidence), "jsonrpc_code": -32005}}
+            jsonrpc_code = -32006 if evidence.state == TransportState.TIMEOUT_UNCERTAIN else -32005
+            message = "Timeout uncertainty" if jsonrpc_code == -32006 else "Transport error"
+            yield {
+                "error": {
+                    "message": message,
+                    "evidence": _evidence_to_dict(evidence),
+                    "jsonrpc_code": jsonrpc_code,
+                }
+            }
             return
 
     def _build_payload(self, model: str, messages: list[dict]) -> dict:
@@ -670,27 +943,6 @@ class AccountSession:
             if role in ("system", "user", "assistant"):
                 formatted.append({"role": role, "content": content})
         return formatted
-
-    # Single implementation - no duplicate
-    async def probe_drift(self) -> tuple[bool, str | None]:
-        """Probe for Sentinel SDK drift. Returns (drifted, message)."""
-        current = await self._probe_drift_hash()
-        if current is None:
-            # Fail-closed: if we can't probe drift, treat as potential drift
-            return True, "Drift probe failed - cannot verify SDK integrity"
-        if self._drift_hash and current != self._drift_hash:
-            # Report drift with both values, but DON'T update hash (preserve baseline)
-            return True, f"Drift detected: {self._drift_hash[:16]} -> {current[:16]}"
-        # First time seeing hash - just store it
-        if not self._drift_hash:
-            self._drift_hash = current
-        return False, None
-
-    async def _drift_gate(self) -> None:
-        """Fail-closed drift gate before any model-effect send."""
-        drifted, msg = await self.probe_drift()
-        if drifted:
-            raise DriftDetected(msg)
 
     async def health_check(self) -> tuple[bool, str | None]:
         """Health check without model effects."""

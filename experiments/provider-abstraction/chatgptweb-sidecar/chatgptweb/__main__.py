@@ -8,18 +8,15 @@ from typing import Any
 
 from chatgptweb.config import settings
 from chatgptweb.session import (
+    DriftDetected,
     SessionManager,
     SessionNotReady,
-    DriftDetected,
-    TransportEvidence,
-    TransportState,
-    ErrorCode,
-    _evidence_to_dict,
 )
 
 
 class JSONRPCError(Exception):
     """JSON-RPC typed error."""
+
     def __init__(self, code: int, message: str, data: dict | None = None):
         self.code = code
         self.message = message
@@ -72,11 +69,15 @@ class JSONRPCServer:
         stream = params.get("stream", True)
 
         if not client_request_id or not model:
-            raise JSONRPCError(self.INVALID_PARAMS, "Missing required params: client_request_id, model")
+            raise JSONRPCError(
+                self.INVALID_PARAMS, "Missing required params: client_request_id, model"
+            )
 
         account_id = params.get("account_id") or settings.default_account
         if not account_id:
-            raise JSONRPCError(self.INVALID_PARAMS, "No account_id provided and no default_account configured")
+            raise JSONRPCError(
+                self.INVALID_PARAMS, "No account_id provided and no default_account configured"
+            )
 
         session = self.session_manager.get_session(account_id)
 
@@ -87,42 +88,44 @@ class JSONRPCServer:
             raise JSONRPCError(
                 self.HUMAN_CHALLENGE_REQUIRED if e.challenge_type else self.AUTHENTICATION_REQUIRED,
                 f"Session not ready: {e.reason}",
-                {"challenge_type": e.challenge_type, "reason": e.reason}
-            )
+                {"challenge_type": e.challenge_type, "reason": e.reason},
+            ) from None
         except DriftDetected as e:
-            raise JSONRPCError(self.CONTRACT_DRIFT, f"Drift detected: {e.message}")
+            raise JSONRPCError(self.CONTRACT_DRIFT, f"Drift detected: {e.message}") from None
 
         # Execute completion with streaming
         content_parts = []
         evidence = None
-
-        async for chunk in session.complete(
-            client_request_id=client_request_id,
-            model=model,
-            messages=messages,
-        ):
-            if "delta" in chunk:
-                content_parts.append(chunk["delta"])
-                if stream:
-                    self._send_notification("stream_delta", {
-                        "client_request_id": client_request_id,
-                        "delta": chunk["delta"],
-                        "done": chunk.get("done", False),
-                    })
-            elif "result" in chunk:
-                # Final result with transport evidence (already serialized as dict)
-                result = chunk["result"]
-                evidence = result.get("evidence", None)
-                "".join(content_parts)
-            elif "error" in chunk:
-                # Transport error - use jsonrpc_code from evidence for proper mapping (P2)
-                error_data = chunk["error"]
-                jsonrpc_code = error_data.get("jsonrpc_code", self.TRANSPORT_FAILED)
-                raise JSONRPCError(
-                    jsonrpc_code,
-                    error_data.get("message", "Transport error"),
-                    error_data
-                )
+        try:
+            async for chunk in session.complete(
+                client_request_id=client_request_id,
+                model=model,
+                messages=messages,
+            ):
+                if "delta" in chunk:
+                    content_parts.append(chunk["delta"])
+                    if stream:
+                        self._send_notification(
+                            "stream_delta",
+                            {
+                                "client_request_id": client_request_id,
+                                "delta": chunk["delta"],
+                                "done": chunk.get("done", False),
+                            },
+                        )
+                elif "result" in chunk:
+                    # Final result with transport evidence (already serialized as dict)
+                    result = chunk["result"]
+                    evidence = result.get("evidence", None)
+                elif "error" in chunk:
+                    # Transport error - use jsonrpc_code from evidence for proper mapping (P2)
+                    error_data = chunk["error"]
+                    jsonrpc_code = error_data.get("jsonrpc_code", self.TRANSPORT_FAILED)
+                    raise JSONRPCError(
+                        jsonrpc_code, error_data.get("message", "Transport error"), error_data
+                    )
+        except DriftDetected as e:
+            raise JSONRPCError(self.CONTRACT_DRIFT, f"Drift detected: {e.message}") from None
 
         # Build response with transport evidence (NO secrets)
         # evidence is already a dict from _evidence_to_dict()
@@ -143,7 +146,7 @@ class JSONRPCServer:
                 "retry_after": evidence.get("retry_after"),
                 "reset_at": evidence.get("reset_at"),
                 "challenge_type": evidence.get("challenge_type"),
-            }
+            },
         }
 
     async def handle_health_check(self, params: dict) -> dict:
@@ -160,8 +163,18 @@ class JSONRPCServer:
         """List available models (static for research)."""
         return {
             "models": [
-                {"id": "gpt-5.6-luna", "display_name": "GPT-5.6 Luna", "context_window": 128000, "capabilities": ["text"]},
-                {"id": "gpt-5", "display_name": "GPT-5", "context_window": 128000, "capabilities": ["text", "reasoning"]},
+                {
+                    "id": "gpt-5.6-luna",
+                    "display_name": "GPT-5.6 Luna",
+                    "context_window": 128000,
+                    "capabilities": ["text"],
+                },
+                {
+                    "id": "gpt-5",
+                    "display_name": "GPT-5",
+                    "context_window": 128000,
+                    "capabilities": ["text", "reasoning"],
+                },
             ]
         }
 
@@ -179,10 +192,10 @@ class JSONRPCServer:
             raise JSONRPCError(
                 self.HUMAN_CHALLENGE_REQUIRED if e.challenge_type else self.AUTHENTICATION_REQUIRED,
                 f"Session not ready: {e.reason}",
-                {"challenge_type": e.challenge_type, "reason": e.reason}
-            )
+                {"challenge_type": e.challenge_type, "reason": e.reason},
+            ) from None
         except DriftDetected as e:
-            raise JSONRPCError(self.CONTRACT_DRIFT, f"Drift detected: {e.message}")
+            raise JSONRPCError(self.CONTRACT_DRIFT, f"Drift detected: {e.message}") from None
 
     def _send_notification(self, method: str, params: dict):
         """Send JSON-RPC notification (no id, no response expected)."""
@@ -236,11 +249,7 @@ class JSONRPCServer:
 
 
 async def main():
-    # Check required env
-    if not settings.master_key:
-        print("ERROR: CHATGPTWEB_MASTER_KEY environment variable required", file=sys.stderr)
-        sys.exit(1)
-
+    # Credentials remain under the browser profile; no secret is loaded here.
     server = JSONRPCServer()
 
     loop = asyncio.get_event_loop()

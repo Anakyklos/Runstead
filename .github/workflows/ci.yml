@@ -22,6 +22,13 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: experiments/provider-abstraction/chatgptweb-sidecar/pyproject.toml
+
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
 
@@ -39,6 +46,21 @@ jobs:
 
       - name: Run protocol checks
         run: bash experiments/protocol/test.sh
+
+      - name: Install sidecar development dependencies
+        working-directory: experiments/provider-abstraction/chatgptweb-sidecar
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
+
+      - name: Run sidecar deterministic tests
+        working-directory: experiments/provider-abstraction/chatgptweb-sidecar
+        run: python -m pytest tests/ -q
+
+      - name: Run sidecar lint and compile checks
+        working-directory: experiments/provider-abstraction/chatgptweb-sidecar
+        run: ruff check chatgptweb tests && python -m compileall -q chatgptweb tests
+
+      - name: Reject removed cookie-encryption residue
+        run: '! grep -RInE --exclude-dir=.git --exclude-dir=__pycache__ --exclude=''*.pyc'' "CHATGPTWEB_MASTER_KEY|cookies\\.enc|encrypt_cookies|decrypt_cookies|from chatgptweb.crypto" experiments/provider-abstraction/chatgptweb-sidecar/chatgptweb experiments/provider-abstraction/chatgptweb-sidecar/tests experiments/provider-abstraction/chatgptweb-sidecar/pyproject.toml'
 
       - name: Run standalone browser-substrate spike deterministic checks
         # Zero model turns, zero browser launch. Validates the review-hardened

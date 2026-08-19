@@ -7,14 +7,11 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Accounts directory for encrypted cookies
+    # Accounts directory for browser profiles; credentials never leave this boundary.
     accounts_dir: Path = Field(
         default_factory=lambda: Path.home() / ".local" / "share" / "runstead" / "chatgptweb",
-        validation_alias="CHATGPTWEB_ACCOUNTS_DIR"
+        validation_alias="CHATGPTWEB_ACCOUNTS_DIR",
     )
-
-    # Master key for cookie encryption (required)
-    master_key: str = Field(validation_alias="CHATGPTWEB_MASTER_KEY")
 
     # Optional proxy
     proxy: str | None = Field(default=None, validation_alias="CHATGPTWEB_PROXY")
