@@ -44,11 +44,11 @@ As credenciais permanecem dentro do perfil dedicado do browser. O sidecar não e
 
 ### Fronteira JSON-RPC
 
-O entrypoint aceita `initialize`, `complete`, `cancel`, `health_check`, `models` e `warm_session`. Completions são executadas em tarefas de background para que uma nova linha `cancel` possa ser processada enquanto o streaming está em andamento. O cancelamento recebe o `client_request_id` local e retorna primeiro apenas `state: cancellation_requested`; ele sinaliza o mesmo `asyncio.Event` entregue ao transporte, e só é reportado como cancelamento físico na resposta final quando o mesmo `AbortController` do POST observa `AbortError`.
+O entrypoint aceita `initialize`, `complete`, `cancel`, `health_check`, `models` e `warm_session`. Completions são executadas em tarefas de background para que uma nova linha `cancel` possa ser processada enquanto o streaming está em andamento. O cancelamento recebe o `client_request_id` local e retorna primeiro apenas `state: cancellation_requested`; ele sinaliza o mesmo `asyncio.Event` entregue ao transporte. Se o evento for observado antes do dispatch, a resposta final usa `canceled_pre_dispatch` com `send_count=0`; somente um POST que observa `AbortError` pode ser reportado como cancelamento físico.
 
 O transporte segue uma regra de request único. O browser cria um `AbortController`, inicia um único POST e publica um evento `sent` assim que o dispatch físico é confirmado, antes da chegada dos headers. Essa observação já incrementa `send_count`; portanto, timeout, erro ou cancelamento entre o dispatch e os headers não faz a tentativa desaparecer da contabilidade. Timeout e cancelamento nunca abrem um segundo POST.
 
-A conclusão só é declarada quando o SSE termina com `[DONE]`. Se o aborto físico não for observado, ou se o stream terminar sem `[DONE]`, a resposta permanece em estado conservador `timeout_uncertain`. Drift, falha de probe e desafio humano bloqueiam o efeito de modelo sem sobrescrever o baseline persistido.
+A conclusão só é declarada quando o SSE termina com `[DONE]`. Se o aborto físico não for observado, o ACK do script de start se perder depois que o browser pode ter iniciado o fetch, ou o stream terminar sem `[DONE]`, a resposta permanece em estado conservador `timeout_uncertain` e não volta a `send_count=0`. Drift, falha de probe e desafio humano bloqueiam o efeito de modelo sem sobrescrever o baseline persistido.
 
 | Método | Finalidade |
 |---|---|

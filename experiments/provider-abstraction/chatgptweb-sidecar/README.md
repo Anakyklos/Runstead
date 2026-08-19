@@ -60,8 +60,8 @@ O método `cancel` recebe somente `client_request_id` e pode ser enviado enquant
 | `-32002` | sessão não pronta | challenge, login wall, navegação ou warm-up sem comprovação |
 | `-32003` | rate limited | HTTP 429; `retry_after` pode ser preservado como evidência |
 | `-32004` | contract drift | falha do drift gate antes ou durante o efeito de modelo |
-| `-32005` | falha de transporte | não houve evidência de envio ou ocorreu erro HTTP 5xx |
-| `-32006` | resultado não comprovado | timeout, aborto físico não confirmado, SSE truncado ou erro após envio |
+| `-32005` | falha de transporte | falha determinística comprovada antes de qualquer dispatch, ou erro HTTP 5xx |
+| `-32006` | resultado não comprovado | cancelamento, timeout, aborto físico não confirmado, ACK de dispatch perdido, SSE truncado ou erro após envio |
 
 Toda resposta de erro de transporte inclui uma estrutura JSON-serializável de evidência. Ela pode conter `state`, `http_status`, `send_count`, `duration_ms`, `error_code`, `retry_after` e os identificadores upstream fornecidos pelo próprio serviço. Segredos, headers completos, cookies, corpos crus e query strings não são emitidos no protocolo.
 
@@ -77,6 +77,7 @@ A máquina de estados não deriva entrega de `err == nil` nem de HTTP 200 isolad
 | `completed` | `[DONE]` foi observado e a resposta é declarada completa |
 | `transport_failed` | falha determinística sem evidência de entrega do efeito |
 | `timeout_uncertain` | o efeito pode ter sido aceito; a entrega não é comprovável |
+| `canceled_pre_dispatch` | cancelamento observado antes de qualquer dispatch; `send_count=0` e nenhum POST é alegado |
 | `canceled` | o mesmo POST reportou `AbortError` após `abort()` físico |
 
 ## Drift gate
@@ -87,11 +88,11 @@ Antes de cada envio de efeito de modelo, o sidecar calcula o hash SHA-256 do rec
 
 O `SSEReconciler` trata o conteúdo recebido como cumulativo e emite somente o sufixo novo, suprimindo duplicidades e evitando slicing negativo. Cada completion cria seu próprio reconciliador, portanto chamadas concorrentes não compartilham estado de conteúdo.
 
-O transporte usa um único `fetch` físico no browser, com `ReadableStream` e um `AbortController` associado àquele request. Em timeout ou cancelamento, o sidecar chama `abort()` no mesmo controller e aguarda o estado terminal do mesmo fetch. A ausência dessa confirmação nunca é convertida em “cancelado” ou “concluído”; é reportada como `timeout_uncertain`.
+O transporte usa um único `fetch` físico no browser, com `ReadableStream` e um `AbortController` associado àquele request. Em timeout ou cancelamento pós-dispatch, o sidecar chama `abort()` no mesmo controller e aguarda o estado terminal do mesmo fetch. Cancelamento antes do dispatch é reportado como `canceled_pre_dispatch`, com `send_count=0`; somente o estado `canceled` pode alegar que o POST observou `AbortError`. Se o script de start executar o fetch, mas o ACK `{started: true}` se perder na fronteira CDP, o efeito é tratado como `timeout_uncertain` e `send_count` não volta para zero.
 
 ## Testes e gates
 
-A suíte determinística não usa credenciais, não abre browser e não executa live model turns. Ela cobre reconciliação SSE sequencial e concorrente, baseline de drift persistente, falha do probe, dispatch pré-headers, aborto físico do mesmo POST, aborto não comprovado, mapeamento 401/403/429/5xx, truncamento sem `[DONE]`, separação entre erro antes e depois do dispatch, serialização da evidência, códigos JSON-RPC, cancelamento concorrente pelo stdio, identidade dos requests e warm idempotente.
+A suíte determinística não usa credenciais, não abre browser e não executa live model turns. Ela cobre reconciliação SSE sequencial e concorrente, baseline de drift persistente, falha do probe, dispatch pré-headers, cancelamento pré-dispatch, aborto físico pós-dispatch, perda do ACK de start, aborto não comprovado, mapeamento 401/403/429/5xx, truncamento sem `[DONE]`, separação entre erro antes e depois do dispatch, cleanup de IDs após erro de preflight, serialização da evidência, códigos JSON-RPC, cancelamento concorrente pelo stdio, identidade dos requests e warm idempotente.
 
 ```bash
 cd experiments/provider-abstraction/chatgptweb-sidecar

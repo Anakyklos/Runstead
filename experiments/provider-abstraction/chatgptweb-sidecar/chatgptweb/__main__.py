@@ -66,40 +66,42 @@ class JSONRPCServer:
         self, params: dict, cancel_event: asyncio.Event | None = None
     ) -> dict:
         """Handle completion request. Returns transport evidence, never secrets."""
-        if not self.initialized:
-            raise JSONRPCError(self.INTERNAL_ERROR, "Not initialized")
-
-        client_request_id = params.get("client_request_id")
-        model = params.get("model")
-        messages = params.get("messages", [])
-        stream = params.get("stream", True)
-
-        if not client_request_id or not model:
-            raise JSONRPCError(
-                self.INVALID_PARAMS, "Missing required params: client_request_id, model"
-            )
-
-        if cancel_event is None:
-            if client_request_id in self._active_completions:
-                raise JSONRPCError(
-                    self.INVALID_PARAMS,
-                    f"Completion already in flight: {client_request_id}",
-                )
-            cancel_event = asyncio.Event()
-            self._active_completions[client_request_id] = cancel_event
-        elif self._active_completions.get(client_request_id) is not cancel_event:
-            self._active_completions[client_request_id] = cancel_event
-
-        account_id = params.get("account_id") or settings.default_account
-        if not account_id:
-            self._active_completions.pop(client_request_id, None)
-            raise JSONRPCError(
-                self.INVALID_PARAMS, "No account_id provided and no default_account configured"
-            )
-
-        session = self.session_manager.get_session(account_id)
-
+        client_request_id = params.get("client_request_id") if isinstance(params, dict) else None
         try:
+            if not self.initialized:
+                raise JSONRPCError(self.INTERNAL_ERROR, "Not initialized")
+            if not isinstance(params, dict):
+                raise JSONRPCError(self.INVALID_PARAMS, "params must be an object")
+
+            client_request_id = params.get("client_request_id")
+            model = params.get("model")
+            messages = params.get("messages", [])
+            stream = params.get("stream", True)
+
+            if not client_request_id or not model:
+                raise JSONRPCError(
+                    self.INVALID_PARAMS, "Missing required params: client_request_id, model"
+                )
+
+            if cancel_event is None:
+                if client_request_id in self._active_completions:
+                    raise JSONRPCError(
+                        self.INVALID_PARAMS,
+                        f"Completion already in flight: {client_request_id}",
+                    )
+                cancel_event = asyncio.Event()
+                self._active_completions[client_request_id] = cancel_event
+            elif self._active_completions.get(client_request_id) is not cancel_event:
+                self._active_completions[client_request_id] = cancel_event
+
+            account_id = params.get("account_id") or settings.default_account
+            if not account_id:
+                raise JSONRPCError(
+                    self.INVALID_PARAMS, "No account_id provided and no default_account configured"
+                )
+
+            session = self.session_manager.get_session(account_id)
+
             # Ensure session is warm - may raise SessionNotReady with challenge.
             try:
                 await session.warm()
@@ -173,7 +175,13 @@ class JSONRPCServer:
                 },
             }
         finally:
-            if self._active_completions.get(client_request_id) is cancel_event:
+            # The registry is an in-flight index, not durable history. Remove the
+            # entry even when validation, initialization, warm-up, or completion
+            # fails before the previous try/finally boundary.
+            if (
+                client_request_id
+                and self._active_completions.get(client_request_id) is cancel_event
+            ):
                 self._active_completions.pop(client_request_id, None)
 
     async def handle_cancel(self, params: dict) -> dict:

@@ -39,6 +39,7 @@ class TransportState(Enum):
     RESPONSE_STARTED = "response_started"
     COMPLETED = "completed"
     CANCELED = "canceled"
+    CANCELED_PRE_DISPATCH = "canceled_pre_dispatch"
     TIMEOUT_UNCERTAIN = "timeout_uncertain"
     TRANSPORT_FAILED = "transport_failed"
     UNKNOWN = "unknown"
@@ -124,6 +125,14 @@ class DriftDetected(Exception):
 
 class RequestCanceled(Exception):
     """Raised only after the physical request reports an AbortError."""
+
+
+class PreDispatchCanceled(Exception):
+    """Raised when cancellation is observed before a physical POST is dispatched."""
+
+
+class PhysicalDispatchUncertain(Exception):
+    """Raised when the browser may have dispatched a POST but its start ACK was lost."""
 
 
 class PhysicalAbortUnproven(Exception):
@@ -399,7 +408,7 @@ class BrowserSession:
             raise ValueError("cdp_fetch_stream only supports POST model effects")
 
         if cancel_event is not None and cancel_event.is_set():
-            raise RequestCanceled("explicit cancellation requested before physical dispatch")
+            raise PreDispatchCanceled("explicit cancellation requested before physical dispatch")
 
         request_key = f"runstead-stream-{uuid.uuid4().hex}"
         request_headers = {
@@ -480,11 +489,21 @@ class BrowserSession:
         deadline = asyncio.get_running_loop().time() + timeout
         forced_state = None
         try:
-            result = self._unwrap_evaluate_result(
-                await self.page.evaluate(start_script, await_promise=True)
-            )
+            try:
+                result = self._unwrap_evaluate_result(
+                    await self.page.evaluate(start_script, await_promise=True)
+                )
+            except Exception as error:
+                # The script may have executed fetch() before CDP delivered its
+                # {started: true} ACK. Never convert this lost boundary signal
+                # into deterministic no-send evidence.
+                raise PhysicalDispatchUncertain(
+                    "physical fetch dispatch is uncertain after start ACK failure"
+                ) from error
             if not isinstance(result, dict) or result.get("started") is not True:
-                raise RuntimeError("Browser did not confirm fetch start")
+                raise PhysicalDispatchUncertain(
+                    "browser did not confirm fetch start; physical dispatch is uncertain"
+                )
 
             # The browser has accepted and dispatched this physical fetch. It
             # may not have produced response headers yet, but the attempt must
@@ -887,12 +906,36 @@ class AccountSession:
                 }
             }
 
+        except PreDispatchCanceled:
+            evidence.state = TransportState.CANCELED_PRE_DISPATCH
+            evidence.duration_ms = int((time.time() - start_time) * 1000)
+            yield {
+                "error": {
+                    "message": "Request canceled before physical dispatch",
+                    "evidence": _evidence_to_dict(evidence),
+                    "jsonrpc_code": -32006,
+                }
+            }
+            return
         except RequestCanceled:
             evidence.state = TransportState.CANCELED
             evidence.duration_ms = int((time.time() - start_time) * 1000)
             yield {
                 "error": {
                     "message": "Request canceled after physical abort",
+                    "evidence": _evidence_to_dict(evidence),
+                    "jsonrpc_code": -32006,
+                }
+            }
+            return
+        except PhysicalDispatchUncertain:
+            evidence.state = TransportState.TIMEOUT_UNCERTAIN
+            evidence.error_code = ErrorCode.TIMEOUT_UNCERTAIN
+            evidence.send_count = max(evidence.send_count, 1)
+            evidence.duration_ms = int((time.time() - start_time) * 1000)
+            yield {
+                "error": {
+                    "message": "Physical dispatch uncertain after start acknowledgment loss",
                     "evidence": _evidence_to_dict(evidence),
                     "jsonrpc_code": -32006,
                 }
