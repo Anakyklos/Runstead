@@ -729,6 +729,12 @@ func runGitCommand(t *testing.T, workspace string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = workspace
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_NOGLOBAL=1",
+		"GIT_CONFIG_COUNT=0",
+		"GIT_TERMINAL_PROMPT=0",
+	)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
