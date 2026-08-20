@@ -40,12 +40,12 @@ required before any live Phase 3 turn).
 
 | Question | Answer |
 |---|---|
-| Canary executed or blocked? | **Attempted; readiness-blocked before any model turn** (no authorized authenticated session available for the disposable profile). |
+| Canary executed or blocked? | **Attempted; readiness blocked by the auth gate** (see §14): a persisted authenticated session in the dedicated profile is **rejected** when reopened via Playwright, which redirects to the Google login. No model turn was dispatched. |
 | Mechanism observed | Playwright drives the dedicated Chromium profile via its CDP-based control protocol; page interaction is DOM-based (selectors/evaluate); auth is profile-resident cookies. |
-| Physical sends observed | **0** (no composer submission; no model-effect request was ever dispatchable). |
+| Physical sends observed | **0** (no composer submission; the login gate blocked the authenticated path, so nothing was dispatchable). |
 | Response attributed correctly? | n/a — no turn was sent, so no response existed to attribute. |
-| Limitations | No authorized session; only read-only page loads performed. |
-| Recommendation | Substrate is viable to launch in this environment and was **not** flagged by the login gate at the landing stage; an authenticated session must be authorized before a Phase 3 turn can be exercised. |
+| Limitations | Playwright + Chromium cannot hold/use an authenticated ChatGPT session (auth gate desauthenticates under automation); live send accounting for Playwright remains unproven. |
+| Recommendation | The synthetic bake-off passed, but the **real-substrate finding is that Playwright + Chromium is rejected for the authenticated ChatGPT Web path** (session desauthenticated under automation). This materially informs the ADR/issue-sequencing decision for #84/#16. |
 
 ---
 
@@ -180,7 +180,52 @@ Isto é um **UNKNOWN/blocked-readiness** (ausência de autorização), não uma 
 
 ---
 
-## 13. Final deliverable checks
+## 14. AUTH-GATE DISCOVERY (live, isolated): Playwright desauthenticates a persisted session
+
+A follow-up on this machine (owner-authenticated dedicated profile) produced the
+canary's central real-substrate finding, confirmed by controlled isolation:
+
+**Setup.** The owner logged into a dedicated Chromium profile (`scratch/issue-84-canary/profile-live`,
+gitignored) through a **clean Chrome 151 launch (no automation flags)**, as the issue #16
+spike prescribed. After login the profile held a live session (73 cookies, including
+`__Secure-next-auth.session-token.*`, `__Secure-next-auth.csrf-token`,
+`oai-client-auth-session`, `unified_session_manifest`).
+
+**Isolated observations (same profile, same Chrome 151):**
+
+| Reopen mode | Result |
+|---|---|
+| Clean Chrome 151 (no automation flags) | Session **recognized**; window shows authenticated "ChatGPT"; no login redirect |
+| **Playwright-controlled Chrome 151** (same `executablePath`, adds `--enable-automation` / devtools wiring) | Session **NOT recognized**; page redirects to `accounts.google.com/v3/signin` and `/api/auth/session` becomes unreachable (404) |
+
+**Interpretation.** The OpenAI login gate treats a Playwright/automation-controlled
+browser as untrusted and **desauthenticates / forces re-login**, even when the profile
+holds a valid persisted session. This confirms, in a real controlled environment and
+for the Playwright+Chromium candidate, the transport property the issue #16 CDP spike
+had measured for CDP-flag-flagged launches.
+
+**Canary consequence (fail-closed).** Because an authenticated Playwright session
+cannot be held/used on chatgpt.com, the Phase 3 live turn **cannot be executed in an
+attributable way via Playwright** in this state. Attempting it would land on the login
+gate (a `blocked_readiness_reason` / drift), and bypassing automation is forbidden.
+This makes the readiness **blocked** for the Playwright live turn and directly informs
+whether Playwright+Chromium is usable for the authenticated ChatGPT Web path at all.
+
+**Evidence recorded (sanitized):** `docs/research/issue-84-canary/evidence-auth-gate.md`.
+No token/cookie value was logged; presence of session-cookie names and auth redirect
+state were the only signals used.
+
+### Corrected bottom line (supersedes the provisional "positive login-gate absence" in §5)
+
+The earlier §5 landing-page observation (no CAPTCHA while logged out) remains true but
+is no longer the deciding signal: the deciding signal is that a persisted authenticated
+session is **rejected** when the profile is reopened under Playwright. This is a real,
+material limitation for the Playwright+Chromium candidate on the authenticated ChatGPT
+Web path and should drive the maintainer's ADR/issue-sequencing decision.
+
+---
+
+## 15. Final deliverable checks
 
 - `git status` and `git diff --check` were run (see below): only research documentation under `docs/research/issue-84-canary/` is new.
 - No credentials, cookies, tokens, headers, or private content were written into any committed artifact.
@@ -190,4 +235,9 @@ Isto é um **UNKNOWN/blocked-readiness** (ausência de autorização), não uma 
 
 ## Sanitization note
 
-This report references only: versions, tool paths, hostnames, and observable readiness classifications. It contains no cookie values, no tokens, no headers, no conversation content, and no screenshots of private data. The disposable profile lives under the gitignored `scratch/` directory and holds no session.
+This report references only: versions, tool paths, hostnames, and observable readiness
+classifications (session-cookie **name presence**, auth redirect state). It contains no
+cookie **values**, no tokens, no headers, no conversation content, and no screenshots of
+private data. The authenticated session created during this follow-up lives **only** in
+the dedicated gitignored profile directory (`scratch/issue-84-canary/profile-live`) and
+was never exported, persisted into any artifact, or passed through this agent's evidence.
