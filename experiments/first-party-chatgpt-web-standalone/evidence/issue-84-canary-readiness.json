@@ -1,0 +1,44 @@
+{
+  "schema": "runstead.issue-84.canary-readiness.v1",
+  "date": "2026-08-19",
+  "candidate": "playwright-cdp-chromium",
+  "harness": "experiments/first-party-chatgpt-web-standalone/run_spike.mjs",
+  "harness_version": "v3",
+  "mode": "dry",
+  "environment": {
+    "node": "v22.13.0",
+    "browser_binary": "chromium",
+    "browser_version": "151.0.7922.71",
+    "cdp_endpoint": "DevToolsActivePort + /json/version",
+    "profile_ref": "profiles/standalone-spike",
+    "profile_kind": "fresh_sandbox_profile",
+    "profile_authorized": false
+  },
+  "readiness": {
+    "verdict": "login_required",
+    "action": "stopped_before_authenticated_runtime",
+    "challenge_or_drift": "no_authorized_session_available",
+    "model_turns": 0
+  },
+  "transport_evidence": {
+    "physical_model_effect_request_count": 0,
+    "route_identity": null,
+    "request_identity_attribution": null,
+    "response_completion_attribution": null,
+    "resulting_state": "blocked_before_dispatch"
+  },
+  "safety": {
+    "retry": false,
+    "resubmit": false,
+    "fallback": false,
+    "credential_export": false,
+    "kill_criteria_triggered": false,
+    "fail_closed": true
+  },
+  "limitations": [
+    "A sandbox profile without an authorized account cannot prove authenticated readiness or upstream model-effect behavior.",
+    "No real ChatGPT Web session, account, cookie, token, model turn, response attribution, or completion was exercised.",
+    "The artifact is a readiness-stop record, not evidence that the live canary passed."
+  ],
+  "recommendation": "Keep the PR draft and stop until a maintainer supplies or authorizes a dedicated authenticated profile through an approved channel. Do not execute live mode in this environment."
+}
