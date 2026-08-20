@@ -1,6 +1,6 @@
 # Issue #84 — substrate bake-off: Playwright/Chromium vs. chromedp/CDP
 
-**Status:** pesquisa isolada concluída; nenhuma integração de produção; nenhum canary real executado. **Recomendação para revisão do mantenedor:** autorizar Playwright + Chromium para o próximo canary assistido, mantendo a escolha como recomendação — não como decisão arquitetural aprovada.
+**Status:** pesquisa isolada concluída; nenhuma integração de produção; readiness pass local executada com zero model turns; canary real bloqueada antes de uma sessão autenticada. **Recomendação para revisão do mantenedor:** manter Playwright + Chromium como candidato do canary assistido, sem tratar a escolha como decisão arquitetural aprovada.
 
 ## Resumo executivo
 
@@ -136,9 +136,25 @@ A pesquisa não prova aceitação upstream depois do dispatch, idempotência rea
 
 O cenário de Service Worker é uma prova sintética local de controle e observabilidade. O cenário de controller disconnect comprova cleanup e classificação no helper deste proof, não a recuperação completa de um processo de produção. O RSS é uma amostra local e não deve ser usado como orçamento universal.
 
+## Readiness pass do canary autorizado
+
+Em 2026-08-19, foi executada a suíte determinística e o modo `dry` de `experiments/first-party-chatgpt-web-standalone/run_spike.mjs`, usando Node `v22.13.0`, Chromium `151.0.7922.71`, CDP via `DevToolsActivePort + /json/version` e o perfil descartável `profiles/standalone-spike`. O harness chegou à página, mas classificou a prontidão como `login_required`; como não havia uma sessão autenticada autorizada disponível, a execução parou antes do runtime autenticado. O registro sanitizado está em `experiments/first-party-chatgpt-web-standalone/evidence/issue-84-canary-readiness.json`.[6]
+
+| Evidência da readiness pass | Resultado |
+| --- | --- |
+| Model turns emitidos | `0` |
+| POST físico de efeito de modelo | `0` |
+| Identidade de rota e request | Não observada; parada anterior ao dispatch |
+| Atribuição de resposta/completion | Não aplicável |
+| Retry, resubmit ou fallback | Não executado |
+| Estado final | `blocked_before_dispatch` |
+| Classificação | `fail_closed` |
+
+Essa execução confirma apenas que o caminho sem sessão não avança para um efeito de modelo. Ela **não** prova login, estabilidade de sessão, aceitação upstream, atribuição de response/completion nem comportamento de um model turn real.
+
 ## Gate do canary real
 
-O canary real está **bloqueado**. Não foram usados conta, cookies, tokens, perfil autenticado, ChatGPT Web ou model turn. A próxima ação deve ser escolhida pelo mantenedor na revisão da PR. Se aprovado, o canary deve permanecer na mesma PR, com perfil descartável/autorizado, escopo mínimo, sem exportação de credenciais e sem retry automático.
+O canary real permanece **bloqueado**. Não foram usados conta autenticada, cookies, tokens, perfil autorizado, model turn ou exportação de credenciais. A alternativa segura disponível neste ambiente é apenas repetir a readiness pass e a matriz sintética; executar `live` sem um perfil autorizado violaria o escopo da revisão. O PR deve continuar em draft até que o mantenedor forneça ou autorize um perfil dedicado por um canal aprovado. Se e quando isso ocorrer, o canary deve permanecer na mesma PR, com escopo mínimo, sem retry automático e sem tornar `sent_unconfirmed` otimisticamente em `not_sent`.
 
 ## Validações executadas
 
@@ -153,3 +169,4 @@ As validações de produção do repositório — `gofmt -l .`, `go test ./...`,
 [3]: https://github.com/pedro-labsabs/Runstead/blob/main/docs/architecture.md "Runstead architecture"
 [4]: https://github.com/pedro-labsabs/Runstead/issues/49 "Runstead Issue #49 — security/provenance constraints"
 [5]: https://github.com/pedro-labsabs/Runstead/issues/74 "Runstead Issue #74 — drift/reconciliation constraints"
+[6]: ../../experiments/first-party-chatgpt-web-standalone/evidence/issue-84-canary-readiness.json "Sanitized canary readiness record — 2026-08-19"
