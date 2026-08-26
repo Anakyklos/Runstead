@@ -17,6 +17,7 @@ package openaicompat_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -278,5 +279,75 @@ func TestOpenAICompatAdapterFullPublicPathConfigToWireWithAuthSecret(t *testing.
 	}
 	if strings.Contains(fmt.Sprintf("%#v", result), secretValue) {
 		t.Fatal("secret value leaked into the execution result/evidence")
+	}
+}
+
+// TestOpenAICompatAdapterRateLimitCrossesGovernorBoundaryWithSingleRequest
+// proves the adapter's stable, sanitized error classification crosses the
+// governor boundary through the PUBLIC OutcomeClassifier seam: a caller-owned
+// classifier reads openaicompat.Error.Kind/DeliveryState via errors.As (no
+// vendor coupling in governor production code), the attempt is debited exactly
+// once, and the upstream saw exactly one physical request even on a 429.
+func TestOpenAICompatAdapterRateLimitCrossesGovernorBoundaryWithSingleRequest(t *testing.T) {
+	counter := &openaiCompatCounter{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		counter.mu.Lock()
+		counter.requests++
+		counter.mu.Unlock()
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error","code":"rate_limit_exceeded"}}`)
+	}))
+	defer server.Close()
+
+	client := newOpenAICompatAdapter(t, server.URL)
+
+	config := integrationConfig()
+	governor, err := policy.New(config, policy.Options{})
+	if err != nil {
+		t.Fatalf("policy.New() error = %v", err)
+	}
+
+	var seenRetryAfter time.Duration
+	classifier := func(response provider.Response, err error) policy.Outcome {
+		var upstreamErr *openaicompat.Error
+		if errors.As(err, &upstreamErr) {
+			seenRetryAfter = upstreamErr.RetryAfter
+			switch upstreamErr.Kind {
+			case openaicompat.ErrorRateCapacity:
+				return policy.Outcome{
+					Class:           policy.OutcomeRateCapacity,
+					UpstreamReached: upstreamErr.UpstreamReached,
+					DeliveryState:   upstreamErr.DeliveryState,
+				}
+			}
+		}
+		return policy.Outcome{Class: policy.OutcomeUncertainReached, UpstreamReached: true, DeliveryState: response.Metadata.DeliveryState}
+	}
+
+	result := governor.Execute(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-4",
+		ClientRequestID: "request-4",
+		ModelPool:       "model-pool",
+		ProviderRequest: provider.Request{Model: "model-a", Prompt: "prompt"},
+	}, client, classifier)
+
+	if result.Err == nil {
+		t.Fatal("Execute() err = nil, want the classified rate-limit error")
+	}
+	if result.Completion.Outcome != policy.OutcomeRateCapacity {
+		t.Fatalf("completion outcome = %q, want rate_or_capacity", result.Completion.Outcome)
+	}
+	if result.Completion.AttemptDebited != 1 {
+		t.Fatalf("attempts debited = %d, want exactly 1", result.Completion.AttemptDebited)
+	}
+	if result.Completion.DeliveryState != provider.DeliveryCompleted {
+		t.Fatalf("completion delivery state = %s, want completed (429 body fully read)", result.Completion.DeliveryState)
+	}
+	if seenRetryAfter != time.Second {
+		t.Fatalf("classifier saw RetryAfter = %s, want 1s (stable duration surfaced publicly)", seenRetryAfter)
+	}
+	if got := counter.count(); got != 1 {
+		t.Fatalf("physical requests = %d, want exactly 1 on a governed rate-limited attempt", got)
 	}
 }
