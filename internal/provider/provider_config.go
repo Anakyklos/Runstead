@@ -22,10 +22,44 @@ var ErrInvalidProviderConfig = errors.New("invalid provider configuration")
 // enters Runstead state, metadata, traces, contract hashes, fixtures or model
 // context (#79).
 //
-// Empty means the endpoint requires no authentication.
+// Whether authentication is needed is declared EXPLICITLY through
+// Config.AuthRequirement and is never inferred from the protocol family: #86
+// includes gateways, local services and third-party endpoints whose family
+// matches but which accept unauthenticated traffic.
 type SecretRef string
 
 func (r SecretRef) String() string { return string(r) }
+
+// Normalize trims surrounding whitespace. A whitespace-only reference is
+// treated as unset so it can never pose as configured authentication material.
+func (r SecretRef) Normalize() SecretRef {
+	return SecretRef(strings.TrimSpace(string(r)))
+}
+
+// AuthRequirement declares explicitly whether one configured provider endpoint
+// requires authentication. It is operator-declared evidence about the
+// endpoint, never derived from the protocol family name.
+type AuthRequirement string
+
+const (
+	// AuthReferenceRequired means the endpoint needs authentication material;
+	// a non-empty SecretRef must be configured or resolution fails closed.
+	AuthReferenceRequired AuthRequirement = "reference_required"
+	// AuthNone means the endpoint accepts unauthenticated traffic. Declaring
+	// AuthNone together with a SecretRef is refused so declarations stay honest.
+	AuthNone AuthRequirement = "none"
+)
+
+// Valid reports whether r is one of the known auth requirements. The zero
+// value is deliberately invalid: the requirement must be declared, not guessed.
+func (r AuthRequirement) Valid() bool {
+	switch r {
+	case AuthReferenceRequired, AuthNone:
+		return true
+	default:
+		return false
+	}
+}
 
 // Config is one operator-declared provider endpoint. It separates:
 //
@@ -37,7 +71,10 @@ func (r SecretRef) String() string { return string(r) }
 //     identity are distinct concepts; neither implies the other;
 //   - BaseURL: the exact endpoint root;
 //   - Model: the exact model identifier required for every request;
-//   - Auth: non-secret authentication reference (SecretRef);
+//   - Auth: non-secret authentication reference (SecretRef); required if and
+//     only if AuthRequirement demands it;
+//   - AuthRequirement: explicit declaration of whether this endpoint needs
+//     authentication. Never inferred from the protocol family;
 //   - Options: strictly necessary NON-SECRET protocol options for this
 //     endpoint. Values must never carry credential material;
 //   - Profile: the explicit versioned capability profile proven for this
@@ -47,14 +84,15 @@ func (r SecretRef) String() string { return string(r) }
 //
 // Config contains no secret values by construction; Auth is only a reference.
 type Config struct {
-	ProviderID     string
-	ProtocolFamily ProtocolFamily
-	BaseURL        string
-	Model          string
-	Auth           SecretRef
-	Options        map[string]string
-	Profile        CapabilityProfile
-	ConfigVersion  string
+	ProviderID      string
+	ProtocolFamily  ProtocolFamily
+	BaseURL         string
+	Model           string
+	Auth            SecretRef
+	AuthRequirement AuthRequirement
+	Options         map[string]string
+	Profile         CapabilityProfile
+	ConfigVersion   string
 }
 
 // Sanitized renders the configuration identity without any secret-bearing
@@ -72,8 +110,8 @@ func (c Config) Sanitized() string {
 			optionKeys[j], optionKeys[j-1] = optionKeys[j-1], optionKeys[j]
 		}
 	}
-	return fmt.Sprintf("provider.Config{ProviderID:%q ProtocolFamily:%q BaseURL:%q Model:%q AuthRef:%t Options:%v ProfileVersion:%q RouteSafety:%#v ConfigVersion:%q}",
-		c.ProviderID, c.ProtocolFamily, c.BaseURL, c.Model, c.Auth != "", optionKeys,
+	return fmt.Sprintf("provider.Config{ProviderID:%q ProtocolFamily:%q BaseURL:%q Model:%q AuthRequirement:%q AuthRef:%t Options:%v ProfileVersion:%q RouteSafety:%#v ConfigVersion:%q}",
+		c.ProviderID, c.ProtocolFamily, c.BaseURL, c.Model, string(c.AuthRequirement), c.Auth != "", optionKeys,
 		c.Profile.ProfileVersion, c.Profile.RouteSafety, c.ConfigVersion)
 }
 
@@ -84,13 +122,14 @@ func (c Config) GoString() string { return c.Sanitized() }
 // before any dispatch. Every field is normalized and proven; a Resolved value
 // existing means the provider passed all pre-flight contract checks.
 type Resolved struct {
-	ProviderID     string
-	ProtocolFamily ProtocolFamily
-	BaseURL        string
-	Model          string
-	Auth           SecretRef
-	Profile        CapabilityProfile
-	ConfigIdentity string
+	ProviderID      string
+	ProtocolFamily  ProtocolFamily
+	BaseURL         string
+	Model           string
+	Auth            SecretRef
+	AuthRequirement AuthRequirement
+	Profile         CapabilityProfile
+	ConfigIdentity  string
 }
 
 // Validate checks one provider configuration for internal consistency. It
@@ -120,11 +159,35 @@ func (c Config) Validate() error {
 	if parsed.Host == "" {
 		return fmt.Errorf("%w: base URL for provider %q must include a host", ErrInvalidProviderConfig, c.ProviderID)
 	}
+	// The base URL is an endpoint ROOT. Userinfo, query and fragment components
+	// are classic credential carriers; refusing them here keeps everything that
+	// can reach Sanitized()/ConfigIdentity provably non-secret (#79).
+	if parsed.User != nil {
+		return fmt.Errorf("%w: base URL for provider %q must not carry userinfo; use the non-secret authentication reference instead", ErrInvalidProviderConfig, c.ProviderID)
+	}
+	if parsed.RawQuery != "" || parsed.ForceQuery {
+		return fmt.Errorf("%w: base URL for provider %q must not carry a query string", ErrInvalidProviderConfig, c.ProviderID)
+	}
+	if parsed.Fragment != "" || parsed.RawFragment != "" {
+		return fmt.Errorf("%w: base URL for provider %q must not carry a fragment", ErrInvalidProviderConfig, c.ProviderID)
+	}
+	// Authentication is validated from the explicit declaration, never from
+	// the protocol family name.
+	if !c.AuthRequirement.Valid() {
+		return fmt.Errorf("%w: provider %q must declare auth_requirement explicitly (%q or %q); it is never inferred from the protocol family", ErrInvalidProviderConfig, c.ProviderID, AuthNone, AuthReferenceRequired)
+	}
+	auth := c.Auth.Normalize()
+	if c.Auth != "" && auth == "" {
+		return fmt.Errorf("%w: provider %q has a blank authentication reference", ErrInvalidProviderConfig, c.ProviderID)
+	}
 	if strings.TrimSpace(c.Model) == "" {
 		return fmt.Errorf("%w: exact model must be configured for provider %q", ErrInvalidProviderConfig, c.ProviderID)
 	}
 	if err := c.Profile.Validate(); err != nil {
 		return fmt.Errorf("%w: provider %q: %v", ErrInvalidProviderConfig, c.ProviderID, err)
+	}
+	if c.AuthRequirement == AuthNone && auth != "" {
+		return fmt.Errorf("%w: provider %q declares auth_requirement none but also configures an authentication reference", ErrInvalidProviderConfig, c.ProviderID)
 	}
 	for key, value := range c.Options {
 		if strings.TrimSpace(key) == "" {
@@ -213,22 +276,25 @@ func (r *Registry) Resolve(providerID string, required []Capability, safety Rout
 		return nil, fmt.Errorf("%w: provider %q declares route safety %#v incompatible with the required route safety %#v",
 			ErrInvalidProviderConfig, config.ProviderID, profile.RouteSafety, safety)
 	}
-	// Authentication: if this configuration requires auth material, the
-	// reference must have been configured. Missing credentials fail before
-	// dispatch; the reference itself stays non-secret.
-	if authRequiredFor(config.ProtocolFamily) && config.Auth == "" {
+	// Authentication: the explicit declaration decides. A required-but-missing
+	// reference fails closed before dispatch; a declared-authless endpoint
+	// resolves with an empty normalized reference. The reference itself stays
+	// non-secret.
+	auth := config.Auth.Normalize()
+	if config.AuthRequirement == AuthReferenceRequired && auth == "" {
 		return nil, fmt.Errorf("%w: provider %q requires an authentication reference but none is configured", ErrInvalidProviderConfig, config.ProviderID)
 	}
 	baseURL := strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
 	model := strings.TrimSpace(config.Model)
 	return &Resolved{
-		ProviderID:     strings.TrimSpace(config.ProviderID),
-		ProtocolFamily: config.ProtocolFamily,
-		BaseURL:        baseURL,
-		Model:          model,
-		Auth:           config.Auth,
-		Profile:        profile,
-		ConfigIdentity: config.Sanitized(),
+		ProviderID:      strings.TrimSpace(config.ProviderID),
+		ProtocolFamily:  config.ProtocolFamily,
+		BaseURL:         baseURL,
+		Model:           model,
+		Auth:            auth,
+		AuthRequirement: config.AuthRequirement,
+		Profile:         profile,
+		ConfigIdentity:  config.Sanitized(),
 	}, nil
 }
 
@@ -241,16 +307,4 @@ func routeSafetyCompatible(declared, required RouteSafety) bool {
 		return false
 	}
 	return declared.Equal(required)
-}
-
-// authRequiredFor reports whether a protocol family conventionally requires
-// bearer/key authentication. All three supported families do today. This is
-// configuration-level gating only; adapters still own actual credential use.
-func authRequiredFor(family ProtocolFamily) bool {
-	switch family {
-	case FamilyOpenAICompatible, FamilyAnthropicCompatible, FamilyGoogleCompatible:
-		return true
-	default:
-		return false
-	}
 }

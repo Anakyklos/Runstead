@@ -33,22 +33,55 @@ const (
 // nothing is supported until explicitly declared, which fails closed when a
 // capability is later required (#79).
 //
-// The type does not model retry/amplification safety or delivery-uncertainty
-// semantics: those remain owned exclusively by RouteSafety and DeliveryState,
-// the existing executable sources of truth. This avoids a second competing
-// representation of the same guarantees.
+// The set is CLOSED: only capabilities in KnownCapabilities may appear as
+// keys. Anything else is refused by Validate, so an unknown capability can
+// never silently satisfy a gate. The type does not model retry/amplification
+// safety or delivery-uncertainty semantics: those remain owned exclusively by
+// RouteSafety and DeliveryState, the existing executable sources of truth.
 type Capabilities map[Capability]bool
+
+// knownCapabilities is the closed vocabulary of capabilities this contract
+// version understands. It must contain exactly the Capability constants above.
+var knownCapabilities = map[Capability]struct{}{
+	CapabilityTextTurn:         {},
+	CapabilityRunsteadProtocol: {},
+	CapabilityNativeTools:      {},
+	CapabilityStreaming:        {},
+	CapabilityCancellation:     {},
+}
+
+// IsKnown reports whether cap is part of the closed capability vocabulary.
+func IsKnown(cap Capability) bool {
+	_, ok := knownCapabilities[cap]
+	return ok
+}
+
+// Validate refuses any capability outside the closed vocabulary. An unknown
+// key would otherwise be able to pose as a satisfiable requirement, so the
+// declaration fails closed before dispatch (#79).
+func (c Capabilities) Validate() error {
+	for cap := range c {
+		if !IsKnown(cap) {
+			return fmt.Errorf("unknown capability %q is not part of this contract's closed capability set", string(cap))
+		}
+	}
+	return nil
+}
 
 func (c Capabilities) Has(cap Capability) bool { return c[cap] }
 
 // SupportsRequired reports whether every capability in required is explicitly
-// declared. Unknown or absent capabilities fail closed: the returned error
-// names each missing capability so an incompatible endpoint is refused before
-// any dispatch with provider/family/capability identified.
+// declared. Unknown capabilities fail closed on BOTH sides: a requirement
+// outside the closed vocabulary is refused even before consulting the set, and
+// an absent capability is reported by name, so an incompatible endpoint is
+// refused before any dispatch with provider/family/capability identified.
 func (c Capabilities) SupportsRequired(required []Capability) error {
 	for _, cap := range required {
+		if !IsKnown(cap) {
+			return fmt.Errorf("required capability %q is unknown to this contract version; refusing to interpret it", string(cap))
+		}
 		if !c.Has(cap) {
-			return fmt.Errorf("required capability %q is unknown or not declared for this provider", cap)
+			return fmt.Errorf("required capability %q is not declared for this provider", cap)
 		}
 	}
 	return nil
@@ -75,18 +108,23 @@ type CapabilityProfile struct {
 	MaxResponseBytes int
 }
 
-// KnownCapabilities lists the capabilities this contract version understands.
+// profileContractVersion identifies the capability contract version. The
+// closed vocabulary lives in knownCapabilities; growing it bumps this version.
 const profileContractVersion = 1
 
 // Validate checks the profile's internal consistency. Unknown values fail
-// closed: an undeclared profile version, an invalid RouteSafety declaration or
-// negative bounds refuse the configuration before dispatch.
+// closed: an undeclared profile version, a capability outside the closed
+// vocabulary, an invalid RouteSafety declaration or negative bounds refuse the
+// configuration before dispatch.
 func (p CapabilityProfile) Validate() error {
 	if p.ProfileVersion == "" {
 		return fmt.Errorf("capability profile version must not be empty")
 	}
 	if p.ProfileVersion != fmt.Sprintf("v%d", profileContractVersion) {
 		return fmt.Errorf("unsupported capability profile version %q", p.ProfileVersion)
+	}
+	if err := p.Capabilities.Validate(); err != nil {
+		return fmt.Errorf("capability profile declares an unusable capability set: %w", err)
 	}
 	if err := p.RouteSafety.Validate(); err != nil {
 		return fmt.Errorf("capability profile route safety is unsafe: %w", err)

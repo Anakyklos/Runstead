@@ -20,13 +20,14 @@ func safeProfile() CapabilityProfile {
 
 func openAIConfig(providerID string) Config {
 	return Config{
-		ProviderID:     providerID,
-		ProtocolFamily: FamilyOpenAICompatible,
-		BaseURL:        "https://" + providerID + ".example.invalid/v1",
-		Model:          "model-" + providerID,
-		Auth:           SecretRef("RUNSTEAD_TEST_SECRET"),
-		Profile:        safeProfile(),
-		ConfigVersion:  "1",
+		ProviderID:      providerID,
+		ProtocolFamily:  FamilyOpenAICompatible,
+		BaseURL:         "https://" + providerID + ".example.invalid/v1",
+		Model:           "model-" + providerID,
+		Auth:            SecretRef("RUNSTEAD_TEST_SECRET"),
+		Profile:         safeProfile(),
+		AuthRequirement: AuthReferenceRequired,
+		ConfigVersion:   "1",
 	}
 }
 
@@ -144,6 +145,50 @@ func TestMissingRequiredCapabilityFailsBeforeDispatch(t *testing.T) {
 	}
 	if !strings.Contains(resolveErr.Error(), string(CapabilityRunsteadProtocol)) {
 		t.Fatalf("error must identify the missing capability, got: %v", resolveErr)
+	}
+}
+
+// Unknown capabilities fail closed on both sides: an unknown DECLARED
+// capability is refused by profile validation, and an unknown REQUIRED
+// capability can never be satisfied by whatever the endpoint declares.
+func TestUnknownDeclaredAndRequiredCapabilitiesFailClosed(t *testing.T) {
+	declaredUnknown := openAIConfig("declared-unknown-cap")
+	declaredUnknown.Profile.Capabilities[Capability("future_unknown")] = true
+
+	registry, err := NewRegistry(declaredUnknown)
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+	resolveErr := registry.resolveExpectInvalid(t, "declared-unknown-cap")
+	if !strings.Contains(resolveErr, "unknown capability") {
+		t.Fatalf("an unknown declared capability must be refused by validation, got %q", resolveErr)
+	}
+
+	// Even with every known capability proven, a requirement outside the closed
+	// vocabulary must never resolve.
+	everything := openAIConfig("unknown-requirement")
+	everything.Profile.Capabilities = Capabilities{
+		CapabilityTextTurn:         true,
+		CapabilityRunsteadProtocol: true,
+		CapabilityNativeTools:      true,
+		CapabilityStreaming:        true,
+		CapabilityCancellation:     true,
+	}
+	registry2, err := NewRegistry(everything)
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+	_, reqErr := registry2.Resolve("unknown-requirement", []Capability{Capability("future_unknown")}, SafeRouteSafety())
+	if !errors.Is(reqErr, ErrInvalidProviderConfig) || !strings.Contains(reqErr.Error(), "future_unknown") {
+		t.Fatalf("an unknown required capability must fail closed by name, got %v", reqErr)
+	}
+	if err := (Capabilities{Capability("future_unknown"): true}).Validate(); err == nil {
+		t.Fatal("Capabilities.Validate must refuse keys outside the closed vocabulary")
+	}
+	for _, known := range []Capability{CapabilityTextTurn, CapabilityRunsteadProtocol, CapabilityNativeTools, CapabilityStreaming, CapabilityCancellation} {
+		if !IsKnown(known) {
+			t.Fatalf("known capability %q must be recognized", known)
+		}
 	}
 }
 
@@ -296,6 +341,41 @@ func TestAmplificationCannotBeMaskedAsSafeConfiguration(t *testing.T) {
 // 11+12. Secrets never appear in metadata/errors/traces/contract identity;
 // sanitized identity is inspectable without revealing secrets. Fixtures use
 // only reference names, never real credential values.
+// BaseURL is an endpoint root: credential-carrying URL components are
+// refused so nothing sensitive can reach Sanitized()/ConfigIdentity.
+func TestBaseURLRejectsCredentialBearingComponents(t *testing.T) {
+	for name, baseURL := range map[string]string{
+		"userinfo":       "https://user:secret@example.invalid/v1",
+		"user only":      "https://user@example.invalid/v1",
+		"query string":   "https://example.invalid/v1?api_key=abc",
+		"forced query":   "https://example.invalid/v1?",
+		"fragment":       "https://example.invalid/v1#cred",
+		"query and frag": "https://example.invalid/v1?key=abc#frag",
+	} {
+		config := openAIConfig("url-" + strings.ReplaceAll(name, " ", "-"))
+		config.BaseURL = baseURL
+		registry, err := NewRegistry(config)
+		if err != nil {
+			t.Fatalf("NewRegistry failed for %s: %v", name, err)
+		}
+		_, resolveErr := registry.Resolve(config.ProviderID, RequiredCapabilities(), SafeRouteSafety())
+		if !errors.Is(resolveErr, ErrInvalidProviderConfig) {
+			t.Fatalf("credential-bearing endpoint %q (%s) must be refused before dispatch, got %v", baseURL, name, resolveErr)
+		}
+	}
+
+	clean := openAIConfig("clean-url")
+	clean.BaseURL = "https://example.invalid:8443/v1/"
+	registry, err := NewRegistry(clean)
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+	resolved := mustResolve(t, registry, "clean-url")
+	if resolved.BaseURL != "https://example.invalid:8443/v1" || strings.Contains(resolved.ConfigIdentity, ":8443") == false {
+		t.Fatalf("a clean endpoint with port must resolve and render in identity: %q / %q", resolved.BaseURL, resolved.ConfigIdentity)
+	}
+}
+
 func TestSanitizedIdentityNeverContainsSecretMaterial(t *testing.T) {
 	config := openAIConfig("sanitized")
 	config.Options = map[string]string{"api_version": "2024-01-01"}
@@ -413,6 +493,9 @@ func TestCapabilityProfileValidation(t *testing.T) {
 	}
 }
 
+// Authentication is declared explicitly per endpoint and never inferred from
+// the protocol family: an authless gateway resolves, a required-but-missing or
+// blank reference fails closed before dispatch.
 func TestAuthenticationReferenceRequiredBeforeDispatch(t *testing.T) {
 	config := openAIConfig("authless")
 	config.Auth = ""
@@ -424,6 +507,55 @@ func TestAuthenticationReferenceRequiredBeforeDispatch(t *testing.T) {
 	_, resolveErr := registry.Resolve("authless", RequiredCapabilities(), SafeRouteSafety())
 	if !errors.Is(resolveErr, ErrInvalidProviderConfig) || !strings.Contains(resolveErr.Error(), "authentication reference") {
 		t.Fatalf("required authentication without reference must fail before dispatch, got %v", resolveErr)
+	}
+}
+
+func TestAuthlessEndpointResolvesWithoutFamilyInference(t *testing.T) {
+	authless := openAIConfig("local-gateway")
+	authless.AuthRequirement = AuthNone
+	authless.Auth = ""
+
+	registry, err := NewRegistry(authless)
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+	resolved := mustResolve(t, registry, "local-gateway")
+	if resolved.AuthRequirement != AuthNone || resolved.Auth != "" {
+		t.Fatalf("a declared-authless endpoint must resolve without any reference: %+v", resolved)
+	}
+
+	blankRef := openAIConfig("whitespace-ref")
+	blankRef.Auth = SecretRef("   ")
+	registry2, err := NewRegistry(blankRef)
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+	_, resolveErr := registry2.Resolve("whitespace-ref", RequiredCapabilities(), SafeRouteSafety())
+	if !errors.Is(resolveErr, ErrInvalidProviderConfig) || !strings.Contains(resolveErr.Error(), "blank authentication reference") {
+		t.Fatalf("a whitespace-only reference must never pose as configured authentication, got %v", resolveErr)
+	}
+
+	undeclared := openAIConfig("undeclared-requirement")
+	undeclared.AuthRequirement = ""
+	registry3, err := NewRegistry(undeclared)
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+	resolveErrText := registry3.resolveExpectInvalid(t, "undeclared-requirement")
+	if !strings.Contains(resolveErrText, "auth_requirement") {
+		t.Fatalf("an undeclared auth requirement must be refused explicitly, got %q", resolveErrText)
+	}
+
+	conflicted := openAIConfig("conflicted")
+	conflicted.AuthRequirement = AuthNone
+	conflicted.Auth = SecretRef("RUNSTEAD_TEST_SECRET")
+	registry4, err := NewRegistry(conflicted)
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+	resolveErrText = registry4.resolveExpectInvalid(t, "conflicted")
+	if !strings.Contains(resolveErrText, "auth_requirement none") {
+		t.Fatalf("auth_none with a configured reference must stay honest and refuse, got %q", resolveErrText)
 	}
 }
 
