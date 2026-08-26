@@ -102,17 +102,14 @@ func TestUnknownProviderFailsBeforeDispatch(t *testing.T) {
 func TestUnknownProtocolFamilyFailsBeforeDispatch(t *testing.T) {
 	config := openAIConfig("odd-one")
 	config.ProtocolFamily = ProtocolFamily("gptweb_official")
-	if _, err := NewRegistry(config); err == nil {
-		// Registry construction does not validate; resolution must.
-		registry, regErr := NewRegistry(config)
-		if regErr != nil {
-			t.Fatalf("NewRegistry failed: %v", regErr)
-		}
-		_, resolveErr := registry.Resolve("odd-one", RequiredCapabilities(), SafeRouteSafety())
-		if !errors.Is(resolveErr, ErrInvalidProviderConfig) || !strings.Contains(resolveErr.Error(), "unknown protocol family") {
-			t.Fatalf("expected fail-closed unknown protocol family error, got %v", resolveErr)
-		}
-		return
+	// Registry construction does not validate; resolution must.
+	registry, err := NewRegistry(config)
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+	resolveErr := registry.resolveExpectInvalid(t, "odd-one")
+	if !strings.Contains(resolveErr, "unknown protocol family") {
+		t.Fatalf("expected fail-closed unknown protocol family error, got %q", resolveErr)
 	}
 }
 

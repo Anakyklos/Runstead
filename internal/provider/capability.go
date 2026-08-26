@@ -85,7 +85,7 @@ func (p CapabilityProfile) Validate() error {
 	if p.ProfileVersion == "" {
 		return fmt.Errorf("capability profile version must not be empty")
 	}
-	if p.ProfileVersion != fmt.Sprintf("v%d", profileContractVersion) && p.ProfileVersion != "v1" {
+	if p.ProfileVersion != fmt.Sprintf("v%d", profileContractVersion) {
 		return fmt.Errorf("unsupported capability profile version %q", p.ProfileVersion)
 	}
 	if err := p.RouteSafety.Validate(); err != nil {

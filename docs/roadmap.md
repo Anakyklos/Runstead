@@ -174,9 +174,11 @@ receipts) -> #30 (protected live activation) -> #4 (OmniRoute live provider);
 the deterministic offline core is implemented and the live gate fails closed
 (see [coding-loop.md](coding-loop.md)).
 
-> **Historical milestones.** Milestones 0 through 7 below were planned under
-> the original ChatGPT Web/OmniRoute bootstrap strategy. The provider strategy
-> was rebased on compatibility protocol families (#86/#79): they remain as
+> **Historical milestones.** Milestones 0 through 4 above were planned under
+> the original ChatGPT Web/OmniRoute bootstrap strategy; Milestone 5 below was
+> reframed for configured compatible endpoints. The provider strategy
+> was rebased on compatibility protocol families (#86/#79): these milestones
+> remain as
 > historical planning provenance, and the deterministic runtime capabilities
 > they describe stay valid, but the OmniRoute/ChatGPT Web transport path is no
 > longer the v0.1 baseline. Active provider work proceeds through Milestone P0
