@@ -60,7 +60,7 @@ The provider-neutral contract (#79) consists of:
 
 Resolution fails closed on unknown provider ID, unknown protocol family, incomplete configuration, missing mandatory model, invalid endpoint, missing required capability, incompatible RouteSafety and required-but-unconfigured authentication. Capability is proven per endpoint; it is never inferred from the vendor name or the declared family. Credentials are external secret material named only by a non-secret reference; they never enter SQLite state, metadata, traces, contract hashes, fixtures or model context.
 
-Concrete HTTP adapters for each family are separate issues (#87 OpenAI-compatible, #88 Anthropic-compatible, #89 Google/Gemini-compatible); this architecture defines only the contract they must implement. The existing OmniRoute adapter remains a fail-closed scaffold behind its own pinned receipt lane until a compatible producer exists; it holds no special architectural status beyond being the first historical adapter.
+Concrete HTTP adapters for each family are separate issues (#88 Anthropic-compatible and #89 Google/Gemini-compatible remain open). The first one, the OpenAI-compatible adapter (#87), is implemented in `internal/provider/openaicompat`: standard-library HTTP only, the minimal Chat Completions subset (exact configured model, rendered prompt as a single user message, streaming disabled), fail-closed response parsing, no redirect following, no retries, authentication resolved at dispatch time through a non-persisted secret resolver seam, and delivery evidence derived from observable transport facts (`httptrace`) rather than absence of error. The existing OmniRoute adapter remains a fail-closed scaffold behind its own pinned receipt lane until a compatible producer exists; it holds no special architectural status beyond being the first historical adapter.
 
 ## Architectural style
 
@@ -73,7 +73,8 @@ agent loop
     ├── protocol
     ├── provider
     │   ├── (contract: family/config/capability/route-safety)
-    │   └── omniroute      # historical fail-closed adapter scaffold
+    │   ├── omniroute      # historical fail-closed adapter scaffold
+    │   └── openaicompat   # OpenAI-compatible protocol adapter (#87)
     ├── tools
     ├── executor
     ├── governor

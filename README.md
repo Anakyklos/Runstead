@@ -185,8 +185,10 @@ process runner (#26). The provider strategy has been rebased on compatibility
 protocol families (#79/#86): provider identity, protocol family
 (`openai_compatible`, `anthropic_compatible`, `google_compatible`),
 configuration, versioned capability profiles and fail-closed pre-dispatch
-resolution now exist in `internal/provider`; concrete family adapters are
-#87/#88/#89. `runstead run` executes a deterministic task end to end:
+resolution now exist in `internal/provider`; the first concrete family adapter
+(#87, OpenAI-compatible) lives in `internal/provider/openaicompat` with one
+physical request per governed completion and no retry/fallback/redirect
+following; the remaining family adapters are #88/#89. `runstead run` executes a deterministic task end to end:
 every model turn is admitted by the account governor, actions are validated
 and executed by the registry (read-only tools plus policy-gated
 `write_file`/`apply_patch` with stale-state protection and operator-declared
