@@ -3,7 +3,7 @@
 Runstead follows a staged provider strategy (decision #86, implemented from #79):
 
 1. define the provider-neutral contract: provider identity, protocol family (`openai_compatible`, `anthropic_compatible`, `google_compatible`), configuration and versioned capability profiles with fail-closed resolution (#79);
-2. implement one protocol adapter per supported family (#87 OpenAI-compatible — done in `internal/provider/openaicompat`, proven over local httptest doubles only; #88 Anthropic-compatible and #89 Google/Gemini-compatible remain open);
+2. implement one protocol adapter per supported family (#87 OpenAI-compatible — done in `internal/provider/openaicompat`, proven over local httptest doubles only; #88 Anthropic-compatible — done in `internal/provider/anthropiccompat`, proven over local httptest doubles only; #89 Google/Gemini-compatible remains open);
 3. harden the runtime against configured compatible endpoints, including a shared deterministic compatibility suite;
 4. run opt-in live smoke tests against representative configured providers.
 
