@@ -111,6 +111,15 @@ func New(resolved provider.Resolved, resolver SecretResolver, options Options) (
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ForceAttemptHTTP2 = false
 	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	transport.Proxy = nil
+	// Implicit proxy support is disabled fail-closed. The cloned DefaultTransport
+	// inherits ProxyFromEnvironment, and HTTP_PROXY/HTTPS_PROXY could insert an
+	// opaque infrastructure between Runstead and the configured endpoint (with
+	// downstream retries, fallbacks or route changes) that this single-attempt
+	// route cannot observe or account for. A baseline route that owns its
+	// dispatch stack must never inherit transport behavior from the ambient
+	// environment; explicit proxy support, if ever needed, is future
+	// configuration plus safety evidence, not inherited environment.
 	client.httpClient = &http.Client{
 		Transport: transport,
 		Jar:       nil,
@@ -294,12 +303,6 @@ type nonReplayableReader struct {
 // non-replayable body: Request.GetBody is always nil for this reader type.
 func newModelEffectRequest(ctx context.Context, endpointURL string, payload []byte) (*http.Request, error) {
 	return http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, &nonReplayableReader{Reader: bytes.NewReader(payload)})
-}
-
-// HTTPTransport exposes the adapter-owned dispatch transport for safety tests.
-// It is read-only evidence: callers cannot swap or wrap it.
-func (c *Client) HTTPTransport() *http.Transport {
-	return c.httpClient.Transport.(*http.Transport)
 }
 
 // chatCompletionsURL derives the family endpoint from the validated base URL,

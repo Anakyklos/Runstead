@@ -2,6 +2,8 @@ package openaicompat
 
 import (
 	"context"
+	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/RenyEnnos/Runstead/internal/provider"
@@ -35,7 +37,13 @@ func TestSafeRouteTransportHasNoHiddenRetryPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	transport := client.HTTPTransport()
+	// Package-private inspection: the production surface never exposes this
+	// pointer (see TestNoExportedSurfaceCanMutateOrReplaceTheTransport), so
+	// mutability cannot escape New.
+	transport := client.httpClient.Transport.(*http.Transport)
+	if transport.Proxy != nil {
+		t.Fatal("adapter transport inherits an implicit proxy; ambient HTTP_PROXY/HTTPS_PROXY could insert opaque retry/fallback/routing that this single-attempt route cannot observe")
+	}
 	if transport.ForceAttemptHTTP2 {
 		t.Fatal("adapter transport enables ForceAttemptHTTP2; the stdlib h2 internal retry loop must stay unreachable")
 	}
@@ -58,5 +66,55 @@ func TestSafeRouteTransportHasNoHiddenRetryPath(t *testing.T) {
 	}
 	if request.Body == nil {
 		t.Fatal("model-effect request lost its body; wire contract broken")
+	}
+}
+
+// TestNoExportedSurfaceCanMutateOrReplaceTheTransport pins the third-round
+// review blocker: Client must not export ANY way to read, mutate or replace
+// the adapter-owned dispatch transport (which would let a caller re-open
+// amplification knobs after New while the client keeps announcing
+// SafeRouteSafety). The proof lives in the internal package, where the
+// unexported field itself is inspected instead.
+func TestNoExportedSurfaceCanMutateOrReplaceTheTransport(t *testing.T) {
+	clientType := reflect.TypeOf((*Client)(nil))
+	for i := 0; i < clientType.NumMethod(); i++ {
+		method := clientType.Method(i)
+		if !method.IsExported() {
+			continue
+		}
+		methodType := method.Type
+		for param := 0; param < methodType.NumIn(); param++ {
+			if isMutableTransportType(methodType.In(param)) {
+				t.Fatalf("exported method %s accepts a mutable transport type %v; injection surface must never exist", method.Name, methodType.In(param))
+			}
+		}
+		for result := 0; result < methodType.NumOut(); result++ {
+			if isMutableTransportType(methodType.Out(result)) {
+				t.Fatalf("exported method %s returns a mutable transport type %v; the adapter-owned stack must stay private after New", method.Name, methodType.Out(result))
+			}
+		}
+	}
+	var clientFields reflect.Type
+	clientFields = reflect.TypeOf(Client{})
+	for i := 0; i < clientFields.NumField(); i++ {
+		field := clientFields.Field(i)
+		if field.IsExported() {
+			t.Fatalf("Client exposes exported field %s; a caller could mutate adapter state", field.Name)
+		}
+	}
+}
+
+func isMutableTransportType(typ reflect.Type) bool {
+	switch {
+	case typ == reflect.TypeOf((*http.Transport)(nil)):
+		return true
+	case typ == reflect.TypeOf((*http.Client)(nil)):
+		return true
+	case typ == reflect.TypeOf((*http.RoundTripper)(nil)).Elem():
+		return true
+	case typ.Implements(reflect.TypeOf((*http.RoundTripper)(nil)).Elem()):
+		return true
+	default:
+		return false
 	}
 }
