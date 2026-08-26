@@ -1,15 +1,39 @@
 # Delivery Roadmap
 
-Runstead follows a staged provider strategy:
+Runstead follows a staged provider strategy (decision #86, implemented from #79):
 
-1. prove the agent runtime through OmniRoute;
-2. harden an OmniRoute-backed v0.1;
-3. implement a narrow first-party ChatGPT Web connector;
-4. migrate only after a controlled comparison demonstrates a real advantage.
+1. define the provider-neutral contract: provider identity, protocol family (`openai_compatible`, `anthropic_compatible`, `google_compatible`), configuration and versioned capability profiles with fail-closed resolution (#79);
+2. implement one protocol adapter per supported family (#87 OpenAI-compatible, #88 Anthropic-compatible, #89 Google/Gemini-compatible);
+3. harden the runtime against configured compatible endpoints, including a shared deterministic compatibility suite;
+4. run opt-in live smoke tests against representative configured providers.
+
+Provider identity and protocol family are distinct concepts; official vendors are examples, not privileged dependencies. ChatGPT Web/OmniRoute work is deferred to future plugin/composable-provider tracks and is not on the v0.1 critical path.
 
 Dates are intentionally omitted until the protocol experiment produces evidence. Milestones represent capability gates, not calendar promises.
 
-## Milestone 0 — OmniRoute protocol proof
+## Milestone P0 — Provider contract (issue #79)
+
+**Goal:** represent and validate configurable providers across the three supported protocol families without touching the agent loop.
+
+Deliverables:
+
+- stable operator-configured provider IDs distinct from protocol family;
+- the three-family enum with fail-closed parsing (`internal/provider`);
+- provider configuration: base URL, exact model, non-secret auth reference, strictly necessary non-secret options, config version identity;
+- explicit versioned capability profiles gating execution (text turn, Runstead structured protocol, native tools only when separately proven, streaming, cancellation);
+- RouteSafety as the single executable attempt-safety truth, integrated with configuration resolution;
+- pre-dispatch resolution failing closed on unknown provider/family, incomplete config, missing model/endpoint/capability/auth reference or incompatible route safety;
+- secrets kept outside metadata, errors, traces, contract identity and fixtures.
+
+Exit criteria:
+
+- two provider IDs on the same family resolve through the same contract with no agent-loop branching;
+- all three families are representable through the same boundary;
+- every invalid configuration case fails before dispatch;
+- no hidden retry/fallback/pooling can be declared as safe configuration;
+- existing fake-provider and deterministic runtime tests stay green.
+
+## Milestone 0 — Protocol proof
 
 **Goal:** determine whether ChatGPT Web can follow a strict, recoverable Runstead action contract with useful consistency when reached through OmniRoute.
 
@@ -30,9 +54,9 @@ Exit criteria:
 - failures can be classified from captured evidence;
 - the result is reproducible enough to justify implementing the runtime.
 
-## Milestone 1 — OmniRoute-backed read-only agent loop
+## Milestone 1 — Read-only agent loop (historical: OmniRoute-backed)
 
-**Goal:** build a small Go CLI that can inspect a repository through ChatGPT Web using OmniRoute as the baseline transport.
+**Goal (historical wording):** build a small Go CLI that can inspect a repository through ChatGPT Web using OmniRoute as the then-baseline transport. The implemented runtime is provider-neutral; the capabilities below are the delivered outcome.
 
 Deliverables:
 
@@ -40,8 +64,8 @@ Deliverables:
 - reproducible Docker development environment that remains optional;
 - configuration through flags and environment variables;
 - minimal provider interface and deterministic fake provider;
-- account-scoped ChatGPT Web request governor with rolling budgets and circuit protection;
-- OmniRoute baseline provider adapter;
+- account-scoped provider request governor with rolling budgets and circuit protection;
+- fail-closed baseline provider adapter;
 - action parser and validator;
 - read-only tool registry;
 - bounded agent loop;
@@ -57,7 +81,7 @@ Exit criteria:
 
 ## Milestone 2 — Durable state and recovery
 
-**Goal:** make task progress survive process and remote-session failure while remaining independent of OmniRoute session state.
+**Goal:** make task progress survive process and remote-session failure while remaining independent of any provider session state.
 
 Deliverables:
 
@@ -80,7 +104,7 @@ Exit criteria:
 
 ## Milestone 3 — Safe repository modification
 
-**Goal:** allow ChatGPT Web to modify code while Runstead retains control over side effects.
+**Goal:** allow the configured model to modify code while Runstead retains control over side effects.
 
 Deliverables:
 
@@ -150,9 +174,20 @@ receipts) -> #30 (protected live activation) -> #4 (OmniRoute live provider);
 the deterministic offline core is implemented and the live gate fails closed
 (see [coding-loop.md](coding-loop.md)).
 
-## Milestone 5 — OmniRoute-backed v0.1 hardening
+> **Historical milestones.** Milestones 0 through 4 above were planned under
+> the original ChatGPT Web/OmniRoute bootstrap strategy; Milestone 5 below was
+> reframed for configured compatible endpoints. The provider strategy
+> was rebased on compatibility protocol families (#86/#79): these milestones
+> remain as
+> historical planning provenance, and the deterministic runtime capabilities
+> they describe stay valid, but the OmniRoute/ChatGPT Web transport path is no
+> longer the v0.1 baseline. Active provider work proceeds through Milestone P0
+> (#79) and the family adapters #87/#88/#89; ChatGPT Web/OmniRoute is deferred
+> to future plugin/composable-provider tracks.
 
-**Goal:** demonstrate that the runtime remains dependable under expected failures before adding direct ChatGPT Web transport complexity.
+## Milestone 5 — Runtime hardening on configured providers
+
+**Goal:** demonstrate that the runtime remains dependable under expected failures before adding more transport complexity.
 
 Deliverables:
 
@@ -161,10 +196,10 @@ Deliverables:
 - empty, truncated and malformed-response fixtures;
 - stuck-command termination;
 - duplicate-request protection;
-- installation and OmniRoute configuration documentation;
+- installation and provider configuration documentation;
 - Docker development workflow documentation;
 - stable CLI behavior for the v0.1 surface;
-- OmniRoute-backed end-to-end acceptance scenario.
+- end-to-end acceptance scenario against a configured compatible endpoint.
 
 Exit criteria:
 
@@ -174,51 +209,7 @@ Exit criteria:
 - known limitations are documented;
 - the runtime baseline is stable enough that later transport failures can be isolated from agent-runtime failures.
 
-## Milestone 6 — First-party ChatGPT Web connector
-
-**Goal:** implement a narrow direct ChatGPT Web provider adapter without turning Runstead into a general-purpose router.
-
-Deliverables:
-
-- documented credential-import flow that never collects account passwords;
-- secure local credential-storage decision;
-- session and token lifecycle implementation;
-- browser-compatible transport strategy;
-- ChatGPT Web request construction and SSE decoding;
-- sanitized raw transport traces;
-- precise authentication, challenge, timeout, protocol and upstream error classes;
-- direct-connector integration tests;
-- dedicated container image or helper only if native transport dependencies require it.
-
-Exit criteria:
-
-- the direct adapter can run the same read-only protocol suite used by OmniRoute;
-- credentials are not written to repositories, images, task databases or logs;
-- a failed direct session can be replaced without losing local task state;
-- the direct connector does not introduce a public compatibility API or unrelated provider features.
-
-## Milestone 7 — Provider bake-off and migration decision
-
-**Goal:** compare OmniRoute and the first-party connector under equivalent conditions and choose the default based on evidence.
-
-Deliverables:
-
-- shared benchmark and failure corpus;
-- repeated independent sessions using the same account, model, prompt contract and tasks;
-- comparison of valid-action rate, correction rate, refusal rate, malformed responses, recoverability, latency and diagnostic precision;
-- maintenance and security review;
-- written architecture decision record;
-- migration plan if the direct connector wins;
-- retained OmniRoute compatibility plan or removal rationale.
-
-Exit criteria:
-
-- the decision is based on repeated measurements rather than isolated demos;
-- the direct connector becomes default only with a material and documented advantage;
-- migration does not weaken task recovery, evidence, credential safety or testability;
-- if the direct connector does not win, OmniRoute remains the default without treating the experiment as failure.
-
-## Deferred until after the provider decision
+## Deferred to plugin/composable-provider tracks
 
 - additional web providers such as Qwen or GLM;
 - native tool-calling optimization;
@@ -233,7 +224,35 @@ Exit criteria:
   reconstruction exists; when introduced it must preserve tool-call/result
   pairs, never discard evidence silently, treat model summaries as
   non-authoritative, and keep required evidence identifiers verifiable);
-- a general-purpose OpenAI-compatible gateway.
+- a general-purpose OpenAI-compatible gateway;
+- the first-party ChatGPT Web connector and any OmniRoute-specific live path
+  (historical milestones 6 and 7 document that research; see also
+  [`research/`](research/) for preserved provenance).
+
+## Historical record — ChatGPT Web / OmniRoute milestones (superseded)
+
+The following two milestones were part of the original OmniRoute bootstrap
+strategy. They are superseded by the #86 protocol-family decision and are kept
+here as historical planning evidence only.
+
+**Milestone 6 (historical) — First-party ChatGPT Web connector.** A narrow
+direct ChatGPT Web provider adapter: credential-import flow without account
+passwords, secure local credential storage, session/token lifecycle,
+browser-compatible transport, request construction with SSE decoding,
+sanitized transport traces, precise failure classes and integration tests.
+Exit criteria required running the shared read-only protocol suite, keeping
+credentials out of repositories/images/databases/logs and replacing failed
+sessions without losing local state. Related preserved research:
+[`research/first-party-chatgpt-web-spike.md`](research/first-party-chatgpt-web-spike.md),
+[`research/first-party-chatgpt-web-standalone-spike.md`](research/first-party-chatgpt-web-standalone-spike.md).
+
+**Milestone 7 (historical) — Provider bake-off and migration decision.**
+Compare OmniRoute and the first-party connector under equivalent conditions
+and choose a default based on repeated measurements, with a written
+architecture decision record and a migration plan only on material advantage.
+This bake-off is no longer scheduled: any future ChatGPT Web or OmniRoute use
+arrives as an ordinary endpoint behind one of the supported protocol families
+or as plugin work, never as a privileged core adapter.
 
 ## Milestone governance
 

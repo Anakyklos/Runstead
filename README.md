@@ -2,19 +2,19 @@
 
 Runstead is a local agent runtime that turns model access into durable, controlled and verifiable work.
 
-The first implementation path uses ChatGPT Web through OmniRoute. This is an intentional bootstrap decision: Runstead must first prove its agent loop, action protocol, tools, persistence and verification before assuming ownership of the unstable ChatGPT Web transport layer.
+Runstead is provider-neutral. It supports configurable model providers that implement one of three compatibility protocol families:
 
-After the OmniRoute-backed runtime is reliable, Runstead will develop a first-party ChatGPT Web connector, compare both paths under the same workload and migrate only if the direct connector demonstrates a material reliability or observability advantage.
+- `openai_compatible`;
+- `anthropic_compatible`;
+- `google_compatible`.
+
+Provider identity and protocol family are separate concepts. `provider_id` names one operator-configured endpoint; `protocol_family` names the wire contract it speaks. Official OpenAI, Anthropic and Google endpoints are only examples of those families: they are valid implementations, not privileged architectural dependencies. A new endpoint that sufficiently implements a supported family normally requires configuration plus compatibility evidence, not changes to the agent loop.
 
 > Models may fail, sessions may disappear, providers may change, and transports may be replaced. The work must remain recoverable and inspectable.
 
-## Delivery strategy
-
-### Phase 1 — OmniRoute baseline
+## Provider strategy
 
 ```text
-User / CLI
-    ↓
 Runstead
     ├── agent loop
     ├── action protocol
@@ -23,39 +23,32 @@ Runstead
     ├── durable state
     ├── verification
     └── recovery
-    ↓
-OmniRoute
-    ↓
-ChatGPT Web
+        ↓
+provider-neutral contract (internal/provider)
+        ↓
+┌─────────────────────┬───────────────────────────┬─────────────────────┐
+│ openai_compatible   │ anthropic_compatible      │ google_compatible   │
+└─────────────────────┴───────────────────────────┴─────────────────────┘
+        ↓
+configured provider endpoint (official vendor, gateway, local service
+or third-party inference provider)
 ```
 
-OmniRoute is the initial transport and compatibility layer. Runstead does not trust OmniRoute's emulated native tool calling; it owns a text action protocol and independently verifies every side effect.
+The runtime depends only on the small provider-neutral contract (`provider.Client`, `RouteSafety`, delivery evidence) and on declared/proven capabilities. Protocol adapters are replaceable infrastructure added per family (#87 OpenAI-compatible, #88 Anthropic-compatible, #89 Google/Gemini-compatible). The agent loop never branches on a vendor name or a protocol family.
 
-### Phase 2 — First-party ChatGPT Web connector
+### ChatGPT Web / OmniRoute status
 
-```text
-Runstead Core
-├── provider/omniroute
-└── provider/chatgptweb
-```
-
-The direct connector will own only the ChatGPT Web concerns required by Runstead: credential import, session exchange, browser-compatible transport, request construction, SSE parsing, error classification and sanitized diagnostics.
-
-It will not become a general-purpose router or attempt to reproduce OmniRoute's full provider catalog.
-
-### Phase 3 — Evidence-based migration
-
-The direct connector becomes the default only after an A/B evaluation using the same account, model, protocol, tasks and acceptance criteria. Until then, OmniRoute remains the baseline, compatibility adapter and fallback for development.
+ChatGPT Web and OmniRoute are **out of the v0.1 critical path** and explicitly deferred to future plugin/composable-provider work. OmniRoute may later be used as an ordinary compatible endpoint if it satisfies one of the supported protocol contracts, but it holds no special core status. The historical browser/web research under [`docs/research/`](docs/research/) remains preserved as provenance/reference material only.
 
 ## Core rules
 
 1. **Runstead owns the agent runtime, regardless of transport.**
-2. **OmniRoute is the first transport, not a permanent architectural dependency.**
+2. **Providers are replaceable infrastructure behind a neutral contract; no vendor is privileged.**
 3. **Remote sessions are disposable; local state is authoritative.**
 4. **The model proposes actions; Runstead validates and executes them.**
 5. **No action is complete without evidence from the environment.**
 6. **A failed conversation or provider must not destroy an unfinished task.**
-7. **Generalize only after the ChatGPT Web path is demonstrably reliable.**
+7. **Provider identity and protocol family are distinct; capability is proven, not assumed from naming.**
 8. **Do not replace working infrastructure without measured evidence.**
 
 ## Technology direction
@@ -131,11 +124,11 @@ See [`docs/development.md`](docs/development.md).
 
 ## First-release capabilities
 
-The OmniRoute-backed v0.1 should be able to:
+The provider-neutral v0.1 should be able to:
 
 - accept a development task;
 - inspect a repository;
-- ask ChatGPT Web for structured actions through a Runstead-owned protocol;
+- ask the configured model provider for structured actions through a Runstead-owned protocol;
 - validate and execute approved local tools;
 - edit files safely;
 - run tests and inspect exit codes;
@@ -163,7 +156,7 @@ recipes (test, build, vet, ...) by ID with no generic shell: fixed argv,
 allowlisted environment, bounded output, full process-tree termination on
 timeout/cancellation and structured process evidence.
 
-## Explicit non-goals for the OmniRoute-backed v0.1
+## Explicit non-goals for the provider-neutral v0.1
 
 - multi-agent orchestration;
 - model marketplaces or automatic model routing;
@@ -171,16 +164,14 @@ timeout/cancellation and structured process evidence.
 - vector memory or RAG;
 - graphical interfaces;
 - distributed execution;
-- broad provider compatibility;
+- a universal AI gateway or generic OpenAI-compatible proxy/server;
 - unattended long-running autonomy;
-- a general-purpose replacement for OmniRoute;
-- direct ChatGPT Web credential handling before the runtime baseline is proven.
+- automatic provider/model/key/account fallback, rotation or pooling;
+- ChatGPT Web transport in the critical path (deferred plugin work).
 
 ## Definition of success
 
-A hello-world tool call is not enough. The v0.1 acceptance scenario must complete a real repository task with multiple inspect/edit/test cycles, include at least one recoverable failure, survive process interruption, resume correctly and provide verifiable final evidence through the OmniRoute baseline.
-
-The later direct connector is successful only if it matches this capability and provides measurable improvement without weakening security or maintainability.
+A hello-world tool call is not enough. The v0.1 acceptance scenario must complete a real repository task with multiple inspect/edit/test cycles, include at least one recoverable failure, survive process interruption, resume correctly and provide verifiable final evidence through a configured provider endpoint implementing one of the supported protocol families.
 
 ## Project status
 
@@ -190,17 +181,21 @@ boundary and evidence identifiers (#6), the account-scoped request governor
 with attempt receipts (#21, PR #33), the fail-closed OmniRoute adapter
 scaffold (#28), the bounded agent loop (#7), durable SQLite state (#8),
 resume/recovery (#9), the policy-gated safe write tools (#10) and the bounded
-process runner (#26). `runstead run` executes a deterministic task end to end:
+process runner (#26). The provider strategy has been rebased on compatibility
+protocol families (#79/#86): provider identity, protocol family
+(`openai_compatible`, `anthropic_compatible`, `google_compatible`),
+configuration, versioned capability profiles and fail-closed pre-dispatch
+resolution now exist in `internal/provider`; concrete family adapters are
+#87/#88/#89. `runstead run` executes a deterministic task end to end:
 every model turn is admitted by the account governor, actions are validated
 and executed by the registry (read-only tools plus policy-gated
 `write_file`/`apply_patch` with stale-state protection and operator-declared
 `run_recipe` processes with no generic shell), observations return as
 untrusted data, and a final answer is accepted only when grounded in evidence
-IDs produced during the run. The
-deterministic offline mode replays scripted model responses through the real
-governor and tools (`--scripted FILE`); live OmniRoute execution remains
-disabled until a compatible attempt-receipt producer exists and #30 activates
-it.
+IDs produced during the run. The deterministic offline mode replays scripted
+model responses through the real governor and tools (`--scripted FILE`);
+live execution through any provider remains gated behind its adapter's
+fail-closed preflight and receipt contract.
 
 See [`docs/architecture.md`](docs/architecture.md), [`docs/roadmap.md`](docs/roadmap.md) and [`docs/development.md`](docs/development.md).
 

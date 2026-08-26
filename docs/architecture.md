@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Runstead exists to make ChatGPT Web behave as a dependable local agent by owning the execution contract around the model rather than trusting a provider session, a transport adapter or the model's claims.
+Runstead exists to make model access behave as a dependable local agent by owning the execution contract around the model rather than trusting a provider session, a transport adapter or the model's claims.
 
-The project deliberately separates the **agent runtime** from the **provider transport**. The runtime must become reliable first through OmniRoute. A first-party ChatGPT Web connector is introduced only after the runtime baseline is proven.
+The project deliberately separates the **agent runtime** from the **provider layer**. The runtime depends on a small provider-neutral contract, and concrete transports are configurable endpoints implementing one of three compatibility protocol families (`openai_compatible`, `anthropic_compatible`, `google_compatible`). Official OpenAI, Anthropic and Google services are only examples of those families: they are valid implementations, not privileged architectural dependencies (#86). ChatGPT Web/OmniRoute work is deferred to future plugin/composable-provider tracks.
 
 ## System boundary
 
@@ -20,104 +20,47 @@ The project deliberately separates the **agent runtime** from the **provider tra
 - verification of observable effects;
 - final evidence and auditability.
 
-### Provider adapters own
+### Provider layer owns
 
-- authentication material required by the provider path;
+- provider identity (operator-configured `provider_id`) and protocol family as distinct concepts;
+- configuration resolution that fails closed before any dispatch;
+- authentication material required by the provider path (referenced externally, never persisted);
 - request and response transport;
-- provider-specific request construction;
+- protocol-family-specific request construction;
 - streaming or response decoding;
 - provider error classification;
-- sanitized transport diagnostics.
+- sanitized transport diagnostics;
+- declared/proven capability profiles and route-safety declarations.
 
-Provider adapters must not own task truth, acceptance decisions or local side effects.
+Provider adapters must not own task truth, acceptance decisions or local side effects. The agent loop never branches on a vendor name or a protocol family; family dispatch belongs exclusively to the provider layer.
 
-## Provider transition strategy
+## Provider architecture
 
-### Stage 1 — OmniRoute baseline
+```text
+Runstead runtime
+      |
+provider-neutral contract (internal/provider)
+      |
+protocol adapter (one per supported family)
+  |        |        |
+openai_   anthropic_ google_
+compatible compatible compatible
+      |
+configured provider endpoint
+```
 
-OmniRoute is the first supported adapter because it already exposes ChatGPT Web and lets Runstead validate the higher-risk agent-runtime assumptions without first rebuilding the unofficial web transport.
+The provider-neutral contract (#79) consists of:
 
-The OmniRoute adapter owns:
+- `provider.Client`: one logical completion through governed admission;
+- `provider.RouteSafety`: the executable declaration of attempt/amplification behavior; the single source of truth for attempt safety;
+- delivery evidence (`DeliveryState`, attempt receipts): transport-level proof of what physically happened upstream;
+- `ProtocolFamily`: which compatibility wire contract the endpoint speaks (`openai_compatible`, `anthropic_compatible`, `google_compatible`);
+- `Config` / `Registry.Resolve`: operator-declared endpoint identity, base URL, exact model, non-secret auth reference, non-secret options and config version, resolved fail-closed before any provider code runs;
+- `CapabilityProfile`: an explicit, versioned capability profile (text turn, Runstead structured protocol, native tools only when separately proven, streaming, cancellation, size bounds) plus the endpoint's RouteSafety declaration.
 
-- configurable base URL, API key and model;
-- non-streaming requests initially;
-- fail-closed OmniRoute scaffold; management snapshots are sanity evidence
-  only. The Runstead consumer side of the #29 attempt-receipt contract is
-  merged (PR #33); protected model execution remains disabled until a
-  compatible OmniRoute producer emits authoritative receipts and #30
-  activates the live path;
-- timeouts and cancellation;
-- capture of useful upstream identifiers;
-- classification of transport, authentication, timeout, rate/capacity,
-  account-safety, empty-response and malformed-response failures;
-- optional sanitized rate-limit/resilience telemetry.
+Resolution fails closed on unknown provider ID, unknown protocol family, incomplete configuration, missing mandatory model, invalid endpoint, missing required capability, incompatible RouteSafety and required-but-unconfigured authentication. Capability is proven per endpoint; it is never inferred from the vendor name or the declared family. Credentials are external secret material named only by a non-secret reference; they never enter SQLite state, metadata, traces, contract hashes, fixtures or model context.
 
-Runstead does not depend on OmniRoute's emulated native tool calling. Model output is treated as text and interpreted through a Runstead-owned action protocol.
-
-### Stage 2 — First-party ChatGPT Web connector
-
-After the OmniRoute-backed v0.1 is reliable, Runstead will add `provider/chatgptweb`.
-
-The first-party connector may need to own:
-
-- explicit local credential import without collecting account passwords;
-- secure credential storage or operating-system keyring integration;
-- session-cookie rotation and access-token exchange;
-- ChatGPT Web request requirements and proof material;
-- browser-compatible HTTP/TLS behavior;
-- model-slug discovery or mapping;
-- request construction for the internal conversation endpoint;
-- SSE decoding and final-answer extraction;
-- sanitized raw-response capture for diagnosis;
-- precise failure categories and bounded recovery.
-
-This connector is intentionally narrow. It will not expose a public OpenAI-compatible API, manage many accounts, implement quota routing or reproduce OmniRoute's provider catalog.
-
-### Reverse-engineering input (2026-08-07)
-
-A static audit of OmniRoute's `ChatGptWebExecutor` (release/v3.8.50,
-SHA `976d670ff3a7712df0c695f13095c43eace5e29b`) informs both adapter stages.
-Full findings and evidence: [`research/omniroute-chatgpt-web-executor.md`](research/omniroute-chatgpt-web-executor.md).
-
-Key consequences for this architecture:
-
-- **Conversation-per-request.** OmniRoute starts a fresh Temporary Chat per
-  turn and folds history into the system message. Runstead must not assume
-  conversation continuity through the provider.
-- **Cumulative SSE with echo suppression.** Deltas are diffs of cumulative
-  text; echoes of prior turns are suppressed until the current turn is
-  `in_progress`. This is the reference pattern for Runstead's future stream
-  reconciliation and stale-return prevention.
-- **No retry of the text conversation-model POST inside the web executor.**
-  401/403 clears the token cache and the request fails; account fallback
-  happens above the executor. (Auxiliary image/handoff recovery paths exist
-  upstream but are irrelevant to Runstead's text-only path.) The delivery
-  states (`not_sent` / `sent_confirmed` / `sent_unconfirmed` /
-  `response_started` / `completed`) remain the correct transport-evidence unit
-  for replay safety; they do not create an upstream idempotency guarantee.
-- **Usage from this path is estimated** (`ceil(len/4)`), not real.
-- **Rejected practices:** TLS impersonation, browser-fingerprint mimicry in
-  Sentinel prekeys, page-load warmup, hard-coded frontend build values without
-  a drift probe, silent account fallback, and encryption fail-open (plaintext
-  passthrough / plaintext fallback on cipher failure; only the `enc:v1:`
-  envelope is reference for a future vault). A first-party connector must not
-  reproduce these; the OmniRoute adapter stays the baseline.
-
-### Stage 3 — Bake-off and migration
-
-The OmniRoute and direct adapters must run the same protocol test corpus and end-to-end tasks.
-
-The direct connector becomes the default only if it demonstrates material improvement in one or more of:
-
-- valid action rate;
-- protocol-refusal rate;
-- empty or malformed response rate;
-- recoverability after session failure;
-- diagnostic precision;
-- latency or operational simplicity;
-- maintenance cost.
-
-A direct connector that merely duplicates OmniRoute with similar reliability does not justify migration.
+Concrete HTTP adapters for each family are separate issues (#87 OpenAI-compatible, #88 Anthropic-compatible, #89 Google/Gemini-compatible); this architecture defines only the contract they must implement. The existing OmniRoute adapter remains a fail-closed scaffold behind its own pinned receipt lane until a compatible producer exists; it holds no special architectural status beyond being the first historical adapter.
 
 ## Architectural style
 
@@ -129,8 +72,8 @@ cmd/runstead
 agent loop
     ├── protocol
     ├── provider
-    │   ├── omniroute
-    │   └── chatgptweb     # later milestone
+    │   ├── (contract: family/config/capability/route-safety)
+    │   └── omniroute      # historical fail-closed adapter scaffold
     ├── tools
     ├── executor
     ├── governor
@@ -139,8 +82,8 @@ agent loop
     └── trace
 ```
 
-The `governor` package is the account-protection boundary above both provider
-adapters. It is account-scoped rather than a generic remote-service router: one
+The `governor` package is the account-protection boundary above every provider
+adapter. It is account-scoped rather than a generic remote-service router: one
 FIFO lane admits at most one in-flight provider completion for an account. On a
 legacy single-attempt route, the permit start charges the rolling and task
 ledgers. On a receipt-aware route, start reserves the logical request and
@@ -150,10 +93,9 @@ is still fully accounted, then marks the lane unsafe and blocks later
 admission. Missing or structurally invalid accounting produces a conservative
 uncertain debit and also fails closed. Provider safety metadata and management
 snapshots are diagnostic inputs, not proof of actual attempt count. The
-Runstead consumer side is merged in PR #33, while protected OmniRoute rollout
-remains disabled until a compatible producer emits authoritative receipts and
-#30 activates the live path. See
-[`account-protection.md`](account-protection.md) and
+Runstead consumer side is merged in PR #33; protected live rollout through any
+adapter remains disabled until that adapter produces authoritative receipts.
+See [`account-protection.md`](account-protection.md) and
 [`architecture/attempt-receipts.md`](architecture/attempt-receipts.md).
 
 The governor keeps upstream allowance semantics (#58) separate from
@@ -168,7 +110,7 @@ changing the allowance kind never resets the durable projection.
 
 Packages separate responsibilities, but they do not become services. Internal interfaces are introduced only where real substitution or test isolation is required.
 
-The provider interface should remain small enough to support deterministic fake providers in tests and the two real provider paths without becoming a generic routing framework.
+The provider interface should remain small enough to support deterministic fake providers in tests and one real adapter per supported protocol family without becoming a generic routing framework.
 
 ## Main execution loop
 
@@ -397,7 +339,7 @@ The development environment should:
 - drop unnecessary Linux capabilities and set `no-new-privileges` where supported;
 - retain direct native build and test commands outside Docker.
 
-The later direct ChatGPT Web connector may require a dedicated image or transport helper because browser-compatible TLS behavior can introduce native dependencies. That work must not contaminate the core runtime image before the direct connector milestone.
+A future transport adapter may require a dedicated image or transport helper because unusual TLS or browser-compatible behavior can introduce native dependencies. That work must not contaminate the core runtime image before such an adapter milestone exists.
 
 ## Failure controls
 
