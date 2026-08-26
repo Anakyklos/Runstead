@@ -376,6 +376,57 @@ func TestBaseURLRejectsCredentialBearingComponents(t *testing.T) {
 	}
 }
 
+// Sanitized (and therefore String/GoString) must be intrinsically safe for
+// ANY Config value, including ones that never passed Validate: an endpoint
+// carrying credentials in userinfo/query/fragment is canonicalized so those
+// components can never appear in traces or diagnostics.
+func TestSanitizedIsIntrinsicallySafeForInvalidConfigs(t *testing.T) {
+	for name, baseURL := range map[string]string{
+		"userinfo":    "https://user:secret@example.invalid/v1",
+		"query":       "https://example.invalid/v1?api_key=supersecret",
+		"fragment":    "https://example.invalid/v1#topsecret",
+		"all at once": "https://bob:hunter2@example.invalid/v1?key=abc#frag",
+		"unparseable": "://not a url",
+		"scheme only": "https://",
+	} {
+		config := Config{ProviderID: "leaky-" + strings.ReplaceAll(name, " ", "-"), BaseURL: baseURL}
+		for label, rendered := range map[string]string{
+			"Sanitized": config.Sanitized(),
+			"String":    config.String(),
+			"GoString":  config.GoString(),
+		} {
+			for _, secret := range []string{"secret", "supersecret", "topsecret", "hunter2", "bob:", "api_key=abc"} {
+				if strings.Contains(rendered, secret) {
+					t.Fatalf("%s on %s config leaked %q: %s", label, name, secret, rendered)
+				}
+			}
+		}
+	}
+
+	// A valid endpoint still renders its identifying parts.
+	valid := openAIConfig("valid-render")
+	rendered := valid.Sanitized()
+	if !strings.Contains(rendered, "https://valid-render.example.invalid/v1") {
+		t.Fatalf("a valid endpoint must still be identifiable in sanitized identity: %s", rendered)
+	}
+
+	// An unparseable endpoint reduces to the fixed placeholder instead of
+	// echoing untrusted bytes.
+	if !strings.Contains((Config{BaseURL: "://not a url"}).Sanitized(), "#unparseable-endpoint") {
+		t.Fatal("an unparseable endpoint must render as the fixed placeholder")
+	}
+
+	// Resolution keeps proving the same guarantee end to end.
+	registry, err := NewRegistry(valid)
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+	resolved := mustResolve(t, registry, "valid-render")
+	if !strings.Contains(resolved.ConfigIdentity, "https://valid-render.example.invalid/v1") {
+		t.Fatalf("resolved identity must carry the clean endpoint: %q", resolved.ConfigIdentity)
+	}
+}
+
 func TestSanitizedIdentityNeverContainsSecretMaterial(t *testing.T) {
 	config := openAIConfig("sanitized")
 	config.Options = map[string]string{"api_version": "2024-01-01"}

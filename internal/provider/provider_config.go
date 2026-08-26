@@ -95,10 +95,30 @@ type Config struct {
 	ConfigVersion   string
 }
 
+// sanitizedEndpoint renders the endpoint keeping only its non-secret
+// identifying parts (scheme, host, port, path). It must be intrinsically safe
+// for ANY Config value, including ones that never passed Validate:
+// Sanitized/String/GoString are documented as safe to persist, trace and
+// embed in diagnostics, so they cannot assume validation ran first (#79).
+// Userinfo, query and fragment components are dropped, never transported;
+// an endpoint that does not parse down to scheme/host is reduced to a fixed
+// placeholder instead of echoing untrusted bytes.
+func sanitizedEndpoint(rawBaseURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawBaseURL))
+	if err != nil || parsed.Host == "" {
+		return "#unparseable-endpoint"
+	}
+	safe := url.URL{Scheme: parsed.Scheme, Host: parsed.Host, Path: parsed.Path}
+	return strings.TrimRight(safe.String(), "/")
+}
+
 // Sanitized renders the configuration identity without any secret-bearing
-// content. Options keys are listed but their values are not rendered: option
-// values are untrusted operator input and could accidentally contain
-// credential-shaped strings. Safe to persist, trace or embed in diagnostics.
+// content. It is intrinsically safe for every Config value, valid or not: the
+// endpoint is canonicalized through sanitizedEndpoint (credential-carrying
+// components cannot appear even for configurations that would fail
+// Validate), option keys are listed but their values are never rendered,
+// and authentication appears only as a boolean. Safe to persist, trace or
+// embed in diagnostics.
 func (c Config) Sanitized() string {
 	optionKeys := make([]string, 0, len(c.Options))
 	for key := range c.Options {
@@ -110,8 +130,8 @@ func (c Config) Sanitized() string {
 			optionKeys[j], optionKeys[j-1] = optionKeys[j-1], optionKeys[j]
 		}
 	}
-	return fmt.Sprintf("provider.Config{ProviderID:%q ProtocolFamily:%q BaseURL:%q Model:%q AuthRequirement:%q AuthRef:%t Options:%v ProfileVersion:%q RouteSafety:%#v ConfigVersion:%q}",
-		c.ProviderID, c.ProtocolFamily, c.BaseURL, c.Model, string(c.AuthRequirement), c.Auth != "", optionKeys,
+	return fmt.Sprintf("provider.Config{ProviderID:%q ProtocolFamily:%q Endpoint:%q Model:%q AuthRequirement:%q AuthRef:%t Options:%v ProfileVersion:%q RouteSafety:%#v ConfigVersion:%q}",
+		c.ProviderID, c.ProtocolFamily, sanitizedEndpoint(c.BaseURL), c.Model, string(c.AuthRequirement), c.Auth != "", optionKeys,
 		c.Profile.ProfileVersion, c.Profile.RouteSafety, c.ConfigVersion)
 }
 
