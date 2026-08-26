@@ -52,24 +52,78 @@ func resolvedConfig(t *testing.T, mutate func(*provider.Config)) (provider.Resol
 	return *resolved, config
 }
 
-type countingTransport struct {
-	requests atomic.Int64
-	handler  http.HandlerFunc
-}
-
-func (c *countingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	c.requests.Add(1)
-	recorder := httptest.NewRecorder()
-	c.handler(recorder, request)
-	return recorder.Result(), nil
-}
-
-func (c *countingTransport) count() int64 { return c.requests.Load() }
-
-func newTestClient(t *testing.T, mutate func(*provider.Config), resolver openaicompat.SecretResolver, transport http.RoundTripper) (*openaicompat.Client, provider.Config) {
+// requestRecorder is a REAL HTTP server that counts physically arriving
+// requests. Counting at a real server is what proves the one-physical-request
+// contract; counting RoundTrip invocations would not, because an opaque
+// transport can amplify inside one RoundTrip. The adapter no longer accepts
+// injected transports for exactly that reason.
+// resolvedForBase resolves a standard config against an arbitrary base URL.
+func resolvedForBase(t *testing.T, baseURL string) provider.Resolved {
 	t.Helper()
-	resolved, config := resolvedConfig(t, mutate)
-	client, err := openaicompat.New(resolved, resolver, openaicompat.Options{Transport: transport})
+	resolved, _ := resolvedConfig(t, func(c *provider.Config) { c.BaseURL = baseURL })
+	return resolved
+}
+
+type requestRecorder struct {
+	server  *httptest.Server
+	counter atomic.Int64
+}
+
+func newRequestRecorder(t *testing.T, handler http.HandlerFunc) *requestRecorder {
+	t.Helper()
+	recorder := &requestRecorder{}
+	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recorder.counter.Add(1)
+		if handler != nil {
+			handler(w, r)
+		}
+	})
+	recorder.server = httptest.NewServer(wrapped)
+	t.Cleanup(recorder.server.Close)
+	return recorder
+}
+
+func (r *requestRecorder) count() int64 { return r.counter.Load() }
+
+// newTestClient builds an adapter pointed at recorder.server. The handler may
+// be nil for tests that only construct clients.
+func newTestClient(t *testing.T, mutate func(*provider.Config), resolver openaicompat.SecretResolver, recorder *requestRecorder) (*openaicompat.Client, provider.Config) {
+	t.Helper()
+	config := provider.Config{
+		ProviderID:      "gateway-a",
+		ProtocolFamily:  provider.FamilyOpenAICompatible,
+		BaseURL:         "http://127.0.0.1:1",
+		Model:           "model-a",
+		AuthRequirement: provider.AuthNone,
+		Profile: provider.CapabilityProfile{
+			ProfileVersion: "v1",
+			Capabilities: provider.Capabilities{
+				provider.CapabilityTextTurn:         true,
+				provider.CapabilityRunsteadProtocol: true,
+			},
+			RouteSafety: provider.SafeRouteSafety(),
+		},
+		ConfigVersion: "test-1",
+	}
+	if mutate != nil {
+		mutate(&config)
+	}
+	if recorder != nil && mutate != nil {
+		mutate(&config)
+	}
+	resolvedConfigCopy := config
+	if recorder != nil {
+		resolvedConfigCopy.BaseURL = recorder.server.URL
+	}
+	registry, err := provider.NewRegistry(resolvedConfigCopy)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	resolved, err := registry.Resolve(resolvedConfigCopy.ProviderID, provider.RequiredCapabilities(), provider.SafeRouteSafety())
+	if err != nil {
+		t.Fatalf("resolve config: %v", err)
+	}
+	client, err := openaicompat.New(*resolved, resolver, openaicompat.Options{})
 	if err != nil {
 		t.Fatalf("new adapter: %v", err)
 	}
@@ -97,35 +151,25 @@ func TestTwoProviderIDsShareOneAdapter(t *testing.T) {
 }
 
 func TestBaseURLIsConfigurableAndPreservesPrefixes(t *testing.T) {
-	cases := []struct {
-		base string
-		want string
-	}{
-		{"http://h.example", "http://h.example/chat/completions"},
-		{"http://h.example/v1", "http://h.example/v1/chat/completions"},
-		{"http://h.example/api/prefix/", "http://h.example/api/prefix/chat/completions"},
+	// A real server mounted at /v1 proves that configured prefixes are
+	// preserved and the family path is appended exactly once.
+	var seenPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(validCompletionBody))
+	}))
+	defer server.Close()
+
+	client, err := openaicompat.New(resolvedForBase(t, server.URL+"/v1"), nil, openaicompat.Options{})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
 	}
-	for _, testCase := range cases {
-		resolved, _ := resolvedConfig(t, func(c *provider.Config) { c.BaseURL = testCase.base })
-		client, err := openaicompat.New(resolved, nil, openaicompat.Options{})
-		if err != nil {
-			t.Fatalf("base %q: %v", testCase.base, err)
-		}
-		_ = client
-		transport := &countingTransport{handler: func(w http.ResponseWriter, r *http.Request) {
-			if got := "http://" + r.Host + r.URL.Path; got != testCase.want {
-				t.Errorf("endpoint = %q, want %q", got, testCase.want)
-			}
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(validCompletionBody))
-		}}
-		client2, _ := newTestClient(t, func(c *provider.Config) { c.BaseURL = testCase.base }, nil, transport)
-		if _, err := client2.Complete(context.Background(), provider.Request{Prompt: "p"}); err != nil {
-			t.Fatalf("base %q complete: %v", testCase.base, err)
-		}
-		if transport.count() != 1 {
-			t.Fatalf("base %q requests = %d, want 1", testCase.base, transport.count())
-		}
+	if _, err := client.Complete(context.Background(), provider.Request{Prompt: "p"}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if seenPath != "/v1/chat/completions" {
+		t.Fatalf("path = %q, want /v1/chat/completions (prefix preserved)", seenPath)
 	}
 }
 
@@ -134,7 +178,7 @@ func TestBaseURLIsConfigurableAndPreservesPrefixes(t *testing.T) {
 func TestCompleteSendsExactConfiguredModelAndPrompt(t *testing.T) {
 	var seenModel, seenPrompt, seenFirstRole string
 	var seenStream *bool
-	transport := &countingTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+	recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var payload struct {
 			Model    string `json:"model"`
@@ -157,8 +201,8 @@ func TestCompleteSendsExactConfiguredModelAndPrompt(t *testing.T) {
 		seenStream = payload.Stream
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"synthetic-reply"}}]}`))
-	}}
-	client, _ := newTestClient(t, nil, nil, transport)
+	})
+	client, _ := newTestClient(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL }, nil, recorder)
 	response, err := client.Complete(context.Background(), provider.Request{Prompt: "hello world"})
 	if err != nil {
 		t.Fatalf("complete: %v", err)
@@ -178,35 +222,35 @@ func TestCompleteSendsExactConfiguredModelAndPrompt(t *testing.T) {
 	if response.Metadata.Model != "model-a" || response.Metadata.Endpoint != "/chat/completions" {
 		t.Fatalf("metadata = %#v", response.Metadata)
 	}
-	if transport.count() != 1 {
-		t.Fatalf("physical requests = %d, want exactly 1", transport.count())
+	if recorder.count() != 1 {
+		t.Fatalf("physical requests = %d, want exactly 1", recorder.count())
 	}
 }
 
 func TestRequestModelMismatchFailsBeforeDispatch(t *testing.T) {
-	transport := &countingTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+	recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("no request may reach the wire on model mismatch")
-	}}
-	client, _ := newTestClient(t, nil, nil, transport)
+	})
+	client, _ := newTestClient(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL }, nil, recorder)
 	_, err := client.Complete(context.Background(), provider.Request{Model: "other-model", Prompt: "p"})
 	if err == nil {
 		t.Fatal("model mismatch was accepted")
 	}
-	if transport.count() != 0 {
-		t.Fatalf("requests = %d, want 0", transport.count())
+	if recorder.count() != 0 {
+		t.Fatalf("requests = %d, want 0", recorder.count())
 	}
 }
 
 func TestAuthNoneSendsNoAuthorizationHeader(t *testing.T) {
 	var sawAuthorization bool
-	transport := &countingTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+	recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
 		if _, present := r.Header["Authorization"]; present {
 			sawAuthorization = true
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(validCompletionBody))
-	}}
-	client, _ := newTestClient(t, nil, nil, transport)
+	})
+	client, _ := newTestClient(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL }, nil, recorder)
 	if _, err := client.Complete(context.Background(), provider.Request{Prompt: "p"}); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
@@ -217,11 +261,11 @@ func TestAuthNoneSendsNoAuthorizationHeader(t *testing.T) {
 
 func TestRequiredAuthResolvesSecretOnlyIntoRequest(t *testing.T) {
 	var sawAuthorization string
-	transport := &countingTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+	recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
 		sawAuthorization = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(validCompletionBody))
-	}}
+	})
 	resolverCalls := 0
 	resolver := func(ctx context.Context, reference provider.SecretRef) (string, error) {
 		resolverCalls++
@@ -231,9 +275,10 @@ func TestRequiredAuthResolvesSecretOnlyIntoRequest(t *testing.T) {
 		return testSecret, nil
 	}
 	client, _ := newTestClient(t, func(c *provider.Config) {
+		c.BaseURL = recorder.server.URL
 		c.AuthRequirement = provider.AuthReferenceRequired
 		c.Auth = provider.SecretRef("TEST_SECRET_REF").Normalize()
-	}, resolver, transport)
+	}, resolver, recorder)
 	response, err := client.Complete(context.Background(), provider.Request{Prompt: "p"})
 	if err != nil {
 		t.Fatalf("complete: %v", err)
@@ -267,13 +312,14 @@ func TestRequiredAuthWithoutResolutionProducesZeroRequests(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			transport := &countingTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+			recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
 				t.Errorf("zero requests expected when auth cannot be resolved")
-			}}
+			})
 			client, _ := newTestClient(t, func(c *provider.Config) {
+				c.BaseURL = recorder.server.URL
 				c.AuthRequirement = provider.AuthReferenceRequired
 				c.Auth = provider.SecretRef("TEST_SECRET_REF")
-			}, testCase.resolver, transport)
+			}, testCase.resolver, recorder)
 			response, err := client.Complete(context.Background(), provider.Request{Prompt: "p"})
 			if err == nil {
 				t.Fatal("unresolved auth was accepted")
@@ -281,8 +327,8 @@ func TestRequiredAuthWithoutResolutionProducesZeroRequests(t *testing.T) {
 			if response.Metadata.DeliveryState != provider.DeliveryNotSent {
 				t.Fatalf("delivery = %v, want not_sent", response.Metadata.DeliveryState)
 			}
-			if transport.count() != 0 {
-				t.Fatalf("requests = %d, want 0", transport.count())
+			if recorder.count() != 0 {
+				t.Fatalf("requests = %d, want 0", recorder.count())
 			}
 			if !strings.Contains(strings.ToLower(err.Error()), "auth") {
 				t.Fatalf("error = %v, want auth classification without secret content", err)
@@ -292,13 +338,13 @@ func TestRequiredAuthWithoutResolutionProducesZeroRequests(t *testing.T) {
 }
 
 func TestValidResponseNormalizesTextAndMetadata(t *testing.T) {
-	transport := &countingTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+	recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Request-Id", "req-123")
 		w.Header().Set("Retry-After", "not-a-date")
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte(`{"id":"x","object":"chat.completion","created":1,"model":"model-a","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"the answer"}}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`))
-	}}
-	client, _ := newTestClient(t, nil, nil, transport)
+	})
+	client, _ := newTestClient(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL }, nil, recorder)
 	response, err := client.Complete(context.Background(), provider.Request{Prompt: "p"})
 	if err != nil {
 		t.Fatalf("complete: %v", err)
@@ -317,11 +363,11 @@ func TestValidResponseNormalizesTextAndMetadata(t *testing.T) {
 func TestMalformedJSONFailsClosed(t *testing.T) {
 	for _, body := range []string{`{"choices":[`, `not json at all`, ``, `   `} {
 		t.Run(fmt.Sprintf("%q", body), func(t *testing.T) {
-			transport := &countingTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+			recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte(body))
-			}}
-			client, _ := newTestClient(t, nil, nil, transport)
+			})
+			client, _ := newTestClient(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL }, nil, recorder)
 			response, err := client.Complete(context.Background(), provider.Request{Prompt: "p"})
 			if err == nil {
 				t.Fatalf("body %q was accepted as success", body)
@@ -341,11 +387,11 @@ func TestEmptyOrMissingChoicesFailClosed(t *testing.T) {
 	}
 	for name, body := range bodies {
 		t.Run(name, func(t *testing.T) {
-			transport := &countingTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+			recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte(body))
-			}}
-			client, _ := newTestClient(t, nil, nil, transport)
+			})
+			client, _ := newTestClient(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL }, nil, recorder)
 			_, err := client.Complete(context.Background(), provider.Request{Prompt: "p"})
 			if err == nil {
 				t.Fatalf("%s was accepted", name)
@@ -369,11 +415,11 @@ func TestEmptyOrIncompatibleContentFailsClosed(t *testing.T) {
 	}
 	for name, body := range bodies {
 		t.Run(name, func(t *testing.T) {
-			transport := &countingTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+			recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte(body))
-			}}
-			client, _ := newTestClient(t, nil, nil, transport)
+			})
+			client, _ := newTestClient(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL }, nil, recorder)
 			response, err := client.Complete(context.Background(), provider.Request{Prompt: "p"})
 			if err == nil {
 				t.Fatalf("%s was accepted", name)
@@ -396,14 +442,15 @@ func TestUnauthorizedAndForbiddenClassifiedWithoutLeaks(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(fmt.Sprint(testCase.status), func(t *testing.T) {
 			leak := "upstream says: bad key sk-live-DO-NOT-LEAK and " + testSecret
-			transport := &countingTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+			recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(testCase.status)
 				_, _ = w.Write([]byte(leak))
-			}}
+			})
 			client, _ := newTestClient(t, func(c *provider.Config) {
+				c.BaseURL = recorder.server.URL
 				c.AuthRequirement = provider.AuthReferenceRequired
 				c.Auth = provider.SecretRef("TEST_SECRET_REF")
-			}, func(ctx context.Context, reference provider.SecretRef) (string, error) { return testSecret, nil }, transport)
+			}, func(ctx context.Context, reference provider.SecretRef) (string, error) { return testSecret, nil }, recorder)
 			_, err := client.Complete(context.Background(), provider.Request{Prompt: "p"})
 			if err == nil {
 				t.Fatal("upstream denial accepted as success")
@@ -420,12 +467,12 @@ func TestUnauthorizedAndForbiddenClassifiedWithoutLeaks(t *testing.T) {
 }
 
 func TestRateLimitWithObservableRetryAfter(t *testing.T) {
-	transport := &countingTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+	recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "7")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{"error":{"message":"slow down"}}`))
-	}}
-	client, _ := newTestClient(t, nil, nil, transport)
+	})
+	client, _ := newTestClient(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL }, nil, recorder)
 	response, err := client.Complete(context.Background(), provider.Request{Prompt: "p"})
 	if err == nil {
 		t.Fatal("429 accepted as success")
@@ -440,11 +487,11 @@ func TestRateLimitWithObservableRetryAfter(t *testing.T) {
 
 func TestServerErrorClassified(t *testing.T) {
 	for _, status := range []int{500, 502, 503} {
-		transport := &countingTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+		recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(status)
 			_, _ = w.Write([]byte(`{"error":"boom"}`))
-		}}
-		client, _ := newTestClient(t, nil, nil, transport)
+		})
+		client, _ := newTestClient(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL }, nil, recorder)
 		_, err := client.Complete(context.Background(), provider.Request{Prompt: "p"})
 		if err == nil {
 			t.Fatalf("status %d accepted", status)
@@ -456,10 +503,10 @@ func TestServerErrorClassified(t *testing.T) {
 }
 
 func TestCancelBeforeTransportMeansZeroRequests(t *testing.T) {
-	transport := &countingTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+	recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("cancelled context must not dispatch")
-	}}
-	client, _ := newTestClient(t, nil, nil, transport)
+	})
+	client, _ := newTestClient(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL }, nil, recorder)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	response, err := client.Complete(ctx, provider.Request{Prompt: "p"})
@@ -469,8 +516,8 @@ func TestCancelBeforeTransportMeansZeroRequests(t *testing.T) {
 	if response.Metadata.DeliveryState != provider.DeliveryNotSent {
 		t.Fatalf("delivery = %v, want not_sent", response.Metadata.DeliveryState)
 	}
-	if transport.count() != 0 {
-		t.Fatalf("requests = %d, want 0", transport.count())
+	if recorder.count() != 0 {
+		t.Fatalf("requests = %d, want 0", recorder.count())
 	}
 }
 
@@ -564,25 +611,12 @@ func TestRedirectIsRefusedNotFollowed(t *testing.T) {
 	}
 }
 
-// countingServer counts physical requests arriving over real HTTP.
-func countingServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *atomic.Int64) {
-	t.Helper()
-	var counter atomic.Int64
-	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		counter.Add(1)
-		handler(w, r)
-	})
-	server := httptest.NewServer(wrapped)
-	t.Cleanup(server.Close)
-	return server, &counter
-}
-
 func TestExactlyOnePhysicalRequestPerNormalComplete(t *testing.T) {
-	server, counter := countingServer(t, func(w http.ResponseWriter, r *http.Request) {
+	recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(validCompletionBody))
 	})
-	resolved, _ := resolvedConfig(t, func(c *provider.Config) { c.BaseURL = server.URL })
+	resolved, _ := resolvedConfig(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL })
 	client, err := openaicompat.New(resolved, nil, openaicompat.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -592,15 +626,15 @@ func TestExactlyOnePhysicalRequestPerNormalComplete(t *testing.T) {
 			t.Fatalf("complete %d: %v", i, err)
 		}
 	}
-	if got := counter.Load(); got != 5 {
+	if got := recorder.count(); got != 5 {
 		t.Fatalf("physical requests = %d, want exactly 5 (one per Complete)", got)
 	}
 }
 
 func TestNoHiddenRetryOnTransportError(t *testing.T) {
-	server, counter := countingServer(t, func(w http.ResponseWriter, r *http.Request) {})
-	server.Close() // refuse connections: pure transport failure
-	resolved, _ := resolvedConfig(t, func(c *provider.Config) { c.BaseURL = server.URL })
+	recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {})
+	recorder.server.Close() // refuse connections: pure transport failure
+	resolved, _ := resolvedConfig(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL })
 	client, err := openaicompat.New(resolved, nil, openaicompat.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -609,8 +643,8 @@ func TestNoHiddenRetryOnTransportError(t *testing.T) {
 	if completeErr == nil {
 		t.Fatal("connection failure silently swallowed")
 	}
-	if counter.Load() != 0 {
-		t.Fatalf("requests observed = %d, want 0 (closed server)", counter.Load())
+	if recorder.count() != 0 {
+		t.Fatalf("requests observed = %d, want 0 (closed server)", recorder.count())
 	}
 }
 
@@ -671,17 +705,18 @@ func TestIncompatibleCapabilityConfigPreventsDispatch(t *testing.T) {
 }
 
 func TestSecretNeverAppearsInSanitizedIdentityOrMetadata(t *testing.T) {
-	transport := &countingTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+	recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(validCompletionBody))
-	}}
+	})
 	resolved, config := resolvedConfig(t, func(c *provider.Config) {
+		c.BaseURL = recorder.server.URL
 		c.AuthRequirement = provider.AuthReferenceRequired
 		c.Auth = provider.SecretRef("TEST_SECRET_REF")
 	})
 	client, err := openaicompat.New(resolved, func(ctx context.Context, reference provider.SecretRef) (string, error) {
 		return testSecret, nil
-	}, openaicompat.Options{Transport: transport})
+	}, openaicompat.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

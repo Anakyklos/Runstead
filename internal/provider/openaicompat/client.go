@@ -33,10 +33,15 @@ type SecretResolver func(ctx context.Context, reference provider.SecretRef) (str
 // no secret material: references are resolved through SecretResolver only when
 // AuthReferenceRequired demands it, immediately before the model-effect
 // request is built.
+//
+// There is deliberately NO way to inject an http.Client or RoundTripper. An
+// opaque transport can amplify attempts (retries, fallbacks, fan-out) inside a
+// single RoundTrip call where this adapter cannot observe or account for them,
+// so any injected stack would make the SafeRouteSafety declaration unprovable.
+// The adapter owns the whole dispatch stack; Now exists solely to make time
+// deterministic in tests and cannot amplify requests.
 type Options struct {
-	HTTPClient *http.Client
-	Transport  http.RoundTripper
-	Now        func() time.Time
+	Now func() time.Time
 }
 
 // Client implements provider.Client for any endpoint of the
@@ -83,7 +88,6 @@ func New(resolved provider.Resolved, resolver SecretResolver, options Options) (
 		resolved:    resolved,
 		secret:      resolver,
 		now:         options.Now,
-		httpClient:  nil,
 		maxResponse: defaultResponseLimit,
 	}
 	if bound := resolved.Profile.MaxResponseBytes; bound > 0 {
@@ -92,18 +96,21 @@ func New(resolved provider.Resolved, resolver SecretResolver, options Options) (
 	if options.Now == nil {
 		client.now = time.Now
 	}
-	base := options.HTTPClient
-	if base == nil {
-		base = &http.Client{Transport: options.Transport}
+	// The adapter OWNS the complete dispatch stack. Every knob that could
+	// amplify physical model-effect requests is pinned here:
+	//   - CheckRedirect refuses every redirect, so a 3xx can never become a
+	//     second request without new governor admission;
+	//   - Jar is nil, so no cookie-driven replay;
+	//   - Timeout bounds one attempt; there is no retry wrapper anywhere.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ForceAttemptHTTP2 = true
+	client.httpClient = &http.Client{
+		Transport: transport,
+		Jar:       nil,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
-	// Clone injected clients so the adapter always owns its safety-critical
-	// knobs regardless of what the caller passed in.
-	dispatch := *base
-	dispatch.Jar = nil
-	dispatch.CheckRedirect = func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
-	client.httpClient = &dispatch
 	return client, nil
 }
 

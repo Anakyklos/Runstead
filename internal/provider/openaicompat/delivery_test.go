@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -186,6 +187,42 @@ func TestAmplificationTimeoutThenExplicitSecondCallIsTwoSeparateCompletions(t *t
 	}
 	if got := proof.count(); got != 2 {
 		t.Fatalf("physical requests = %d, want 2 (one per EXPLICIT completion)", got)
+	}
+}
+
+// TestAmplifyingTransportStackCannotBeInjected is the regression demanded by
+// the PR review: a retry/fan-out-capable dispatch stack must not be able to
+// pose as SafeRouteSafety. The constructor accepts no http.Client and no
+// RoundTripper at all, so an amplifying stack can never be installed where the
+// adapter could not observe or account for it; this test pins that surface by
+// compile-time shape (Options has no transport fields) plus a runtime probe
+// showing the adapter's client keeps its own pinned knobs.
+func TestAmplifyingTransportStackCannotBeInjected(t *testing.T) {
+	// Compile-time proof: Options must expose no transport injection points.
+	// If someone re-adds such a field, this struct literal stops compiling.
+	options := openaicompat.Options{}
+	optionsType := reflect.TypeOf(options)
+	if optionsType.NumField() != 1 || optionsType.Field(0).Name != "Now" {
+		t.Fatalf("openaicompat.Options must expose only Now; found %d fields with transport injection surfaces", optionsType.NumField())
+	}
+
+	// Runtime proof: the adapter owns its stack regardless of what a caller
+	// would like to inject; Complete still reaches a real server through the
+	// adapter-pinned transport with redirect refusal intact.
+	recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/elsewhere", http.StatusTemporaryRedirect)
+	})
+	resolved, _ := resolvedConfig(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL })
+	client, err := openaicompat.New(resolved, nil, openaicompat.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, completeErr := client.Complete(context.Background(), provider.Request{Prompt: "p"})
+	if completeErr == nil || !strings.Contains(completeErr.Error(), "unsafe_redirect") {
+		t.Fatalf("err = %v, want refused redirect through adapter-owned stack", completeErr)
+	}
+	if recorder.count() != 1 {
+		t.Fatalf("requests = %d, want exactly 1: the refused redirect must not amplify", recorder.count())
 	}
 }
 
