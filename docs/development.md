@@ -12,7 +12,7 @@ Docker remains optional. The project must continue to support normal native Go c
 - no host installation of Go, `jq`, SQLite tools or test dependencies;
 - isolated module and build caches;
 - easier CI parity;
-- a controlled place for future ChatGPT Web transport dependencies;
+- a controlled place for future provider transport dependencies;
 - disposable protocol experiments.
 
 ## What Docker does not solve
@@ -343,9 +343,7 @@ Credentials must never be:
 - included in fixtures;
 - persisted in shell history through documented examples.
 
-For the OmniRoute stage, inject the API key at runtime through an environment variable or a local secret file excluded from version control.
-
-For the later direct ChatGPT Web connector, prefer operating-system keyring storage for native execution. Container-based direct-connector testing should use a narrowly mounted, read-only secret or ephemeral environment injection. Password-based login automation is out of scope.
+Inject provider credentials at runtime through an environment variable or a local secret file excluded from version control. Provider configuration itself stores only a non-secret secret reference (#79); the referenced material never enters Runstead state. Prefer operating-system keyring storage for native execution where applicable. Password-based login automation is out of scope.
 
 ## File ownership
 
@@ -355,9 +353,9 @@ UID/GID behavior must be tested on the primary Linux development environment. Ro
 
 ## Network policy
 
-The OmniRoute client requires outbound access to the configured OmniRoute endpoint. The development container should use normal bridge networking and should not use host networking unless a concrete local-endpoint requirement cannot be solved through an explicit host gateway configuration.
+Provider adapters require outbound access only to their configured endpoint. The development container should use normal bridge networking and should not use host networking unless a concrete local-endpoint requirement cannot be solved through an explicit host gateway configuration.
 
-Later direct ChatGPT Web work may require outbound access to ChatGPT endpoints and additional transport dependencies. Keep that work in a dedicated layer or image so the core development environment remains understandable.
+Adapters needing unusual transport behavior or extra native dependencies stay in a dedicated layer or image so the core development environment remains understandable.
 
 ## Issue #3 Go foundation
 
