@@ -475,6 +475,82 @@ func TestErrorOutputNeverContainsSecretValues(t *testing.T) {
 	}
 }
 
+// Resolved must propagate the validated non-secret protocol options as a
+// DEFENSIVE COPY (#88). Protocol adapters consume strictly necessary options
+// (for example the Messages-style max_tokens and anthropic-version semantics)
+// without a parallel configuration model; mutating the operator Config after
+// resolve, or the resolved copy, must never affect the other side.
+func TestResolvedOptionsPropagateAsDefensiveCopy(t *testing.T) {
+	config := openAIConfig("options")
+	config.Options = map[string]string{
+		"max_tokens":        "2048",
+		"anthropic_version": "2023-06-01", // scenario value; family is openai here only for the shared contract test
+	}
+	registry, err := NewRegistry(config)
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+	resolved := mustResolve(t, registry, "options")
+
+	if resolved.Options["max_tokens"] != "2048" || resolved.Options["anthropic_version"] != "2023-06-01" {
+		t.Fatalf("resolved options = %v, want propagated values", resolved.Options)
+	}
+	if len(resolved.Options) != 2 {
+		t.Fatalf("resolved options = %v, want exactly the configured pair", resolved.Options)
+	}
+
+	// Mutation after resolve must not leak either way.
+	config.Options["max_tokens"] = "mutated-after-resolve"
+	if resolved.Options["max_tokens"] != "2048" {
+		t.Fatal("resolved options changed after the operator Config mutated; the copy is not defensive")
+	}
+	resolved.Options["max_tokens"] = "mutated-by-adapter"
+	if config.Options["max_tokens"] != "mutated-after-resolve" {
+		t.Fatal("operator Config options changed after the resolved copy mutated; the copy is not defensive")
+	}
+
+	// A second resolve must not observe the adapter-side mutation.
+	second := mustResolve(t, registry, "options")
+	if second.Options["max_tokens"] != "2048" {
+		t.Fatalf("second resolve observed adapter-side mutation: %v", second.Options)
+	}
+}
+
+// Resolved.Options must never carry secret material and must not be able to
+// smuggle credential-shaped values past the closed Config validation: the
+// defensive copy is taken only AFTER Config.Validate refused such values.
+func TestResolvedOptionsStayNonSecretAndValidated(t *testing.T) {
+	config := openAIConfig("options-validated")
+	config.Options = map[string]string{"max_tokens": "1024"}
+	registry, err := NewRegistry(config)
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+	resolved := mustResolve(t, registry, "options-validated")
+	for key, value := range resolved.Options {
+		if looksCredentialShaped(value) {
+			t.Fatalf("resolved option %q carries credential-shaped value %q", key, value)
+		}
+		if strings.TrimSpace(key) == "" {
+			t.Fatal("resolved options contain an empty key")
+		}
+	}
+	if strings.Contains(resolved.ConfigIdentity, "1024") {
+		t.Fatal("option values must never render into the deterministic config identity")
+	}
+
+	// No options configured stays nil, and resolution still succeeds.
+	plain := openAIConfig("options-empty")
+	plainRegistry, regErr := NewRegistry(plain)
+	if regErr != nil {
+		t.Fatalf("NewRegistry failed: %v", regErr)
+	}
+	plainResolved := mustResolve(t, plainRegistry, "options-empty")
+	if plainResolved.Options != nil {
+		t.Fatalf("resolved options = %v, want nil when the operator configured none", plainResolved.Options)
+	}
+}
+
 // 13. The existing fake provider keeps working against the same contract and
 // remains usable as the deterministic offline path.
 func TestFakeProviderContinuesWorking(t *testing.T) {

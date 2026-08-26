@@ -148,8 +148,20 @@ type Resolved struct {
 	Model           string
 	Auth            SecretRef
 	AuthRequirement AuthRequirement
-	Profile         CapabilityProfile
-	ConfigIdentity  string
+	// Options is a DEFENSIVE COPY of the validated non-secret protocol options
+	// from Config.Options. It exists so adapters can consume strictly
+	// necessary, non-secret protocol parameters (for example generation
+	// limits or versioned header semantics that the Messages-style wire
+	// requires and provider.Request does not carry) without a parallel
+	// configuration model. Values are never secret-bearing: Config.Validate
+	// already refused credential-shaped values, and ConfigIdentity never
+	// renders values. Adapters must fail closed on option keys they do not
+	// implement instead of silently ignoring them.
+	Options map[string]string
+	Profile CapabilityProfile
+	// ConfigIdentity is the deterministic sanitized configuration identity
+	// (Config.Sanitized). It never contains option values or secret material.
+	ConfigIdentity string
 }
 
 // Validate checks one provider configuration for internal consistency. It
@@ -246,10 +258,14 @@ type Registry struct {
 }
 
 // NewRegistry builds a registry from operator configurations. Duplicate
-// provider IDs are a configuration error, never a silent overwrite.
+// provider IDs are a configuration error, never a silent overwrite. Each
+// stored configuration is defensively copied: the Options map is never shared
+// with the caller, so later mutation of the operator-side map cannot change
+// what Resolve proves (#79/#88).
 func NewRegistry(configs ...Config) (*Registry, error) {
 	registry := &Registry{configs: make(map[string]Config, len(configs))}
 	for _, config := range configs {
+		config.Options = copyStringMap(config.Options)
 		id := strings.TrimSpace(config.ProviderID)
 		if _, exists := registry.configs[id]; exists {
 			return nil, fmt.Errorf("%w: duplicate provider id %q", ErrInvalidProviderConfig, id)
@@ -313,9 +329,24 @@ func (r *Registry) Resolve(providerID string, required []Capability, safety Rout
 		Model:           model,
 		Auth:            auth,
 		AuthRequirement: config.AuthRequirement,
+		Options:         copyStringMap(config.Options),
 		Profile:         profile,
 		ConfigIdentity:  config.Sanitized(),
 	}, nil
+}
+
+// copyStringMap returns a defensive copy of a string map. The resolved
+// configuration must never share mutable state with the operator's Config, so
+// later mutation of either side is invisible to the other (#88).
+func copyStringMap(source map[string]string) map[string]string {
+	if source == nil {
+		return nil
+	}
+	copied := make(map[string]string, len(source))
+	for key, value := range source {
+		copied[key] = value
+	}
+	return copied
 }
 
 // routeSafetyCompatible reports whether the endpoint's declared route safety
