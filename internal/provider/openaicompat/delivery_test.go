@@ -226,6 +226,35 @@ func TestAmplifyingTransportStackCannotBeInjected(t *testing.T) {
 	}
 }
 
+// TestSafeRouteUsesHTTP11AndCompletesOnce is the external, end-to-end half of
+// the hidden-retry regression (the structural half lives in
+// safe_route_internal_test.go): over the adapter-pinned HTTP/1.1 stack a
+// normal Complete works with exactly one physical request and the response
+// provably arrived over HTTP/1.1, so the h2 retry loop never ran.
+func TestSafeRouteUsesHTTP11AndCompletesOnce(t *testing.T) {
+	var seenProto string
+	recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
+		seenProto = r.Proto
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(validCompletionBody))
+	})
+	resolved, _ := resolvedConfig(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL })
+	client, err := openaicompat.New(resolved, nil, openaicompat.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, completeErr := client.Complete(context.Background(), provider.Request{Prompt: "p"})
+	if completeErr != nil {
+		t.Fatalf("complete over pinned http/1.1 stack: %v", completeErr)
+	}
+	if seenProto != "HTTP/1.1" {
+		t.Fatalf("upstream request protocol = %s, want HTTP/1.1 (h2 must never be negotiated)", seenProto)
+	}
+	if response.Metadata.DeliveryState != provider.DeliveryCompleted || recorder.count() != 1 {
+		t.Fatalf("delivery=%v requests=%d, want completed with exactly one physical request", response.Metadata.DeliveryState, recorder.count())
+	}
+}
+
 func TestAmbiguousTransportErrorIsConservativeNotNotSent(t *testing.T) {
 	resolved, _ := resolvedConfig(t, func(c *provider.Config) { c.BaseURL = "http://127.0.0.1:0" })
 	client, err := openaicompat.New(resolved, nil, openaicompat.Options{})

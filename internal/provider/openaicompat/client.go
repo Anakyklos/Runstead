@@ -1,6 +1,7 @@
 package openaicompat
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -102,8 +103,14 @@ func New(resolved provider.Resolved, resolver SecretResolver, options Options) (
 	//     second request without new governor admission;
 	//   - Jar is nil, so no cookie-driven replay;
 	//   - Timeout bounds one attempt; there is no retry wrapper anywhere.
+	// HTTP/2 is disabled EXPLICITLY and STRUCTURALLY: the stdlib h2 transport
+	// contains an internal request-retry loop (h2_bundle.go, retry <= 6) that
+	// re-emits replayable requests on GOAWAY/REFUSED_STREAM/protocol errors.
+	// One governed Complete must never be able to produce multiple physical
+	// transmissions, so this adapter speaks HTTP/1.1 only.
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ForceAttemptHTTP2 = true
+	transport.ForceAttemptHTTP2 = false
+	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	client.httpClient = &http.Client{
 		Transport: transport,
 		Jar:       nil,
@@ -169,7 +176,7 @@ func (c *Client) Complete(ctx context.Context, request provider.Request) (provid
 	observation := &deliveryObservation{}
 	callCtx = httptrace.WithClientTrace(callCtx, observation.trace())
 
-	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpointURL, strings.NewReader(string(payload)))
+	httpReq, err := newModelEffectRequest(callCtx, endpointURL, payload)
 	if err != nil {
 		return notSent(ErrorConfigRefused, err)
 	}
@@ -272,6 +279,27 @@ func sanitizeHeaderToken(value string) string {
 		}
 	}
 	return value
+}
+
+// nonReplayableReader hides the concrete *bytes.Reader type from the stdlib.
+// http.NewRequestWithContext populates Request.GetBody only for recognized
+// replayable types (*bytes.Reader, *strings.Reader, *bytes.Buffer); wrapped in
+// this plain io.Reader, GetBody stays nil, so no layer below the governor can
+// re-emit the model-effect request from buffered bytes.
+type nonReplayableReader struct {
+	io.Reader
+}
+
+// newModelEffectRequest builds the single POST request with a provably
+// non-replayable body: Request.GetBody is always nil for this reader type.
+func newModelEffectRequest(ctx context.Context, endpointURL string, payload []byte) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, &nonReplayableReader{Reader: bytes.NewReader(payload)})
+}
+
+// HTTPTransport exposes the adapter-owned dispatch transport for safety tests.
+// It is read-only evidence: callers cannot swap or wrap it.
+func (c *Client) HTTPTransport() *http.Transport {
+	return c.httpClient.Transport.(*http.Transport)
 }
 
 // chatCompletionsURL derives the family endpoint from the validated base URL,
