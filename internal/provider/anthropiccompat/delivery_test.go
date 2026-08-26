@@ -120,6 +120,18 @@ func TestAmplificationErrorScenariosNeverFireSecondRequest(t *testing.T) {
 			w.WriteHeader(http.StatusTooManyRequests)
 			_, _ = w.Write([]byte(`{"type":"error","error":{"message":"slow down"}}`))
 		},
+		"413 request too large": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"message":"too large"}}`))
+		},
+		"504 gateway timeout": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusGatewayTimeout)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"message":"timeout"}}`))
+		},
+		"529 overloaded": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(529)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"message":"overloaded"}}`))
+		},
 		"server failure": func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte(`{"type":"error","error":{"message":"boom"}}`))

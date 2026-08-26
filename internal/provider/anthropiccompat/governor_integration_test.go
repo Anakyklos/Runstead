@@ -368,6 +368,96 @@ func TestAnthropicCompatAdapterRateLimitCrossesGovernorBoundaryWithSingleRequest
 	}
 }
 
+// TestAnthropicCompatAdapterRecoveryRelevantStatusesCrossGovernorBoundary
+// proves, through Governor.Execute, that the statuses which influence future
+// retry/cooldown policy decisions (504 timeout_error, 529 overloaded_error,
+// 413 request_too_large) cross the public boundary with their stable adapter
+// classification intact. For every case: exactly one physical request (no
+// automatic retry anywhere), exactly one attempt debited by the governor, the
+// caller-owned OutcomeClassifier sees the typed Kind and maps it to the
+// matching public outcome, and the delivery evidence stays conservative
+// (completed: the error body was fully received; never not_sent).
+func TestAnthropicCompatAdapterRecoveryRelevantStatusesCrossGovernorBoundary(t *testing.T) {
+	cases := []struct {
+		name        string
+		status      int
+		wantKind    anthropiccompat.ErrorKind
+		wantOutcome policy.OutcomeClass
+	}{
+		{"504 gateway timeout", http.StatusGatewayTimeout, anthropiccompat.ErrorTimeout, policy.OutcomeTimeout},
+		{"529 overloaded", 529, anthropiccompat.ErrorRateCapacity, policy.OutcomeRateCapacity},
+		{"413 request too large", http.StatusRequestEntityTooLarge, anthropiccompat.ErrorRequestTooLarge, policy.OutcomeUncertainReached},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			counter := &anthropicCompatCounter{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				counter.mu.Lock()
+				counter.requests++
+				counter.mu.Unlock()
+				w.WriteHeader(testCase.status)
+				fmt.Fprint(w, `{"type":"error","error":{"message":"synthetic"}}`)
+			}))
+			defer server.Close()
+
+			client := newAnthropicCompatAdapter(t, server.URL)
+			config := integrationConfig()
+			governor, err := policy.New(config, policy.Options{})
+			if err != nil {
+				t.Fatalf("policy.New() error = %v", err)
+			}
+
+			var sawKind anthropiccompat.ErrorKind
+			var sawUpstream bool
+			classifier := func(response provider.Response, err error) policy.Outcome {
+				var adapterErr *anthropiccompat.Error
+				if errors.As(err, &adapterErr) {
+					sawKind = adapterErr.Kind
+					sawUpstream = adapterErr.UpstreamReached
+					switch sawKind {
+					case testCase.wantKind:
+						return policy.Outcome{
+							Class:           testCase.wantOutcome,
+							UpstreamReached: adapterErr.UpstreamReached,
+							DeliveryState:   adapterErr.DeliveryState,
+						}
+					}
+				}
+				return policy.Outcome{Class: policy.OutcomeUncertainReached, UpstreamReached: true, DeliveryState: response.Metadata.DeliveryState}
+			}
+
+			result := governor.Execute(context.Background(), policy.AttemptRequest{
+				TaskID:          "task-rec-" + testCase.name,
+				ClientRequestID: "request-rec-" + testCase.name,
+				ModelPool:       "model-pool",
+				ProviderRequest: provider.Request{Model: "model-a", Prompt: "prompt"},
+			}, client, classifier)
+
+			if result.Err == nil {
+				t.Fatal("Execute() err = nil, want the classified upstream error")
+			}
+			if sawKind != testCase.wantKind {
+				t.Fatalf("adapter kind seen by classifier = %q, want %q", sawKind, testCase.wantKind)
+			}
+			if !sawUpstream {
+				t.Fatalf("%s marked UpstreamReached = false, want true", testCase.name)
+			}
+			if result.Completion.Outcome != testCase.wantOutcome {
+				t.Fatalf("completion outcome = %q, want %q", result.Completion.Outcome, testCase.wantOutcome)
+			}
+			if result.Completion.AttemptDebited != 1 {
+				t.Fatalf("attempts debited = %d, want exactly 1", result.Completion.AttemptDebited)
+			}
+			if result.Completion.DeliveryState != provider.DeliveryCompleted {
+				t.Fatalf("delivery state = %s, want completed (error body fully read, conservative evidence)", result.Completion.DeliveryState)
+			}
+			if got := counter.count(); got != 1 {
+				t.Fatalf("physical requests = %d, want exactly 1 on %s (zero automatic retries)", got, testCase.name)
+			}
+		})
+	}
+}
+
 // TestAnthropicCompatAdapterTimeoutCrossesGovernorBoundaryConservatively proves
 // deadline semantics through the public Execute interface: a context timeout
 // mid-flight is classified as OutcomeTimeout by the governor's default

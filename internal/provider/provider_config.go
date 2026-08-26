@@ -275,12 +275,19 @@ func NewRegistry(configs ...Config) (*Registry, error) {
 	return registry, nil
 }
 
-// Config returns the configured definition for providerID.
+// Config returns the configured definition for providerID as a DEFENSIVE
+// COPY: the Options map is copied, so mutating the returned configuration can
+// never change what the registry stores or what a later Resolve proves. The
+// returned value is otherwise the stored configuration (identity, family,
+// endpoint, model and references are immutable value fields anyway); the
+// copy exists because Options is the only mutable map a caller could reach
+// behind ConfigIdentity's back (#88/#96 review).
 func (r *Registry) Config(providerID string) (Config, error) {
 	config, ok := r.configs[strings.TrimSpace(providerID)]
 	if !ok {
 		return Config{}, fmt.Errorf("%w %q", ErrUnknownProvider, providerID)
 	}
+	config.Options = copyStringMap(config.Options)
 	return config, nil
 }
 

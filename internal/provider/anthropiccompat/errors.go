@@ -45,9 +45,11 @@ const (
 	ErrorAuthenticationDenied ErrorKind = "authentication_denied"
 	// ErrorPermissionDenied is an upstream 403 (or 407 proxy denial).
 	ErrorPermissionDenied ErrorKind = "permission_denied"
-	// ErrorRateCapacity is an upstream 429 (rate/quota/capacity).
+	// ErrorRateCapacity is an upstream 429 (rate/quota/capacity) or 529
+	// (Messages-family overloaded/capacity) response.
 	ErrorRateCapacity ErrorKind = "rate_or_capacity"
-	// ErrorTimeout covers context deadlines and transport timeouts.
+	// ErrorTimeout covers context deadlines, transport timeouts and upstream
+	// 504 gateway timeouts.
 	ErrorTimeout ErrorKind = "timeout"
 	// ErrorCancelled covers caller cancellation observed by the adapter.
 	ErrorCancelled ErrorKind = "cancelled"
@@ -74,7 +76,8 @@ const (
 	ErrorRefusal ErrorKind = "refusal"
 	// ErrorResponseTooLarge exceeds the configured response byte bound.
 	ErrorResponseTooLarge ErrorKind = "response_too_large"
-	// ErrorRequestTooLarge exceeds the configured request byte bound.
+	// ErrorRequestTooLarge is an upstream 413 or a request exceeding the
+	// configured request byte bound.
 	ErrorRequestTooLarge ErrorKind = "request_too_large"
 	// ErrorUpstreamServerFailure is an upstream 5xx.
 	ErrorUpstreamServerFailure ErrorKind = "upstream_server_failure"
@@ -182,9 +185,23 @@ func transportError(err error, delivery provider.DeliveryState) *Error {
 	return &Error{Kind: ErrorTransport, DeliveryState: delivery, Cause: err}
 }
 
-// httpError classifies an observed non-2xx status. The body is deliberately
-// not inspected for causes the adapter cannot prove; only the status code and
-// an observably valid Retry-After value are normalized.
+// httpError classifies an observed non-2xx status deterministically by status
+// code, without parsing free message text. The body is deliberately not
+// inspected for causes the adapter cannot prove; only the status code and an
+// observably valid Retry-After value are normalized.
+//
+// The Messages family carries statuses whose recovery semantics differ from a
+// generic 5xx and must stay conservative:
+//   - 413 request_too_large -> request_too_large (feeds request
+//     reconstruction/adaptation, never server retry);
+//   - 504 timeout_error -> timeout (a gateway timeout is a timeout, never a
+//     server-failure retry candidate);
+//   - 529 overloaded_error -> rate_or_capacity (feeds rate/capacity/
+//     cooldown accounting, never blind server retry).
+//
+// DeliveryState is preserved exactly as observed; none of these statuses
+// trigger any retry inside the adapter. Retry remains outside the adapter and
+// under governor authority.
 func httpError(metadata provider.ResponseMetadata, statusCode int) *Error {
 	kind := ErrorUpstreamHTTPFailure
 	switch {
@@ -193,6 +210,14 @@ func httpError(metadata provider.ResponseMetadata, statusCode int) *Error {
 	case statusCode == http.StatusForbidden || statusCode == http.StatusProxyAuthRequired:
 		kind = ErrorPermissionDenied
 	case statusCode == http.StatusTooManyRequests:
+		kind = ErrorRateCapacity
+	case statusCode == http.StatusRequestEntityTooLarge:
+		kind = ErrorRequestTooLarge
+	case statusCode == http.StatusGatewayTimeout:
+		kind = ErrorTimeout
+	case statusCode == 529:
+		// 529 is the Messages-family "overloaded" status: the upstream is at
+		// capacity. It is a quota/capacity signal, classified as such.
 		kind = ErrorRateCapacity
 	case statusCode >= http.StatusInternalServerError:
 		kind = ErrorUpstreamServerFailure

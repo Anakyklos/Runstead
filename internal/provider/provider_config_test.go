@@ -475,6 +475,56 @@ func TestErrorOutputNeverContainsSecretValues(t *testing.T) {
 	}
 }
 
+// Registry.Config must return a DEFENSIVE COPY of Options. The review blocker
+// (#96): the stored Config is returned by value but its Options map would
+// share the backing map, so mutating the returned configuration changed what a
+// later Resolve proved while ConfigIdentity (which never renders option
+// values) stayed identical. This regression proves the registry cannot be
+// silently reconfigured through the object Config() returns.
+func TestRegistryConfigReturnsDefensiveOptionsCopy(t *testing.T) {
+	config := openAIConfig("config-copy")
+	config.Options = map[string]string{
+		"max_tokens":        "2048",
+		"anthropic_version": "2023-06-01",
+	}
+	registry, err := NewRegistry(config)
+	if err != nil {
+		t.Fatalf("NewRegistry failed: %v", err)
+	}
+
+	cfg, err := registry.Config("config-copy")
+	if err != nil {
+		t.Fatalf("Config() failed: %v", err)
+	}
+	if cfg.Options["max_tokens"] != "2048" || cfg.Options["anthropic_version"] != "2023-06-01" {
+		t.Fatalf("Config() options = %v, want the configured pair", cfg.Options)
+	}
+
+	// Mutate the returned configuration extensively: a later Resolve must
+	// observe the ORIGINAL values, never the mutation.
+	cfg.Options["max_tokens"] = "1"
+	cfg.Options["anthropic_version"] = "2020-01-01"
+	cfg.Options["smuggled"] = "should-not-exist"
+	cfg.Options = map[string]string{"replaced": "entirely"}
+
+	resolved := mustResolve(t, registry, "config-copy")
+	if resolved.Options["max_tokens"] != "2048" || resolved.Options["anthropic_version"] != "2023-06-01" {
+		t.Fatalf("Resolve after Config() mutation saw %v, want the original validated pair", resolved.Options)
+	}
+	if len(resolved.Options) != 2 {
+		t.Fatalf("Resolve after Config() mutation saw %v, want exactly the two original options", resolved.Options)
+	}
+
+	// A second Config() must still return the original values too.
+	again, err := registry.Config("config-copy")
+	if err != nil {
+		t.Fatalf("second Config() failed: %v", err)
+	}
+	if again.Options["max_tokens"] != "2048" || again.Options["anthropic_version"] != "2023-06-01" || len(again.Options) != 2 {
+		t.Fatalf("second Config() options = %v, want the pristine configured pair", again.Options)
+	}
+}
+
 // Resolved must propagate the validated non-secret protocol options as a
 // DEFENSIVE COPY (#88). Protocol adapters consume strictly necessary options
 // (for example the Messages-style max_tokens and anthropic-version semantics)

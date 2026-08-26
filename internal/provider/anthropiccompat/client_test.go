@@ -655,6 +655,74 @@ func TestRateLimitWithObservableRetryAfter(t *testing.T) {
 	}
 }
 
+// TestAnthropicStatusClassificationIsDeterministic pins the review blocker:
+// the Messages family carries statuses whose recovery semantics differ from a
+// generic 5xx. They are classified deterministically by status code, never by
+// parsing free message text, with DeliveryState preserved exactly as observed
+// and zero retries (retry remains outside the adapter, under governor
+// authority):
+//   - 413 request_too_large -> request_too_large;
+//   - 504 timeout_error -> timeout;
+//   - 529 overloaded_error -> rate_or_capacity.
+func TestAnthropicStatusClassificationIsDeterministic(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     int
+		wantKind   anthropiccompat.ErrorKind
+		wantStatus int
+	}{
+		{"413 request too large", http.StatusRequestEntityTooLarge, anthropiccompat.ErrorRequestTooLarge, 413},
+		{"504 gateway timeout", http.StatusGatewayTimeout, anthropiccompat.ErrorTimeout, 504},
+		{"529 overloaded", 529, anthropiccompat.ErrorRateCapacity, 529},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			// The body deliberately tries to lie with free text: classification
+			// must come from the status, never from message parsing.
+			recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(testCase.status)
+				_, _ = w.Write([]byte(`{"type":"error","error":{"type":"not_a_hint","message":"synthetic body must be ignored"}}`))
+			})
+			client, _ := newTestClient(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL }, nil, recorder)
+			response, err := client.Complete(context.Background(), provider.Request{Prompt: "p"})
+			if err == nil {
+				t.Fatalf("status %d accepted as success", testCase.status)
+			}
+			var adapterErr *anthropiccompat.Error
+			if !errors.As(err, &adapterErr) {
+				t.Fatalf("err = %T, want sanitized adapter error", err)
+			}
+			if adapterErr.Kind != testCase.wantKind {
+				t.Fatalf("status %d classified as %q, want %q", testCase.status, adapterErr.Kind, testCase.wantKind)
+			}
+			if adapterErr.StatusCode != testCase.wantStatus {
+				t.Fatalf("status %d surfaced as %d, want the observed status", testCase.status, adapterErr.StatusCode)
+			}
+			// The body was fully received: delivery evidence stays completed,
+			// never degraded by the classification.
+			if response.Metadata.DeliveryState != provider.DeliveryCompleted {
+				t.Fatalf("status %d delivery = %v, want completed (body fully read)", testCase.status, response.Metadata.DeliveryState)
+			}
+			if adapterErr.DeliveryState != provider.DeliveryCompleted {
+				t.Fatalf("status %d error delivery = %v, want completed", testCase.status, adapterErr.DeliveryState)
+			}
+			if adapterErr.UpstreamReached != true {
+				t.Fatalf("status %d UpstreamReached = false, want true", testCase.status)
+			}
+			if adapterErr.RetryAfter != 0 {
+				t.Fatalf("status %d RetryAfter = %v, want zero (no retry hint fabricated)", testCase.status, adapterErr.RetryAfter)
+			}
+			// Exactly one physical request: classification is not a retry.
+			if recorder.count() != 1 {
+				t.Fatalf("status %d requests = %d, want exactly 1 with zero automatic retries", testCase.status, recorder.count())
+			}
+			if strings.Contains(fmt.Sprintf("%v", err), "synthetic body") {
+				t.Fatalf("status %d leaked the response body", testCase.status)
+			}
+		})
+	}
+}
+
 func TestServerErrorClassified(t *testing.T) {
 	for _, status := range []int{500, 502, 503} {
 		recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
