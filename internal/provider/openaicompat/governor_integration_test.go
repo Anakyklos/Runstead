@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -34,6 +35,7 @@ type openaiCompatCounter struct {
 	requests int
 	lastPath string
 	lastID   string
+	lastAuth string
 	lastBody map[string]any
 }
 
@@ -43,6 +45,7 @@ func (c *openaiCompatCounter) server() *httptest.Server {
 		c.requests++
 		c.lastPath = r.URL.Path
 		c.lastID = r.Header.Get("X-Runstead-Client-Request-ID")
+		c.lastAuth = r.Header.Get("Authorization")
 		defer r.Body.Close()
 		_ = json.NewDecoder(r.Body).Decode(&c.lastBody)
 		c.mu.Unlock()
@@ -55,6 +58,12 @@ func (c *openaiCompatCounter) count() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.requests
+}
+
+func (c *openaiCompatCounter) authorization() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastAuth
 }
 
 func (c *openaiCompatCounter) snapshot() (string, string) {
@@ -185,5 +194,89 @@ func TestOpenAICompatAdapterRejectedFailClosedOnRouteMismatchWithZeroRequests(t 
 	}
 	if got := counter.count(); got != 0 {
 		t.Fatalf("physical requests = %d, want exactly 0 on fail-closed mismatch", got)
+	}
+}
+
+// TestOpenAICompatAdapterFullPublicPathConfigToWireWithAuthSecret drives the
+// whole public acceptance chain for one completion: provider.Config ->
+// provider.NewRegistry -> Registry.Resolve (capability + route-safety +
+// auth-reference validation) -> openaicompat.New with a SecretResolver ->
+// Governor.Execute against a real server. It proves the secret reference is
+// resolved only at dispatch time, lands on the wire as the Authorization
+// header, and never appears in the config identity or in the execution
+// result/evidence.
+func TestOpenAICompatAdapterFullPublicPathConfigToWireWithAuthSecret(t *testing.T) {
+	counter := &openaiCompatCounter{}
+	server := counter.server()
+	defer server.Close()
+
+	const secretValue = "synthetic-secret-value-not-in-identity"
+	registry, err := provider.NewRegistry(provider.Config{
+		ProviderID:      "gateway-a",
+		ProtocolFamily:  provider.FamilyOpenAICompatible,
+		BaseURL:         server.URL,
+		Model:           "model-a",
+		Auth:            provider.SecretRef("vault://runstead/synthetic"),
+		AuthRequirement: provider.AuthReferenceRequired,
+		Profile: provider.CapabilityProfile{
+			ProfileVersion: "v1",
+			Capabilities: provider.Capabilities{
+				provider.CapabilityTextTurn:         true,
+				provider.CapabilityRunsteadProtocol: true,
+			},
+			RouteSafety: provider.SafeRouteSafety(),
+		},
+		ConfigVersion: "v1",
+	})
+	if err != nil {
+		t.Fatalf("provider.NewRegistry() error = %v", err)
+	}
+
+	resolved, err := registry.Resolve("gateway-a", provider.RequiredCapabilities(), provider.SafeRouteSafety())
+	if err != nil {
+		t.Fatalf("Registry.Resolve() error = %v", err)
+	}
+	if strings.Contains(resolved.ConfigIdentity, secretValue) {
+		t.Fatal("secret value leaked into resolved config identity")
+	}
+	if resolved.Auth != "vault://runstead/synthetic" {
+		t.Fatalf("resolved auth reference = %q, want the non-secret reference", resolved.Auth)
+	}
+
+	client, err := openaicompat.New(*resolved, func(_ context.Context, reference provider.SecretRef) (string, error) {
+		return secretValue, nil
+	}, openaicompat.Options{})
+	if err != nil {
+		t.Fatalf("openaicompat.New() error = %v", err)
+	}
+
+	config := integrationConfig()
+	config.Model = "model-a"
+	governor, err := policy.New(config, policy.Options{})
+	if err != nil {
+		t.Fatalf("policy.New() error = %v", err)
+	}
+
+	result := governor.Execute(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-3",
+		ClientRequestID: "request-3",
+		ModelPool:       "model-pool",
+		ProviderRequest: provider.Request{Model: "model-a", Prompt: "prompt"},
+	}, client, nil)
+
+	if result.Err != nil || result.Completion.Err != nil {
+		t.Fatalf("Execute() errors = %v / %v", result.Err, result.Completion.Err)
+	}
+	if got := result.Response.Text; got != "hello from upstream" {
+		t.Fatalf("Response.Text = %q, want upstream text", got)
+	}
+	if got := counter.count(); got != 1 {
+		t.Fatalf("physical requests = %d, want exactly 1", got)
+	}
+	if got := counter.authorization(); got != "Bearer "+secretValue {
+		t.Fatalf("wire Authorization = %q, want the resolved secret material", got)
+	}
+	if strings.Contains(fmt.Sprintf("%#v", result), secretValue) {
+		t.Fatal("secret value leaked into the execution result/evidence")
 	}
 }
