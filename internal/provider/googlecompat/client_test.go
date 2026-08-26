@@ -622,6 +622,66 @@ func TestFunctionCallShapesFailClosed(t *testing.T) {
 	}
 }
 
+// TestThoughtPartsFailClosed is the #97 review regression for the Part.thought
+// blocker: GenerateContent parts marked thought:true carry reasoning/summary
+// content, never the model's normal completion text. The baseline does not
+// support thought summaries, so any thought part fails closed as an
+// unsupported response format and never enters provider.Response.Text, while
+// explicitly non-thought parts (thought:false, with or without
+// thoughtSignature metadata) remain normal text. thoughtSignature and other
+// unused metadata never leave this package; this is not thinking support.
+func TestThoughtPartsFailClosed(t *testing.T) {
+	unsupportedBodies := map[string]string{
+		"thought then final text": `{"candidates":[{"content":{"parts":[{"thought":true,"text":"internal reasoning summary"},{"text":"final answer"}],"role":"model"},"finishReason":"STOP"}],"promptFeedback":{}}`,
+		"text then thought part":  `{"candidates":[{"content":{"parts":[{"text":"lead-in"},{"thought":true,"text":"retrospective reasoning"}],"role":"model"},"finishReason":"STOP"}],"promptFeedback":{}}`,
+		"thought only":            `{"candidates":[{"content":{"parts":[{"thought":true,"text":"reasoning"}],"role":"model"},"finishReason":"STOP"}],"promptFeedback":{}}`,
+		"thought with signature":  `{"candidates":[{"content":{"parts":[{"thought":true,"text":"reasoning","thoughtSignature":"tok_sig_123"}],"role":"model"},"finishReason":"STOP"}],"promptFeedback":{}}`,
+	}
+	for name, body := range unsupportedBodies {
+		t.Run(name, func(t *testing.T) {
+			recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(body))
+			})
+			client, _ := newTestClient(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL }, nil, recorder)
+			response, err := client.Complete(context.Background(), provider.Request{Prompt: "p"})
+			if err == nil {
+				t.Fatalf("%s was accepted as a normal completion", name)
+			}
+			var adapterErr *googlecompat.Error
+			if !errors.As(err, &adapterErr) || adapterErr.Kind != googlecompat.ErrorUnsupportedResponseFormat {
+				t.Fatalf("%s classified as %v, want unsupported_response_format", name, err)
+			}
+			if response.Text != "" {
+				t.Fatalf("%s leaked text %q; thought content must never become task truth", name, response.Text)
+			}
+			rendered := fmt.Sprintf("%v", err) + fmt.Sprintf("%#v", response)
+			if strings.Contains(rendered, "reasoning") || strings.Contains(rendered, "lead-in") || strings.Contains(rendered, "final answer") || strings.Contains(rendered, "tok_sig_123") {
+				t.Fatalf("%s leaked thought/response content or signature into errors/metadata", name)
+			}
+		})
+	}
+
+	t.Run("explicit non-thought parts remain normal text", func(t *testing.T) {
+		recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"thought":false,"text":"first "},{"text":"second","thoughtSignature":"sig_ignored"}],"role":"model"},"finishReason":"STOP"}],"promptFeedback":{}}`))
+		})
+		client, _ := newTestClient(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL }, nil, recorder)
+		response, err := client.Complete(context.Background(), provider.Request{Prompt: "p"})
+		if err != nil {
+			t.Fatalf("explicit non-thought parts must complete: %v", err)
+		}
+		if response.Text != "first second" {
+			t.Fatalf("text = %q, want ordered concatenation of non-thought parts", response.Text)
+		}
+		rendered := fmt.Sprintf("%#v", response)
+		if strings.Contains(rendered, "sig_ignored") {
+			t.Fatal("thoughtSignature metadata leaked into the response surface")
+		}
+	})
+}
+
 func TestUnauthorizedAndForbiddenClassifiedWithoutLeaks(t *testing.T) {
 	cases := []struct {
 		status int
@@ -878,6 +938,44 @@ func TestRedirectIsRefusedNotFollowed(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsafe_redirect") {
 		t.Fatalf("err = %v, want unsafe_redirect", err)
+	}
+}
+
+// TestRedirectWithTruncatedBodyNeverClaimsCompleted is the #97 review
+// regression for the 3xx delivery-evidence blocker: the redirect path must
+// count the body as fully read ONLY when the read completed without error. The
+// server declares Content-Length 128, sends a few bytes and closes the
+// connection, so the client observes a premature EOF: the delivery state must
+// stay conservative (response_started), NEVER completed, while the redirect
+// itself is still refused with zero replay.
+func TestRedirectWithTruncatedBodyNeverClaimsCompleted(t *testing.T) {
+	recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _ = fmt.Fprintf(conn, "HTTP/1.1 307 Temporary Redirect\r\nLocation: /elsewhere\r\nContent-Length: 128\r\nContent-Type: text/plain\r\n\r\npartial")
+		// The connection closes right after "partial": the declared 128-byte
+		// body is never delivered, so the client read ends in unexpected EOF.
+	})
+	client, _ := newTestClient(t, func(c *provider.Config) { c.BaseURL = recorder.server.URL }, nil, recorder)
+	response, err := client.Complete(context.Background(), provider.Request{Prompt: "p"})
+	if err == nil {
+		t.Fatal("redirect accepted as success")
+	}
+	if !strings.Contains(err.Error(), "unsafe_redirect") {
+		t.Fatalf("err = %v, want unsafe_redirect", err)
+	}
+	if response.Metadata.DeliveryState == provider.DeliveryCompleted {
+		t.Fatal("truncated redirect body claimed completed despite premature EOF")
+	}
+	if response.Metadata.DeliveryState != provider.DeliveryResponseStarted {
+		t.Fatalf("delivery = %v, want response_started (response began but never completed)", response.Metadata.DeliveryState)
+	}
+	if recorder.count() != 1 {
+		t.Fatalf("physical requests = %d, want exactly 1: the refused redirect must not amplify", recorder.count())
 	}
 }
 

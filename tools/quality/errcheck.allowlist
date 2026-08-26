@@ -108,13 +108,12 @@ internal/governor/execute.go:50  admission.Permit.CancelBeforeStart()
 internal/provider/omniroute/client.go:303  defer response.Body.Close()
 internal/provider/omniroute/client_transport.go:96  response.Body.Close()
 
-# Google-compatible adapter (#89): the same reviewed best-effort sites as the
+# Google-compatible adapter (#89): the same reviewed best-effort site as the
 # openai_compatible/anthropic_compatible adapters. The deferred body close is
-# cleanup whose primary path already returns; the bounded ReadAll on a refused
-# redirect discards only the body of a response the adapter already refuses to
-# follow (read completion is derived from byte count, never from the error).
+# cleanup whose primary path already returns. (The redirect-path ReadAll was
+# only a best-effort discard until the #97 review fix; it now binds readErr
+# and is no longer a swallowed error.)
 internal/provider/googlecompat/client.go:229  defer response.Body.Close()
-internal/provider/googlecompat/client.go:238  body, _ := io.ReadAll(io.LimitReader(response.Body, int64(c.maxResponse)+1))
 
 # Deferred transaction rollback uses the standard commit-then-rollback
 # idiom: Commit's error is checked explicitly at each site, and the

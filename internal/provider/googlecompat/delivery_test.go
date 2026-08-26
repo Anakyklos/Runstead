@@ -180,6 +180,10 @@ func TestAmplificationErrorScenariosNeverFireSecondRequest(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"read_file"}}],"role":"model"},"finishReason":"STOP"}],"promptFeedback":{}}`))
 		},
+		"thought part": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"thought":true,"text":"reasoning"},{"text":"final answer"}],"role":"model"},"finishReason":"STOP"}],"promptFeedback":{}}`))
+		},
 	}
 	for name, handler := range scenarios {
 		t.Run(name, func(t *testing.T) {

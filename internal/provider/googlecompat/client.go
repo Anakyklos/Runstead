@@ -232,11 +232,15 @@ func (c *Client) Complete(ctx context.Context, request provider.Request) (provid
 	metadata.DeliveryState = provider.DeliveryResponseStarted
 
 	// A 3xx is refused instead of followed: a second physical request can only
-	// exist after new governor admission.
+	// exist after new governor admission. Delivery evidence stays honest: the
+	// body counts as fully read ONLY when the read completed without error AND
+	// the configured size bound was not exceeded. A read error, premature EOF
+	// or any other uncertainty after the response started preserves a
+	// conservative state (response_started), never completed (#97 review).
 	if statusCode := response.StatusCode; statusCode >= http.StatusMultipleChoices && statusCode < http.StatusBadRequest {
 		locationHash := hashOpaque(response.Header.Get("Location"))
-		body, _ := io.ReadAll(io.LimitReader(response.Body, int64(c.maxResponse)+1))
-		readComplete := len(body) <= c.maxResponse
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, int64(c.maxResponse)+1))
+		readComplete := readErr == nil && len(body) <= c.maxResponse
 		metadata.DeliveryState = observation.stateAfterBody(readComplete)
 		return provider.Response{Metadata: metadata}, unsafeRedirectError(metadata, statusCode, locationHash)
 	}

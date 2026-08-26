@@ -65,10 +65,18 @@ type candidateContent struct {
 // pointer to RawMessage so only a REAL functionCall object counts; an absent
 // or null field stays nil, while any present object is typed evidence that
 // the candidate is a tool-shape response, which this baseline (native tools
-// disabled) can never reinterpret as text.
+// disabled) can never reinterpret as text. Thought is the semantic
+// GenerateContent flag (#97 review): when explicitly true, the part carries
+// reasoning/summary content that the baseline does not support and must never
+// enter provider.Response.Text. The pointer distinguishes absent (normal
+// text part) from explicit false (still a normal text part) from explicit
+// true (thought part, fail closed). thoughtSignature and other unused
+// metadata stay ignored by design and outside task truth; this is not
+// thinking support.
 type part struct {
 	Text         *string          `json:"text"`
 	FunctionCall *json.RawMessage `json:"functionCall"`
+	Thought      *bool            `json:"thought"`
 }
 
 // promptFeedback is the typed prompt-block signal
@@ -148,6 +156,15 @@ func decodeGenerateResponse(body []byte) (string, error) {
 			// A functionCall part (or a part carrying one) can never be
 			// interpreted as text: the response as a whole is not a supported
 			// text-only turn.
+			return "", &Error{Kind: ErrorUnsupportedResponseFormat}
+		}
+		if candidatePart.Thought != nil && *candidatePart.Thought {
+			// A thought part carries reasoning/summary content, never the
+			// model's normal completion text. The baseline does not support
+			// thought summaries, so this fails closed instead of
+			// reinterpreting unknown wire semantics as Runstead task truth.
+			// thoughtSignature and other unused metadata never leave this
+			// package.
 			return "", &Error{Kind: ErrorUnsupportedResponseFormat}
 		}
 		if candidatePart.Text == nil {
