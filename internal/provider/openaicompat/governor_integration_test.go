@@ -351,3 +351,65 @@ func TestOpenAICompatAdapterRateLimitCrossesGovernorBoundaryWithSingleRequest(t 
 		t.Fatalf("physical requests = %d, want exactly 1 on a governed rate-limited attempt", got)
 	}
 }
+
+// TestOpenAICompatAdapterTimeoutCrossesGovernorBoundaryConservatively proves
+// deadline semantics through the public Execute interface: a context timeout
+// mid-flight is classified as OutcomeTimeout by the governor's default
+// classifier, the attempt is debited exactly once, the delivery evidence stays
+// conservative (never degraded to not_sent: the request left this process),
+// and the upstream saw exactly one physical request with zero retries.
+func TestOpenAICompatAdapterTimeoutCrossesGovernorBoundaryConservatively(t *testing.T) {
+	counter := &openaiCompatCounter{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		counter.mu.Lock()
+		counter.requests++
+		counter.mu.Unlock()
+		// The client returns at its own 300ms deadline; the upstream connection
+		// lingers (stdlib transport behavior with a non-empty body, observed via
+		// probe: the request fully left this process and no second request is
+		// ever emitted). The 2s fallback bounds this test while still proving
+		// the client-side deadline contract.
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	defer server.Close()
+
+	client := newOpenAICompatAdapter(t, server.URL)
+
+	config := integrationConfig()
+	governor, err := policy.New(config, policy.Options{})
+	if err != nil {
+		t.Fatalf("policy.New() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	result := governor.Execute(ctx, policy.AttemptRequest{
+		TaskID:          "task-5",
+		ClientRequestID: "request-5",
+		ModelPool:       "model-pool",
+		ProviderRequest: provider.Request{Model: "model-a", Prompt: "prompt"},
+	}, client, nil)
+
+	if result.Err == nil {
+		t.Fatal("Execute() err = nil, want the deadline classification")
+	}
+	if result.Completion.Outcome != policy.OutcomeTimeout {
+		t.Fatalf("completion outcome = %q, want timeout", result.Completion.Outcome)
+	}
+	if result.Completion.AttemptDebited != 1 {
+		t.Fatalf("attempts debited = %d, want exactly 1", result.Completion.AttemptDebited)
+	}
+	state := result.Completion.DeliveryState
+	if state == provider.DeliveryNotSent {
+		t.Fatal("post-dispatch timeout claimed not_sent; delivery evidence must stay conservative at the governor boundary")
+	}
+	if state != provider.DeliverySentConfirmed && state != provider.DeliverySentUnconfirmed && state != provider.DeliveryResponseStarted {
+		t.Fatalf("delivery = %s, want a conservative sent/response state", state)
+	}
+	if got := counter.count(); got != 1 {
+		t.Fatalf("physical requests = %d, want exactly 1 on a governed timeout (zero retries)", got)
+	}
+}
