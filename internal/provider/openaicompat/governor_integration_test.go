@@ -1,0 +1,189 @@
+package openaicompat_test
+
+// Integration-boundary validation: the real OpenAI-compatible adapter (issue
+// #87) driven through the governor's public Execute interface against a real
+// HTTP server. This is the acceptance seam the adapter will live behind, so
+// it must prove, end to end:
+//
+//  1. a SafeRouteSafety policy admits the adapter's declared route and the
+//     completion returns the upstream text with exactly ONE physical request
+//     (single-attempt accounting as announced);
+//  2. policy/route mismatch fails closed at the governor boundary with zero
+//     physical requests (the adapter's SafeRouteSafety() must be compared,
+//     not trusted by convention);
+//  3. the governor passes its own ClientRequestID through to the adapter's
+//     wire header (correlation survives the boundary).
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"testing"
+	"time"
+
+	policy "github.com/RenyEnnos/Runstead/internal/governor"
+	"github.com/RenyEnnos/Runstead/internal/provider"
+	"github.com/RenyEnnos/Runstead/internal/provider/openaicompat"
+)
+
+type openaiCompatCounter struct {
+	mu       sync.Mutex
+	requests int
+	lastPath string
+	lastID   string
+	lastBody map[string]any
+}
+
+func (c *openaiCompatCounter) server() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c.mu.Lock()
+		c.requests++
+		c.lastPath = r.URL.Path
+		c.lastID = r.Header.Get("X-Runstead-Client-Request-ID")
+		defer r.Body.Close()
+		_ = json.NewDecoder(r.Body).Decode(&c.lastBody)
+		c.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chatcmpl-integration-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hello from upstream"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`)
+	}))
+}
+
+func (c *openaiCompatCounter) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.requests
+}
+
+func (c *openaiCompatCounter) snapshot() (string, string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastPath, c.lastID
+}
+
+func newOpenAICompatAdapter(t *testing.T, baseURL string) *openaicompat.Client {
+	t.Helper()
+	client, err := openaicompat.New(provider.Resolved{
+		ProviderID:      "gateway-a",
+		ProtocolFamily:  provider.FamilyOpenAICompatible,
+		BaseURL:         baseURL,
+		Model:           "model-a",
+		AuthRequirement: provider.AuthNone,
+		Profile: provider.CapabilityProfile{
+			ProfileVersion: "v1",
+			RouteSafety:    provider.SafeRouteSafety(),
+		},
+		ConfigIdentity: "identity",
+	}, nil, openaicompat.Options{})
+	if err != nil {
+		t.Fatalf("openaicompat.New() error = %v", err)
+	}
+	return client
+}
+
+// integrationConfig mirrors fastConfig from the governor test package: an
+// instant single-attempt policy that passes Config.Validate without pacing
+// delays between scenarios.
+func integrationConfig() policy.Config {
+	config := policy.DefaultInstantConfig("policy-account-1", "gateway-a", "model-pool", provider.SafeRouteSafety())
+	config.MinimumStartInterval = time.Nanosecond
+	config.Rolling3h = 100
+	config.Rolling1h = 90
+	config.Rolling10m = 80
+	config.ManualReserve = 10
+	config.TaskBudget = 4
+	config.RetryBudget = 2
+	return config
+}
+
+func TestOpenAICompatAdapterServesGovernorExecuteWithExactlyOnePhysicalRequest(t *testing.T) {
+	counter := &openaiCompatCounter{}
+	server := counter.server()
+	defer server.Close()
+
+	client := newOpenAICompatAdapter(t, server.URL)
+
+	config := integrationConfig()
+	config.Model = "model-a"
+	governor, err := policy.New(config, policy.Options{})
+	if err != nil {
+		t.Fatalf("policy.New() error = %v", err)
+	}
+
+	result := governor.Execute(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-1",
+		ClientRequestID: "request-1",
+		ModelPool:       "model-pool",
+		ProviderRequest: provider.Request{Model: "model-a", Prompt: "prompt"},
+	}, client, nil)
+
+	if result.Err != nil {
+		t.Fatalf("Execute() err = %v", result.Err)
+	}
+	if result.Completion.Err != nil {
+		t.Fatalf("Execute() completion err = %v", result.Completion.Err)
+	}
+	if !result.Admission.Admitted() {
+		t.Fatalf("Execute() admission = %#v, want admitted", result.Admission)
+	}
+	if got := result.Response.Text; got != "hello from upstream" {
+		t.Fatalf("Response.Text = %q, want upstream text", got)
+	}
+	if got := result.Completion.DeliveryState; got != provider.DeliveryCompleted {
+		t.Fatalf("DeliveryState = %s, want completed", got)
+	}
+	if got := counter.count(); got != 1 {
+		t.Fatalf("physical requests = %d, want exactly 1", got)
+	}
+
+	path, id := counter.snapshot()
+	if path != "/chat/completions" {
+		t.Fatalf("wire path = %q, want /chat/completions", path)
+	}
+	if id != "request-1" {
+		t.Fatalf("wire client request ID = %q, want governor-issued request-1", id)
+	}
+}
+
+func TestOpenAICompatAdapterRejectedFailClosedOnRouteMismatchWithZeroRequests(t *testing.T) {
+	counter := &openaiCompatCounter{}
+	server := counter.server()
+	defer server.Close()
+
+	client := newOpenAICompatAdapter(t, server.URL)
+
+	// A receipt-aware policy is a valid governor config, but this adapter
+	// declares/executes single-attempt safe-route semantics. The boundary
+	// must refuse admission on the declaration mismatch before any request
+	// can leave this process.
+	config := integrationConfig()
+	config.Model = "concrete-model"
+	config.RequireSingleAttempt = false
+	config.RequireAttemptReceipts = true
+	config.AttemptProviderID = "gateway-a"
+	config.AccountLaneHash = "lane"
+	config.RouteSafety = provider.ReceiptRouteSafety()
+	governor, err := policy.New(config, policy.Options{})
+	if err != nil {
+		t.Fatalf("policy.New() error = %v", err)
+	}
+
+	result := governor.Execute(context.Background(), policy.AttemptRequest{
+		TaskID:          "task-2",
+		ClientRequestID: "request-2",
+		ModelPool:       "model-pool",
+		ProviderRequest: provider.Request{Model: "concrete-model", Prompt: "prompt"},
+	}, client, nil)
+
+	if result.Admission.Code != policy.AdmissionUnsafeProviderAmplification {
+		t.Fatalf("admission = %#v, want unsafe_provider_amplification", result.Admission)
+	}
+	if result.Admission.Err == nil {
+		t.Fatal("admission err = nil, want fail-closed route mismatch error")
+	}
+	if got := counter.count(); got != 0 {
+		t.Fatalf("physical requests = %d, want exactly 0 on fail-closed mismatch", got)
+	}
+}
