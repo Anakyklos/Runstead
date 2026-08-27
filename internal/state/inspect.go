@@ -259,6 +259,8 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 		}
 	}
 
+	renderOperationalProfile(ctx, s, &builder, ProviderIdentityFromConfigSnapshot(task.ConfigJSON))
+
 	builder.WriteString("\nProvider attempt receipts:\n")
 	if len(receipts) == 0 {
 		builder.WriteString("  (none)\n")
@@ -1061,5 +1063,53 @@ func ProviderIdentityFromConfigSnapshot(configJSON string) ProviderIdentitySnaps
 		ConfigIdentity: readString("provider_config_identity"),
 		ProfileVersion: readString("provider_profile_version"),
 		AdapterVersion: readString("provider_adapter_version"),
+	}
+}
+
+// renderOperationalProfile explains the durable operational profile (if any)
+// of the task's configured provider endpoint, without secrets. Values whose
+// provenance is absent stay explicitly unknown; nothing is guessed. Evidence
+// references are shown only in their sanitized form.
+func renderOperationalProfile(ctx context.Context, store *Store, builder *strings.Builder, snapshot ProviderIdentitySnapshot) {
+	if snapshot.ProviderID == "" {
+		// The task did not run through a configured provider endpoint.
+		return
+	}
+	builder.WriteString("\nOperational profile:\n")
+	identity := provider.Identity{
+		ProviderID:     snapshot.ProviderID,
+		ProtocolFamily: provider.ProtocolFamily(snapshot.ProtocolFamily),
+		Model:          snapshot.Model,
+		ConfigIdentity: snapshot.ConfigIdentity,
+		ProfileVersion: snapshot.ProfileVersion,
+		AdapterVersion: snapshot.AdapterVersion,
+	}
+	profile, err := store.LoadOperationalProfile(ctx, identity)
+	if err != nil {
+		builder.WriteString("  unavailable: " + Redact(err.Error()) + "\n")
+		return
+	}
+	if profile == nil || len(profile.Values) == 0 {
+		builder.WriteString("  (no operational evidence; every bound is unknown)\n")
+		return
+	}
+	fmt.Fprintf(builder, "  provider_id=%s\n", profile.ProviderID)
+	fmt.Fprintf(builder, "  protocol_family=%s\n", profile.ProtocolFamily)
+	fmt.Fprintf(builder, "  model=%s\n", profile.Model)
+	fmt.Fprintf(builder, "  config_identity=%s\n", profile.ConfigIdentity)
+	fmt.Fprintf(builder, "  profile_version=%s\n", profile.ProfileVersion)
+	for _, field := range provider.AllProfileFields {
+		value, exists := profile.Values[field]
+		if !exists {
+			fmt.Fprintf(builder, "  %s: unknown\n", field)
+			continue
+		}
+		fmt.Fprintf(builder, "  %s: value=%d provenance=%s\n", field, value.Value, value.Provenance)
+		if value.EvidenceRef != "" {
+			fmt.Fprintf(builder, "    evidence_ref=%s\n", value.EvidenceRef)
+		}
+		if value.UpdatedAt != "" {
+			fmt.Fprintf(builder, "    updated_at=%s\n", value.UpdatedAt)
+		}
 	}
 }
