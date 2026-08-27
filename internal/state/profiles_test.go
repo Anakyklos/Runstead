@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,12 +204,13 @@ func TestOperationalProfileFailClosed(t *testing.T) {
 	if _, err := store.LoadOperationalProfile(ctx, identity); err == nil {
 		t.Fatalf("invalid provenance row must fail closed")
 	}
-	// Restore and corrupt differently.
-	if _, err := store.db.ExecContext(ctx, `UPDATE provider_operational_profiles SET value = 999999999 WHERE field = 'max_request_bytes'`); err != nil {
+	// Restore and corrupt differently: a persisted row whose value is
+	// non-positive (zero/unknown representation violation) fails closed.
+	if _, err := store.db.ExecContext(ctx, `UPDATE provider_operational_profiles SET value = 0 WHERE field = 'max_request_bytes'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.LoadOperationalProfile(ctx, identity); err == nil {
-		t.Fatalf("over-cap row must fail closed")
+		t.Fatalf("non-positive row must fail closed")
 	}
 	// Restore and corrupt the identity/key binding.
 	if _, err := store.db.ExecContext(ctx, `UPDATE provider_operational_profiles SET config_identity = 'provider.Config{...other...}'`); err != nil {
@@ -344,5 +346,122 @@ func TestRenderInspectWithoutConfiguredProviderRendersNoProfile(t *testing.T) {
 	}
 	if strings.Contains(rendered.String(), "Operational profile:") {
 		t.Fatalf("legacy lane must not render an operational profile section:\n%s", rendered.String())
+	}
+}
+
+// applyObservedThroughDurableBoundary is the legitimate way the runtime (and
+// tests) feed a specific produced observation into the durable profile.
+func applyObservedThroughDurableBoundary(t *testing.T, store *Store, identity provider.Identity, field provider.ProfileField, value int64, evidence string) {
+	t.Helper()
+	if _, err := store.ApplyOperationalProfileUpdates(context.Background(), identity, nil, []provider.ProfileUpdate{{
+		Field: field, Value: value, Provenance: provider.ProvenanceObserved, EvidenceRef: evidence,
+	}}); err != nil {
+		t.Fatalf("ApplyOperationalProfileUpdates(observed): %v", err)
+	}
+}
+
+// TestOperationalProfileUpdatesMonotonicAcrossReruns is the #91-review
+// regression: persisted configured=8000, tightened to observed=2048, then
+// re-running the SAME configured bound (8000) must leave the field at
+// 2048/observed, and a restart must preserve the property.
+func TestOperationalProfileUpdatesMonotonicAcrossReruns(t *testing.T) {
+	identity := testProfileIdentity()
+	ctx := context.Background()
+
+	// 1) persist configured=8000.
+	store := openTestStore(t)
+	profile, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldMaxRequestBytes, Value: 8000, Provenance: provider.ProvenanceConfigured,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := profile.Effective(provider.FieldMaxRequestBytes); v.Value != 8000 || v.Provenance != provider.ProvenanceConfigured {
+		t.Fatalf("configured=8000 not persisted: %+v", v)
+	}
+	// 2) tighten through the durable boundary to observed=2048.
+	applyObservedThroughDurableBoundary(t, store, identity, provider.FieldMaxRequestBytes, 2048, "obs-000001")
+	loaded, err := store.LoadOperationalProfile(ctx, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := loaded.Effective(provider.FieldMaxRequestBytes); v.Value != 2048 || v.Provenance != provider.ProvenanceObserved {
+		t.Fatalf("observed=2048 not persisted: %+v", v)
+	}
+	// 3) re-run with the SAME configured bound (replay).
+	replayed, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldMaxRequestBytes, Value: 8000, Provenance: provider.ProvenanceConfigured,
+	}})
+	if err != nil {
+		t.Fatalf("configured replay must be a benign no-op, got error: %v", err)
+	}
+	if replayed == nil {
+		t.Fatalf("replay must still return the profile")
+	}
+	if v := replayed.Effective(provider.FieldMaxRequestBytes); v.Value != 2048 || v.Provenance != provider.ProvenanceObserved {
+		t.Fatalf("configured replay undid the observed tightening: %+v", v)
+	}
+	// 4) restart does not alter the property: reopen across a real SQLite
+	// file is covered by TestOperationalProfileRestartPreservesWithoutProviderCalls
+	// (same persistence path); here we repeat the monotonic assertion through
+	// a fresh Load of the same durable store.
+	again, err := store.LoadOperationalProfile(ctx, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := again.Effective(provider.FieldMaxRequestBytes); v.Value != 2048 || v.Provenance != provider.ProvenanceObserved {
+		t.Fatalf("property lost after reload: %+v", v)
+	}
+}
+
+// TestOperationalProfileUpdatesCooldownDirection is the #91-review
+// regression at the durable boundary: Retry-After 60s over configured 30s is
+// accepted as conservative tightening; a 10s observation never weakens it.
+func TestOperationalProfileUpdatesCooldownDirection(t *testing.T) {
+	identity := testProfileIdentity()
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldCooldownMillis, Value: 30000, Provenance: provider.ProvenanceConfigured,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	// Retry-After 60s -> accepted (higher is conservative).
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldCooldownMillis, Value: 60000, Provenance: provider.ProvenanceObserved, EvidenceRef: "obs-retry-after",
+	}}); err != nil {
+		t.Fatalf("cooldown 30s -> observed 60s must be accepted: %v", err)
+	}
+	// Observation 10s -> refused (would weaken).
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldCooldownMillis, Value: 10000, Provenance: provider.ProvenanceObserved, EvidenceRef: "obs-faster",
+	}}); !errors.Is(err, provider.ErrObservedNotConservative) {
+		t.Fatalf("cooldown weakening must be refused, got %v", err)
+	}
+	loaded, err := store.LoadOperationalProfile(ctx, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := loaded.Effective(provider.FieldCooldownMillis); v.Value != 60000 || v.Provenance != provider.ProvenanceObserved {
+		t.Fatalf("cooldown weakened without authority: %+v", v)
+	}
+}
+
+// TestZeroAndNegativeUpdatesRefusedAtDurableBoundary proves the single
+// zero/unknown representation holds at the store boundary too.
+func TestZeroAndNegativeUpdatesRefusedAtDurableBoundary(t *testing.T) {
+	identity := testProfileIdentity()
+	ctx := context.Background()
+	store := openTestStore(t)
+	for _, update := range []provider.ProfileUpdate{
+		{Field: provider.FieldMaxRequestBytes, Value: 0, Provenance: provider.ProvenanceConfigured},
+		{Field: provider.FieldMaxRequestBytes, Value: -5, Provenance: provider.ProvenanceConfigured},
+		{Field: provider.FieldCooldownMillis, Value: 0, Provenance: provider.ProvenanceObserved, EvidenceRef: "obs-000001"},
+		{Field: provider.FieldTimeoutMillis, Value: 0, Provenance: provider.ProvenanceAuthoritative, EvidenceRef: "verif-000001"},
+	} {
+		if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{update}); err == nil {
+			t.Fatalf("non-positive update %+v must fail closed at the durable boundary", update)
+		}
 	}
 }

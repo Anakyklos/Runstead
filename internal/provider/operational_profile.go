@@ -6,19 +6,21 @@ package provider
 // METADATA only: it is not task truth, not policy, not approval, not retry
 // authority, not verifier state and never model-controlled state.
 //
-// Guarantees enforced by the update rules (OperationalProfile.Apply):
-//   - evidence can make the runtime automatically MORE conservative
-//     (observed evidence may tighten an effective value, never raise it);
-//   - ordinary successful requests NEVER raise a hard ceiling, concurrency
-//     ceiling, rate envelope, context/output limit or any bound;
-//   - raising a value above the currently known effective value for the same
-//     unchanged identity requires operator configuration or an explicitly
-//     typed authoritative update, and is always bounded by Runstead hard caps;
-//   - unknown stays unknown and is never fabricated into information.
+// Guarantees enforced by the update rules (ApplyFieldValue):
+//   - evidence can make the runtime automatically MORE conservative, in the
+//     explicit per-field safety direction (FieldSafetyDirection); ordinary
+//     successful observations NEVER raise a ceiling or weaken a bound;
+//   - raising/weakening a value for the same unchanged identity requires
+//     operator configuration or an explicitly typed authoritative update;
+//   - unknown stays unknown (zero value / absent row) and is never
+//     fabricated into information; a value of zero is refused for every
+//     writable provenance.
 //
 // The profile cannot execute retries, cannot grant admission, cannot change
 // provider/model/fallback and never contains credentials, prompts or private
-// response bodies.
+// response bodies. The profile defines NO admission policy of its own: it
+// represents values with provenance and lets the governor/adapters enforce
+// the runtime's existing contracts.
 
 import (
 	"crypto/sha256"
@@ -38,10 +40,12 @@ const ProfileVersion = "v1"
 // without parsing text.
 var ErrProfileInvalid = errors.New("invalid operational profile")
 
-// ErrObservedCannotRaise is returned when observed evidence tries to raise
-// an effective value: ordinary observations can only tighten or fill
-// unknown, never increase a ceiling (#91).
-var ErrObservedCannotRaise = errors.New("observed evidence cannot raise an effective value")
+// ErrObservedNotConservative is returned when observed evidence would move a
+// field AWAY from its conservative direction (raising a lower-is-conservative
+// bound, or lowering a higher-is-conservative bound) or when a field has no
+// defined automatic safety direction: ordinary observations can only tighten
+// or fill unknown (#91/#92).
+var ErrObservedNotConservative = errors.New("observed evidence is not conservative for this field")
 
 // ErrProfileReplayUndo is returned when a configured-replay update (the same
 // unchanged identity re-supplying its declared bounds) would undo an
@@ -49,30 +53,37 @@ var ErrObservedCannotRaise = errors.New("observed evidence cannot raise an effec
 // benign no-op signal for the composition root: the profile is left intact.
 var ErrProfileReplayUndo = errors.New("configured replay would undo observed/authoritative effective value")
 
+// ErrNoAutomaticDirection is returned when observed evidence targets a field
+// whose automatic safety direction is not defined (timeout_millis): the
+// profile can represent configured/authoritative values for such fields, but
+// never auto-adjusts them from observations (#91 review).
+var ErrNoAutomaticDirection = errors.New("field has no defined automatic safety direction for observations")
+
 // Provenance is the typed origin of one persisted profile value. The four
 // semantics are distinct and fail-closed: the zero value is invalid.
 type Provenance string
 
 const (
 	// ProvenanceUnknown means no information exists; the effective value is
-	// absent and nothing is guessed.
+	// absent (zero/row-absent) and nothing is guessed. It is a valid STATE
+	// but never a writable origin.
 	ProvenanceUnknown Provenance = "unknown"
 	// ProvenanceConfigured is operator-declared configuration evidence (for
 	// example capability-profile bounds).
 	ProvenanceConfigured Provenance = "configured"
 	// ProvenanceObserved is concrete runtime evidence actually produced
-	// (restrictive limits, retry-after envelopes, timeout observations),
-	// referenced by its sanitized evidence id.
+	// (restrictive limits, retry-after envelopes), referenced by its
+	// sanitized evidence id.
 	ProvenanceObserved Provenance = "observed"
 	// ProvenanceAuthoritative is evidence accepted through an explicitly
 	// typed, contract-reviewed path (for example an operator-accepted
-	// evidence record); it is the only provenance that can raise a value for
-	// the same unchanged identity, still bounded by the Runstead hard caps.
+	// evidence record); it is not bounded by invented profile-only caps and
+	// remains the highest authority for a field's value.
 	ProvenanceAuthoritative Provenance = "authoritative"
 )
 
-// Valid reports whether p is one of the known provenance values. The zero
-// value is invalid and fails closed everywhere it is checked.
+// Valid reports whether p is one of the known WRITABLE provenance values.
+// unknown/zero/absent are valid states but never update origins.
 func (p Provenance) Valid() bool {
 	switch p {
 	case ProvenanceConfigured, ProvenanceObserved, ProvenanceAuthoritative:
@@ -83,7 +94,7 @@ func (p Provenance) Valid() bool {
 }
 
 // ParseProvenance parses an operator/evidence-supplied provenance name,
-// failing closed on empty or unknown values.
+// failing closed on empty, unknown or absent-state values.
 func ParseProvenance(value string) (Provenance, error) {
 	parsed := Provenance(strings.TrimSpace(value))
 	if !parsed.Valid() {
@@ -111,8 +122,10 @@ const (
 	// FieldConcurrencyCeiling is the effective concurrency ceiling. It can
 	// only be tightened by evidence; success never raises it.
 	FieldConcurrencyCeiling ProfileField = "concurrency_ceiling"
-	// FieldTimeoutMillis is the conservative timeout/latency observation
-	// bound when adequate evidence exists.
+	// FieldTimeoutMillis is a timeout/latency representation WITHOUT an
+	// automatic safety direction: the profile can carry configured or
+	// authoritative values for it, but observations never auto-adjust it
+	// (no assumption that a smaller timeout is always safer).
 	FieldTimeoutMillis ProfileField = "timeout_millis"
 )
 
@@ -136,41 +149,40 @@ func IsProfileField(field ProfileField) bool {
 	return false
 }
 
-// Hard caps: Runstead's OWN absolute ceilings. No effective value may ever
-// exceed the cap of its field; a raising update is refused even with
-// configured/authoritative provenance. Values are deliberately conservative.
+// FieldSafetyDirection declares, per field, which direction is MORE
+// conservative. Automatic observed tightening is only defined where this
+// direction is explicit (#91 review).
+type FieldSafetyDirection int
+
 const (
-	HardCapMaxRequestBytes    int64 = 32 << 20 // 32 MiB
-	HardCapMaxResponseBytes   int64 = 64 << 20 // 64 MiB
-	HardCapRequestsPerMinute  int64 = 1000
-	HardCapCooldownMillis     int64 = 3600_000 // 1h
-	HardCapConcurrencyCeiling int64 = 16
-	HardCapTimeoutMillis      int64 = 600_000 // 10m
+	// DirectionLowerIsConservative: smaller effective values are safer
+	// (request/output bytes, requests per minute, concurrency ceiling).
+	DirectionLowerIsConservative FieldSafetyDirection = iota
+	// DirectionHigherIsConservative: larger effective values are safer
+	// (cooldown wait after rate limiting).
+	DirectionHigherIsConservative
+	// DirectionNoAutomatic means the field's safety semantics are NOT
+	// assumed; observations are never auto-applied to it.
+	DirectionNoAutomatic
 )
 
-// HardCapFor returns Runstead's hard cap for one profile field. Unknown
-// fields have no cap and are refused earlier by validation.
-func HardCapFor(field ProfileField) int64 {
+// SafetyDirection returns the explicit conservative direction of one field.
+func SafetyDirection(field ProfileField) FieldSafetyDirection {
 	switch field {
-	case FieldMaxRequestBytes:
-		return HardCapMaxRequestBytes
-	case FieldMaxResponseBytes:
-		return HardCapMaxResponseBytes
-	case FieldRequestsPerMinute:
-		return HardCapRequestsPerMinute
+	case FieldMaxRequestBytes, FieldMaxResponseBytes, FieldRequestsPerMinute, FieldConcurrencyCeiling:
+		return DirectionLowerIsConservative
 	case FieldCooldownMillis:
-		return HardCapCooldownMillis
-	case FieldConcurrencyCeiling:
-		return HardCapConcurrencyCeiling
+		return DirectionHigherIsConservative
 	case FieldTimeoutMillis:
-		return HardCapTimeoutMillis
+		return DirectionNoAutomatic
 	default:
-		return 0
+		return DirectionNoAutomatic
 	}
 }
 
-// ProfileValue is one persisted variable value with its provenance. Missing
-// or zero fields are UNKNOWN: no default is fabricated.
+// ProfileValue is one persisted variable value with its provenance. The
+// representation is single: a KNOWN value is always positive; zero value
+// (or absent row) means UNKNOWN and is never fabricable.
 type ProfileValue struct {
 	Value      int64
 	Provenance Provenance
@@ -182,7 +194,7 @@ type ProfileValue struct {
 	UpdatedAt string
 }
 
-// Known reports whether the field carries an effective value.
+// Known reports whether the field carries an effective (positive) value.
 func (v ProfileValue) Known() bool {
 	return v.Provenance.Valid() && v.Value > 0
 }
@@ -234,8 +246,8 @@ func NewOperationalProfile(identity Identity) *OperationalProfile {
 
 // ProfileUpdate is one typed, deterministic update request to a profile. It
 // deliberately carries NO provider/model/fallback/retry authority: the
-// identity of the profile is fixed at construction; only a field value with
-// provenance and evidence may be proposed.
+// identity is fixed at construction; only a field value with provenance and
+// evidence may be proposed.
 type ProfileUpdate struct {
 	Field       ProfileField
 	Value       int64
@@ -244,21 +256,18 @@ type ProfileUpdate struct {
 }
 
 // Validate checks one update for internal consistency BEFORE it reaches the
-// rule engine. Unknown provenance, unknown field, negative values, values
-// above the Runstead hard cap and missing evidence references for
-// observed/authoritative provenance all fail closed.
+// rule engine: unknown provenance, unknown field, non-positive values (zero
+// means unknown/absent and is never persisted) and missing evidence
+// references for observed/authoritative provenance all fail closed.
 func (u ProfileUpdate) Validate() error {
 	if !IsProfileField(u.Field) {
 		return fmt.Errorf("%w: unknown profile field %q", ErrProfileInvalid, string(u.Field))
 	}
 	if !u.Provenance.Valid() {
-		return fmt.Errorf("%w: provenance %q is not a valid update origin (unknown values are never written)", ErrProfileInvalid, string(u.Provenance))
+		return fmt.Errorf("%w: provenance %q is not a valid update origin (unknown/zero values are never written)", ErrProfileInvalid, string(u.Provenance))
 	}
-	if u.Value < 0 {
-		return fmt.Errorf("%w: %s value must not be negative", ErrProfileInvalid, u.Field)
-	}
-	if cap := HardCapFor(u.Field); u.Value > cap {
-		return fmt.Errorf("%w: %s value %d exceeds the Runstead hard cap %d", ErrProfileInvalid, u.Field, u.Value, cap)
+	if u.Value <= 0 {
+		return fmt.Errorf("%w: %s value must be positive (a zero value means unknown/absent and is never persisted)", ErrProfileInvalid, u.Field)
 	}
 	if u.Provenance == ProvenanceObserved || u.Provenance == ProvenanceAuthoritative {
 		if strings.TrimSpace(u.EvidenceRef) == "" {
@@ -268,29 +277,80 @@ func (u ProfileUpdate) Validate() error {
 	return nil
 }
 
-// Apply executes the deterministic update rules and returns a NEW profile
-// state. The receiver is never mutated: profiles are pure state so no side
-// effect (network, retry, admission) is even possible.
+// moreConservative reports whether candidate is strictly more conservative
+// than current for the field's explicit safety direction.
+func moreConservative(field ProfileField, current, candidate int64) bool {
+	switch SafetyDirection(field) {
+	case DirectionHigherIsConservative:
+		return candidate > current
+	default:
+		// lower-is-conservative is the default direction for bounded fields.
+		return candidate < current
+	}
+}
+
+// ApplyFieldValue is the SINGLE deterministic rule engine shared by the
+// in-memory profile AND the durable-state boundary (issues #91/#92). It
+// decides whether an update is acceptable against one field's current state
+// and returns the new field value. current is the absent/unknown state when
+// exists is false.
 //
 // Rules:
 //
 //	unknown -> configured            (operator declaration)
 //	unknown -> observed              (a specific, actually produced observation,
 //	                                 with evidence reference)
-//	unknown -> authoritative         (only through the explicitly typed path)
-//	observed value < effective       (restrictive evidence tightens)
-//	observed value >= effective      REFUSED (success/common evidence never
-//	                                 raises a ceiling; ErrObservedCannotRaise)
-//	configured < effective           (operator tightens further)
-//	configured >= effective          REFUSED when the current provenance is
-//	                                 observed or authoritative (a replay of the
-//	                                 same unchanged identity must not undo
-//	                                 tightening/acceptance)
-//	authoritative                    ACCEPTED (explicitly typed path), bounded
-//	                                 by the hard caps
-func (p *OperationalProfile) Apply(update ProfileUpdate, clock func() time.Time) (*OperationalProfile, error) {
+//	unknown -> authoritative         (explicitly typed path)
+//	observed, direction defined     ACCEPTED only when strictly more
+//	                                 conservative for this field; otherwise
+//	                                 ErrObservedNotConservative
+//	observed, no automatic direction REFUSED (ErrNoAutomaticDirection)
+//	configured over configured       supersedes
+//	configured over observed/...     ACCEPTED only when strictly more
+//	                                 conservative; otherwise ErrProfileReplayUndo
+//	                                 (a replay of the same unchanged identity
+//	                                 must not undo tightening/acceptance)
+//	authoritative                    ACCEPTED (explicitly typed path)
+func ApplyFieldValue(field ProfileField, current ProfileValue, exists bool, update ProfileUpdate, now string) (ProfileValue, error) {
 	if err := update.Validate(); err != nil {
-		return nil, err
+		return ProfileValue{}, err
+	}
+	proposed := ProfileValue{Value: update.Value, Provenance: update.Provenance, EvidenceRef: strings.TrimSpace(update.EvidenceRef), UpdatedAt: now}
+
+	if !exists || !current.Known() {
+		// unknown/absent can receive any writable provenance through its
+		// typed path.
+		return proposed, nil
+	}
+	if update.Provenance == ProvenanceObserved {
+		switch SafetyDirection(field) {
+		case DirectionNoAutomatic:
+			return ProfileValue{}, fmt.Errorf("%w: %s (no automatic safety direction)", ErrNoAutomaticDirection, field)
+		default:
+			if !moreConservative(field, current.Value, update.Value) {
+				return ProfileValue{}, fmt.Errorf("%w: %s observed value %d is not conservative against the effective value %d", ErrObservedNotConservative, field, update.Value, current.Value)
+			}
+		}
+		return proposed, nil
+	}
+	if update.Provenance == ProvenanceConfigured {
+		if current.Provenance == ProvenanceObserved || current.Provenance == ProvenanceAuthoritative {
+			if !moreConservative(field, current.Value, update.Value) {
+				return ProfileValue{}, fmt.Errorf("%w: configured bound %s=%d would undo the %s effective value %d for the same unchanged identity", ErrProfileReplayUndo, field, update.Value, current.Provenance, current.Value)
+			}
+		}
+		return proposed, nil
+	}
+	// authoritative: the explicitly typed, contract-reviewed path.
+	return proposed, nil
+}
+
+// Apply executes the deterministic update rules and returns a NEW profile
+// state. The receiver is never mutated: profiles are pure state so no side
+// effect (network, retry, admission) is even possible.
+func (p *OperationalProfile) Apply(update ProfileUpdate, clock func() time.Time) (*OperationalProfile, error) {
+	if p == nil {
+		return nil, fmt.Errorf("%w: nil profile", ErrProfileInvalid)
 	}
 	if p.ProfileVersion != ProfileVersion {
 		return nil, fmt.Errorf("%w: profile version %q is not supported (supported: %s)", ErrProfileInvalid, p.ProfileVersion, ProfileVersion)
@@ -300,21 +360,12 @@ func (p *OperationalProfile) Apply(update ProfileUpdate, clock func() time.Time)
 		now = clock().UTC().Format(time.RFC3339)
 	}
 	current, exists := p.Values[update.Field]
-
-	if update.Provenance == ProvenanceObserved {
-		if exists && current.Known() && update.Value >= current.Value {
-			return nil, fmt.Errorf("%w: %s observed value %d is not restrictive against the effective value %d", ErrObservedCannotRaise, update.Field, update.Value, current.Value)
-		}
-	} else if update.Provenance == ProvenanceConfigured {
-		if exists && current.Known() && update.Value >= current.Value &&
-			(current.Provenance == ProvenanceObserved || current.Provenance == ProvenanceAuthoritative) {
-			return nil, fmt.Errorf("%w: configured bound %s=%d would undo the %s effective value %d for the same unchanged identity", ErrProfileReplayUndo, update.Field, update.Value, current.Provenance, current.Value)
-		}
+	nextValue, err := ApplyFieldValue(update.Field, current, exists, update, now)
+	if err != nil {
+		return nil, err
 	}
-
 	next := p.clone()
-	value := ProfileValue{Value: update.Value, Provenance: update.Provenance, EvidenceRef: strings.TrimSpace(update.EvidenceRef), UpdatedAt: now}
-	next.Values[update.Field] = value
+	next.Values[update.Field] = nextValue
 	if now > next.UpdatedAt {
 		next.UpdatedAt = now
 	}
@@ -369,7 +420,7 @@ func (p *OperationalProfile) Sanitized() string {
 	}
 	sort.Strings(fields)
 	return fmt.Sprintf("OperationalProfile{key:%s provider:%s family:%s model:%q config:%s version:%s values:%v}",
-		shortKey(p.ProfileKey), p.ProviderID, p.ProtocolFamily, p.Model, sanitizedIdentityRef(p.ConfigIdentity), p.ProfileVersion, fields)
+		shortKey(p.ProfileKey), p.ProviderID, p.ProtocolFamily, p.Model, p.ConfigIdentity, p.ProfileVersion, fields)
 }
 
 // shortKey keeps inspection output bounded while staying traceable via the
@@ -379,10 +430,4 @@ func shortKey(key string) string {
 		return key
 	}
 	return key[:16] + "…"
-}
-
-// sanitizedIdentityRef is defense in depth: rendering reuses the
-// Config.Sanitized value, which is already credential-free by construction.
-func sanitizedIdentityRef(identity string) string {
-	return identity
 }

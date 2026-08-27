@@ -203,19 +203,33 @@ Each variable field (currently: `max_request_bytes`, `max_response_bytes`,
 
 Update rules (enforced by code and tests):
 
-- observed evidence may only **tighten** a known value (or fill an unknown
-  one from a specific produced observation); it never raises a hard ceiling,
-  rate/concurrency envelope or context/output bound;
-- ordinary successful requests never raise anything;
-- raising a value for the same unchanged identity requires operator
-  configuration or the explicitly typed authoritative path, and every value
-  is bounded by Runstead's own hard caps (for example 32 MiB request bound,
-  16 concurrency, 1000 rpm);
+- the conservative direction is defined **per field**: `max_request_bytes`,
+  `max_response_bytes`, `requests_per_minute` and `concurrency_ceiling` are
+  lower-is-conservative; `cooldown_millis` is higher-is-conservative (a
+  longer Retry-After wait is safer, a shorter observation never weakens the
+  profile); `timeout_millis` has NO automatic direction (observations are
+  never auto-applied; configured/authoritative values are still
+  representable);
+- observed evidence may only move a field toward its conservative direction
+  (or fill an unknown one from a specific produced observation);
+- ordinary successful requests never change any value;
 - re-supplying the same unchanged configured bounds never undoes an observed
-  tightening or authoritative acceptance (`ErrProfileReplayUndo` is a benign
-  no-op for the composition root);
+  tightening or authoritative acceptance — updates are applied
+  **monotonically at the durable SQLite boundary** inside the same
+  transaction that reads the current row (check-and-set), so concurrent
+  tasks cannot interleave a stale write that weakens conservative state;
+- moving a value in the non-conservative direction for the same unchanged
+  identity requires the operator configuration path or the explicitly typed
+  authoritative path;
 - a config/family/model change derives a different profile key, so old
   learning is never inherited silently.
+
+The profile defines **no admission policy of its own**: it carries no
+invented global caps, represents values with provenance for any
+configuration the existing #79 contract considers valid, and leaves all
+enforcement to the governor and the adapters' existing contracts. Zero is
+the single representation of unknown/absence and is never persisted for any
+writable provenance.
 
 Persistence: migration `0013_operational_profiles.sql` (additive; existing
 databases upgrade without loss). Records are sanitized (no credentials,

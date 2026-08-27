@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -145,11 +146,8 @@ func validateProfileRow(key, configIdentity, model string, family provider.Proto
 	if !value.Provenance.Valid() {
 		return fmt.Errorf("%w: field %s has invalid provenance %q", ErrProfileState, field, string(value.Provenance))
 	}
-	if value.Value < 0 {
-		return fmt.Errorf("%w: field %s has negative value %d", ErrProfileState, field, value.Value)
-	}
-	if cap := provider.HardCapFor(field); value.Value > cap {
-		return fmt.Errorf("%w: field %s value %d exceeds hard cap %d", ErrProfileState, field, value.Value, cap)
+	if value.Value <= 0 {
+		return fmt.Errorf("%w: field %s has non-positive value %d (zero means unknown/absent and is never persisted)", ErrProfileState, field, value.Value)
 	}
 	if !family.Valid() {
 		return fmt.Errorf("%w: protocol family %q is invalid", ErrProfileState, string(family))
@@ -175,11 +173,8 @@ func validatePersistedProfileRow(key, providerID, family, configIdentity, model,
 	if err != nil || string(parsed) != strings.TrimSpace(provenance) {
 		return fmt.Errorf("%w: row for key %s has invalid provenance %q", ErrProfileState, shortKeyRef(key), provenance)
 	}
-	if value < 0 {
-		return fmt.Errorf("%w: row for key %s has negative value", ErrProfileState, shortKeyRef(key))
-	}
-	if cap := provider.HardCapFor(provider.ProfileField(field)); value > cap {
-		return fmt.Errorf("%w: row for key %s exceeds the hard cap", ErrProfileState, shortKeyRef(key))
+	if value <= 0 {
+		return fmt.Errorf("%w: row for key %s has non-positive value %d (zero means unknown/absent)", ErrProfileState, shortKeyRef(key), value)
 	}
 	if strings.TrimSpace(version) != provider.ProfileVersion {
 		return fmt.Errorf("%w: row for key %s has unsupported profile version %q", ErrProfileState, shortKeyRef(key), version)
@@ -201,4 +196,103 @@ func shortKeyRef(key string) string {
 		return key[:16] + "…"
 	}
 	return key
+}
+
+// ApplyOperationalProfileUpdates applies typed profile updates
+// MONOTONICALLY at the durable boundary: the current row state is read and
+// validated inside the SAME SQLite transaction that writes the result
+// (check-and-set), so concurrent tasks cannot interleave a stale write that
+// undoes an observed tightening or authoritative acceptance. The rule engine
+// is provider.ApplyFieldValue (single source of truth shared with the
+// in-memory profile). A configured replay that would undo an
+// observed/authoritative value signals provider.ErrProfileReplayUndo and
+// leaves that field untouched while the remaining updates still apply
+// (atomic commit of the successful subset).
+func (s *Store) ApplyOperationalProfileUpdates(ctx context.Context, identity provider.Identity, clock func() time.Time, updates []provider.ProfileUpdate) (*provider.OperationalProfile, error) {
+	if identity.ConfigIdentity == "" || identity.Model == "" || !identity.ProtocolFamily.Valid() {
+		return nil, fmt.Errorf("%w: incomplete profile identity", ErrProfileState)
+	}
+	if len(updates) == 0 {
+		return nil, nil
+	}
+	key := provider.OperationalProfileKey(identity.ConfigIdentity, identity.Model, identity.ProtocolFamily)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if clock != nil {
+		now = clock().UTC().Format(time.RFC3339)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin operational profile updates: %w", err)
+	}
+	defer tx.Rollback()
+
+	var createdAt string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MIN(created_at), '') FROM provider_operational_profiles WHERE profile_key = ?`, key).Scan(&createdAt); err != nil {
+		return nil, fmt.Errorf("read operational profile age: %w", err)
+	}
+	if createdAt == "" {
+		createdAt = now
+	}
+
+	applied := make(map[provider.ProfileField]provider.ProfileValue)
+	for _, update := range updates {
+		var currentValue int64
+		var currentProvenance, currentEvidence, currentUpdated string
+		var exists bool
+		err := tx.QueryRowContext(ctx,
+			`SELECT value, provenance, evidence_ref, updated_at FROM provider_operational_profiles WHERE profile_key = ? AND field = ?`,
+			key, string(update.Field)).Scan(&currentValue, &currentProvenance, &currentEvidence, &currentUpdated)
+		if err == nil {
+			// Validate the persisted current state before deciding: a
+			// corrupted row is never silently repaired.
+			if err := validatePersistedProfileRow(key, identity.ProviderID, string(identity.ProtocolFamily), identity.ConfigIdentity, identity.Model,
+				provider.ProfileVersion, string(update.Field), currentValue, currentProvenance, currentEvidence); err != nil {
+				return nil, err
+			}
+			exists = true
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("read operational profile field %s: %w", update.Field, err)
+		}
+
+		current := provider.ProfileValue{Value: currentValue, Provenance: provider.Provenance(currentProvenance), EvidenceRef: currentEvidence, UpdatedAt: currentUpdated}
+		next, applyErr := provider.ApplyFieldValue(update.Field, current, exists, update, now)
+		if errors.Is(applyErr, provider.ErrProfileReplayUndo) {
+			// Benign no-op for the same unchanged identity: the field keeps
+			// its more conservative value.
+			if exists {
+				applied[update.Field] = current
+			}
+			continue
+		}
+		if applyErr != nil {
+			return nil, applyErr
+		}
+		if !exists {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO provider_operational_profiles
+				 (profile_key, provider_id, protocol_family, config_identity, model, profile_version, field, value, provenance, evidence_ref, updated_at, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				key, Redact(identity.ProviderID), Redact(string(identity.ProtocolFamily)), Redact(identity.ConfigIdentity),
+				Redact(identity.Model), provider.ProfileVersion, string(update.Field), next.Value, string(next.Provenance),
+				Redact(next.EvidenceRef), next.UpdatedAt, createdAt); err != nil {
+				return nil, fmt.Errorf("insert operational profile field %s: %w", update.Field, err)
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE provider_operational_profiles SET value = ?, provenance = ?, evidence_ref = ?, updated_at = ? WHERE profile_key = ? AND field = ?`,
+				next.Value, string(next.Provenance), Redact(next.EvidenceRef), next.UpdatedAt, key, string(update.Field)); err != nil {
+				return nil, fmt.Errorf("update operational profile field %s: %w", update.Field, err)
+			}
+		}
+		applied[update.Field] = next
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit operational profile updates: %w", err)
+	}
+	if len(applied) == 0 {
+		return nil, nil
+	}
+	return s.loadOperationalProfileByKey(ctx, key, identity)
 }
