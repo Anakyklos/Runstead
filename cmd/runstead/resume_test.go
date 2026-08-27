@@ -1062,7 +1062,7 @@ func TestResumeFailsClosedOnIncompatiblePersistedReserve(t *testing.T) {
 func TestResolveGovernorConfigSelectsExplicitAllowanceProfiles(t *testing.T) {
 	t.Setenv(config.EnvAllowanceProfile, "")
 
-	defaultConfig, err := resolveGovernorConfig(true, config.Config{}, "", false, "", false)
+	defaultConfig, err := resolveGovernorConfig(true, config.Config{}, nil, "", false, "", false)
 	if err != nil {
 		t.Fatalf("default resolveGovernorConfig() error = %v", err)
 	}
@@ -1073,7 +1073,7 @@ func TestResolveGovernorConfigSelectsExplicitAllowanceProfiles(t *testing.T) {
 		t.Fatalf("default profile lost the historical numbers: %#v", defaultConfig)
 	}
 
-	unknown, err := resolveGovernorConfig(true, config.Config{}, "", false, "unknown", true)
+	unknown, err := resolveGovernorConfig(true, config.Config{}, nil, "", false, "unknown", true)
 	if err != nil {
 		t.Fatalf("unknown resolveGovernorConfig() error = %v", err)
 	}
@@ -1081,7 +1081,7 @@ func TestResolveGovernorConfigSelectsExplicitAllowanceProfiles(t *testing.T) {
 		t.Fatalf("CLI unknown profile dropped the conservative local layer: %#v", unknown)
 	}
 
-	unlimited, err := resolveGovernorConfig(true, config.Config{}, "", false, "luna_unlimited_text", true)
+	unlimited, err := resolveGovernorConfig(true, config.Config{}, nil, "", false, "luna_unlimited_text", true)
 	if err != nil {
 		t.Fatalf("luna resolveGovernorConfig() error = %v", err)
 	}
@@ -1092,10 +1092,10 @@ func TestResolveGovernorConfigSelectsExplicitAllowanceProfiles(t *testing.T) {
 		t.Fatalf("CLI luna profile dropped local workload controls: %#v", unlimited)
 	}
 
-	if _, err := resolveGovernorConfig(true, config.Config{}, "", false, "reasoning", true); err == nil {
+	if _, err := resolveGovernorConfig(true, config.Config{}, nil, "", false, "reasoning", true); err == nil {
 		t.Fatal("CLI accepted reasoning without explicit ceilings")
 	}
-	if _, err := resolveGovernorConfig(true, config.Config{}, "", false, "not-a-profile", true); err == nil {
+	if _, err := resolveGovernorConfig(true, config.Config{}, nil, "", false, "not-a-profile", true); err == nil {
 		t.Fatal("CLI accepted an unsupported allowance profile")
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/policy"
 	"github.com/RenyEnnos/Runstead/internal/provider"
+	"github.com/RenyEnnos/Runstead/internal/provider/compat"
 	"github.com/RenyEnnos/Runstead/internal/provider/omniroute"
 	"github.com/RenyEnnos/Runstead/internal/recipe"
 	"github.com/RenyEnnos/Runstead/internal/state"
@@ -97,6 +98,8 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	recipesFile := ""
 	recipePolicy := ""
 	acceptanceFile := ""
+	providersFile := ""
+	providerID := ""
 	flags.StringVar(&workspace, "workspace", "", "workspace path (default: RUNSTEAD_WORKSPACE or .)")
 	flags.StringVar(&logLevel, "log-level", "", "log level: debug, info, warn or error")
 	flags.StringVar(&task, "task", "", "task prompt (RUNSTEAD_TASK)")
@@ -106,6 +109,8 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	flags.StringVar(&recipesFile, "recipes", "", "operator-controlled recipe catalog file (RUNSTEAD_RECIPES): JSON array of recipes; run_recipe fails closed without it")
 	flags.StringVar(&recipePolicy, "recipe-policy", "", "recipe policy modes, e.g. test=allow,vet=approval_required (RUNSTEAD_RECIPE_POLICY; default: approval_required for every recipe)")
 	flags.StringVar(&acceptanceFile, "acceptance", "", "operator acceptance plan file (RUNSTEAD_ACCEPTANCE_PLAN): versioned JSON of typed acceptance checks; completion requires every check to pass. Without a plan, completion is refused (fail closed)")
+	flags.StringVar(&providersFile, "providers", "", "provider declarations file (RUNSTEAD_PROVIDERS): JSON document of provider_config-style endpoints (provider_id, protocol_family, base_url, model, auth_requirement, profile, ...) resolved through the #79 contract before dispatch")
+	flags.StringVar(&providerID, "provider-id", "", "exactly one configured provider_id to execute with (RUNSTEAD_PROVIDER_ID); incompatible with --scripted and OmniRoute configuration")
 	flags.IntVar(&maxSteps, "max-steps", 0, "maximum model turns (RUNSTEAD_MAX_STEPS, default 24)")
 	flags.IntVar(&maxCorrections, "max-corrections", 0, "protocol correction attempts (RUNSTEAD_MAX_CORRECTIONS, default 2)")
 	flags.IntVar(&maxRepeatedActions, "max-repeated-actions", 0, "repeated-action corrections before stopping (RUNSTEAD_MAX_REPEATED_ACTIONS, default 2)")
@@ -199,16 +204,51 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return exitUsage
 	}
 	scriptedPath, scriptedSet := resolveScripted(flags, scripted)
+	providersPath, providersSet := resolveProviders(flags, providersFile)
+	selectedProviderID, providerSelected := resolveProviderID(flags, providerID)
+
+	if scriptedSet && (cfg.OmniRoute != nil || providersSet) {
+		fmt.Fprintln(errOut, "run: scripted offline mode cannot be combined with OmniRoute configuration or provider declarations")
+		return exitUsage
+	}
+	if providersSet && cfg.OmniRoute != nil {
+		fmt.Fprintln(errOut, "run: provider declarations cannot be combined with OmniRoute configuration")
+		return exitUsage
+	}
+	if providersSet != providerSelected {
+		fmt.Fprintln(errOut, "run: --providers and --provider-id must be used together")
+		return exitUsage
+	}
+
+	// The live provider-neutral surface (#14): exactly ONE configured provider
+	// endpoint is resolved through the #79 contract before any dispatch. The
+	// resolved value is sanitized identity plus validated configuration; the
+	// concrete adapter is selected by protocol family only in the composition
+	// layer (internal/provider/compat), never in the agent loop.
+	var resolvedProvider *provider.Resolved
+	if providerSelected {
+		registry, loadErr := loadProviderRegistry(providersPath)
+		if loadErr != nil {
+			fmt.Fprintf(errOut, "run: %v\n", loadErr)
+			return exitUsage
+		}
+		resolved, resolveErr := registry.Resolve(selectedProviderID, provider.RequiredCapabilities(), provider.SafeRouteSafety())
+		if resolveErr != nil {
+			fmt.Fprintf(errOut, "run: %v\n", resolveErr)
+			return exitUsage
+		}
+		resolvedProvider = resolved
+	}
 
 	if scriptedSet {
 		if cfg.OmniRoute != nil {
 			fmt.Fprintln(errOut, "run: scripted offline mode cannot be combined with OmniRoute configuration")
 			return exitUsage
 		}
-	} else if cfg.OmniRoute == nil {
-		fmt.Fprintln(errOut, "run: no provider configured. Use --scripted FILE for a deterministic offline run, or configure the pinned OmniRoute lane (OMNIROUTE_BASE_URL, OMNIROUTE_API_KEY, OMNIROUTE_MODEL, OMNIROUTE_CONNECTION_ID).")
+	} else if cfg.OmniRoute == nil && resolvedProvider == nil {
+		fmt.Fprintln(errOut, "run: no provider configured. Use --scripted FILE for a deterministic offline run, --providers FILE with --provider-id ID for a configured provider endpoint, or the pinned OmniRoute lane (OMNIROUTE_BASE_URL, OMNIROUTE_API_KEY, OMNIROUTE_MODEL, OMNIROUTE_CONNECTION_ID).")
 		return exitUnavailable
-	} else if !cfg.OmniRoute.EnableAttemptReceipts {
+	} else if cfg.OmniRoute != nil && !cfg.OmniRoute.EnableAttemptReceipts {
 		// The live lane is protected: it requires the exact connection pin.
 		// Without it the historical unconditional refusal stays in place.
 		fmt.Fprintln(errOut, "run: live OmniRoute requires the pinned receipt lane: set OMNIROUTE_CONNECTION_ID (--omniroute-connection-id) to pin the exact chatgpt-web connection. The legacy single-attempt declaration cannot authorize this lane.")
@@ -219,7 +259,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	// before any admission: the gateway contract must be healthy and the
 	// protected-route preflight must pass, or no model request is ever made.
 	var liveClient *omniroute.Client
-	if !scriptedSet {
+	if !scriptedSet && cfg.OmniRoute != nil {
 		omniClient, err := omniroute.New(*cfg.OmniRoute, omniroute.Options{})
 		if err != nil {
 			fmt.Fprintf(errOut, "run: live OmniRoute lane unavailable: %v\n", err)
@@ -237,7 +277,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		liveClient = omniClient
 	}
 
-	accountConfig, err := resolveGovernorConfig(scriptedSet, cfg, minStartInterval, flagWasSet(flags, "min-start-interval"), allowanceProfile, flagWasSet(flags, "allowance-profile"))
+	accountConfig, err := resolveGovernorConfig(scriptedSet, cfg, resolvedProvider, minStartInterval, flagWasSet(flags, "min-start-interval"), allowanceProfile, flagWasSet(flags, "allowance-profile"))
 	if err != nil {
 		fmt.Fprintf(errOut, "run: %v\n", err)
 		return exitUsage
@@ -277,6 +317,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 
 	var client provider.Client
 	var model string
+	var providerIdentity provider.Identity
 	if scriptedSet {
 		responses, loadErr := loadScriptedResponses(scriptedPath)
 		if loadErr != nil {
@@ -285,6 +326,18 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		}
 		client = provider.NewFake(responses...)
 		model = "scripted"
+	} else if resolvedProvider != nil {
+		// Exactly one configured endpoint: the composition layer selects the
+		// family adapter; the agent loop keeps depending only on
+		// provider.Client and the provider-neutral contract (#14).
+		compatClient, buildErr := compat.New(*resolvedProvider, compat.EnvSecretResolver(os.LookupEnv))
+		if buildErr != nil {
+			fmt.Fprintf(errOut, "run: provider %q unavailable: %v\n", selectedProviderID, buildErr)
+			return exitUnavailable
+		}
+		client = compatClient
+		model = resolvedProvider.Model
+		providerIdentity = provider.IdentityFromResolved(*resolvedProvider, compat.AdapterVersion)
 	} else {
 		// The protected lane client was constructed and verified above
 		// (gateway contract + preflight); every model request still flows
@@ -334,6 +387,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		Registry:             registry,
 		Limits:               limits,
 		Model:                model,
+		ProviderIdentity:     providerIdentity,
 		Trace:                cliTraceSink(errOut),
 		State:                store,
 		Policy:               policy.NewStatic(policyConfig, storeApprovals(store)),
@@ -350,7 +404,9 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 
 	taskID := "cli-" + fmt.Sprint(time.Now().UnixNano())
 	providerLabel := "scripted"
-	if !scriptedSet {
+	if resolvedProvider != nil {
+		providerLabel = resolvedProvider.ProviderID
+	} else if !scriptedSet {
 		providerLabel = "omniroute"
 	}
 	logger.InfoContext(ctx, "run started", "task_id", taskID, "provider", providerLabel, "workspace", cfg.Workspace)
@@ -371,6 +427,39 @@ func resolveTask(flags *flag.FlagSet, task string) (string, bool) {
 		return value, value != ""
 	}
 	return "", false
+}
+
+// resolveProviders resolves the provider declarations file path from the
+// flag or RUNSTEAD_PROVIDERS, mirroring --scripted.
+func resolveProviders(flags *flag.FlagSet, providersFile string) (string, bool) {
+	if strings.TrimSpace(providersFile) != "" {
+		return providersFile, true
+	}
+	if value, ok := os.LookupEnv(config.EnvProviders); ok {
+		value = strings.TrimSpace(value)
+		return value, value != ""
+	}
+	return "", false
+}
+
+// resolveProviderID resolves the exact configured provider_id from the flag
+// or RUNSTEAD_PROVIDER_ID.
+func resolveProviderID(flags *flag.FlagSet, providerID string) (string, bool) {
+	if strings.TrimSpace(providerID) != "" {
+		return strings.TrimSpace(providerID), true
+	}
+	if value, ok := os.LookupEnv(config.EnvProviderID); ok {
+		value = strings.TrimSpace(value)
+		return value, value != ""
+	}
+	return "", false
+}
+
+// loadProviderRegistry loads and validates the provider declarations file.
+// Every declared provider must be self-consistent; the selected provider is
+// resolved separately through the #79 contract before any dispatch.
+func loadProviderRegistry(path string) (*provider.Registry, error) {
+	return config.LoadProvidersFile(path)
 }
 
 func resolveScripted(flags *flag.FlagSet, scripted string) (string, bool) {
@@ -634,11 +723,19 @@ func resolveLimits(flags *flag.FlagSet, maxSteps, maxCorrections, maxRepeatedAct
 // selectable here because it requires explicit rolling ceilings that the CLI
 // does not expose; an operator needing it must configure the governor
 // directly.
-func resolveGovernorConfig(scripted bool, cfg config.Config, minStartInterval string, intervalSet bool, allowanceProfile string, profileSet bool) (governor.Config, error) {
+func resolveGovernorConfig(scripted bool, cfg config.Config, resolved *provider.Resolved, minStartInterval string, intervalSet bool, allowanceProfile string, profileSet bool) (governor.Config, error) {
 	providerID := "scripted"
 	model := "scripted"
 	safety := provider.SafeRouteSafety()
-	if !scripted {
+	if !scripted && resolved != nil {
+		// The configured provider endpoint: the governor admits attempts for
+		// this exact provider identity and the exact configured model. Route
+		// safety stays the executable SafeRouteSafety declaration the
+		// adapters are proven against (#14).
+		providerID = resolved.ProviderID
+		model = resolved.Model
+		safety = provider.SafeRouteSafety()
+	} else if !scripted {
 		if cfg.OmniRoute == nil {
 			return governor.Config{}, fmt.Errorf("no provider configuration for the account governor")
 		}
@@ -664,6 +761,13 @@ func resolveGovernorConfig(scripted bool, cfg config.Config, minStartInterval st
 		return governor.Config{}, fmt.Errorf("unsupported allowance profile %q", allowanceProfile)
 	}
 	accountConfig.Model = model
+	if resolved != nil {
+		// Sanitized provider-neutral identity on every governed attempt
+		// (persisted with provider_attempts, #14). Never wire types, never
+		// secret material.
+		accountConfig.ProtocolFamily = resolved.ProtocolFamily
+		accountConfig.ConfigIdentity = resolved.ConfigIdentity
+	}
 	// The pinned receipt lane: the governor requires authoritative attempt
 	// receipts, uses the same receipt-aware route safety as the adapter and
 	// validates the derived account-lane hash against every receipt.
@@ -1051,6 +1155,19 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "Use 'runstead <command> --help' for command-specific help.")
 }
 
+// providerRunHelpFragment documents the provider-neutral live surface (#14):
+// the operator declares endpoints in a providers file and selects exactly one
+// provider_id per execution.
+const providerRunHelpFragment = `  --providers FILE         provider declarations file (RUNSTEAD_PROVIDERS): JSON document of exactly
+                           configured endpoints (provider_id, protocol_family, base_url, model,
+                           auth_requirement, auth_ref, options, profile{profile_version,
+                           capabilities, route_safety}, config_version). Every declaration is
+                           validated through the #79 contract before any dispatch.
+  --provider-id ID         execute with exactly one configured provider_id (RUNSTEAD_PROVIDER_ID).
+                           Two different provider IDs may share one protocol adapter; the agent
+                           loop never branches on provider identity or protocol family.
+`
+
 func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage: runstead run [flags]")
 	fmt.Fprintln(out, "")
@@ -1117,6 +1234,10 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --omniroute-chat-endpoint PATH       generic endpoint (OMNIROUTE_CHAT_ENDPOINT); incompatible with the pinned live lane")
 	fmt.Fprintln(out, "  --omniroute-timeout DURATION         timeout (OMNIROUTE_TIMEOUT)")
 	fmt.Fprintln(out, "  --omniroute-safe-route               legacy static declaration; cannot authorize the live receipt lane")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "The provider-neutral live surface (#14) selects exactly ONE configured provider")
+	fmt.Fprintln(out, "endpoint per execution:")
+	fmt.Fprint(out, providerRunHelpFragment)
 }
 
 func printInspectHelp(out io.Writer) {
