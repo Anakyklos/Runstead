@@ -2,9 +2,7 @@ package provider
 
 import (
 	"errors"
-	"fmt"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 )
@@ -437,7 +435,4 @@ func TestInvalidUpdatesFailClosed(t *testing.T) {
 	if _, err := profile.Apply(ProfileUpdate{Field: FieldTimeoutMillis, Value: 0, Provenance: ProvenanceConfigured}, fixedClock()); err == nil {
 		t.Fatalf("zero value must fail closed")
 	}
-	// fmt imported to document the error surface stays typed/sanitizable.
-	var _ = fmt.Sprintf
-	_ = strings.TrimSpace
 }
