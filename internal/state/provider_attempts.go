@@ -66,10 +66,11 @@ func (s *Store) RecordProviderPrepared(ctx context.Context, record governor.Prov
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO provider_attempts
-			 (execution_id, task_id, client_request_id, provider, model_pool, model, attempt_sequence, receipt_aware, delivery_state, status, created_at, prepared_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 'prepared', ?, ?)`,
+			 (execution_id, task_id, client_request_id, provider, model_pool, model, attempt_sequence, receipt_aware, protocol_family, config_identity, delivery_state, status, created_at, prepared_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'prepared', ?, ?)`,
 		executionID, record.TaskID, record.ClientRequestID, record.ProviderID, record.ModelPool, record.Model,
-		record.AttemptSequence, boolInt(record.ReceiptAware), now, formatTime(record.StartedAt)); err != nil {
+		record.AttemptSequence, boolInt(record.ReceiptAware), string(record.ProtocolFamily), Redact(record.ConfigIdentity),
+		now, formatTime(record.StartedAt)); err != nil {
 		return fmt.Errorf("insert provider attempt: %w", err)
 	}
 	if err := s.saveGovernorStateInTx(ctx, tx, record.State, record.TaskID, now); err != nil {
@@ -83,6 +84,8 @@ func (s *Store) RecordProviderPrepared(ctx context.Context, record governor.Prov
 		"model_pool":        record.ModelPool,
 		"attempt_sequence":  record.AttemptSequence,
 		"receipt_aware":     record.ReceiptAware,
+		"protocol_family":   string(record.ProtocolFamily),
+		"config_identity":   Redact(record.ConfigIdentity),
 		"governor":          governorEventPayload(record.State),
 	}, now); err != nil {
 		return err
@@ -112,10 +115,11 @@ func (s *Store) RecordProviderFinished(ctx context.Context, record governor.Prov
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE provider_attempts
 			 SET status = ?, outcome = ?, upstream_reached = ?, uncertain = ?, attempt_debited = ?,
-			     selected_backoff_ns = ?, error_class = ?, delivery_state = ?, completed_at = ?
+			     selected_backoff_ns = ?, error_class = ?, delivery_state = ?, request_id = ?, completed_at = ?
 			 WHERE task_id = ? AND client_request_id = ? AND status = 'prepared'`,
 		status, record.Outcome, boolInt(record.UpstreamReached), boolInt(record.Uncertain),
-		record.AttemptDebited, int64(record.SelectedBackoff), receiptError, persistedDeliveryState(record.DeliveryState), now,
+		record.AttemptDebited, int64(record.SelectedBackoff), receiptError, persistedDeliveryState(record.DeliveryState),
+		Redact(record.RequestID), now,
 		record.TaskID, record.ClientRequestID); err != nil {
 		return fmt.Errorf("finish provider attempt: %w", err)
 	}
@@ -149,6 +153,9 @@ func (s *Store) RecordProviderFinished(ctx context.Context, record governor.Prov
 		"delivery_state":    record.DeliveryState.String(),
 		"attempt_debited":   record.AttemptDebited,
 		"selected_backoff":  int64(record.SelectedBackoff),
+		"protocol_family":   string(record.ProtocolFamily),
+		"config_identity":   Redact(record.ConfigIdentity),
+		"request_id":        Redact(record.RequestID),
 		"receipts":          len(record.Receipts),
 		"receipt_error":     receiptError,
 		"circuit":           record.Circuit.State,

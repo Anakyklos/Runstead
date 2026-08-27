@@ -15,6 +15,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/policy"
 	"github.com/RenyEnnos/Runstead/internal/provider"
+	"github.com/RenyEnnos/Runstead/internal/provider/compat"
 	"github.com/RenyEnnos/Runstead/internal/recipe"
 	"github.com/RenyEnnos/Runstead/internal/recovery"
 	"github.com/RenyEnnos/Runstead/internal/state"
@@ -55,6 +56,8 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	recipesFile := ""
 	recipePolicy := ""
 	acceptanceFile := ""
+	providersFile := ""
+	providerID := ""
 	// Parse manually so flags may appear before or after the task id (the flag
 	// package stops at the first positional argument).
 	for index := 0; index < len(args); index++ {
@@ -124,6 +127,22 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			}
 		case strings.HasPrefix(arg, "--acceptance="):
 			acceptanceFile = strings.TrimPrefix(arg, "--acceptance=")
+		case arg == "--providers":
+			if next, ok := value("--providers"); ok {
+				providersFile = next
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--providers="):
+			providersFile = strings.TrimPrefix(arg, "--providers=")
+		case arg == "--provider-id":
+			if next, ok := value("--provider-id"); ok {
+				providerID = next
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--provider-id="):
+			providerID = strings.TrimPrefix(arg, "--provider-id=")
 		case arg == "--min-start-interval":
 			if next, ok := value("--min-start-interval"); ok {
 				minStartInterval = next
@@ -179,34 +198,6 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		restored = &snapshot
 	}
 
-	accountConfig, err := resolveResumeGovernorConfig(restored, minStartInterval, intervalSet)
-	if err != nil {
-		fmt.Fprintf(errOut, "resume: %v\n", err)
-		return exitUsage
-	}
-
-	level, err := trace.ParseLevel(resolveResumeLogLevel(logLevel))
-	if err != nil {
-		fmt.Fprintf(errOut, "resume: invalid configuration: %v\n", err)
-		return exitUsage
-	}
-	logger := trace.NewLogger(errOut, level)
-	traceSink := cliTraceSink(errOut)
-
-	// The account governor is rebuilt from the persisted protection projection
-	// BEFORE the recovery pipeline so resume can report account-protection
-	// blocks without starting the loop, and so the resumed loop runs under the
-	// same restored protection as the interrupted run.
-	accountGovernor, err := governor.New(accountConfig, governor.Options{
-		Events:      trace.NewPolicySink(logger),
-		Persistence: store,
-		Restore:     restored,
-	})
-	if err != nil {
-		fmt.Fprintf(errOut, "resume: invalid account policy: %v\n", err)
-		return exitUsage
-	}
-
 	// Pre-flight validation BEFORE the recovery pipeline: a resume invocation
 	// that cannot possibly execute (missing workspace, undecodable persisted
 	// configuration, no provider input) must fail without journaling recovery
@@ -230,6 +221,107 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	default:
 		fmt.Fprintf(errOut, "resume: task %q is not resumable: %s\n", taskID, preload.Task.Status)
 		return exitNotResumable
+	}
+
+	accountConfig, err := resolveResumeGovernorConfig(restored, minStartInterval, intervalSet)
+	if err != nil {
+		fmt.Fprintf(errOut, "resume: %v\n", err)
+		return exitUsage
+	}
+
+	level, err := trace.ParseLevel(resolveResumeLogLevel(logLevel))
+	if err != nil {
+		fmt.Fprintf(errOut, "resume: invalid configuration: %v\n", err)
+		return exitUsage
+	}
+	logger := trace.NewLogger(errOut, level)
+	traceSink := cliTraceSink(errOut)
+
+	// Provider identity continuity (#14): the provider-neutral execution
+	// identity persisted with the task configuration is part of the
+	// authoritative task configuration, exactly like the recipe catalog and
+	// acceptance plan. A task executed through a configured provider endpoint
+	// resumes through the SAME endpoint declarations: the operator re-supplies
+	// the providers file and provider id explicitly, and any divergence
+	// (different provider id, model or sanitized configuration identity) is
+	// rejected fail-closed before the recovery pipeline. There is never an
+	// automatic provider/model/fallback switch on resume.
+	persistedIdentity := state.ProviderIdentityFromConfigSnapshot(preload.Task.ConfigJSON)
+	var resumeClient provider.Client
+	var resumeProviderIdentity provider.Identity
+	if persistedIdentity.ProviderID != "" {
+		providersPath, providersSet := resolveProvidersFlag(providersFile)
+		selectedID, selectedSet := resolveProviderIDFlag(providerID)
+		if _, scriptedSet := resolveScriptedFlag(scripted); scriptedSet {
+			fmt.Fprintf(errOut, "resume: task %q was executed through configured provider %q; --scripted cannot replace a configured provider on resume\n", taskID, persistedIdentity.ProviderID)
+			return exitUsage
+		}
+		if !providersSet || !selectedSet {
+			fmt.Fprintf(errOut, "resume: task %q was executed through configured provider %q; resume requires the same provider declarations (--providers) and provider id (--provider-id)\n", taskID, persistedIdentity.ProviderID)
+			return exitUnavailable
+		}
+		registry, loadErr := loadProviderRegistry(providersPath)
+		if loadErr != nil {
+			fmt.Fprintf(errOut, "resume: %v\n", loadErr)
+			return exitUsage
+		}
+		resolved, resolveErr := registry.Resolve(selectedID, provider.RequiredCapabilities(), provider.SafeRouteSafety())
+		if resolveErr != nil {
+			fmt.Fprintf(errOut, "resume: %v\n", resolveErr)
+			return exitUsage
+		}
+		if resolved.ProviderID != persistedIdentity.ProviderID {
+			fmt.Fprintf(errOut, "resume: provider divergence: task %q was executed through provider %q but %q was selected; resume never switches providers silently\n", taskID, persistedIdentity.ProviderID, resolved.ProviderID)
+			return exitUnavailable
+		}
+		if resolved.Model != persistedIdentity.Model {
+			fmt.Fprintf(errOut, "resume: provider divergence: task %q ran with model %q but %q was selected; resume never switches models silently\n", taskID, persistedIdentity.Model, resolved.Model)
+			return exitUnavailable
+		}
+		if resolved.ConfigIdentity != persistedIdentity.ConfigIdentity {
+			fmt.Fprintf(errOut, "resume: provider divergence: the re-supplied configuration for provider %q differs from the configuration the task started with; resume never continues under drifted configuration\n", resolved.ProviderID)
+			return exitUnavailable
+		}
+		if restored != nil && restored.ProviderID != "" && restored.ProviderID != resolved.ProviderID {
+			fmt.Fprintf(errOut, "resume: restored account protection conflicts with provider %q\n", resolved.ProviderID)
+			return exitUnavailable
+		}
+		if restored != nil && restored.Model != "" && restored.Model != resolved.Model {
+			fmt.Fprintf(errOut, "resume: restored account protection conflicts with model %q\n", resolved.Model)
+			return exitUnavailable
+		}
+		compatClient, buildErr := compat.New(*resolved, compat.EnvSecretResolver(os.LookupEnv))
+		if buildErr != nil {
+			fmt.Fprintf(errOut, "resume: provider %q unavailable: %v\n", selectedID, buildErr)
+			return exitUnavailable
+		}
+		resumeClient = compatClient
+		resumeProviderIdentity = provider.IdentityFromResolved(*resolved, compat.AdapterVersion)
+		accountConfig.ProtocolFamily = resolved.ProtocolFamily
+		accountConfig.ConfigIdentity = resolved.ConfigIdentity
+	} else {
+		if _, providersSet := resolveProvidersFlag(providersFile); providersSet {
+			fmt.Fprintln(errOut, "resume: the task was not executed through a configured provider; provider declarations cannot be attached at resume")
+			return exitUsage
+		}
+		if _, selectedSet := resolveProviderIDFlag(providerID); selectedSet {
+			fmt.Fprintln(errOut, "resume: the task was not executed through a configured provider; --provider-id cannot be attached at resume")
+			return exitUsage
+		}
+	}
+
+	// The account governor is rebuilt from the persisted protection projection
+	// BEFORE the recovery pipeline so resume can report account-protection
+	// blocks without starting the loop, and so the resumed loop runs under the
+	// same restored protection as the interrupted run.
+	accountGovernor, err := governor.New(accountConfig, governor.Options{
+		Events:      trace.NewPolicySink(logger),
+		Persistence: store,
+		Restore:     restored,
+	})
+	if err != nil {
+		fmt.Fprintf(errOut, "resume: invalid account policy: %v\n", err)
+		return exitUsage
 	}
 
 	// The task workspace is part of the durable task identity: resume always
@@ -299,15 +391,21 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	}
 	// The provider input is supplied again at resume time: the original remote
 	// conversation is disposable metadata, never an authority over task state.
-	scriptedPath, scriptedSet := resolveScriptedFlag(scripted)
-	if !scriptedSet {
-		fmt.Fprintln(errOut, "resume: no provider configured. Use --scripted FILE for a deterministic offline continuation.")
-		return exitUnavailable
-	}
-	responses, loadErr := loadScriptedResponses(scriptedPath)
-	if loadErr != nil {
-		fmt.Fprintf(errOut, "resume: %v\n", loadErr)
-		return exitUsage
+	if persistedIdentity.ProviderID == "" {
+		// Legacy lane: the provider input is supplied again at resume time;
+		// the original remote conversation is disposable metadata, never an
+		// authority over task state.
+		scriptedPath, scriptedSet := resolveScriptedFlag(scripted)
+		if !scriptedSet {
+			fmt.Fprintln(errOut, "resume: no provider configured. Use --scripted FILE for a deterministic offline continuation, or --providers FILE with --provider-id ID.")
+			return exitUnavailable
+		}
+		responses, loadErr := loadScriptedResponses(scriptedPath)
+		if loadErr != nil {
+			fmt.Fprintf(errOut, "resume: %v\n", loadErr)
+			return exitUsage
+		}
+		resumeClient = provider.NewFake(responses...)
 	}
 	// Persist an operator-attached acceptance plan before the recovery pipeline
 	// so the task is durably resumable under the SAME plan from here on.
@@ -360,8 +458,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	// Wire the resumed task with the same control boundaries as a normal run:
 	// the restored account governor, the read-only registry, the protocol
 	// parser and the persistence boundary.
-	client := provider.NewFake(responses...)
-	executor, err := agent.NewExecutor(accountGovernor, client, nil)
+	executor, err := agent.NewExecutor(accountGovernor, resumeClient, nil)
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: executor unavailable: %v\n", err)
 		return exitUnavailable
@@ -387,6 +484,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		Registry:             registry,
 		Limits:               limits,
 		Model:                plan.Task.Model,
+		ProviderIdentity:     resumeProviderIdentity,
 		Trace:                traceSink,
 		State:                store,
 		Policy:               policy.NewStatic(policyConfig, storeApprovals(store)),
@@ -402,7 +500,11 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		return exitUnavailable
 	}
 
-	logger.InfoContext(ctx, "resume continued", "task_id", taskID, "provider", "scripted", "workspace", workspacePath)
+	providerLabel := "scripted"
+	if persistedIdentity.ProviderID != "" {
+		providerLabel = persistedIdentity.ProviderID
+	}
+	logger.InfoContext(ctx, "resume continued", "task_id", taskID, "provider", providerLabel, "workspace", workspacePath)
 	fmt.Fprintf(errOut, "resume: task %s continuing\n", taskID)
 	result := loop.Run(ctx, agent.Task{ID: taskID, Prompt: ""})
 	if err := printFinalRuntimeResult(ctx, out, errOut, store, taskID, result, "resume"); err != nil {
@@ -528,6 +630,32 @@ func resolveResumeLogLevel(flagValue string) string {
 		return value
 	}
 	return "info"
+}
+
+// resolveProvidersFlag resolves the provider declarations path from the flag
+// or RUNSTEAD_PROVIDERS.
+func resolveProvidersFlag(value string) (string, bool) {
+	if strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value), true
+	}
+	if env, ok := os.LookupEnv(config.EnvProviders); ok {
+		env = strings.TrimSpace(env)
+		return env, env != ""
+	}
+	return "", false
+}
+
+// resolveProviderIDFlag resolves the exact configured provider_id from the
+// flag or RUNSTEAD_PROVIDER_ID.
+func resolveProviderIDFlag(value string) (string, bool) {
+	if strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value), true
+	}
+	if env, ok := os.LookupEnv(config.EnvProviderID); ok {
+		env = strings.TrimSpace(env)
+		return env, env != ""
+	}
+	return "", false
 }
 
 // resolveScriptedFlag resolves the scripted responses path from the flag or
@@ -820,6 +948,8 @@ func printResumeHelp(out io.Writer) {
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Flags:")
 	fmt.Fprintln(out, "  --scripted FILE           scripted responses for a deterministic offline continuation (RUNSTEAD_SCRIPTED_RESPONSES)")
+	fmt.Fprintln(out, "  --providers FILE          provider declarations file (RUNSTEAD_PROVIDERS); required to resume a task that ran through a configured provider")
+	fmt.Fprintln(out, "  --provider-id ID          the exact persisted provider_id (RUNSTEAD_PROVIDER_ID); provider/model/config divergence fails closed")
 	fmt.Fprintln(out, "  --state-dir PATH          durable state directory (RUNSTEAD_STATE_DIR)")
 	fmt.Fprintln(out, "  --log-level LEVEL         debug, info, warn or error (RUNSTEAD_LOG_LEVEL, default info)")
 	fmt.Fprintln(out, "  --write-policy SPEC       write tool modes, e.g. write_file=allow (RUNSTEAD_WRITE_POLICY, default approval_required)")

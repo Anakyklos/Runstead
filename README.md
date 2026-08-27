@@ -198,8 +198,10 @@ and executed by the registry (read-only tools plus policy-gated
 untrusted data, and a final answer is accepted only when grounded in evidence
 IDs produced during the run. The deterministic offline mode replays scripted
 model responses through the real governor and tools (`--scripted FILE`);
-live execution through any provider remains gated behind its adapter's
-fail-closed preflight and receipt contract.
+live execution through a configured endpoint uses the provider-neutral
+surface (`--providers FILE --provider-id ID`), resolved through the #79
+contract before any dispatch, with one governed physical request per model
+turn and no retry/fallback/rotation.
 
 See [`docs/architecture.md`](docs/architecture.md), [`docs/roadmap.md`](docs/roadmap.md) and [`docs/development.md`](docs/development.md).
 

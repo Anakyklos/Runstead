@@ -58,7 +58,20 @@ The provider-neutral contract (#79) consists of:
 - `Config` / `Registry.Resolve`: operator-declared endpoint identity, base URL, exact model, non-secret auth reference, non-secret options and config version, resolved fail-closed before any provider code runs;
 - `CapabilityProfile`: an explicit, versioned capability profile (text turn, Runstead structured protocol, native tools only when separately proven, streaming, cancellation, size bounds) plus the endpoint's RouteSafety declaration.
 
-Resolution fails closed on unknown provider ID, unknown protocol family, incomplete configuration, missing mandatory model, invalid endpoint, missing required capability, incompatible RouteSafety and required-but-unconfigured authentication. Capability is proven per endpoint; it is never inferred from the vendor name or the declared family. Credentials are external secret material named only by a non-secret reference; they never enter SQLite state, metadata, traces, contract hashes, fixtures or model context.
+Resolution fails closed on unknown provider ID, unknown protocol family, incomplete configuration, missing mandatory model, invalid endpoint, missing required capability, incompatible RouteSafety and required-but-unconfigured authentication.
+
+Issue #14 adds the minimal composition surface over this contract:
+`internal/provider/compat` selects the adapter for the configured protocol
+family (the only place a family branch exists) and `internal/config` loads the
+operator provider-declaration document (`--providers`). `runstead run` and
+`runstead resume` select exactly one configured provider per execution; the
+agent loop still depends only on `provider.Client` through the governor-owned
+executor. A sanitized provider-neutral execution identity (provider ID,
+protocol family, exact model, sanitized config identity, adapter version) is
+persisted with the task configuration and per attempt, so execution through a
+configured endpoint is inspectable without ever carrying wire types or
+credentials across the boundary (see
+[`provider-compatibility.md`](provider-compatibility.md)). Capability is proven per endpoint; it is never inferred from the vendor name or the declared family. Credentials are external secret material named only by a non-secret reference; they never enter SQLite state, metadata, traces, contract hashes, fixtures or model context.
 
 Concrete HTTP adapters for each family are separate issues. The OpenAI-compatible adapter (#87) is implemented in `internal/provider/openaicompat`, the Anthropic-compatible adapter (#88) in `internal/provider/anthropiccompat` and the Google/Gemini-compatible adapter (#89) in `internal/provider/googlecompat`: standard-library HTTP only, the minimal family wire subset (exact configured model, rendered prompt as a single user message, streaming disabled), fail-closed response parsing, no redirect following, no retries, authentication resolved at dispatch time through a non-persisted secret resolver seam, and delivery evidence derived from observable transport facts (`httptrace`) rather than absence of error. The anthropiccompat adapter transports the Messages-style generation limit and versioned header semantics through the validated non-secret protocol options propagated by `provider.Resolved` (#88 extension to #79); the googlecompat adapter carries the exact model through the URL resource path (`models/{model}:generateContent`) and keeps an EMPTY protocol-option vocabulary, because the minimal generateContent wire needs nothing beyond `provider.Request`. The existing OmniRoute adapter remains a fail-closed scaffold behind its own pinned receipt lane until a compatible producer exists; it holds no special architectural status beyond being the first historical adapter.
 

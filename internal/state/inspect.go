@@ -69,6 +69,9 @@ type inspectProviderAttempt struct {
 	ExecutionID     string
 	ClientRequestID string
 	Provider        string
+	ProtocolFamily  string
+	ConfigIdentity  string
+	RequestID       string
 	Model           string
 	Status          string
 	Outcome         string
@@ -228,7 +231,13 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 		builder.WriteString("  (none)\n")
 	}
 	for _, attempt := range providerAttempts {
-		fmt.Fprintf(&builder, "  %s request=%s provider=%s model=%s status=%s\n", attempt.ExecutionID, attempt.ClientRequestID, attempt.Provider, attempt.Model, attempt.Status)
+		fmt.Fprintf(&builder, "  %s request=%s provider=%s family=%s model=%s status=%s\n", attempt.ExecutionID, attempt.ClientRequestID, attempt.Provider, attempt.ProtocolFamily, attempt.Model, attempt.Status)
+		if attempt.ConfigIdentity != "" {
+			fmt.Fprintf(&builder, "    config_identity=%s\n", attempt.ConfigIdentity)
+		}
+		if attempt.RequestID != "" {
+			fmt.Fprintf(&builder, "    request_id=%s\n", attempt.RequestID)
+		}
 		fmt.Fprintf(&builder, "    delivery_state=%s\n", attempt.DeliveryState.String())
 		if attempt.Outcome != "" {
 			fmt.Fprintf(&builder, "    outcome=%s upstream_reached=%t\n", attempt.Outcome, attempt.UpstreamReached)
@@ -421,6 +430,7 @@ func (s *Store) RenderFinal(ctx context.Context, out io.Writer, taskID string) e
 		builder.WriteString("    (none)\n")
 	}
 
+	renderProviderIdentity(&builder, projection.task.ConfigJSON)
 	builder.WriteString("  Git observation:\n")
 	renderGitObservation(&builder, projection.verificationAttempts)
 	builder.WriteString("  Process results:\n")
@@ -554,7 +564,7 @@ func (s *Store) loadInspectToolAttempts(ctx context.Context, taskID string) ([]i
 
 func (s *Store) loadInspectProviderAttempts(ctx context.Context, taskID string) ([]inspectProviderAttempt, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT p.execution_id, p.client_request_id, p.provider, p.model, p.status, p.outcome, p.delivery_state, p.upstream_reached,
+		`SELECT p.execution_id, p.client_request_id, p.provider, p.protocol_family, p.config_identity, p.request_id, p.model, p.status, p.outcome, p.delivery_state, p.upstream_reached,
 		        p.uncertain, p.attempt_debited, p.selected_backoff_ns, p.error_class, p.recovery_reason,
 		        (SELECT COUNT(*) FROM provider_attempt_receipts r WHERE r.execution_id = p.execution_id),
 		        p.created_at, p.prepared_at, p.completed_at
@@ -567,7 +577,8 @@ func (s *Store) loadInspectProviderAttempts(ctx context.Context, taskID string) 
 	for rows.Next() {
 		var attempt inspectProviderAttempt
 		var deliveryState string
-		if err := rows.Scan(&attempt.ExecutionID, &attempt.ClientRequestID, &attempt.Provider, &attempt.Model, &attempt.Status,
+		if err := rows.Scan(&attempt.ExecutionID, &attempt.ClientRequestID, &attempt.Provider, &attempt.ProtocolFamily,
+			&attempt.ConfigIdentity, &attempt.RequestID, &attempt.Model, &attempt.Status,
 			&attempt.Outcome, &deliveryState, &attempt.UpstreamReached, &attempt.Uncertain, &attempt.AttemptDebited,
 			&attempt.SelectedBackoff, &attempt.ErrorClass, &attempt.RecoveryReason, &attempt.ReceiptCount, &attempt.CreatedAt,
 			&attempt.PreparedAt, &attempt.CompletedAt); err != nil {
@@ -980,4 +991,75 @@ func renderChangedFiles(files []struct {
 // line.
 func singleLine(value string) string {
 	return strings.Join(strings.Fields(value), " ")
+}
+
+// renderProviderIdentity writes the sanitized provider-neutral execution
+// identity persisted with the task configuration snapshot (#14). It renders
+// nothing when the task did not run through a configured provider endpoint
+// (scripted/OmniRoute lanes). The values come from the operator-validated
+// provider.Config identity: never credentials, option values or raw
+// configuration material.
+func renderProviderIdentity(builder *strings.Builder, configJSON string) {
+	identity := ProviderIdentityFromConfigSnapshot(configJSON)
+	if identity.ProviderID == "" {
+		return
+	}
+	builder.WriteString("  Provider identity:\n")
+	fmt.Fprintf(builder, "    provider_id=%s\n", identity.ProviderID)
+	if identity.ProtocolFamily != "" {
+		fmt.Fprintf(builder, "    protocol_family=%s\n", identity.ProtocolFamily)
+	}
+	if identity.Model != "" {
+		fmt.Fprintf(builder, "    model=%s\n", identity.Model)
+	}
+	if identity.ConfigIdentity != "" {
+		fmt.Fprintf(builder, "    config_identity=%s\n", identity.ConfigIdentity)
+	}
+	if identity.ProfileVersion != "" {
+		fmt.Fprintf(builder, "    profile_version=%s\n", identity.ProfileVersion)
+	}
+	if identity.AdapterVersion != "" {
+		fmt.Fprintf(builder, "    adapter_version=%s\n", identity.AdapterVersion)
+	}
+}
+
+type ProviderIdentitySnapshot struct {
+	ProviderID     string
+	ProtocolFamily string
+	Model          string
+	ConfigIdentity string
+	ProfileVersion string
+	AdapterVersion string
+}
+
+// ProviderIdentityFromConfigSnapshot extracts the sanitized identity the
+// agent loop persisted at run start. A missing or malformed field stays
+// empty; unknown or absent identity renders nothing.
+func ProviderIdentityFromConfigSnapshot(configJSON string) ProviderIdentitySnapshot {
+	if strings.TrimSpace(configJSON) == "" || strings.TrimSpace(configJSON) == "{}" {
+		return ProviderIdentitySnapshot{}
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal([]byte(configJSON), &snapshot); err != nil {
+		return ProviderIdentitySnapshot{}
+	}
+	readString := func(key string) string {
+		raw, ok := snapshot[key]
+		if !ok {
+			return ""
+		}
+		value, ok := raw.(string)
+		if !ok {
+			return ""
+		}
+		return value
+	}
+	return ProviderIdentitySnapshot{
+		ProviderID:     readString("provider_id"),
+		ProtocolFamily: readString("protocol_family"),
+		Model:          readString("provider_model"),
+		ConfigIdentity: readString("provider_config_identity"),
+		ProfileVersion: readString("provider_profile_version"),
+		AdapterVersion: readString("provider_adapter_version"),
+	}
 }

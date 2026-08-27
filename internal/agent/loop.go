@@ -96,17 +96,21 @@ type Task struct {
 // protocol parser, repeat guard, tool registry and the semantic persistence
 // boundary (issue #8).
 type Loop struct {
-	runner       AttemptRunner
-	registry     *tools.Registry
-	contract     string
-	limits       Limits
-	clock        Clock
-	trace        TraceSink
-	model        string
-	state        state.Persistence
-	policy       policy.Policy
-	writePolicy  string
-	recipePolicy string
+	runner   AttemptRunner
+	registry *tools.Registry
+	contract string
+	limits   Limits
+	clock    Clock
+	trace    TraceSink
+	model    string
+	// providerIdentity is the sanitized provider-neutral execution identity
+	// (#14), persisted with the task configuration snapshot only; it never
+	// drives loop behavior.
+	providerIdentity provider.Identity
+	state            state.Persistence
+	policy           policy.Policy
+	writePolicy      string
+	recipePolicy     string
 	// recipeCatalogDigest is the persisted digest of the effective recipe
 	// catalog, used to reject catalog drift on resume (issue #26 review).
 	recipeCatalogDigest string
@@ -129,6 +133,12 @@ type Config struct {
 	Clock    Clock
 	Trace    TraceSink
 	Model    string
+	// ProviderIdentity is the sanitized provider-neutral execution identity
+	// (#14). It is persisted with the task configuration snapshot and exposed
+	// in durable evidence; the loop never branches on it and still depends
+	// exclusively on provider.Client through the governor-owned executor. The
+	// zero value renders no provider identity (scripted/OmniRoute lanes).
+	ProviderIdentity provider.Identity
 	// State is the optional semantic persistence boundary. A nil value
 	// disables persistence (the M1 in-memory behavior).
 	State state.Persistence
@@ -226,6 +236,7 @@ func NewLoop(config Config) (*Loop, error) {
 		clock:                clock,
 		trace:                traceSink,
 		model:                strings.TrimSpace(config.Model),
+		providerIdentity:     config.ProviderIdentity,
 		state:                config.State,
 		policy:               config.Policy,
 		writePolicy:          strings.TrimSpace(config.WritePolicy),
@@ -471,7 +482,7 @@ func (l *Loop) captureGitBaseline() (status, diff string, statusTruncated, diffT
 // catalog digest lets resume reject catalog drift fail-closed (issue #26
 // review).
 func (l *Loop) configSnapshot() []byte {
-	encoded, err := json.Marshal(map[string]any{
+	snapshot := map[string]any{
 		"workspace":                l.registry.Workspace(),
 		"model":                    l.model,
 		"write_policy":             l.writePolicy,
@@ -485,7 +496,16 @@ func (l *Loop) configSnapshot() []byte {
 		"provider_budget":          l.limits.ProviderBudget,
 		"max_consecutive_failures": l.limits.MaxConsecutiveFailures,
 		"max_verification_retries": l.limits.MaxVerificationRetries,
-	})
+	}
+	if !l.providerIdentity.Empty() {
+		snapshot["provider_id"] = l.providerIdentity.ProviderID
+		snapshot["protocol_family"] = string(l.providerIdentity.ProtocolFamily)
+		snapshot["provider_model"] = l.providerIdentity.Model
+		snapshot["provider_config_identity"] = l.providerIdentity.ConfigIdentity
+		snapshot["provider_profile_version"] = l.providerIdentity.ProfileVersion
+		snapshot["provider_adapter_version"] = l.providerIdentity.AdapterVersion
+	}
+	encoded, err := json.Marshal(snapshot)
 	if err != nil {
 		return []byte("{}")
 	}

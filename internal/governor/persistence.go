@@ -28,11 +28,16 @@ type Persistence interface {
 // ProviderPrepared is the durable intent of one governed provider execution,
 // persisted before the provider call.
 type ProviderPrepared struct {
-	TaskID           string
-	ClientRequestID  string
-	ProviderID       string
-	ModelPool        string
-	Model            string
+	TaskID          string
+	ClientRequestID string
+	ProviderID      string
+	ModelPool       string
+	Model           string
+	// ProtocolFamily and ConfigIdentity carry the sanitized provider-neutral
+	// execution identity to durable state (#14). They are never secret and
+	// never wire-type payloads; empty for legacy lanes.
+	ProtocolFamily   provider.ProtocolFamily
+	ConfigIdentity   string
 	AllowanceProfile AllowanceProfile
 	AttemptSequence  int
 	StartedAt        time.Time
@@ -48,6 +53,13 @@ type ProviderFinished struct {
 	TaskID          string
 	ClientRequestID string
 	Outcome         OutcomeClass
+	// ProtocolFamily and ConfigIdentity mirror the prepared identity;
+	// RequestID is the upstream request identifier ONLY when actually
+	// observed, in its adapter-sanitized (hashed) form. Missing/unknown stays
+	// empty and is never guessed (#14).
+	ProtocolFamily  provider.ProtocolFamily
+	ConfigIdentity  string
+	RequestID       string
 	UpstreamReached bool
 	Uncertain       bool
 	DeliveryState   provider.DeliveryState
