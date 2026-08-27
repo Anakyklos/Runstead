@@ -3,9 +3,9 @@
 Runstead follows a staged provider strategy (decision #86, implemented from #79):
 
 1. define the provider-neutral contract: provider identity, protocol family (`openai_compatible`, `anthropic_compatible`, `google_compatible`), configuration and versioned capability profiles with fail-closed resolution (#79);
-2. implement one protocol adapter per supported family (#87 OpenAI-compatible — done in `internal/provider/openaicompat`, proven over local httptest doubles only; #88 Anthropic-compatible — done in `internal/provider/anthropiccompat`, proven over local httptest doubles only; #89 Google/Gemini-compatible — done in `internal/provider/googlecompat`, proven over local httptest doubles only);
-3. harden the runtime against configured compatible endpoints, including a shared deterministic compatibility suite;
-4. run opt-in live smoke tests against representative configured providers.
+2. implement one protocol adapter per supported family (#87 OpenAI-compatible — done in `internal/provider/openaicompat`; #88 Anthropic-compatible — done in `internal/provider/anthropiccompat`; #89 Google/Gemini-compatible — done in `internal/provider/googlecompat`);
+3. harden the runtime against configured compatible endpoints, including a shared deterministic compatibility suite — done in #14 (`internal/provider/compat` composition surface, `--providers`/`--provider-id` operator surface, shared matrix, cross-family inspect-edit-test-fix E2E with interruption/resume; see [`provider-compatibility.md`](provider-compatibility.md));
+4. run opt-in live smoke tests against representative configured providers — procedure implemented (`experiments/provider-live/run.sh`, opt-in only); no family is live-proven yet in the gate environment (all three are recorded as operationally unproven).
 
 Provider identity and protocol family are distinct concepts; official vendors are examples, not privileged dependencies. ChatGPT Web/OmniRoute work is deferred to future plugin/composable-provider tracks and is not on the v0.1 critical path.
 
