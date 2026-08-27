@@ -108,12 +108,21 @@ type Config struct {
 	MaxInFlight            int
 	RequireSingleAttempt   bool
 	RequireAttemptReceipts bool
-	AttemptProviderID      string
-	AccountLaneHash        string
-	RateResponseThreshold  int
-	RateResponseWindow     time.Duration
-	ResetSafetyMargin      time.Duration
-	RouteSafety            provider.RouteSafety
+	// ProtocolFamily is the sanitized compatibility family of the configured
+	// provider endpoint (#14). It is provider-neutral execution identity used
+	// only for persistence/evidence; the governor never branches on it. Empty
+	// means the legacy scripted/OmniRoute lanes, which stay unchanged.
+	ProtocolFamily provider.ProtocolFamily
+	// ConfigIdentity is the deterministic sanitized configuration identity
+	// (provider.Config.Sanitized, #79). It is never option values and never
+	// secret material; empty on legacy lanes.
+	ConfigIdentity        string
+	AttemptProviderID     string
+	AccountLaneHash       string
+	RateResponseThreshold int
+	RateResponseWindow    time.Duration
+	ResetSafetyMargin     time.Duration
+	RouteSafety           provider.RouteSafety
 }
 
 func DefaultInstantConfig(accountPolicyID, providerID, modelPool string, safety provider.RouteSafety) Config {
