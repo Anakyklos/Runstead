@@ -88,19 +88,19 @@ func TestObservedEvidenceTightensButNeverWeakens(t *testing.T) {
 
 	// Restrictive observed evidence tightens (lower-is-conservative).
 	profile, err = profile.Apply(ProfileUpdate{
-		Field: FieldMaxRequestBytes, Value: 2048, Provenance: ProvenanceObserved, EvidenceRef: "obs-000001",
+		Field: FieldMaxRequestBytes, Value: 2048, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000001"},
 	}, fixedClock())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v := profile.Effective(FieldMaxRequestBytes); v.Value != 2048 || v.Provenance != ProvenanceObserved || v.EvidenceRef != "obs-000001" {
+	if v := profile.Effective(FieldMaxRequestBytes); v.Value != 2048 || v.Provenance != ProvenanceObserved || v.EvidenceRef != (EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000001"}) {
 		t.Fatalf("tightening not applied: %+v", v)
 	}
 
 	// Raising or equal observations are REFUSED.
 	for _, value := range []int64{4096, 2048} {
 		if _, err = profile.Apply(ProfileUpdate{
-			Field: FieldMaxRequestBytes, Value: value, Provenance: ProvenanceObserved, EvidenceRef: "obs-000002",
+			Field: FieldMaxRequestBytes, Value: value, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000002"},
 		}, fixedClock()); !errors.Is(err, ErrObservedNotConservative) {
 			t.Fatalf("observed value %d must be refused as not conservative, got %v", value, err)
 		}
@@ -122,7 +122,7 @@ func TestCooldownHigherIsConservative(t *testing.T) {
 	}
 	// Retry-After 60s is MORE conservative than the effective 30s: accepted.
 	profile, err = profile.Apply(ProfileUpdate{
-		Field: FieldCooldownMillis, Value: 60000, Provenance: ProvenanceObserved, EvidenceRef: "obs-retry-after",
+		Field: FieldCooldownMillis, Value: 60000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-retry-after"},
 	}, fixedClock())
 	if err != nil {
 		t.Fatalf("cooldown 30s -> observed 60s must be accepted as tightening: %v", err)
@@ -132,7 +132,7 @@ func TestCooldownHigherIsConservative(t *testing.T) {
 	}
 	// A SHORTER observation must not automatically weaken the profile.
 	if _, err = profile.Apply(ProfileUpdate{
-		Field: FieldCooldownMillis, Value: 10000, Provenance: ProvenanceObserved, EvidenceRef: "obs-faster",
+		Field: FieldCooldownMillis, Value: 10000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-faster"},
 	}, fixedClock()); !errors.Is(err, ErrObservedNotConservative) {
 		t.Fatalf("cooldown 60s -> observed 10s must be refused, got %v", err)
 	}
@@ -151,7 +151,7 @@ func TestTimeoutHasNoAutomaticDirection(t *testing.T) {
 	// unknown timeout -> observed must fail: the undefined direction check
 	// precedes the unknown fast-path (#91 review).
 	if _, err = profile.Apply(ProfileUpdate{
-		Field: FieldTimeoutMillis, Value: 30000, Provenance: ProvenanceObserved, EvidenceRef: "obs-timeout-first",
+		Field: FieldTimeoutMillis, Value: 30000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-timeout-first"},
 	}, fixedClock()); !errors.Is(err, ErrNoAutomaticDirection) {
 		t.Fatalf("unknown timeout -> observed must fail with ErrNoAutomaticDirection, got %v", err)
 	}
@@ -164,18 +164,18 @@ func TestTimeoutHasNoAutomaticDirection(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = profile.Apply(ProfileUpdate{
-		Field: FieldTimeoutMillis, Value: 30000, Provenance: ProvenanceObserved, EvidenceRef: "obs-timeout",
+		Field: FieldTimeoutMillis, Value: 30000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-timeout"},
 	}, fixedClock()); !errors.Is(err, ErrNoAutomaticDirection) {
 		t.Fatalf("timeout observation must be refused without an automatic direction, got %v", err)
 	}
 	if _, err = profile.Apply(ProfileUpdate{
-		Field: FieldTimeoutMillis, Value: 120000, Provenance: ProvenanceObserved, EvidenceRef: "obs-timeout",
+		Field: FieldTimeoutMillis, Value: 120000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-timeout"},
 	}, fixedClock()); !errors.Is(err, ErrNoAutomaticDirection) {
 		t.Fatalf("timeout observation (any direction) must be refused, got %v", err)
 	}
 	// Authoritative remains representable through the typed path.
 	profile, err = profile.Apply(ProfileUpdate{
-		Field: FieldTimeoutMillis, Value: 90000, Provenance: ProvenanceAuthoritative, EvidenceRef: "verif-000001",
+		Field: FieldTimeoutMillis, Value: 90000, Provenance: ProvenanceAuthoritative, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "verif-000001"},
 	}, fixedClock())
 	if err != nil {
 		t.Fatal(err)
@@ -218,7 +218,7 @@ func TestSuccessNeverRaises(t *testing.T) {
 	}
 	for _, proposal := range proposals {
 		if _, err := profile.Apply(ProfileUpdate{
-			Field: proposal.field, Value: proposal.value, Provenance: ProvenanceObserved, EvidenceRef: "obs-success",
+			Field: proposal.field, Value: proposal.value, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-success"},
 		}, fixedClock()); !errors.Is(err, ErrObservedNotConservative) {
 			t.Fatalf("field %s: non-conservative observation must be refused, got %v", proposal.field, err)
 		}
@@ -242,15 +242,15 @@ func TestUnknownCanReceiveAllThreeProvenancesThroughTheirPaths(t *testing.T) {
 		t.Fatalf("configured provenance lost")
 	}
 
-	profile, err = profile.Apply(ProfileUpdate{Field: FieldCooldownMillis, Value: 5000, Provenance: ProvenanceObserved, EvidenceRef: "obs-000010"}, fixedClock())
+	profile, err = profile.Apply(ProfileUpdate{Field: FieldCooldownMillis, Value: 5000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000010"}}, fixedClock())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v := profile.Effective(FieldCooldownMillis); v.Provenance != ProvenanceObserved || v.EvidenceRef != "obs-000010" {
+	if v := profile.Effective(FieldCooldownMillis); v.Provenance != ProvenanceObserved || v.EvidenceRef != (EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000010"}) {
 		t.Fatalf("observed provenance lost")
 	}
 
-	profile, err = profile.Apply(ProfileUpdate{Field: FieldTimeoutMillis, Value: 30000, Provenance: ProvenanceAuthoritative, EvidenceRef: "verif-000002"}, fixedClock())
+	profile, err = profile.Apply(ProfileUpdate{Field: FieldTimeoutMillis, Value: 30000, Provenance: ProvenanceAuthoritative, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "verif-000002"}}, fixedClock())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +296,7 @@ func TestConfiguredReplayCannotUndoObservedTightening(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile, err = profile.Apply(ProfileUpdate{
-		Field: FieldMaxRequestBytes, Value: 2048, Provenance: ProvenanceObserved, EvidenceRef: "obs-000001",
+		Field: FieldMaxRequestBytes, Value: 2048, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000001"},
 	}, fixedClock())
 	if err != nil {
 		t.Fatal(err)
@@ -315,7 +315,7 @@ func TestConfiguredReplayCannotUndoObservedTightening(t *testing.T) {
 	}
 	// Authoritative evidence CAN move the value (explicitly typed path).
 	profile, err = profile.Apply(ProfileUpdate{
-		Field: FieldMaxRequestBytes, Value: 16000, Provenance: ProvenanceAuthoritative, EvidenceRef: "verif-000003",
+		Field: FieldMaxRequestBytes, Value: 16000, Provenance: ProvenanceAuthoritative, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "verif-000003"},
 	}, fixedClock())
 	if err != nil {
 		t.Fatal(err)
@@ -386,8 +386,8 @@ func TestZeroValueNeverPersisted(t *testing.T) {
 	cases := []ProfileUpdate{
 		{Field: FieldMaxRequestBytes, Value: 0, Provenance: ProvenanceConfigured},
 		{Field: FieldMaxRequestBytes, Value: -1, Provenance: ProvenanceConfigured},
-		{Field: FieldCooldownMillis, Value: 0, Provenance: ProvenanceObserved, EvidenceRef: "obs-000001"},
-		{Field: FieldTimeoutMillis, Value: 0, Provenance: ProvenanceAuthoritative, EvidenceRef: "verif-000001"},
+		{Field: FieldCooldownMillis, Value: 0, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000001"}},
+		{Field: FieldTimeoutMillis, Value: 0, Provenance: ProvenanceAuthoritative, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "verif-000001"}},
 	}
 	for _, update := range cases {
 		if _, err := profile.Apply(update, fixedClock()); err == nil {
@@ -406,7 +406,7 @@ func TestApplyIsPureAndProfileCarriesNoExecutionAuthority(t *testing.T) {
 	profile := NewOperationalProfile(testIdentity("cfg", "model-a", FamilyOpenAICompatible))
 	before := profile.Sanitized()
 	next, err := profile.Apply(ProfileUpdate{
-		Field: FieldCooldownMillis, Value: 1000, Provenance: ProvenanceObserved, EvidenceRef: "obs-000020",
+		Field: FieldCooldownMillis, Value: 1000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000020"},
 	}, fixedClock())
 	if err != nil {
 		t.Fatal(err)
@@ -447,5 +447,52 @@ func TestInvalidUpdatesFailClosed(t *testing.T) {
 	}
 	if _, err := profile.Apply(ProfileUpdate{Field: FieldTimeoutMillis, Value: 0, Provenance: ProvenanceConfigured}, fixedClock()); err == nil {
 		t.Fatalf("zero value must fail closed")
+	}
+}
+
+// TestEvidenceRefIsStructuredNotFreeText is the #91-review regression: an
+// evidence reference is a structured kind:id identifier, never free text.
+// Private content (prompts, response bodies, headers, credentials) has no
+// representation it can smuggle through.
+func TestEvidenceRefIsStructuredNotFreeText(t *testing.T) {
+	ref, err := ParseEvidenceRef("evidence:obs-000001")
+	if err != nil {
+		t.Fatalf("valid reference must parse: %v", err)
+	}
+	if ref.Kind != EvidenceKindEvidence || ref.ID != "obs-000001" || ref.String() != "evidence:obs-000001" {
+		t.Fatalf("parsed reference wrong: %+v", ref)
+	}
+	if parsed, err := ParseEvidenceRef(""); err != nil || parsed.Kind != "" {
+		t.Fatalf("empty reference is the ABSENT state, got %+v err %v", parsed, err)
+	}
+	for _, freeText := range []string{
+		"the quick brown fox jumps over the lazy dog",
+		"response body content that must never be a reference",
+		"prompt: fix the calculator and explain",
+		"Bearer sk-secret-token-value",
+		"authorization header value",
+		"evidence:with spaces inside the id",
+		"just a raw token with spaces",
+	} {
+		if _, err := ParseEvidenceRef(freeText); err == nil {
+			t.Fatalf("free text %q must fail ParseEvidenceRef", freeText)
+		}
+		if _, err := ParseEvidenceRef("evidence:" + freeText); err == nil {
+			t.Fatalf("free text id %q must fail ParseEvidenceRef", freeText)
+		}
+	}
+	// Updates with a non-structured reference are invalid before the rules.
+	profile := NewOperationalProfile(testIdentity("cfg", "model-a", FamilyOpenAICompatible))
+	if _, err := profile.Apply(ProfileUpdate{
+		Field: FieldMaxRequestBytes, Value: 2048, Provenance: ProvenanceObserved,
+		EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "free text id"},
+	}, fixedClock()); err == nil {
+		t.Fatalf("update with free-text evidence id must fail closed")
+	}
+	if _, err := profile.Apply(ProfileUpdate{
+		Field: FieldMaxRequestBytes, Value: 2048, Provenance: ProvenanceObserved,
+		EvidenceRef: EvidenceRef{Kind: "bogus", ID: "obs-000001"},
+	}, fixedClock()); err == nil {
+		t.Fatalf("update with unknown evidence kind must fail closed")
 	}
 }

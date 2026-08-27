@@ -48,8 +48,9 @@ func applyObservedTightening(t *testing.T, stateDir string, identity provider.Id
 		t.Fatal(err)
 	}
 	defer store.Close()
+	evidenceRef := provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: evidence}
 	if _, err := store.ApplyOperationalProfileUpdates(context.Background(), identity, nil, []provider.ProfileUpdate{{
-		Field: provider.FieldMaxRequestBytes, Value: value, Provenance: provider.ProvenanceObserved, EvidenceRef: evidence,
+		Field: provider.FieldMaxRequestBytes, Value: value, Provenance: provider.ProvenanceObserved, EvidenceRef: evidenceRef,
 	}}); err != nil {
 		t.Fatal(err)
 	}

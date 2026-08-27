@@ -19,57 +19,6 @@ var ErrProfileState = errors.New("invalid persisted operational profile")
 // profile field separator used by the persisted projection.
 const profileSchemaVersion = "v1"
 
-// SaveOperationalProfile persists one profile (all its known fields) with
-// per-field upsert. The stored projection is sanitized (Redact is applied as
-// defense in depth) and every field is validated fail-closed BEFORE the
-// write. A profile whose key does not match its identity columns is refused.
-func (s *Store) SaveOperationalProfile(ctx context.Context, profile *provider.OperationalProfile) error {
-	if profile == nil {
-		return fmt.Errorf("%w: nil profile", ErrProfileState)
-	}
-	if profile.ProfileVersion != provider.ProfileVersion {
-		return fmt.Errorf("%w: unsupported profile version %q", ErrProfileState, profile.ProfileVersion)
-	}
-	expectedKey := provider.OperationalProfileKey(profile.ConfigIdentity, profile.Model, profile.ProtocolFamily)
-	if profile.ProfileKey != expectedKey {
-		return fmt.Errorf("%w: profile key %q does not match the identity", ErrProfileState, profile.ProfileKey)
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin operational profile save: %w", err)
-	}
-	defer tx.Rollback()
-	for _, field := range provider.AllProfileFields {
-		value, exists := profile.Values[field]
-		if !exists {
-			continue
-		}
-		if err := validateProfileRow(profile.ProfileKey, profile.ConfigIdentity, profile.Model, profile.ProtocolFamily, profile.ProfileVersion, field, value); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO provider_operational_profiles
-			 (profile_key, provider_id, protocol_family, config_identity, model, profile_version, field, value, provenance, evidence_ref, updated_at, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			 ON CONFLICT (profile_key, field) DO UPDATE SET
-			   value = excluded.value,
-			   provenance = excluded.provenance,
-			   evidence_ref = excluded.evidence_ref,
-			   updated_at = excluded.updated_at`,
-			profile.ProfileKey, Redact(profile.ProviderID), Redact(string(profile.ProtocolFamily)),
-			Redact(profile.ConfigIdentity), Redact(profile.Model), profile.ProfileVersion,
-			string(field), value.Value, string(value.Provenance), Redact(value.EvidenceRef),
-			value.UpdatedAt, now); err != nil {
-			return fmt.Errorf("upsert operational profile field %s: %w", field, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit operational profile save: %w", err)
-	}
-	return nil
-}
-
 // LoadOperationalProfile reconstructs the profile for one identity from
 // durable state. It performs NO provider call (recovery never rediscovers
 // information by repeating requests). Rows whose key/identity/provenance
@@ -106,7 +55,14 @@ func (s *Store) loadOperationalProfileByKey(ctx context.Context, key string, ide
 		if err := rows.Scan(&providerID, &family, &configIdentity, &model, &version, &field, &value, &provenance, &evidenceRef, &updatedAt, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan operational profile: %w", err)
 		}
-		if err := validatePersistedProfileRow(key, providerID, family, configIdentity, model, version, field, value, provenance, evidenceRef); err != nil {
+		// The stored provider_id must match the identity the profile is
+		// being reconstructed for: a tampered provider_id is corruption and
+		// fails closed instead of rendering as valid state (#91 review).
+		ref, parseErr := provider.ParseEvidenceRef(evidenceRef)
+		if parseErr != nil {
+			return nil, fmt.Errorf("%w: row for key %s: %v", ErrProfileState, shortKeyRef(key), parseErr)
+		}
+		if err := validatePersistedProfileRow(key, identity.ProviderID, providerID, family, configIdentity, model, version, field, value, provenance, ref); err != nil {
 			return nil, err
 		}
 		profile.ProviderID = providerID
@@ -117,7 +73,7 @@ func (s *Store) loadOperationalProfileByKey(ctx context.Context, key string, ide
 		profile.Values[provider.ProfileField(field)] = provider.ProfileValue{
 			Value:       value,
 			Provenance:  provider.Provenance(provenance),
-			EvidenceRef: evidenceRef,
+			EvidenceRef: ref,
 			UpdatedAt:   updatedAt,
 		}
 		if profile.CreatedAt == "" || createdAt < profile.CreatedAt {
@@ -138,30 +94,13 @@ func (s *Store) loadOperationalProfileByKey(ctx context.Context, key string, ide
 	return profile, nil
 }
 
-// validateProfileRow rejects invalid in-memory rows BEFORE the write.
-func validateProfileRow(key, configIdentity, model string, family provider.ProtocolFamily, version string, field provider.ProfileField, value provider.ProfileValue) error {
-	if !provider.IsProfileField(field) {
-		return fmt.Errorf("%w: unknown profile field %q", ErrProfileState, string(field))
-	}
-	if !value.Provenance.Valid() {
-		return fmt.Errorf("%w: field %s has invalid provenance %q", ErrProfileState, field, string(value.Provenance))
-	}
-	if value.Value <= 0 {
-		return fmt.Errorf("%w: field %s has non-positive value %d (zero means unknown/absent and is never persisted)", ErrProfileState, field, value.Value)
-	}
-	if !family.Valid() {
-		return fmt.Errorf("%w: protocol family %q is invalid", ErrProfileState, string(family))
-	}
-	if version != provider.ProfileVersion {
-		return fmt.Errorf("%w: profile version %q is unsupported", ErrProfileState, version)
-	}
-	return nil
-}
-
 // validatePersistedProfileRow re-validates one persisted row and re-derives
 // the key from the stored identity columns: stored state whose key does not
-// match its own identity is corruption and fails closed.
-func validatePersistedProfileRow(key, providerID, family, configIdentity, model, version, field string, value int64, provenance, evidenceRef string) error {
+// match its own identity, whose provider_id does not match the identity it is
+// being loaded for, whose evidence reference is not a structured sanitized
+// kind:id, or whose provenance/value violates the contract is corruption and
+// fails closed.
+func validatePersistedProfileRow(key, expectedProviderID, providerID, family, configIdentity, model, version, field string, value int64, provenance string, evidenceRef provider.EvidenceRef) error {
 	if !provider.IsProfileField(provider.ProfileField(field)) {
 		return fmt.Errorf("%w: row for key %s has unknown field %q", ErrProfileState, shortKeyRef(key), field)
 	}
@@ -179,14 +118,21 @@ func validatePersistedProfileRow(key, providerID, family, configIdentity, model,
 	if strings.TrimSpace(version) != provider.ProfileVersion {
 		return fmt.Errorf("%w: row for key %s has unsupported profile version %q", ErrProfileState, shortKeyRef(key), version)
 	}
+	if strings.TrimSpace(providerID) != strings.TrimSpace(expectedProviderID) {
+		return fmt.Errorf("%w: row for key %s has provider id %q that does not match the identity %q", ErrProfileState, shortKeyRef(key), providerID, expectedProviderID)
+	}
 	expected := provider.OperationalProfileKey(configIdentity, model, parsedFamily)
 	if expected != key {
 		return fmt.Errorf("%w: row key %s does not match its stored identity", ErrProfileState, shortKeyRef(key))
 	}
-	// Only observed/authoritative rows may carry an evidence reference; a
-	// reference on configured state is a provenance violation.
-	if (parsed == provider.ProvenanceObserved || parsed == provider.ProvenanceAuthoritative) && strings.TrimSpace(evidenceRef) == "" {
-		return fmt.Errorf("%w: row for key %s has provenance %q without evidence reference", ErrProfileState, shortKeyRef(key), parsed)
+	// Evidence references are structured kind:id identifiers; free text and
+	// configured rows carrying references are provenance violations.
+	if parsed == provider.ProvenanceObserved || parsed == provider.ProvenanceAuthoritative {
+		if !evidenceRef.Valid() {
+			return fmt.Errorf("%w: row for key %s has provenance %q without a valid structured evidence reference", ErrProfileState, shortKeyRef(key), parsed)
+		}
+	} else if evidenceRef.Kind != "" {
+		return fmt.Errorf("%w: row for key %s carries an evidence reference on configured provenance", ErrProfileState, shortKeyRef(key))
 	}
 	return nil
 }
@@ -243,11 +189,15 @@ func (s *Store) ApplyOperationalProfileUpdates(ctx context.Context, identity pro
 		err := tx.QueryRowContext(ctx,
 			`SELECT value, provenance, evidence_ref, updated_at FROM provider_operational_profiles WHERE profile_key = ? AND field = ?`,
 			key, string(update.Field)).Scan(&currentValue, &currentProvenance, &currentEvidence, &currentUpdated)
+		currentRef, parseErr := provider.ParseEvidenceRef(currentEvidence)
+		if parseErr != nil {
+			return nil, fmt.Errorf("%w: row for key %s: %v", ErrProfileState, shortKeyRef(key), parseErr)
+		}
 		if err == nil {
 			// Validate the persisted current state before deciding: a
 			// corrupted row is never silently repaired.
-			if err := validatePersistedProfileRow(key, identity.ProviderID, string(identity.ProtocolFamily), identity.ConfigIdentity, identity.Model,
-				provider.ProfileVersion, string(update.Field), currentValue, currentProvenance, currentEvidence); err != nil {
+			if err := validatePersistedProfileRow(key, identity.ProviderID, identity.ProviderID, string(identity.ProtocolFamily), identity.ConfigIdentity, identity.Model,
+				provider.ProfileVersion, string(update.Field), currentValue, currentProvenance, currentRef); err != nil {
 				return nil, err
 			}
 			exists = true
@@ -255,7 +205,7 @@ func (s *Store) ApplyOperationalProfileUpdates(ctx context.Context, identity pro
 			return nil, fmt.Errorf("read operational profile field %s: %w", update.Field, err)
 		}
 
-		current := provider.ProfileValue{Value: currentValue, Provenance: provider.Provenance(currentProvenance), EvidenceRef: currentEvidence, UpdatedAt: currentUpdated}
+		current := provider.ProfileValue{Value: currentValue, Provenance: provider.Provenance(currentProvenance), EvidenceRef: currentRef, UpdatedAt: currentUpdated}
 		next, applyErr := provider.ApplyFieldValue(update.Field, current, exists, update, now)
 		if errors.Is(applyErr, provider.ErrProfileReplayUndo) {
 			// Benign no-op for the same unchanged identity: the field keeps
@@ -275,13 +225,13 @@ func (s *Store) ApplyOperationalProfileUpdates(ctx context.Context, identity pro
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				key, Redact(identity.ProviderID), Redact(string(identity.ProtocolFamily)), Redact(identity.ConfigIdentity),
 				Redact(identity.Model), provider.ProfileVersion, string(update.Field), next.Value, string(next.Provenance),
-				Redact(next.EvidenceRef), next.UpdatedAt, createdAt); err != nil {
+				Redact(next.EvidenceRef.String()), next.UpdatedAt, createdAt); err != nil {
 				return nil, fmt.Errorf("insert operational profile field %s: %w", update.Field, err)
 			}
 		} else {
 			if _, err := tx.ExecContext(ctx,
 				`UPDATE provider_operational_profiles SET value = ?, provenance = ?, evidence_ref = ?, updated_at = ? WHERE profile_key = ? AND field = ?`,
-				next.Value, string(next.Provenance), Redact(next.EvidenceRef), next.UpdatedAt, key, string(update.Field)); err != nil {
+				next.Value, string(next.Provenance), Redact(next.EvidenceRef.String()), next.UpdatedAt, key, string(update.Field)); err != nil {
 				return nil, fmt.Errorf("update operational profile field %s: %w", update.Field, err)
 			}
 		}

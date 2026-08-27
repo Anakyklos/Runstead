@@ -27,6 +27,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -58,6 +59,105 @@ var ErrProfileReplayUndo = errors.New("configured replay would undo observed/aut
 // profile can represent configured/authoritative values for such fields, but
 // never auto-adjusts them from observations (#91 review).
 var ErrNoAutomaticDirection = errors.New("field has no defined automatic safety direction for observations")
+
+// ErrInvalidEvidenceRef marks an evidence reference that is not a structured,
+// sanitized identifier: evidence references are NEVER free text and cannot
+// carry prompts, response bodies, headers or credentials (#91 review).
+var ErrInvalidEvidenceRef = errors.New("invalid sanitized evidence reference")
+
+// EvidenceKind names the structured kind of a sanitized evidence reference.
+type EvidenceKind string
+
+const (
+	// EvidenceKindEvidence references a persisted observation evidence id
+	// (obs-NNNNNN).
+	EvidenceKindEvidence EvidenceKind = "evidence"
+	// EvidenceKindExecution references a Runstead execution id (exec-NNNNNN).
+	EvidenceKindExecution EvidenceKind = "execution"
+	// EvidenceKindVerification references a verification attempt id.
+	EvidenceKindVerification EvidenceKind = "verification"
+	// EvidenceKindTask references a durable task id.
+	EvidenceKindTask EvidenceKind = "task"
+)
+
+// Valid reports whether k is a known evidence kind.
+func (k EvidenceKind) Valid() bool {
+	switch k {
+	case EvidenceKindEvidence, EvidenceKindExecution, EvidenceKindVerification, EvidenceKindTask:
+		return true
+	default:
+		return false
+	}
+}
+
+// evidenceIDPattern restricts evidence IDs to conservative identifier
+// characters: no whitespace, no free text, no punctuation beyond the
+// identifier separators used by Runstead ids (obs-000001, exec-000001,
+// verif-000001, cli-<nanos>).
+var evidenceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+
+// EvidenceRef is a STRUCTURED, sanitized reference to evidence that produced
+// a value. It is deliberately not free text: only a known kind plus a
+// conservative identifier may be persisted, so private content (prompts,
+// response bodies, raw headers, credentials) has no representation it can
+// smuggle through (#91 review).
+type EvidenceRef struct {
+	Kind EvidenceKind
+	ID   string
+}
+
+// Valid reports whether the reference is a complete, structured, sanitized
+// identifier. The zero value (absent reference) is invalid.
+func (r EvidenceRef) Valid() bool {
+	if !r.Kind.Valid() {
+		return false
+	}
+	id := strings.TrimSpace(r.ID)
+	if id == "" || id != r.ID || !evidenceIDPattern.MatchString(id) {
+		return false
+	}
+	return true
+}
+
+// String renders the structured reference as "kind:id" for persistence and
+// inspection. The zero value renders empty (absent reference).
+func (r EvidenceRef) String() string {
+	if r.Kind == "" {
+		return ""
+	}
+	return string(r.Kind) + ":" + r.ID
+}
+
+// ParseEvidenceRef parses a persisted "kind:id" reference. The empty string
+// is the ABSENT reference (no evidence). Anything that is not a known kind
+// plus a conservative identifier fails closed instead of being treated as an
+// opaque token.
+func ParseEvidenceRef(value string) (EvidenceRef, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return EvidenceRef{}, nil
+	}
+	colon := strings.Index(value, ":")
+	if colon <= 0 || colon == len(value)-1 {
+		return EvidenceRef{}, fmt.Errorf("%w: %q is not a structured kind:id reference", ErrInvalidEvidenceRef, RedactRef(value))
+	}
+	kind := EvidenceKind(value[:colon])
+	id := value[colon+1:]
+	ref := EvidenceRef{Kind: kind, ID: id}
+	if !ref.Valid() {
+		return EvidenceRef{}, fmt.Errorf("%w: %q does not satisfy the conservative identifier rules", ErrInvalidEvidenceRef, RedactRef(value))
+	}
+	return ref, nil
+}
+
+// RedactRef renders an invalid evidence-ref candidate for error messages in
+// a bounded, quote-free form (never raw private content).
+func RedactRef(value string) string {
+	if len(value) > 32 {
+		return value[:32] + "…"
+	}
+	return value
+}
 
 // Provenance is the typed origin of one persisted profile value. The four
 // semantics are distinct and fail-closed: the zero value is invalid.
@@ -186,10 +286,10 @@ func SafetyDirection(field ProfileField) FieldSafetyDirection {
 type ProfileValue struct {
 	Value      int64
 	Provenance Provenance
-	// EvidenceRef is the SANITIZED evidence reference (evidence id, task id,
-	// verification attempt id) when the origin is observed/authoritative. It
-	// is never a copy of private evidence content.
-	EvidenceRef string
+	// EvidenceRef is the STRUCTURED, sanitized evidence reference (kind:id)
+	// used only when the provenance is observed/authoritative. It is never
+	// free text and never a copy of private evidence content (#91 review).
+	EvidenceRef EvidenceRef
 	// UpdatedAt is the RFC3339 UTC time of the last update to this field.
 	UpdatedAt string
 }
@@ -252,7 +352,7 @@ type ProfileUpdate struct {
 	Field       ProfileField
 	Value       int64
 	Provenance  Provenance
-	EvidenceRef string
+	EvidenceRef EvidenceRef
 }
 
 // Validate checks one update for internal consistency BEFORE it reaches the
@@ -270,8 +370,8 @@ func (u ProfileUpdate) Validate() error {
 		return fmt.Errorf("%w: %s value must be positive (a zero value means unknown/absent and is never persisted)", ErrProfileInvalid, u.Field)
 	}
 	if u.Provenance == ProvenanceObserved || u.Provenance == ProvenanceAuthoritative {
-		if strings.TrimSpace(u.EvidenceRef) == "" {
-			return fmt.Errorf("%w: %s with provenance %q requires a sanitized evidence reference", ErrProfileInvalid, u.Field, u.Provenance)
+		if !u.EvidenceRef.Valid() {
+			return fmt.Errorf("%w: %s with provenance %q requires a structured sanitized evidence reference (kind:id without free text)", ErrProfileInvalid, u.Field, u.Provenance)
 		}
 	}
 	return nil
@@ -323,7 +423,7 @@ func ApplyFieldValue(field ProfileField, current ProfileValue, exists bool, upda
 	if update.Provenance == ProvenanceObserved && SafetyDirection(field) == DirectionNoAutomatic {
 		return ProfileValue{}, fmt.Errorf("%w: %s (no automatic safety direction)", ErrNoAutomaticDirection, field)
 	}
-	proposed := ProfileValue{Value: update.Value, Provenance: update.Provenance, EvidenceRef: strings.TrimSpace(update.EvidenceRef), UpdatedAt: now}
+	proposed := ProfileValue{Value: update.Value, Provenance: update.Provenance, EvidenceRef: update.EvidenceRef, UpdatedAt: now}
 
 	if !exists || !current.Known() {
 		// unknown/absent can receive any writable provenance through its

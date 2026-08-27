@@ -1105,8 +1105,8 @@ func renderOperationalProfile(ctx context.Context, store *Store, builder *string
 			continue
 		}
 		fmt.Fprintf(builder, "  %s: value=%d provenance=%s\n", field, value.Value, value.Provenance)
-		if value.EvidenceRef != "" {
-			fmt.Fprintf(builder, "    evidence_ref=%s\n", value.EvidenceRef)
+		if value.EvidenceRef.Valid() {
+			fmt.Fprintf(builder, "    evidence_ref=%s\n", value.EvidenceRef.String())
 		}
 		if value.UpdatedAt != "" {
 			fmt.Fprintf(builder, "    updated_at=%s\n", value.UpdatedAt)
