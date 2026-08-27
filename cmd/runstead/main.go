@@ -338,6 +338,12 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		client = compatClient
 		model = resolvedProvider.Model
 		providerIdentity = provider.IdentityFromResolved(*resolvedProvider, compat.AdapterVersion)
+		// Durable operational profile (#91): configured capability bounds
+		// with provenance, persisted before execution. Metadata only.
+		if _, profileErr := syncOperationalConfiguredBounds(ctx, store, resolvedProvider, providerIdentity); profileErr != nil {
+			fmt.Fprintf(errOut, "run: %v\n", profileErr)
+			return exitUnavailable
+		}
 	} else {
 		// The protected lane client was constructed and verified above
 		// (gateway contract + preflight); every model request still flows

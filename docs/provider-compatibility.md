@@ -181,6 +181,58 @@ only through the SAME provider declarations and provider ID. Re-supplying a
 different provider ID, model or configuration identity fails closed before
 the recovery pipeline ("resume never switches providers silently").
 
+## Operational profiles (issue #91)
+
+`runstead run`/`resume` through a configured provider also persists a
+**durable, versioned operational profile** keyed by the sanitized
+config identity + exact model + protocol family (`profile_key` is a SHA-256
+of those three). The profile is operational metadata with evidence
+provenance; it is not task truth, not policy, not approval, not retry
+authority and not verifier state.
+
+Each variable field (currently: `max_request_bytes`, `max_response_bytes`,
+`requests_per_minute`, `cooldown_millis`, `concurrency_ceiling`,
+`timeout_millis`) carries:
+
+- the effective value;
+- its provenance — `configured` (operator declaration), `observed` (concrete
+  runtime evidence actually produced, with a sanitized evidence reference) or
+  `authoritative` (accepted through an explicitly typed, contract-reviewed
+  path); the honest absent state is **unknown**, never a guessed value;
+- the sanitized evidence reference and update timestamp when they exist.
+
+Update rules (enforced by code and tests):
+
+- observed evidence may only **tighten** a known value (or fill an unknown
+  one from a specific produced observation); it never raises a hard ceiling,
+  rate/concurrency envelope or context/output bound;
+- ordinary successful requests never raise anything;
+- raising a value for the same unchanged identity requires operator
+  configuration or the explicitly typed authoritative path, and every value
+  is bounded by Runstead's own hard caps (for example 32 MiB request bound,
+  16 concurrency, 1000 rpm);
+- re-supplying the same unchanged configured bounds never undoes an observed
+  tightening or authoritative acceptance (`ErrProfileReplayUndo` is a benign
+  no-op for the composition root);
+- a config/family/model change derives a different profile key, so old
+  learning is never inherited silently.
+
+Persistence: migration `0013_operational_profiles.sql` (additive; existing
+databases upgrade without loss). Records are sanitized (no credentials,
+prompts, response bodies or headers), survive restarts, and are reconstructed
+from durable state without any provider request. Corrupted/inconsistent rows
+(key/identity mismatch, invalid provenance, over-cap values) fail closed.
+`runstead inspect` renders the section `Operational profile:` with effective
+value, provenance, sanitized identity, exact model and protocol family;
+absent fields render as `unknown`.
+
+The profile currently records what the runtime genuinely knows
+(configured capability bounds); the observation/authoritative ingestion
+paths are contract-ready for #92 (bounded retry/cooldown inputs) and #93
+(conservative adaptation), which remain out of scope here. The profile cannot
+execute retries, grant admission or change provider/model/fallback; the
+governor stays the only admission authority.
+
 ## Execution rules (unchanged invariants)
 
 - an arbitrary configured compatible endpoint has UNKNOWN upstream
