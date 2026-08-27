@@ -102,7 +102,7 @@ func writeProvidersFile(t *testing.T, family e2eFamily, endpoints map[string]str
 	type profile struct {
 		ProfileVersion string   `json:"profile_version"`
 		Capabilities   []string `json:"capabilities"`
-		RouteSafety    any      `json:"route_safety,omitempty"`
+		RouteSafety    any      `json:"route_safety"`
 	}
 	type entry struct {
 		ProviderID      string          `json:"provider_id"`
@@ -113,6 +113,17 @@ func writeProvidersFile(t *testing.T, family e2eFamily, endpoints map[string]str
 		Options         json.RawMessage `json:"options,omitempty"`
 		ConfigVersion   string          `json:"config_version"`
 		Profile         profile         `json:"profile"`
+	}
+	// Route safety is mandatory operator evidence; the E2E declares the safe
+	// single-attempt route explicitly.
+	routeSafety := map[string]string{
+		"attempt_accounting": "single",
+		"single_attempt":     "guaranteed",
+		"internal_retries":   "disabled",
+		"cooldown_replay":    "disabled",
+		"account_pooling":    "disabled",
+		"automatic_fallback": "disabled",
+		"combo_routing":      "disabled",
 	}
 	var providers []entry
 	for providerID, baseURL := range endpoints {
@@ -127,6 +138,7 @@ func writeProvidersFile(t *testing.T, family e2eFamily, endpoints map[string]str
 			Profile: profile{
 				ProfileVersion: "v1",
 				Capabilities:   []string{"text_turn", "runstead_protocol"},
+				RouteSafety:    routeSafety,
 			},
 		})
 	}

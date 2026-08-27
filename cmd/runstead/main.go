@@ -747,6 +747,14 @@ func resolveGovernorConfig(scripted bool, cfg config.Config, resolved *provider.
 		allowanceProfile = os.Getenv(config.EnvAllowanceProfile)
 		profileSet = strings.TrimSpace(allowanceProfile) != ""
 	}
+	// The provider-neutral surface is an ARBITRARY configured compatible
+	// endpoint: its upstream allowance semantics are unknown unless the
+	// operator declares them explicitly. Never fabricate the historical
+	// plus_go_instant published-quota contract for such an endpoint (#58/#14).
+	// The legacy scripted and OmniRoute lanes keep their historical default.
+	if !scripted && resolved != nil && !profileSet {
+		allowanceProfile = string(governor.ProfileUnknown)
+	}
 	var accountConfig governor.Config
 	switch strings.TrimSpace(allowanceProfile) {
 	case "", string(governor.ProfileInstant):

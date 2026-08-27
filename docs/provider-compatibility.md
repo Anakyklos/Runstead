@@ -93,7 +93,8 @@ The operator declares configured endpoints in one providers file
 (`--provider-id ID` / `RUNSTEAD_PROVIDER_ID`). The document maps one-to-one
 onto the #79 contract (`provider.Config`, `CapabilityProfile`,
 `RouteSafety`); resolution happens through the existing registry before any
-dispatch.
+dispatch. The document is explicitly versioned: only `version: 1` is
+accepted, and absent/unknown/future versions or trailing JSON are rejected.
 
 ```json
 {
@@ -147,8 +148,9 @@ Fields:
 - `profile.capabilities` — at least `text_turn` and `runstead_protocol` are
   required for execution; missing required capabilities fail closed.
 - `profile.route_safety` — the endpoint's executable attempt-safety
-  declaration. When omitted the safe single-attempt declaration is assumed;
-  incompatible declarations fail closed.
+  declaration, and it is MANDATORY: absence of evidence cannot be promoted to
+  a safe-route guarantee, so omission fails closed before any dispatch.
+  Unknown enum values and incompatible declarations also fail closed.
 - `config_version` — operator-maintained configuration identity, bumped
   when the meaning changes.
 
@@ -181,6 +183,12 @@ the recovery pipeline ("resume never switches providers silently").
 
 ## Execution rules (unchanged invariants)
 
+- an arbitrary configured compatible endpoint has UNKNOWN upstream
+  allowance semantics unless the operator declares them explicitly: the
+  provider-neutral run surface defaults to the conservative `unknown`
+  allowance profile instead of the historical ChatGPT-Web `plus_go_instant`
+  published-quota contract (the legacy scripted/OmniRoute lanes keep their
+  historical default);
 - local durable state is authoritative;
 - providers/models/sessions are replaceable infrastructure;
 - the model proposes actions; Runstead validates, authorizes, executes and

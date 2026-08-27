@@ -1,11 +1,18 @@
 package config
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/RenyEnnos/Runstead/internal/provider"
 )
+
+// stripRouteSafety removes the route_safety block so tests can exercise
+// omission/injection against the real document shape.
+func stripRouteSafety(document string) string {
+	return regexp.MustCompile(`(?s)"route_safety":\s*\{[^}]*\}`).ReplaceAllString(document, "")
+}
 
 func validDocument() string {
 	return `{
@@ -20,7 +27,16 @@ func validDocument() string {
 				"config_version": "v1",
 				"profile": {
 					"profile_version": "v1",
-					"capabilities": ["text_turn", "runstead_protocol"]
+					"capabilities": ["text_turn", "runstead_protocol"],
+					"route_safety": {
+						"attempt_accounting": "single",
+						"single_attempt": "guaranteed",
+						"internal_retries": "disabled",
+						"cooldown_replay": "disabled",
+						"account_pooling": "disabled",
+						"automatic_fallback": "disabled",
+						"combo_routing": "disabled"
+					}
 				}
 			}
 		]
@@ -51,9 +67,14 @@ func TestProvidersFileLoadsAllFamiliesWithDefaults(t *testing.T) {
 	if resolved.Model != "demo-model" {
 		t.Fatalf("model = %q", resolved.Model)
 	}
-	// The safe route is the default declaration when omitted.
+	// The declared safe route is honored exactly as declared.
 	if !resolved.Profile.RouteSafety.Equal(provider.SafeRouteSafety()) {
-		t.Fatalf("default route safety must be the safe single-attempt declaration")
+		t.Fatalf("declared route safety must resolve to the safe single-attempt declaration")
+	}
+	// Omission is fail-closed, never promoted to a safe-route guarantee.
+	withoutSafety := stripRouteSafety(validDocument())
+	if _, err := parseProviders(strings.NewReader(withoutSafety)); err == nil {
+		t.Fatalf("route_safety omission must fail closed, got success")
 	}
 	for _, family := range []provider.ProtocolFamily{
 		provider.FamilyAnthropicCompatible,
@@ -130,6 +151,21 @@ func TestProvidersFileFailsClosed(t *testing.T) {
 		name   string
 		mutate func(string) string
 	}{
+		{"missing version", func(string) string {
+			return strings.Replace(validDocument(), `"version": 1,`, "", 1)
+		}},
+		{"version zero", func(document string) string {
+			return strings.Replace(document, `"version": 1`, `"version": 0`, 1)
+		}},
+		{"unknown future version", func(document string) string {
+			return strings.Replace(document, `"version": 1`, `"version": 2`, 1)
+		}},
+		{"trailing json", func(document string) string {
+			return document + `{"extra":true}`
+		}},
+		{"missing route safety", func(document string) string {
+			return stripRouteSafety(document)
+		}},
 		{"empty document", func(string) string { return `{}` }},
 		{"no providers", func(string) string { return `{"version":1,"providers":[]}` }},
 		{"duplicate provider id", func(document string) string {
@@ -148,7 +184,8 @@ func TestProvidersFileFailsClosed(t *testing.T) {
 			return strings.Replace(document, `"profile_version": "v1"`, `"profile_version": ""`, 1)
 		}},
 		{"invalid route safety", func(document string) string {
-			return strings.Replace(document, `"capabilities": ["text_turn", "runstead_protocol"]`, `"capabilities": ["text_turn", "runstead_protocol"], "route_safety": {"attempt_accounting":"single","single_attempt":"guaranteed","internal_retries":"enabled"}`, 1)
+			document = stripRouteSafety(document)
+			return strings.Replace(document, `"capabilities": ["text_turn", "runstead_protocol"]`, `"capabilities": ["text_turn", "runstead_protocol"], "route_safety": {"attempt_accounting":"single","single_attempt":"guaranteed","internal_retries":"enabled","cooldown_replay":"disabled","account_pooling":"disabled","automatic_fallback":"disabled","combo_routing":"disabled"}`, 1)
 		}},
 		{"unknown json field", func(document string) string {
 			return strings.Replace(document, `"config_version": "v1"`, `"config_version": "v1", "nonsense": true`, 1)

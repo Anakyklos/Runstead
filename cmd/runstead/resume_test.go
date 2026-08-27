@@ -1055,6 +1055,50 @@ func TestResumeFailsClosedOnIncompatiblePersistedReserve(t *testing.T) {
 	}
 }
 
+// TestResolveGovernorConfigProviderNeutralDefaultsToUnknown is the #14
+// review regression: a configured compatible endpoint must never inherit the
+// historical plus_go_instant published-quota contract by default. Without an
+// explicit operator declaration, the provider-neutral surface stays unknown
+// (conservative local ceilings, no fabricated upstream quota). The legacy
+// scripted/OmniRoute lanes keep their historical default.
+func TestResolveGovernorConfigProviderNeutralDefaultsToUnknown(t *testing.T) {
+	t.Setenv(config.EnvAllowanceProfile, "")
+	resolved := &provider.Resolved{ProviderID: "provider-a", Model: "model-a", ProtocolFamily: provider.FamilyOpenAICompatible}
+
+	// No explicit declaration: unknown, never the historical instant contract.
+	unknown, err := resolveGovernorConfig(false, config.Config{}, resolved, "", false, "", false)
+	if err != nil {
+		t.Fatalf("resolveGovernorConfig() error = %v", err)
+	}
+	if unknown.AllowanceProfile != governor.ProfileUnknown || unknown.AllowanceKind != governor.AllowanceKindUnknown {
+		t.Fatalf("provider-neutral default profile = %#v, want unknown/unknown", unknown)
+	}
+	if unknown.ProviderID != "provider-a" || unknown.Model != "model-a" {
+		t.Fatalf("provider identity lost: %#v", unknown)
+	}
+	if unknown.ProtocolFamily != resolved.ProtocolFamily || unknown.ConfigIdentity != resolved.ConfigIdentity {
+		t.Fatalf("sanitized identity must reach the governor: %#v", unknown)
+	}
+
+	// An explicit operator declaration is honored.
+	explicit, err := resolveGovernorConfig(false, config.Config{}, resolved, "", false, "plus_go_instant", true)
+	if err != nil {
+		t.Fatalf("resolveGovernorConfig(explicit) error = %v", err)
+	}
+	if explicit.AllowanceProfile != governor.ProfileInstant || explicit.AllowanceKind != governor.AllowanceKindPublishedQuota {
+		t.Fatalf("explicit instant profile not honored: %#v", explicit)
+	}
+
+	// The legacy scripted lane keeps the historical default.
+	scripted, err := resolveGovernorConfig(true, config.Config{}, nil, "", false, "", false)
+	if err != nil {
+		t.Fatalf("resolveGovernorConfig(scripted) error = %v", err)
+	}
+	if scripted.AllowanceProfile != governor.ProfileInstant {
+		t.Fatalf("scripted lane default changed: %#v", scripted)
+	}
+}
+
 // Issue #58 review: the CLI profile selection must be explicit and must not
 // weaken the local layer. Unknown keeps the conservative local ceilings and
 // reserve; unlimited text keeps no numeric layer; the default remains the

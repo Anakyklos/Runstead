@@ -81,6 +81,21 @@ func parseProviders(reader io.Reader) (*provider.Registry, error) {
 	if err := decoder.Decode(&document); err != nil {
 		return nil, fmt.Errorf("provider declarations: %v", err)
 	}
+	// The document is explicitly versioned: only the supported version is
+	// accepted, and absent/unknown/future versions fail closed instead of
+	// being interpreted with a different meaning.
+	if document.Version != 1 {
+		return nil, fmt.Errorf("provider declarations: unsupported version %d (supported: 1)", document.Version)
+	}
+	// The document must be exactly one JSON document: trailing JSON or data
+	// after the first value is a configuration error, never a silent ignore.
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("provider declarations: unexpected content after the providers document")
+		}
+		return nil, fmt.Errorf("provider declarations: malformed content after the providers document: %v", err)
+	}
 	if len(document.Providers) == 0 {
 		return nil, fmt.Errorf("provider declarations: at least one provider must be configured")
 	}
@@ -137,13 +152,16 @@ func buildProfile(entry providersProfile) (provider.CapabilityProfile, error) {
 		}
 		capabilities[capability] = true
 	}
-	safety := provider.SafeRouteSafety()
-	if entry.RouteSafety != nil {
-		parsed, err := buildSafety(*entry.RouteSafety)
-		if err != nil {
-			return provider.CapabilityProfile{}, err
-		}
-		safety = parsed
+	// Route safety is operator-declared EVIDENCE about the endpoint, never a
+	// derived default: absence of a declaration cannot become a guarantee of
+	// single-attempt behavior with retries/fallback/pooling disabled.
+	// #79/#86/#14: omission fails closed before any dispatch.
+	if entry.RouteSafety == nil {
+		return provider.CapabilityProfile{}, fmt.Errorf("profile.route_safety must be declared explicitly; absence of evidence cannot be promoted to a safe-route guarantee")
+	}
+	safety, err := buildSafety(*entry.RouteSafety)
+	if err != nil {
+		return provider.CapabilityProfile{}, err
 	}
 	return provider.CapabilityProfile{
 		ProfileVersion:   strings.TrimSpace(entry.ProfileVersion),
