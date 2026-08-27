@@ -315,21 +315,24 @@ func ApplyFieldValue(field ProfileField, current ProfileValue, exists bool, upda
 	if err := update.Validate(); err != nil {
 		return ProfileValue{}, err
 	}
+	// The automatic-safety-direction check precedes the unknown fast-path: a
+	// field with NO defined conservative direction (timeout_millis) never
+	// accepts observations, not even as its first value. An absent field is
+	// not a license to apply an observation whose safety semantics are
+	// undefined (#91 review).
+	if update.Provenance == ProvenanceObserved && SafetyDirection(field) == DirectionNoAutomatic {
+		return ProfileValue{}, fmt.Errorf("%w: %s (no automatic safety direction)", ErrNoAutomaticDirection, field)
+	}
 	proposed := ProfileValue{Value: update.Value, Provenance: update.Provenance, EvidenceRef: strings.TrimSpace(update.EvidenceRef), UpdatedAt: now}
 
 	if !exists || !current.Known() {
 		// unknown/absent can receive any writable provenance through its
-		// typed path.
+		// typed path (subject to the checks above).
 		return proposed, nil
 	}
 	if update.Provenance == ProvenanceObserved {
-		switch SafetyDirection(field) {
-		case DirectionNoAutomatic:
-			return ProfileValue{}, fmt.Errorf("%w: %s (no automatic safety direction)", ErrNoAutomaticDirection, field)
-		default:
-			if !moreConservative(field, current.Value, update.Value) {
-				return ProfileValue{}, fmt.Errorf("%w: %s observed value %d is not conservative against the effective value %d", ErrObservedNotConservative, field, update.Value, current.Value)
-			}
+		if !moreConservative(field, current.Value, update.Value) {
+			return ProfileValue{}, fmt.Errorf("%w: %s observed value %d is not conservative against the effective value %d", ErrObservedNotConservative, field, update.Value, current.Value)
 		}
 		return proposed, nil
 	}

@@ -91,9 +91,12 @@ func TestProfilesSeparateModelsAndConfigsInPersistence(t *testing.T) {
 	if v := loadedB.Effective(provider.FieldMaxRequestBytes); v.Value != 2048 {
 		t.Fatalf("profile B content wrong: %+v", v)
 	}
-	// Updating A never changes B (independent keys).
+	// Updating A never changes B (independent keys). The observed update
+	// targets requests_per_minute, which is absent in the seeded profile and
+	// has a defined automatic safety direction (lower is conservative), so
+	// unknown -> observed is legitimate there.
 	updatedA, err := loadedA.Apply(provider.ProfileUpdate{
-		Field: provider.FieldTimeoutMillis, Value: 1000, Provenance: provider.ProvenanceObserved, EvidenceRef: "obs-000002",
+		Field: provider.FieldRequestsPerMinute, Value: 1000, Provenance: provider.ProvenanceObserved, EvidenceRef: "obs-000002",
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +108,7 @@ func TestProfilesSeparateModelsAndConfigsInPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloadedB.Effective(provider.FieldTimeoutMillis).Known() {
+	if reloadedB.Effective(provider.FieldRequestsPerMinute).Known() {
 		t.Fatalf("updating profile A leaked into profile B")
 	}
 	// profile C is independent of A and B (its own config identity).
@@ -463,5 +466,36 @@ func TestZeroAndNegativeUpdatesRefusedAtDurableBoundary(t *testing.T) {
 		if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{update}); err == nil {
 			t.Fatalf("non-positive update %+v must fail closed at the durable boundary", update)
 		}
+	}
+}
+
+// TestOperationalProfileUpdatesTimeoutUnknownObservedPersistsNoRow is the
+// #91-review durable-boundary regression: an observed timeout on an unknown
+// field is refused (no automatic safety direction) and NO row is persisted.
+func TestOperationalProfileUpdatesTimeoutUnknownObservedPersistsNoRow(t *testing.T) {
+	identity := testProfileIdentity()
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldTimeoutMillis, Value: 30000, Provenance: provider.ProvenanceObserved, EvidenceRef: "obs-timeout-first",
+	}}); !errors.Is(err, provider.ErrNoAutomaticDirection) {
+		t.Fatalf("unknown timeout -> observed at the durable boundary must fail with ErrNoAutomaticDirection, got %v", err)
+	}
+	// No row exists for any field of that profile: the refused observation
+	// persisted nothing.
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM provider_operational_profiles`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("refused timeout observation persisted %d rows, want 0", count)
+	}
+	loaded, err := store.LoadOperationalProfile(ctx, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded != nil {
+		t.Fatalf("refused observation produced a profile: %+v", loaded)
 	}
 }

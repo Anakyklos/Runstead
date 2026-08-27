@@ -142,10 +142,23 @@ func TestCooldownHigherIsConservative(t *testing.T) {
 }
 
 // TestTimeoutHasNoAutomaticDirection: observations are never auto-applied to
-// timeout_millis; configured/authoritative values are still representable.
+// timeout_millis — including as the FIRST value on an unknown field —
+// while configured/authoritative values remain representable.
 func TestTimeoutHasNoAutomaticDirection(t *testing.T) {
 	profile := NewOperationalProfile(testIdentity("cfg", "model-a", FamilyOpenAICompatible))
 	var err error
+
+	// unknown timeout -> observed must fail: the undefined direction check
+	// precedes the unknown fast-path (#91 review).
+	if _, err = profile.Apply(ProfileUpdate{
+		Field: FieldTimeoutMillis, Value: 30000, Provenance: ProvenanceObserved, EvidenceRef: "obs-timeout-first",
+	}, fixedClock()); !errors.Is(err, ErrNoAutomaticDirection) {
+		t.Fatalf("unknown timeout -> observed must fail with ErrNoAutomaticDirection, got %v", err)
+	}
+	if profile.Effective(FieldTimeoutMillis).Known() {
+		t.Fatalf("refused observation must not produce an effective value")
+	}
+
 	profile, err = profile.ApplyConfigured(FieldTimeoutMillis, 60000, fixedClock())
 	if err != nil {
 		t.Fatal(err)
