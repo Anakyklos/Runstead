@@ -93,8 +93,8 @@ internal/tools/execute.go:57  recipeID, _ := stringArgument(action.Arguments, "r
 # the command's primary result/error is already returned before the defer
 # runs, so a close failure can only degrade the process exit.
 cmd/runstead/main.go:311  defer store.Close()
-cmd/runstead/main.go:1006  defer store.Close()
-cmd/runstead/main.go:1105  defer store.Close()
+cmd/runstead/main.go:1019  defer store.Close()
+cmd/runstead/main.go:1118  defer store.Close()
 cmd/runstead/resume.go:198  defer store.Close()
 cmd/runstead/scripted.go:23  defer file.Close()
 
