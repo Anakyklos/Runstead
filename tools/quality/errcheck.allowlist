@@ -36,7 +36,7 @@
 
 # Best-effort baseline capture: the status result is checked, while a diff
 # failure only degrades the rendered baseline (the loop still runs).
-internal/agent/loop.go:461  diffText, diffFlag, _ := l.registry.GitDiffText()
+internal/agent/loop.go:472  diffText, diffFlag, _ := l.registry.GitDiffText()
 
 # Telemetry timestamp is best-effort: a parse failure yields the zero time.
 # NOTE: follow-up review worth doing (telemetry parsing) outside issue #35.
@@ -92,10 +92,10 @@ internal/tools/execute.go:57  recipeID, _ := stringArgument(action.Arguments, "r
 # Deferred durable-store and script-file close on command shutdown paths:
 # the command's primary result/error is already returned before the defer
 # runs, so a close failure can only degrade the process exit.
-cmd/runstead/main.go:259  defer store.Close()
-cmd/runstead/main.go:830  defer store.Close()
-cmd/runstead/main.go:929  defer store.Close()
-cmd/runstead/resume.go:170  defer store.Close()
+cmd/runstead/main.go:311  defer store.Close()
+cmd/runstead/main.go:1006  defer store.Close()
+cmd/runstead/main.go:1105  defer store.Close()
+cmd/runstead/resume.go:198  defer store.Close()
 cmd/runstead/scripted.go:23  defer file.Close()
 
 # Governor cancellation bookkeeping is best-effort: the admission error is
@@ -125,7 +125,7 @@ internal/state/actions.go:57  defer tx.Rollback()
 internal/state/approval_flow.go:49  defer tx.Rollback()
 internal/state/migrations.go:104  defer tx.Rollback()
 internal/state/provider_attempts.go:62  defer tx.Rollback()
-internal/state/provider_attempts.go:111  defer tx.Rollback()
+internal/state/provider_attempts.go:114  defer tx.Rollback()
 internal/state/recovery.go:89  defer tx.Rollback()
 internal/state/recovery.go:121  defer tx.Rollback()
 internal/state/recovery.go:172  defer tx.Rollback()
@@ -156,13 +156,13 @@ internal/state/governor_state.go:210  defer rows.Close()
 internal/state/governor_state.go:229  defer rows.Close()
 internal/state/governor_state.go:248  defer rows.Close()
 internal/state/governor_state.go:267  defer rows.Close()
-internal/state/inspect.go:523  defer rows.Close()
-internal/state/inspect.go:542  defer rows.Close()
-internal/state/inspect.go:565  defer rows.Close()
-internal/state/inspect.go:592  defer rows.Close()
-internal/state/inspect.go:652  defer rows.Close()
-internal/state/inspect.go:724  defer rows.Close()
-internal/state/inspect.go:742  defer rows.Close()
+internal/state/inspect.go:535  defer rows.Close()
+internal/state/inspect.go:554  defer rows.Close()
+internal/state/inspect.go:577  defer rows.Close()
+internal/state/inspect.go:605  defer rows.Close()
+internal/state/inspect.go:665  defer rows.Close()
+internal/state/inspect.go:737  defer rows.Close()
+internal/state/inspect.go:755  defer rows.Close()
 internal/state/recovery.go:498  defer rows.Close()
 internal/state/recovery.go:517  defer rows.Close()
 internal/state/recovery.go:538  defer rows.Close()
@@ -190,3 +190,29 @@ internal/tools/write.go:272  tmp.Close()
 internal/tools/write.go:276  tmp.Close()
 internal/tools/write.go:282  tmp.Close()
 internal/tools/write_file.go:316  defer file.Close()
+
+# providers.go: closing the providers declarations document is best-effort
+# on a read-only parse path; a close failure cannot affect the parsed result.
+internal/config/providers.go:73  defer file.Close()
+
+# Compatible adapter response handling (#87/#88): closing the response body
+# is best-effort (the failure is already being classified into the closed
+# ErrorKind vocabulary returned to the governor), and the 3xx Location body
+# is read only to hash the redirect target, so a read failure degrades only
+# the opaque location hash.
+internal/provider/anthropiccompat/client.go:248  defer response.Body.Close()
+internal/provider/anthropiccompat/client.go:257  body, _ := io.ReadAll(io.LimitReader(response.Body, int64(c.maxResponse)+1))
+internal/provider/openaicompat/client.go:215  defer response.Body.Close()
+internal/provider/openaicompat/client.go:224  body, _ := io.ReadAll(io.LimitReader(response.Body, int64(c.maxResponse)+1))
+
+# Operational profile state paths (#91): rows/tx cleanup follows the same
+# best-effort convention as the other state/* entries; each profileRows close
+# on a validation error path is immediately followed by returning the
+# authoritative error, and rows.Err() is checked before the final close.
+internal/state/profiles.go:38  defer rows.Close()
+internal/state/profiles.go:173  defer tx.Rollback()
+internal/state/profiles.go:200  profileRows.Close()
+internal/state/profiles.go:205  profileRows.Close()
+internal/state/profiles.go:210  profileRows.Close()
+internal/state/profiles.go:215  profileRows.Close()
+internal/state/profiles.go:218  profileRows.Close()

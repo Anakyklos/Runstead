@@ -58,6 +58,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	acceptanceFile := ""
 	providersFile := ""
 	providerID := ""
+	retryPolicy := ""
 	// Parse manually so flags may appear before or after the task id (the flag
 	// package stops at the first positional argument).
 	for index := 0; index < len(args); index++ {
@@ -143,6 +144,14 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			}
 		case strings.HasPrefix(arg, "--provider-id="):
 			providerID = strings.TrimPrefix(arg, "--provider-id=")
+		case arg == "--retry-policy":
+			if next, ok := value("--retry-policy"); ok {
+				retryPolicy = next
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--retry-policy="):
+			retryPolicy = strings.TrimPrefix(arg, "--retry-policy=")
 		case arg == "--min-start-interval":
 			if next, ok := value("--min-start-interval"); ok {
 				minStartInterval = next
@@ -465,7 +474,39 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	// Wire the resumed task with the same control boundaries as a normal run:
 	// the restored account governor, the read-only registry, the protocol
 	// parser and the persistence boundary.
-	executor, err := agent.NewExecutor(accountGovernor, resumeClient, nil)
+	// Retry policy is operator configuration re-supplied at resume (like the
+	// providers file); it is not persisted with the task. The composition
+	// classifier applies whenever the resumed task runs through a configured
+	// compatible provider.
+	var outcomeClassifier governor.OutcomeClassifier
+	if persistedIdentity.ProviderID != "" {
+		outcomeClassifier = compat.NewClassifier()
+	}
+	retriesEnabled, retryErr := resolveRetryPolicy(retryPolicy, retryPolicy != "")
+	if retryErr != nil {
+		fmt.Fprintf(errOut, "resume: %v\n", retryErr)
+		return exitUsage
+	}
+	if retriesEnabled && persistedIdentity.ProviderID == "" {
+		fmt.Fprintln(errOut, "resume: --retry-policy bounded applies only to configured compatible providers (--providers/--provider-id)")
+		return exitUsage
+	}
+	var retryOptions []agent.ExecutorOptions
+	if retriesEnabled && persistedIdentity.ProviderID != "" && store != nil {
+		resumeIdentity := resumeProviderIdentity
+		retryOptions = append(retryOptions, agent.ExecutorOptions{EnableRetry: true, RetryProfileCooldown: func() time.Duration {
+			profile, loadErr := store.LoadOperationalProfile(ctx, resumeIdentity)
+			if loadErr != nil || profile == nil {
+				return 0
+			}
+			value := profile.Effective(provider.FieldCooldownMillis)
+			if !value.Known() {
+				return 0
+			}
+			return time.Duration(value.Value) * time.Millisecond
+		}})
+	}
+	executor, err := agent.NewExecutor(accountGovernor, resumeClient, outcomeClassifier, retryOptions...)
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: executor unavailable: %v\n", err)
 		return exitUnavailable
@@ -963,6 +1004,7 @@ func printResumeHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --recipes FILE            operator-controlled recipe catalog (RUNSTEAD_RECIPES); re-supplied at resume")
 	fmt.Fprintln(out, "  --recipe-policy SPEC      recipe modes, e.g. test=allow (RUNSTEAD_RECIPE_POLICY; must match the persisted policy)")
 	fmt.Fprintln(out, "  --acceptance FILE         operator acceptance plan (RUNSTEAD_ACCEPTANCE_PLAN; must match the persisted plan; loaded from state when omitted; may ATTACH a plan to a task that started without one, since completion fails closed without acceptance criteria)")
+	fmt.Fprintln(out, "  --retry-policy SPEC         bounded governor-owned retry for compatible providers (RUNSTEAD_RETRY_POLICY); re-supplied at resume, must match the run intent")
 	fmt.Fprintln(out, "  --min-start-interval DURATION  account governor pacing override (RUNSTEAD_MIN_START_INTERVAL)")
 	fmt.Fprintln(out, "  allowance profile is reconstructed from the persisted governor state (RUNSTEAD_ALLOWANCE_PROFILE applies to `run` only)")
 	fmt.Fprintln(out, "")
