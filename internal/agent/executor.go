@@ -123,8 +123,21 @@ func (e *Executor) Execute(ctx context.Context, request governor.AttemptRequest)
 // safe: the governor already computed eligibility (recoverable class +
 // delivery evidence + retry budget + circuit closed); the executor adds the
 // context gate and refuses to retry failed/persistently-errored completions.
+//
+// A failed durable finish (TX 2: RecordProviderFinished) after an otherwise
+// retryable outcome leaves the physical attempt only 'prepared'/ambiguous in
+// the store: the effect was observed but its classified outcome was never
+// durably recorded. Automatic retry must not issue another physical attempt
+// while the previous effect lacks a completed durable outcome, so the
+// persistence failure turns the loop off even though the computed completion
+// was still marked retry-eligible. Typed adapter failures (429/503) also
+// ride on ExecutionResult.Err and must remain retryable, so only the
+// persistence sentinel is excluded.
 func (e *Executor) retryEligible(ctx context.Context, result governor.ExecutionResult) bool {
 	if result.Completion.Err != nil {
+		return false
+	}
+	if errors.Is(result.Err, governor.ErrProviderOutcomePersist) {
 		return false
 	}
 	if !result.Completion.RetryEligible {

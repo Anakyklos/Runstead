@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,15 +22,19 @@ import (
 type fakeTimer struct {
 	ch     chan time.Time
 	once   sync.Once
-	fired  bool
+	fired  atomic.Bool
 	fireAt time.Time
 }
 
 func (t *fakeTimer) C() <-chan time.Time { return t.ch }
-func (t *fakeTimer) Stop() bool          { return !t.fired }
+
+// Stop may run concurrently with trigger (the executor's deferred Stop races
+// with the clock goroutine firing the timer when context and timer become due
+// at the same moment); fired must therefore be atomic, not a plain bool.
+func (t *fakeTimer) Stop() bool { return !t.fired.Load() }
 
 func (t *fakeTimer) trigger() {
-	t.once.Do(func() { t.fired = true; t.ch <- t.fireAt })
+	t.once.Do(func() { t.fired.Store(true); t.ch <- t.fireAt })
 }
 
 type fakeClock struct {
@@ -57,7 +62,7 @@ func (c *fakeClock) Advance(delay time.Duration) {
 	c.now = c.now.Add(delay)
 	due := make([]*fakeTimer, 0)
 	for _, timer := range c.timers {
-		if !timer.fired && !timer.fireAt.After(c.now) {
+		if !timer.fired.Load() && !timer.fireAt.After(c.now) {
 			due = append(due, timer)
 		}
 	}
@@ -134,6 +139,13 @@ func planClassifier(classes ...governor.OutcomeClass) governor.OutcomeClassifier
 // newRetryHarness builds a governor + executor sharing one fake clock.
 func newRetryHarness(t *testing.T, mutate func(*governor.Config), client provider.Client, classifier governor.OutcomeClassifier, options ExecutorOptions) (*governor.Governor, *fakeClock, *Executor) {
 	t.Helper()
+	return newRetryHarnessWithPersistence(t, mutate, nil, client, classifier, options)
+}
+
+// newRetryHarnessWithPersistence builds the same harness with an explicit
+// governor persistence boundary (nil disables durable state).
+func newRetryHarnessWithPersistence(t *testing.T, mutate func(*governor.Config), persistence governor.Persistence, client provider.Client, classifier governor.OutcomeClassifier, options ExecutorOptions) (*governor.Governor, *fakeClock, *Executor) {
+	t.Helper()
 	config := governor.DefaultInstantConfig("policy-test", "provider-a", "instant", provider.SafeRouteSafety())
 	config.RetryBudget = 2
 	config.MinimumStartInterval = time.Millisecond
@@ -141,7 +153,7 @@ func newRetryHarness(t *testing.T, mutate func(*governor.Config), client provide
 		mutate(&config)
 	}
 	clock := &fakeClock{now: time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)}
-	gov, err := governor.New(config, governor.Options{Clock: clock, Jitter: fixedJitter{}})
+	gov, err := governor.New(config, governor.Options{Clock: clock, Jitter: fixedJitter{}, Persistence: persistence})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,6 +163,19 @@ func newRetryHarness(t *testing.T, mutate func(*governor.Config), client provide
 		t.Fatal(err)
 	}
 	return gov, clock, executor
+}
+
+// failFinishedPersistence commits TX 1 (prepared) but fails TX 2 (finished):
+// the physical effect was observed, but its classified outcome was never
+// durably recorded, leaving the attempt 'prepared'/ambiguous in the store.
+type failFinishedPersistence struct{}
+
+func (failFinishedPersistence) RecordProviderPrepared(_ context.Context, _ governor.ProviderPrepared) error {
+	return nil
+}
+
+func (failFinishedPersistence) RecordProviderFinished(_ context.Context, _ governor.ProviderFinished) error {
+	return errors.New("tx2 write failed")
 }
 
 func retryRequest() governor.AttemptRequest {
@@ -415,5 +440,42 @@ func TestExecutorTimerFiresOnceNoDuplicateDispatch(t *testing.T) {
 	clock.Advance(5 * time.Second)
 	if calls := client.callCount(); calls != 2 {
 		t.Fatalf("physical calls after extra clock advance = %d, want still 2", calls)
+	}
+}
+
+// TestExecutorRetryStopsWhenFinishedPersistFails: TX 1 (prepared) commits but
+// TX 2 (finished) fails on an otherwise retryable outcome. The physical
+// attempt stays 'prepared'/ambiguous in the store, so automatic retry must
+// stop even though the computed completion was still retry-eligible: exactly
+// one provider call, no second admission/dispatch, no retry debit, and the
+// original ambiguous result (ErrProviderOutcomePersist) is returned.
+func TestExecutorRetryStopsWhenFinishedPersistFails(t *testing.T) {
+	client := newScriptedClient(rateClientResults()...)
+	gov, clock, executor := newRetryHarnessWithPersistence(t, nil, failFinishedPersistence{}, client,
+		rateThenSuccessClassifier(client), ExecutorOptions{EnableRetry: true})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result := executor.Execute(ctx, retryRequest())
+	if calls := client.callCount(); calls != 1 {
+		t.Fatalf("physical calls = %d, want 1 (TX2 failure must stop retry despite retry-eligible completion)", calls)
+	}
+	if !errors.Is(result.Err, governor.ErrProviderOutcomePersist) {
+		t.Fatalf("result.Err = %v, want ErrProviderOutcomePersist", result.Err)
+	}
+	if !result.Completion.RetryEligible {
+		t.Fatalf("completion must still be retry-eligible so this regression proves the persistence guard is what stops the retry")
+	}
+	if result.Completion.Outcome != governor.OutcomeRateCapacity {
+		t.Fatalf("outcome = %q, want the original rate outcome", result.Completion.Outcome)
+	}
+	tasks := gov.Snapshot().Tasks["task-retry"]
+	if tasks.Attempts != 1 || tasks.Retries != 0 {
+		t.Fatalf("task accounting = attempts %d retries %d, want 1/0 (no retry debit)", tasks.Attempts, tasks.Retries)
+	}
+	// Advancing the clock after the stop must never awaken a retry dispatch.
+	clock.Advance(30 * time.Second)
+	if calls := client.callCount(); calls != 1 {
+		t.Fatalf("physical calls after clock advance = %d, want still 1", calls)
 	}
 }

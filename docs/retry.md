@@ -40,10 +40,17 @@ AND delivery_state_is_safe_for_retry()
 
 Retryable classes (explicitly classified, typed, provider-neutral):
 `rate_or_capacity` (429), `upstream_server_failure` (transient 5xx),
-`empty_response`, `malformed_upstream`, `connection_reset`, `timeout` —
-each ONLY when delivery state proves the effect was not possibly sent
-(`completed`/`sent_confirmed`); any `sent_unconfirmed` / `response_started`
-state downgrades to uncertain and is never retried.
+`empty_response`, `malformed_upstream`, `timeout` — each ONLY when
+delivery state proves the effect was not possibly sent (`completed`/
+`sent_confirmed`); any `sent_unconfirmed` / `response_started` state
+downgrades to uncertain and is never retried.
+
+`connection_reset` remains a governor-level class that OTHER classification
+paths may produce; the compatible-provider classifier deliberately does NOT
+map it. The compatible adapters expose a generic `transport` kind for
+connection/setup failures, and delivery observation cannot prove the request
+was never dispatched, so `compat.classifyError` maps `transport` (and every
+unknown kind) to `uncertain_reached`: never retried, by construction.
 
 Never retried: auth/permission failures, config/capability mismatches,
 refusal, unknown classification, unsafe redirects, request/response too
@@ -65,7 +72,8 @@ transport retry.
 
 ## Backoff order
 
-1. authoritative `Retry-After` / reset observed on the response;
+1. authoritative `Retry-After` / reset observed on the response, when the
+   governor selects a backoff from it (rate/capacity class today);
 2. the durable `OperationalProfile` (#91) `cooldown_millis` input when it is
    larger (the profile is an INPUT only — it never executes retries and
    never changes governor authority);
