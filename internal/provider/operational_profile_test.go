@@ -3,6 +3,7 @@ package provider
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -122,7 +123,7 @@ func TestCooldownHigherIsConservative(t *testing.T) {
 	}
 	// Retry-After 60s is MORE conservative than the effective 30s: accepted.
 	profile, err = profile.Apply(ProfileUpdate{
-		Field: FieldCooldownMillis, Value: 60000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-retry-after"},
+		Field: FieldCooldownMillis, Value: 60000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000042"},
 	}, fixedClock())
 	if err != nil {
 		t.Fatalf("cooldown 30s -> observed 60s must be accepted as tightening: %v", err)
@@ -132,7 +133,7 @@ func TestCooldownHigherIsConservative(t *testing.T) {
 	}
 	// A SHORTER observation must not automatically weaken the profile.
 	if _, err = profile.Apply(ProfileUpdate{
-		Field: FieldCooldownMillis, Value: 10000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-faster"},
+		Field: FieldCooldownMillis, Value: 10000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000043"},
 	}, fixedClock()); !errors.Is(err, ErrObservedNotConservative) {
 		t.Fatalf("cooldown 60s -> observed 10s must be refused, got %v", err)
 	}
@@ -151,7 +152,7 @@ func TestTimeoutHasNoAutomaticDirection(t *testing.T) {
 	// unknown timeout -> observed must fail: the undefined direction check
 	// precedes the unknown fast-path (#91 review).
 	if _, err = profile.Apply(ProfileUpdate{
-		Field: FieldTimeoutMillis, Value: 30000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-timeout-first"},
+		Field: FieldTimeoutMillis, Value: 30000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000046"},
 	}, fixedClock()); !errors.Is(err, ErrNoAutomaticDirection) {
 		t.Fatalf("unknown timeout -> observed must fail with ErrNoAutomaticDirection, got %v", err)
 	}
@@ -164,18 +165,18 @@ func TestTimeoutHasNoAutomaticDirection(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = profile.Apply(ProfileUpdate{
-		Field: FieldTimeoutMillis, Value: 30000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-timeout"},
+		Field: FieldTimeoutMillis, Value: 30000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000045"},
 	}, fixedClock()); !errors.Is(err, ErrNoAutomaticDirection) {
 		t.Fatalf("timeout observation must be refused without an automatic direction, got %v", err)
 	}
 	if _, err = profile.Apply(ProfileUpdate{
-		Field: FieldTimeoutMillis, Value: 120000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-timeout"},
+		Field: FieldTimeoutMillis, Value: 120000, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000045"},
 	}, fixedClock()); !errors.Is(err, ErrNoAutomaticDirection) {
 		t.Fatalf("timeout observation (any direction) must be refused, got %v", err)
 	}
 	// Authoritative remains representable through the typed path.
 	profile, err = profile.Apply(ProfileUpdate{
-		Field: FieldTimeoutMillis, Value: 90000, Provenance: ProvenanceAuthoritative, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "verif-000001"},
+		Field: FieldTimeoutMillis, Value: 90000, Provenance: ProvenanceAuthoritative, EvidenceRef: EvidenceRef{Kind: EvidenceKindVerification, ID: "verif-000001"},
 	}, fixedClock())
 	if err != nil {
 		t.Fatal(err)
@@ -218,7 +219,7 @@ func TestSuccessNeverRaises(t *testing.T) {
 	}
 	for _, proposal := range proposals {
 		if _, err := profile.Apply(ProfileUpdate{
-			Field: proposal.field, Value: proposal.value, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-success"},
+			Field: proposal.field, Value: proposal.value, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000044"},
 		}, fixedClock()); !errors.Is(err, ErrObservedNotConservative) {
 			t.Fatalf("field %s: non-conservative observation must be refused, got %v", proposal.field, err)
 		}
@@ -250,7 +251,7 @@ func TestUnknownCanReceiveAllThreeProvenancesThroughTheirPaths(t *testing.T) {
 		t.Fatalf("observed provenance lost")
 	}
 
-	profile, err = profile.Apply(ProfileUpdate{Field: FieldTimeoutMillis, Value: 30000, Provenance: ProvenanceAuthoritative, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "verif-000002"}}, fixedClock())
+	profile, err = profile.Apply(ProfileUpdate{Field: FieldTimeoutMillis, Value: 30000, Provenance: ProvenanceAuthoritative, EvidenceRef: EvidenceRef{Kind: EvidenceKindVerification, ID: "verif-000002"}}, fixedClock())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +316,7 @@ func TestConfiguredReplayCannotUndoObservedTightening(t *testing.T) {
 	}
 	// Authoritative evidence CAN move the value (explicitly typed path).
 	profile, err = profile.Apply(ProfileUpdate{
-		Field: FieldMaxRequestBytes, Value: 16000, Provenance: ProvenanceAuthoritative, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "verif-000003"},
+		Field: FieldMaxRequestBytes, Value: 16000, Provenance: ProvenanceAuthoritative, EvidenceRef: EvidenceRef{Kind: EvidenceKindVerification, ID: "verif-000003"},
 	}, fixedClock())
 	if err != nil {
 		t.Fatal(err)
@@ -387,7 +388,7 @@ func TestZeroValueNeverPersisted(t *testing.T) {
 		{Field: FieldMaxRequestBytes, Value: 0, Provenance: ProvenanceConfigured},
 		{Field: FieldMaxRequestBytes, Value: -1, Provenance: ProvenanceConfigured},
 		{Field: FieldCooldownMillis, Value: 0, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000001"}},
-		{Field: FieldTimeoutMillis, Value: 0, Provenance: ProvenanceAuthoritative, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "verif-000001"}},
+		{Field: FieldTimeoutMillis, Value: 0, Provenance: ProvenanceAuthoritative, EvidenceRef: EvidenceRef{Kind: EvidenceKindVerification, ID: "verif-000001"}},
 	}
 	for _, update := range cases {
 		if _, err := profile.Apply(update, fixedClock()); err == nil {
@@ -451,9 +452,11 @@ func TestInvalidUpdatesFailClosed(t *testing.T) {
 }
 
 // TestEvidenceRefIsStructuredNotFreeText is the #91-review regression: an
-// evidence reference is a structured kind:id identifier, never free text.
-// Private content (prompts, response bodies, headers, credentials) has no
-// representation it can smuggle through.
+// evidence reference is a structured kind:id identifier whose ID must match
+// the CLOSED format Runstead actually produces — not merely "no spaces".
+// Private content, even as a single token such as "privatePromptBody" or
+// "sensitive-response-content", has no representation it can smuggle
+// through, and error messages never reproduce the invalid candidate.
 func TestEvidenceRefIsStructuredNotFreeText(t *testing.T) {
 	ref, err := ParseEvidenceRef("evidence:obs-000001")
 	if err != nil {
@@ -465,22 +468,44 @@ func TestEvidenceRefIsStructuredNotFreeText(t *testing.T) {
 	if parsed, err := ParseEvidenceRef(""); err != nil || parsed.Kind != "" {
 		t.Fatalf("empty reference is the ABSENT state, got %+v err %v", parsed, err)
 	}
-	for _, freeText := range []string{
+	for _, kind := range []EvidenceKind{EvidenceKindEvidence, EvidenceKindExecution, EvidenceKindVerification, EvidenceKindTask} {
+		pattern := closedEvidenceIDPatterns[kind]
+		if pattern == nil {
+			t.Fatalf("kind %s has no closed pattern", kind)
+		}
+	}
+
+	// Free text with spaces AND single tokens without spaces are refused:
+	// the closed per-kind formats only accept the ids Runstead produces.
+	for _, candidate := range []string{
 		"the quick brown fox jumps over the lazy dog",
 		"response body content that must never be a reference",
 		"prompt: fix the calculator and explain",
 		"Bearer sk-secret-token-value",
 		"authorization header value",
 		"evidence:with spaces inside the id",
-		"just a raw token with spaces",
+		"privatePromptBody",
+		"sensitive-response-content",
+		"thequickbrownfoxjumpsoverthelazydogandmoreprivatetext",
+		"credentials-in-a-reference",
+		"obs-retry-after",
+		"obs-00001",
+		"ober-000001",
+		"obs-0000010",
+		"obs-NNNNNN",
 	} {
-		if _, err := ParseEvidenceRef(freeText); err == nil {
-			t.Fatalf("free text %q must fail ParseEvidenceRef", freeText)
+		if _, err := ParseEvidenceRef(candidate); err == nil {
+			t.Fatalf("candidate %q must fail ParseEvidenceRef", candidate)
 		}
-		if _, err := ParseEvidenceRef("evidence:" + freeText); err == nil {
-			t.Fatalf("free text id %q must fail ParseEvidenceRef", freeText)
+		if _, err := ParseEvidenceRef("evidence:" + candidate); err == nil {
+			t.Fatalf("candidate id %q must fail ParseEvidenceRef", candidate)
+		}
+		// Errors never reproduce the invalid candidate.
+		if _, err := ParseEvidenceRef(candidate); err != nil && strings.Contains(err.Error(), candidate) {
+			t.Fatalf("error must not echo the invalid candidate: %v", err)
 		}
 	}
+
 	// Updates with a non-structured reference are invalid before the rules.
 	profile := NewOperationalProfile(testIdentity("cfg", "model-a", FamilyOpenAICompatible))
 	if _, err := profile.Apply(ProfileUpdate{
@@ -491,8 +516,22 @@ func TestEvidenceRefIsStructuredNotFreeText(t *testing.T) {
 	}
 	if _, err := profile.Apply(ProfileUpdate{
 		Field: FieldMaxRequestBytes, Value: 2048, Provenance: ProvenanceObserved,
+		EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "privatePromptBody"},
+	}, fixedClock()); err == nil {
+		t.Fatalf("update with private single-token id must fail closed")
+	}
+	if _, err := profile.Apply(ProfileUpdate{
+		Field: FieldMaxRequestBytes, Value: 2048, Provenance: ProvenanceObserved,
 		EvidenceRef: EvidenceRef{Kind: "bogus", ID: "obs-000001"},
 	}, fixedClock()); err == nil {
 		t.Fatalf("update with unknown evidence kind must fail closed")
+	}
+	// Typed constructors + closed formats are the only valid path.
+	if !EvidenceEvidenceRef("obs-000001").Valid() || !ExecutionEvidenceRef("exec-000001").Valid() ||
+		!VerificationEvidenceRef("verif-000001").Valid() || !TaskEvidenceRef("cli-1787864000000000000").Valid() {
+		t.Fatalf("typed constructors with real Runstead ids must be valid")
+	}
+	if EvidenceEvidenceRef("privatePromptBody").Valid() {
+		t.Fatalf("typed constructor must still refuse private non-format ids")
 	}
 }

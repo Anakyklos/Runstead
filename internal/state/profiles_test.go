@@ -31,7 +31,7 @@ func seedProfileUpdates() []provider.ProfileUpdate {
 	return []provider.ProfileUpdate{
 		{Field: provider.FieldMaxRequestBytes, Value: 8000, Provenance: provider.ProvenanceConfigured},
 		{Field: provider.FieldMaxRequestBytes, Value: 2048, Provenance: provider.ProvenanceObserved, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000001"}},
-		{Field: provider.FieldCooldownMillis, Value: 5000, Provenance: provider.ProvenanceAuthoritative, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "verif-000001"}},
+		{Field: provider.FieldCooldownMillis, Value: 5000, Provenance: provider.ProvenanceAuthoritative, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindVerification, ID: "verif-000001"}},
 	}
 }
 
@@ -65,7 +65,7 @@ func testProfile(t *testing.T, configIdentity string, model string) *provider.Op
 		t.Fatal(err)
 	}
 	next, err = next.Apply(provider.ProfileUpdate{
-		Field: provider.FieldCooldownMillis, Value: 5000, Provenance: provider.ProvenanceAuthoritative, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "verif-000001"},
+		Field: provider.FieldCooldownMillis, Value: 5000, Provenance: provider.ProvenanceAuthoritative, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindVerification, ID: "verif-000001"},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -425,13 +425,13 @@ func TestOperationalProfileUpdatesCooldownDirection(t *testing.T) {
 	}
 	// Retry-After 60s -> accepted (higher is conservative).
 	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
-		Field: provider.FieldCooldownMillis, Value: 60000, Provenance: provider.ProvenanceObserved, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-retry-after"},
+		Field: provider.FieldCooldownMillis, Value: 60000, Provenance: provider.ProvenanceObserved, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000042"},
 	}}); err != nil {
 		t.Fatalf("cooldown 30s -> observed 60s must be accepted: %v", err)
 	}
 	// Observation 10s -> refused (would weaken).
 	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
-		Field: provider.FieldCooldownMillis, Value: 10000, Provenance: provider.ProvenanceObserved, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-faster"},
+		Field: provider.FieldCooldownMillis, Value: 10000, Provenance: provider.ProvenanceObserved, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000043"},
 	}}); !errors.Is(err, provider.ErrObservedNotConservative) {
 		t.Fatalf("cooldown weakening must be refused, got %v", err)
 	}
@@ -454,7 +454,7 @@ func TestZeroAndNegativeUpdatesRefusedAtDurableBoundary(t *testing.T) {
 		{Field: provider.FieldMaxRequestBytes, Value: 0, Provenance: provider.ProvenanceConfigured},
 		{Field: provider.FieldMaxRequestBytes, Value: -5, Provenance: provider.ProvenanceConfigured},
 		{Field: provider.FieldCooldownMillis, Value: 0, Provenance: provider.ProvenanceObserved, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000001"}},
-		{Field: provider.FieldTimeoutMillis, Value: 0, Provenance: provider.ProvenanceAuthoritative, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "verif-000001"}},
+		{Field: provider.FieldTimeoutMillis, Value: 0, Provenance: provider.ProvenanceAuthoritative, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindVerification, ID: "verif-000001"}},
 	} {
 		if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{update}); err == nil {
 			t.Fatalf("non-positive update %+v must fail closed at the durable boundary", update)
@@ -471,7 +471,7 @@ func TestOperationalProfileUpdatesTimeoutUnknownObservedPersistsNoRow(t *testing
 	store := openTestStore(t)
 
 	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
-		Field: provider.FieldTimeoutMillis, Value: 30000, Provenance: provider.ProvenanceObserved, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-timeout-first"},
+		Field: provider.FieldTimeoutMillis, Value: 30000, Provenance: provider.ProvenanceObserved, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000046"},
 	}}); !errors.Is(err, provider.ErrNoAutomaticDirection) {
 		t.Fatalf("unknown timeout -> observed at the durable boundary must fail with ErrNoAutomaticDirection, got %v", err)
 	}
@@ -539,6 +539,7 @@ func TestOperationalProfileEvidenceRefRejectsPrivateContent(t *testing.T) {
 	identity := testProfileIdentity()
 	mustSeedProfile(t, store, identity)
 
+	// Free text WITH spaces is refused on load.
 	if _, err := store.db.ExecContext(ctx,
 		`UPDATE provider_operational_profiles SET evidence_ref = 'the quick brown fox prompt response text' WHERE field = 'max_request_bytes'`); err != nil {
 		t.Fatal(err)
@@ -546,12 +547,23 @@ func TestOperationalProfileEvidenceRefRejectsPrivateContent(t *testing.T) {
 	if loaded, err := store.LoadOperationalProfile(ctx, identity); err == nil && loaded != nil {
 		t.Fatalf("free-text evidence_ref must fail closed on load")
 	}
-	// The raw file never contains the private text.
+	// A private single token WITHOUT spaces (e.g. privatePromptBody) is also
+	// refused: the closed per-kind formats only accept Runstead-produced ids.
+	if _, err := store.db.ExecContext(ctx,
+		`UPDATE provider_operational_profiles SET evidence_ref = 'privatePromptBody' WHERE field = 'max_request_bytes'`); err != nil {
+		t.Fatal(err)
+	}
+	if loaded, err := store.LoadOperationalProfile(ctx, identity); err == nil && loaded != nil {
+		t.Fatalf("private single-token evidence_ref must fail closed on load")
+	}
+	// The raw file never contains the private content.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "the quick brown fox prompt response text") {
-		t.Fatalf("durable state contains free-text evidence content")
+	for _, forbidden := range []string{"the quick brown fox prompt response text", "privatePromptBody"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("durable state contains private evidence content %q", forbidden)
+		}
 	}
 }

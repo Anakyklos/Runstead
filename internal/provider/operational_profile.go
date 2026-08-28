@@ -90,11 +90,21 @@ func (k EvidenceKind) Valid() bool {
 	}
 }
 
-// evidenceIDPattern restricts evidence IDs to conservative identifier
-// characters: no whitespace, no free text, no punctuation beyond the
-// identifier separators used by Runstead ids (obs-000001, exec-000001,
-// verif-000001, cli-<nanos>).
-var evidenceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+// closedEvidenceIDPatterns restrict each EvidenceKind to the CLOSED set of
+// identifier formats the Runstead runtime actually produces (#91 review):
+//   - state.nextIdentity(prefix) emits "<prefix>-%06d" (zero-padded six
+//     digits: obs-000001, exec-000001, verif-000001);
+//   - task ids are the CLI-generated "cli-"+unix-nanos (digits only).
+//
+// A token that merely has no spaces (for example "privatePromptBody" or
+// "sensitive-response-content") is NOT a Runstead-produced identifier and is
+// refused: private content has no representation it can smuggle through.
+var closedEvidenceIDPatterns = map[EvidenceKind]*regexp.Regexp{
+	EvidenceKindEvidence:     regexp.MustCompile(`^obs-[0-9]{6}$`),
+	EvidenceKindExecution:    regexp.MustCompile(`^exec-[0-9]{6}$`),
+	EvidenceKindVerification: regexp.MustCompile(`^verif-[0-9]{6}$`),
+	EvidenceKindTask:         regexp.MustCompile(`^cli-[0-9]{10,19}$`),
+}
 
 // EvidenceRef is a STRUCTURED, sanitized reference to evidence that produced
 // a value. It is deliberately not free text: only a known kind plus a
@@ -106,17 +116,19 @@ type EvidenceRef struct {
 	ID   string
 }
 
-// Valid reports whether the reference is a complete, structured, sanitized
-// identifier. The zero value (absent reference) is invalid.
+// Valid reports whether the reference is a complete reference whose ID
+// matches the CLOSED identifier format of its kind. The zero value (absent
+// reference) is invalid.
 func (r EvidenceRef) Valid() bool {
-	if !r.Kind.Valid() {
+	pattern, ok := closedEvidenceIDPatterns[r.Kind]
+	if !ok {
 		return false
 	}
-	id := strings.TrimSpace(r.ID)
-	if id == "" || id != r.ID || !evidenceIDPattern.MatchString(id) {
+	id := r.ID
+	if id == "" || id != strings.TrimSpace(id) {
 		return false
 	}
-	return true
+	return pattern.MatchString(id)
 }
 
 // String renders the structured reference as "kind:id" for persistence and
@@ -130,8 +142,9 @@ func (r EvidenceRef) String() string {
 
 // ParseEvidenceRef parses a persisted "kind:id" reference. The empty string
 // is the ABSENT reference (no evidence). Anything that is not a known kind
-// plus a conservative identifier fails closed instead of being treated as an
-// opaque token.
+// producing a Runstead identifier fails closed. Error messages are strictly
+// generic and NEVER reproduce the candidate value: an invalid candidate may
+// be private content, so nothing about it is echoed back (#91 review).
 func ParseEvidenceRef(value string) (EvidenceRef, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -139,24 +152,35 @@ func ParseEvidenceRef(value string) (EvidenceRef, error) {
 	}
 	colon := strings.Index(value, ":")
 	if colon <= 0 || colon == len(value)-1 {
-		return EvidenceRef{}, fmt.Errorf("%w: %q is not a structured kind:id reference", ErrInvalidEvidenceRef, RedactRef(value))
+		return EvidenceRef{}, fmt.Errorf("%w: reference is not a structured kind:id value", ErrInvalidEvidenceRef)
 	}
 	kind := EvidenceKind(value[:colon])
 	id := value[colon+1:]
 	ref := EvidenceRef{Kind: kind, ID: id}
 	if !ref.Valid() {
-		return EvidenceRef{}, fmt.Errorf("%w: %q does not satisfy the conservative identifier rules", ErrInvalidEvidenceRef, RedactRef(value))
+		return EvidenceRef{}, fmt.Errorf("%w: id does not satisfy the closed per-kind identifier format", ErrInvalidEvidenceRef)
 	}
 	return ref, nil
 }
 
-// RedactRef renders an invalid evidence-ref candidate for error messages in
-// a bounded, quote-free form (never raw private content).
-func RedactRef(value string) string {
-	if len(value) > 32 {
-		return value[:32] + "…"
-	}
-	return value
+// EvidenceEvidenceRef / ExecutionEvidenceRef / VerificationEvidenceRef /
+// TaskEvidenceRef are the typed constructors so sanitized references are
+// born from a Runstead-produced id space. The reference is still validated
+// (Valid) before it can be applied or persisted.
+func EvidenceEvidenceRef(id string) EvidenceRef {
+	return EvidenceRef{Kind: EvidenceKindEvidence, ID: id}
+}
+
+func ExecutionEvidenceRef(id string) EvidenceRef {
+	return EvidenceRef{Kind: EvidenceKindExecution, ID: id}
+}
+
+func VerificationEvidenceRef(id string) EvidenceRef {
+	return EvidenceRef{Kind: EvidenceKindVerification, ID: id}
+}
+
+func TaskEvidenceRef(id string) EvidenceRef {
+	return EvidenceRef{Kind: EvidenceKindTask, ID: id}
 }
 
 // Provenance is the typed origin of one persisted profile value. The four
