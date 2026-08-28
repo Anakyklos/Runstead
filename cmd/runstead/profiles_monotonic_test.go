@@ -23,6 +23,16 @@ import (
 
 const profileTestBound = 8000
 
+// profileTighteningObserved is the durable observed tightening injected in
+// the run monotonicity test: still a tightening against the configured 8000,
+// yet comfortably ABOVE the largest measured run payload (5841 bytes) so the
+// rerun exercises the effective bound without tripping it.
+const profileTighteningObserved = 7900
+
+// resumeTighteningObserved is the resumed-flow probe: below the configured
+// 8000 yet above the largest measured resumed payload (7132 bytes).
+const resumeTighteningObserved = 7900
+
 // profileTighteningIdentity resolves the pinned identity of the providers
 // file so the test can apply observations through the same key the runtime
 // uses.
@@ -88,8 +98,8 @@ func monotonicRunArgs(t *testing.T, workspace, stateDir, acceptance, providersFi
 }
 
 // TestRunRerunRestartKeepObservedTightening runs the full scenario required
-// by the review: persist configured=8000, tighten to observed=2048, run the
-// SAME configuration again, and confirm the field stays 2048/observed after
+// by the review: persist configured=8000, tighten to observed=profileTighteningObserved, run the
+// SAME configuration again, and confirm the field stays profileTighteningObserved/observed after
 // the rerun and after a real SQLite reopen.
 func TestRunRerunRestartKeepObservedTightening(t *testing.T) {
 	workspace := t.TempDir()
@@ -120,8 +130,8 @@ func TestRunRerunRestartKeepObservedTightening(t *testing.T) {
 		t.Fatalf("run#1 must persist configured=%d, got %+v", profileTestBound, v)
 	}
 
-	// Tighten through the durable boundary to observed=2048.
-	applyObservedTightening(t, stateDir, identity, 2048, "obs-000001")
+	// Tighten through the durable boundary to observed=profileTighteningObserved.
+	applyObservedTightening(t, stateDir, identity, profileTighteningObserved, "obs-000001")
 
 	// Second run with the SAME configuration: the replayed configured bound
 	// must NOT undo the observed tightening.
@@ -130,20 +140,20 @@ func TestRunRerunRestartKeepObservedTightening(t *testing.T) {
 	if code := run(context.Background(), monotonicRunArgs(t, workspace, stateDir, acceptance, providersFile, "mono-provider"), &out, &errOut); code != exitSuccess {
 		t.Fatalf("run#2 exit = %d\nstderr:\n%s", code, errOut.String())
 	}
-	if v := loadTightening(t, stateDir, identity); v.Value != 2048 || v.Provenance != provider.ProvenanceObserved {
+	if v := loadTightening(t, stateDir, identity); v.Value != profileTighteningObserved || v.Provenance != provider.ProvenanceObserved {
 		t.Fatalf("rerun undid the observed tightening: %+v", v)
 	}
 
 	// Restart (reopen) does not alter the property.
-	if v := loadTightening(t, stateDir, identity); v.Value != 2048 || v.Provenance != provider.ProvenanceObserved {
+	if v := loadTightening(t, stateDir, identity); v.Value != profileTighteningObserved || v.Provenance != provider.ProvenanceObserved {
 		t.Fatalf("restart lost the monotonic property: %+v", v)
 	}
 }
 
 // TestResumeKeepsObservedTightening crashes a run after the first governed
-// provider attempt, tightens the durable profile to observed=2048, then
+// provider attempt, tightens the durable profile to observed=resumeTighteningObserved, then
 // resumes with the SAME configuration: the resumed configured replay must
-// leave 2048/observed intact.
+// leave resumeTighteningObserved/observed intact.
 func TestResumeKeepsObservedTightening(t *testing.T) {
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("sample\n"), 0o644); err != nil {
@@ -180,8 +190,11 @@ func TestResumeKeepsObservedTightening(t *testing.T) {
 		t.Fatalf("crashed run must have persisted configured=%d, got %+v", profileTestBound, v)
 	}
 
-	// Tighten the durable profile while the task is interrupted.
-	applyObservedTightening(t, stateDir, identity, 2048, "obs-000001")
+	// Tighten the durable profile while the task is interrupted. The probe is
+	// below the configured 8000 (a genuine tightening) yet above the largest
+	// resumed payload (7132 bytes measured), so enforcement stays effective
+	// without tripping this task's own envelope.
+	applyObservedTightening(t, stateDir, identity, resumeTighteningObserved, "obs-000001")
 
 	// Resume through the SAME configuration.
 	var out, errOut strings.Builder
@@ -199,7 +212,7 @@ func TestResumeKeepsObservedTightening(t *testing.T) {
 	if !strings.Contains(out.String(), "outcome: completed") {
 		t.Fatalf("resume must complete:\n%s", out.String())
 	}
-	if v := loadTightening(t, stateDir, identity); v.Value != 2048 || v.Provenance != provider.ProvenanceObserved {
+	if v := loadTightening(t, stateDir, identity); v.Value != resumeTighteningObserved || v.Provenance != provider.ProvenanceObserved {
 		t.Fatalf("resume undid the observed tightening: %+v", v)
 	}
 }

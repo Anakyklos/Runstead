@@ -299,12 +299,6 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			fmt.Fprintf(errOut, "resume: restored account protection conflicts with model %q\n", resolved.Model)
 			return exitUnavailable
 		}
-		compatClient, buildErr := compat.New(*resolved, compat.EnvSecretResolver(os.LookupEnv))
-		if buildErr != nil {
-			fmt.Fprintf(errOut, "resume: provider %q unavailable: %v\n", selectedID, buildErr)
-			return exitUnavailable
-		}
-		resumeClient = compatClient
 		resumeProviderIdentity = provider.IdentityFromResolved(*resolved, compat.AdapterVersion)
 		accountConfig.ProtocolFamily = resolved.ProtocolFamily
 		accountConfig.ConfigIdentity = resolved.ConfigIdentity
@@ -315,6 +309,20 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			fmt.Fprintf(errOut, "resume: %v\n", profileErr)
 			return exitUnavailable
 		}
+		// Effective envelope bounds (#93): the profile's effective size
+		// bounds become the resumed execution frontier; unreadable profile
+		// state fails closed before any recovery or execution.
+		effectiveResolved, effErr := applyEffectiveProfileBounds(ctx, store, resumeProviderIdentity, resolved)
+		if effErr != nil {
+			fmt.Fprintf(errOut, "resume: %v\n", effErr)
+			return exitUnavailable
+		}
+		compatClient, buildErr := compat.New(*effectiveResolved, compat.EnvSecretResolver(os.LookupEnv))
+		if buildErr != nil {
+			fmt.Fprintf(errOut, "resume: provider %q unavailable: %v\n", selectedID, buildErr)
+			return exitUnavailable
+		}
+		resumeClient = compatClient
 	} else {
 		if _, providersSet := resolveProvidersFlag(providersFile); providersSet {
 			fmt.Fprintln(errOut, "resume: the task was not executed through a configured provider; provider declarations cannot be attached at resume")
@@ -491,22 +499,30 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintln(errOut, "resume: --retry-policy bounded applies only to configured compatible providers (--providers/--provider-id)")
 		return exitUsage
 	}
-	var retryOptions []agent.ExecutorOptions
-	if retriesEnabled && persistedIdentity.ProviderID != "" && store != nil {
-		resumeIdentity := resumeProviderIdentity
-		retryOptions = append(retryOptions, agent.ExecutorOptions{EnableRetry: true, RetryProfileCooldown: func() time.Duration {
-			profile, loadErr := store.LoadOperationalProfile(ctx, resumeIdentity)
-			if loadErr != nil || profile == nil {
-				return 0
+	var executorOptions []agent.ExecutorOptions
+	if persistedIdentity.ProviderID != "" && store != nil {
+		// Conservative envelope learning (#93) runs on resume exactly as on
+		// run: admitted attempt outcomes of the resumed identity are
+		// observed and durable evidence is persisted (monotonic boundary).
+		opts := agent.ExecutorOptions{Observer: newProfileObserver(store, resumeProviderIdentity, nil)}
+		if retriesEnabled {
+			opts.EnableRetry = true
+			resumeIdentity := resumeProviderIdentity
+			opts.RetryProfileCooldown = func() time.Duration {
+				profile, loadErr := store.LoadOperationalProfile(ctx, resumeIdentity)
+				if loadErr != nil || profile == nil {
+					return 0
+				}
+				value := profile.Effective(provider.FieldCooldownMillis)
+				if !value.Known() {
+					return 0
+				}
+				return time.Duration(value.Value) * time.Millisecond
 			}
-			value := profile.Effective(provider.FieldCooldownMillis)
-			if !value.Known() {
-				return 0
-			}
-			return time.Duration(value.Value) * time.Millisecond
-		}})
+		}
+		executorOptions = append(executorOptions, opts)
 	}
-	executor, err := agent.NewExecutor(accountGovernor, resumeClient, outcomeClassifier, retryOptions...)
+	executor, err := agent.NewExecutor(accountGovernor, resumeClient, outcomeClassifier, executorOptions...)
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: executor unavailable: %v\n", err)
 		return exitUnavailable

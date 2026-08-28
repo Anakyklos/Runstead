@@ -46,6 +46,12 @@ type ExecutorOptions struct {
 	// The profile is an INPUT only; it never executes retries and never
 	// changes governor authority.
 	RetryProfileCooldown func() time.Duration
+	// Observer, when non-nil, receives every ADMITTED governed attempt
+	// outcome exactly once (issue #93). Observation is independent of
+	// EnableRetry: learning from typed evidence happens whenever an attempt
+	// is admitted. The observer has no execution authority; a returned
+	// error stops the attempt loop conservatively before any retry.
+	Observer AttemptObserver
 }
 
 // Executor is the only agent-facing provider execution seam. The provider is
@@ -59,6 +65,7 @@ type Executor struct {
 	clock      governor.Clock
 	profile    func() time.Duration
 	retry      bool
+	observer   AttemptObserver
 }
 
 // NewExecutor builds the agent-facing provider frontier. classifier may be
@@ -77,7 +84,7 @@ func NewExecutor(accountGovernor *governor.Governor, client provider.Client, cla
 	if clock == nil {
 		clock = executorRealClock{}
 	}
-	return &Executor{governor: accountGovernor, provider: client, classifier: classifier, clock: clock, profile: opts.RetryProfileCooldown, retry: opts.EnableRetry}, nil
+	return &Executor{governor: accountGovernor, provider: client, classifier: classifier, clock: clock, profile: opts.RetryProfileCooldown, retry: opts.EnableRetry, observer: opts.Observer}, nil
 }
 
 // Execute runs one logical governed attempt. When the governor's
@@ -103,6 +110,25 @@ func (e *Executor) Execute(ctx context.Context, request governor.AttemptRequest)
 		}
 		result := e.governor.Execute(ctx, attemptRequest, e.provider, e.classifier)
 		e.governor.DrainEvents()
+		// Observe the ADMITTED attempt outcome (issue #93): learning happens
+		// after the governor's durable finish and before any retry decision.
+		// A failed observation is a conservative stop: the effect IS already
+		// durable and observed, so no new physical attempt may start under
+		// state the observer could not safely account for.
+		if e.observer != nil && result.Admission.Admitted() {
+			if err := e.observer.ObserveAttempt(ctx, attemptRequest, result); err != nil {
+				if errors.Is(result.Err, governor.ErrProviderOutcomePersist) {
+					// Never lose a pre-existing control-plane durability
+					// sentinel when the observation also fails: both the
+					// conservative stop and the underlying persistence
+					// diagnosis must stay detectable via errors.Is.
+					result.Err = fmt.Errorf("%w: %w (admitted outcome also failed durable persist: %w)", ErrAttemptObservation, err, result.Err)
+					return result
+				}
+				result.Err = fmt.Errorf("%w: %w", ErrAttemptObservation, err)
+				return result
+			}
+		}
 		if !e.retry || !e.retryEligible(ctx, result) {
 			return result
 		}
