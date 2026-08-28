@@ -100,9 +100,11 @@ func e2eWrapResponse(family provider.ProtocolFamily, text string) []byte {
 func writeProvidersFile(t *testing.T, family e2eFamily, endpoints map[string]string) string {
 	t.Helper()
 	type profile struct {
-		ProfileVersion string   `json:"profile_version"`
-		Capabilities   []string `json:"capabilities"`
-		RouteSafety    any      `json:"route_safety"`
+		ProfileVersion   string   `json:"profile_version"`
+		Capabilities     []string `json:"capabilities"`
+		RouteSafety      any      `json:"route_safety"`
+		MaxRequestBytes  int      `json:"max_request_bytes,omitempty"`
+		MaxResponseBytes int      `json:"max_response_bytes,omitempty"`
 	}
 	type entry struct {
 		ProviderID      string          `json:"provider_id"`
@@ -136,9 +138,11 @@ func writeProvidersFile(t *testing.T, family e2eFamily, endpoints map[string]str
 			Options:         json.RawMessage(family.optionsJSON),
 			ConfigVersion:   "v1",
 			Profile: profile{
-				ProfileVersion: "v1",
-				Capabilities:   []string{"text_turn", "runstead_protocol"},
-				RouteSafety:    routeSafety,
+				ProfileVersion:   "v1",
+				Capabilities:     []string{"text_turn", "runstead_protocol"},
+				RouteSafety:      routeSafety,
+				MaxRequestBytes:  1 << 18, // 256 KiB: payloads well under the bound
+				MaxResponseBytes: 1 << 20,
 			},
 		})
 	}
@@ -269,7 +273,9 @@ func TestProviderE2ECodingLoopAcrossAllFamilies(t *testing.T) {
 				t.Fatalf("git must observe the modified implementation:\n%s", statusOutput)
 			}
 
-			// Durable provider identity is inspectable per attempt.
+			// Durable provider identity is inspectable per attempt, and the
+			// operational profile explains the configured bounds with
+			// provenance (#91).
 			taskID := taskIDFromOutput(t, errOut.String())
 			rendered := inspectRendered(t, stateDir, taskID)
 			for _, want := range []string{
@@ -279,6 +285,10 @@ func TestProviderE2ECodingLoopAcrossAllFamilies(t *testing.T) {
 				"recipe=test exit=1",
 				"recipe=test exit=0",
 				"during-task changes: app/calc.go ( M)",
+				"Operational profile:",
+				"max_request_bytes: value=262144 provenance=configured",
+				"max_response_bytes: value=1048576 provenance=configured",
+				"concurrency_ceiling: unknown",
 			} {
 				if !strings.Contains(rendered, want) {
 					t.Fatalf("inspect missing %q:\n%s", want, rendered)

@@ -299,6 +299,13 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		resumeProviderIdentity = provider.IdentityFromResolved(*resolved, compat.AdapterVersion)
 		accountConfig.ProtocolFamily = resolved.ProtocolFamily
 		accountConfig.ConfigIdentity = resolved.ConfigIdentity
+		// Durable operational profile (#91): the resumed endpoint re-records
+		// its configured capability bounds (same identity: replay that would
+		// undo observed/authoritative values is a benign no-op).
+		if _, profileErr := syncOperationalConfiguredBounds(ctx, store, resolved, resumeProviderIdentity); profileErr != nil {
+			fmt.Fprintf(errOut, "resume: %v\n", profileErr)
+			return exitUnavailable
+		}
 	} else {
 		if _, providersSet := resolveProvidersFlag(providersFile); providersSet {
 			fmt.Fprintln(errOut, "resume: the task was not executed through a configured provider; provider declarations cannot be attached at resume")

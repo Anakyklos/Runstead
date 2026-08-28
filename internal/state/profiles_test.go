@@ -1,0 +1,686 @@
+package state
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/RenyEnnos/Runstead/internal/provider"
+)
+
+func testProfileIdentity() provider.Identity {
+	return provider.Identity{
+		ProviderID:     "provider-a",
+		ProtocolFamily: provider.FamilyOpenAICompatible,
+		Model:          "model-a",
+		ConfigIdentity: "provider.Config{ProviderID:\"provider-a\" ProtocolFamily:\"openai_compatible\" Endpoint:\"https://e.invalid/v1\" Model:\"model-a\" AuthRequirement:\"none\"}",
+		ProfileVersion: "v1",
+		AdapterVersion: "test",
+	}
+}
+
+// seedProfileUpdates is the canonical profile seed used by the persistence
+// tests: configured=8000, observed tighten=2048 and authoritative cooldown,
+// all applied through the durable monotonic boundary.
+func seedProfileUpdates() []provider.ProfileUpdate {
+	return []provider.ProfileUpdate{
+		{Field: provider.FieldMaxRequestBytes, Value: 8000, Provenance: provider.ProvenanceConfigured},
+		{Field: provider.FieldMaxRequestBytes, Value: 2048, Provenance: provider.ProvenanceObserved, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000001"}},
+		{Field: provider.FieldCooldownMillis, Value: 5000, Provenance: provider.ProvenanceAuthoritative, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindVerification, ID: "verif-000001"}},
+	}
+}
+
+// mustSeedProfile persists the canonical seed through the ONLY durable write
+// path (ApplyOperationalProfileUpdates).
+func mustSeedProfile(t *testing.T, store *Store, identity provider.Identity) {
+	t.Helper()
+	if _, err := store.ApplyOperationalProfileUpdates(context.Background(), identity, nil, seedProfileUpdates()); err != nil {
+		t.Fatalf("mustSeedProfile: %v", err)
+	}
+}
+
+func testProfile(t *testing.T, configIdentity string, model string) *provider.OperationalProfile {
+	t.Helper()
+	identity := testProfileIdentity()
+	if configIdentity != "" {
+		identity.ConfigIdentity = configIdentity
+	}
+	if model != "" {
+		identity.Model = model
+	}
+	profile := provider.NewOperationalProfile(identity)
+	next, err := profile.ApplyConfigured(provider.FieldMaxRequestBytes, 8000, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err = next.Apply(provider.ProfileUpdate{
+		Field: provider.FieldMaxRequestBytes, Value: 2048, Provenance: provider.ProvenanceObserved, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000001"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err = next.Apply(provider.ProfileUpdate{
+		Field: provider.FieldCooldownMillis, Value: 5000, Provenance: provider.ProvenanceAuthoritative, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindVerification, ID: "verif-000001"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return next
+}
+
+// TestProfilesSeparateModelsAndConfigsInPersistence proves two models on the
+// same endpoint and the same model name on different config identities store
+// independent profiles (the required key semantics survive a restart).
+func TestProfilesSeparateModelsAndConfigsInPersistence(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	identityA := testProfileIdentity()
+	identityB := testProfileIdentity()
+	identityB.Model = "model-b"
+	identityC := testProfileIdentity()
+	identityC.ConfigIdentity = "provider.Config{ProviderID:\"provider-c\" ...}"
+
+	mustSeedProfile(t, store, identityA)
+	mustSeedProfile(t, store, identityB)
+	mustSeedProfile(t, store, identityC)
+
+	loadedA, err := store.LoadOperationalProfile(ctx, identityA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadedB, err := store.LoadOperationalProfile(ctx, identityB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedA == nil || loadedB == nil {
+		t.Fatalf("profiles must load independently")
+	}
+	if v := loadedA.Effective(provider.FieldMaxRequestBytes); v.Value != 2048 || v.Provenance != provider.ProvenanceObserved {
+		t.Fatalf("profile A content wrong: %+v", v)
+	}
+	if v := loadedB.Effective(provider.FieldMaxRequestBytes); v.Value != 2048 {
+		t.Fatalf("profile B content wrong: %+v", v)
+	}
+	// Updating A never changes B (independent keys). The observed update
+	// targets requests_per_minute, which is absent in the seeded profile and
+	// has a defined automatic safety direction (lower is conservative), so
+	// unknown -> observed is legitimate there.
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identityA, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldRequestsPerMinute, Value: 1000, Provenance: provider.ProvenanceObserved, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000002"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	reloadedB, err := store.LoadOperationalProfile(ctx, identityB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloadedB.Effective(provider.FieldRequestsPerMinute).Known() {
+		t.Fatalf("updating profile A leaked into profile B")
+	}
+	// profile C is independent of A and B (its own config identity).
+	loadedC, err := store.LoadOperationalProfile(ctx, identityC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedC == nil {
+		t.Fatalf("profile C must load under its own identity")
+	}
+	if loadedC.ProviderID != identityC.ProviderID {
+		t.Fatalf("profile C identity wrong")
+	}
+	// An incompatible identity that was NEVER stored must not inherit any of
+	// the old profiles: family/config identity changes never reuse learning.
+	neverStored := testProfileIdentity()
+	neverStored.ConfigIdentity = `provider.Config{ProviderID:"brand-new" ProtocolFamily:"openai_compatible" Endpoint:"https://other.invalid/v1" ConfigVersion:"v9"}`
+	if loaded, err := store.LoadOperationalProfile(ctx, neverStored); err != nil || loaded != nil {
+		t.Fatalf("unrelated identity must not inherit old learning (loaded=%v err=%v)", loaded, err)
+	}
+	neverStoredFamily := testProfileIdentity()
+	neverStoredFamily.ProtocolFamily = provider.FamilyGoogleCompatible
+	if loaded, err := store.LoadOperationalProfile(ctx, neverStoredFamily); err != nil || loaded != nil {
+		t.Fatalf("different protocol family must not inherit old learning (loaded=%v err=%v)", loaded, err)
+	}
+}
+
+// TestOperationalProfileRestartPreservesWithoutProviderCalls proves the
+// profile survives a real reopen of the SQLite file, and reconstruction is
+// pure state reads (no provider requests are possible anywhere in the path).
+func TestOperationalProfileRestartPreservesWithoutProviderCalls(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runstead.db")
+	ctx := context.Background()
+
+	store, err := Open(Options{Path: path, Clock: newFixedClock()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSeedProfile(t, store, testProfileIdentity())
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen: the profile is reconstructed from durable state only.
+	reopened, err := Open(Options{Path: path, Clock: newFixedClock()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	loaded, err := reopened.LoadOperationalProfile(ctx, testProfileIdentity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded == nil {
+		t.Fatalf("profile lost across restart")
+	}
+	if v := loaded.Effective(provider.FieldMaxRequestBytes); v.Value != 2048 || v.Provenance != provider.ProvenanceObserved || v.EvidenceRef != (provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000001"}) {
+		t.Fatalf("profile content lost across restart: %+v", v)
+	}
+	if v := loaded.Effective(provider.FieldCooldownMillis); v.Provenance != provider.ProvenanceAuthoritative {
+		t.Fatalf("authoritative value lost across restart: %+v", v)
+	}
+}
+
+// TestOperationalProfileFailClosed covers negative authority and corruption:
+// key mismatches, invalid provenance rows, over-cap values and unknown fields
+// are never silently repaired.
+func TestOperationalProfileFailClosed(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	identity := testProfileIdentity()
+
+	// Seed a valid profile through the only durable write path.
+	mustSeedProfile(t, store, identity)
+
+	// Directly corrupt one persisted row: unknown provenance.
+	if _, err := store.db.ExecContext(ctx, `UPDATE provider_operational_profiles SET provenance = 'guessed' WHERE field = 'cooldown_millis'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadOperationalProfile(ctx, identity); err == nil {
+		t.Fatalf("invalid provenance row must fail closed")
+	}
+	// Restore and corrupt differently: a persisted row whose value is
+	// non-positive (zero/unknown representation violation) fails closed.
+	if _, err := store.db.ExecContext(ctx, `UPDATE provider_operational_profiles SET value = 0 WHERE field = 'max_request_bytes'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadOperationalProfile(ctx, identity); err == nil {
+		t.Fatalf("non-positive row must fail closed")
+	}
+	// Restore and corrupt the identity/key binding.
+	if _, err := store.db.ExecContext(ctx, `UPDATE provider_operational_profiles SET config_identity = 'provider.Config{...other...}'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadOperationalProfile(ctx, identity); err == nil {
+		t.Fatalf("identity/key mismatch row must fail closed")
+	}
+	// Evidence reference missing on an observed row fails closed.
+	if _, err := store.db.ExecContext(ctx, `UPDATE provider_operational_profiles SET evidence_ref = '', provenance = 'observed'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadOperationalProfile(ctx, identity); err == nil {
+		t.Fatalf("observed row without evidence reference must fail closed")
+	}
+}
+
+// TestOperationalProfileSecretsNeverPersisted proves credential-shaped
+// content is redacted before reaching the database and that prompts/response
+// bodies have no representation in the profile projection at all.
+func TestOperationalProfileSecretsNeverPersisted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runstead.db")
+	store, err := Open(Options{Path: path, Clock: newFixedClock()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	ctx := context.Background()
+	identity := testProfileIdentity()
+	identity.ConfigIdentity = "provider.Config{ProviderID:\"x\" Endpoint:\"https://e.invalid/v1\" Auth:\"Bearer sk-super-secret-1234567890\"}"
+
+	// A credential-shaped "identity" is impossible through the real contract
+	// (Config.Sanitized is credential-free by construction). The persistence
+	// layer's Redact defense interacts with such a value by creating rows
+	// that are internally inconsistent with their key, and EVERY subsequent
+	// read fails CONSERVATIVELY: corruption never becomes usable state. The
+	// boundary either refuses at apply time or (if rows were written) at
+	// load time — never rendering a secret-bearing identity as valid.
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldCooldownMillis, Value: 1000, Provenance: provider.ProvenanceObserved,
+		EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000001"},
+	}}); err == nil {
+		if loaded, loadErr := store.LoadOperationalProfile(ctx, identity); loadErr == nil && loaded != nil {
+			t.Fatalf("credential-shaped identity must never load as valid")
+		}
+	}
+
+	// The raw database file never contains the credential-shaped value.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"sk-super-secret", "Bearer", "prompt-body-text", "response-body-text", "the quick brown fox"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("durable state contains forbidden content %q", forbidden)
+		}
+	}
+	if loaded, err := store.LoadOperationalProfile(ctx, identity); err == nil && loaded != nil {
+		t.Fatalf("redacted credential-shaped identity must fail closed on load")
+	}
+	// The perfectly legitimate identity surface never carries the secret.
+	sane := testProfileIdentity()
+	mustSeedProfile(t, store, sane)
+	loaded, err := store.LoadOperationalProfile(ctx, sane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded == nil || strings.Contains(loaded.ConfigIdentity, "sk-super-secret") {
+		t.Fatalf("sane identity must load cleanly without secret content")
+	}
+}
+
+// TestRenderInspectExplainsOperationalProfile renders the sanitized profile
+// section: effective value, provenance, identity, model and family, with
+// unknown fields explicit and never guessed.
+func TestRenderInspectExplainsOperationalProfile(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	taskID := "task-profile"
+	snapshot := `{"provider_id":"provider-a","protocol_family":"openai_compatible","provider_model":"model-a","provider_config_identity":"provider.Config{ProviderID:\"provider-a\" ProtocolFamily:\"openai_compatible\" Endpoint:\"https://e.invalid/v1\" Model:\"model-a\" AuthRequirement:\"none\"}","provider_profile_version":"v1","provider_adapter_version":"compatible-provider-v0.1"}`
+	if err := store.CreateTask(ctx, TaskRecord{TaskID: taskID, Objective: "objective", Workspace: "/tmp/ws", Model: "model-a", ConfigJSON: []byte(snapshot)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StartTask(ctx, taskID); err != nil {
+		t.Fatal(err)
+	}
+	mustSeedProfile(t, store, testProfileIdentity())
+
+	var rendered bytes.Buffer
+	if err := store.RenderInspect(ctx, &rendered, taskID); err != nil {
+		t.Fatal(err)
+	}
+	output := rendered.String()
+	for _, want := range []string{
+		"Operational profile:",
+		"provider_id=provider-a",
+		"protocol_family=openai_compatible",
+		"model=model-a",
+		"profile_version=v1",
+		"max_request_bytes: value=2048 provenance=observed",
+		"evidence_ref=evidence:obs-000001",
+		"cooldown_millis: value=5000 provenance=authoritative",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("inspect missing %q:\n%s", want, output)
+		}
+	}
+	// Unknown fields are explicit, never guessed.
+	if !strings.Contains(output, "concurrency_ceiling: unknown") {
+		t.Fatalf("unknown field must render as unknown:\n%s", output)
+	}
+	// No prompt/body/secret content ever appears.
+	if strings.Contains(output, "sk-super-secret") || strings.Contains(output, "prompt") {
+		t.Fatalf("inspect leaked forbidden content:\n%s", output)
+	}
+}
+
+// TestRenderInspectWithoutConfiguredProviderRendersNoProfile ensures the
+// legacy scripted/OmniRoute lanes stay unchanged.
+func TestRenderInspectWithoutConfiguredProviderRendersNoProfile(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	mustTask(t, store, "task-legacy")
+	var rendered bytes.Buffer
+	if err := store.RenderInspect(ctx, &rendered, "task-legacy"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rendered.String(), "Operational profile:") {
+		t.Fatalf("legacy lane must not render an operational profile section:\n%s", rendered.String())
+	}
+}
+
+// applyObservedThroughDurableBoundary is the legitimate way the runtime (and
+// tests) feed a specific produced observation into the durable profile.
+func applyObservedThroughDurableBoundary(t *testing.T, store *Store, identity provider.Identity, field provider.ProfileField, value int64, evidence string) {
+	t.Helper()
+	evidenceRef := provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: evidence}
+	if _, err := store.ApplyOperationalProfileUpdates(context.Background(), identity, nil, []provider.ProfileUpdate{{
+		Field: field, Value: value, Provenance: provider.ProvenanceObserved, EvidenceRef: evidenceRef,
+	}}); err != nil {
+		t.Fatalf("ApplyOperationalProfileUpdates(observed): %v", err)
+	}
+}
+
+// TestOperationalProfileUpdatesMonotonicAcrossReruns is the #91-review
+// regression: persisted configured=8000, tightened to observed=2048, then
+// re-running the SAME configured bound (8000) must leave the field at
+// 2048/observed, and a restart must preserve the property.
+func TestOperationalProfileUpdatesMonotonicAcrossReruns(t *testing.T) {
+	identity := testProfileIdentity()
+	ctx := context.Background()
+
+	// 1) persist configured=8000.
+	store := openTestStore(t)
+	profile, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldMaxRequestBytes, Value: 8000, Provenance: provider.ProvenanceConfigured,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := profile.Effective(provider.FieldMaxRequestBytes); v.Value != 8000 || v.Provenance != provider.ProvenanceConfigured {
+		t.Fatalf("configured=8000 not persisted: %+v", v)
+	}
+	// 2) tighten through the durable boundary to observed=2048.
+	applyObservedThroughDurableBoundary(t, store, identity, provider.FieldMaxRequestBytes, 2048, "obs-000001")
+	loaded, err := store.LoadOperationalProfile(ctx, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := loaded.Effective(provider.FieldMaxRequestBytes); v.Value != 2048 || v.Provenance != provider.ProvenanceObserved {
+		t.Fatalf("observed=2048 not persisted: %+v", v)
+	}
+	// 3) re-run with the SAME configured bound (replay).
+	replayed, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldMaxRequestBytes, Value: 8000, Provenance: provider.ProvenanceConfigured,
+	}})
+	if err != nil {
+		t.Fatalf("configured replay must be a benign no-op, got error: %v", err)
+	}
+	if replayed == nil {
+		t.Fatalf("replay must still return the profile")
+	}
+	if v := replayed.Effective(provider.FieldMaxRequestBytes); v.Value != 2048 || v.Provenance != provider.ProvenanceObserved {
+		t.Fatalf("configured replay undid the observed tightening: %+v", v)
+	}
+	// 4) restart does not alter the property: reopen across a real SQLite
+	// file is covered by TestOperationalProfileRestartPreservesWithoutProviderCalls
+	// (same persistence path); here we repeat the monotonic assertion through
+	// a fresh Load of the same durable store.
+	again, err := store.LoadOperationalProfile(ctx, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := again.Effective(provider.FieldMaxRequestBytes); v.Value != 2048 || v.Provenance != provider.ProvenanceObserved {
+		t.Fatalf("property lost after reload: %+v", v)
+	}
+}
+
+// TestOperationalProfileUpdatesCooldownDirection is the #91-review
+// regression at the durable boundary: Retry-After 60s over configured 30s is
+// accepted as conservative tightening; a 10s observation never weakens it.
+func TestOperationalProfileUpdatesCooldownDirection(t *testing.T) {
+	identity := testProfileIdentity()
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldCooldownMillis, Value: 30000, Provenance: provider.ProvenanceConfigured,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	// Retry-After 60s -> accepted (higher is conservative).
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldCooldownMillis, Value: 60000, Provenance: provider.ProvenanceObserved, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000042"},
+	}}); err != nil {
+		t.Fatalf("cooldown 30s -> observed 60s must be accepted: %v", err)
+	}
+	// Observation 10s -> refused (would weaken).
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldCooldownMillis, Value: 10000, Provenance: provider.ProvenanceObserved, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000043"},
+	}}); !errors.Is(err, provider.ErrObservedNotConservative) {
+		t.Fatalf("cooldown weakening must be refused, got %v", err)
+	}
+	loaded, err := store.LoadOperationalProfile(ctx, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := loaded.Effective(provider.FieldCooldownMillis); v.Value != 60000 || v.Provenance != provider.ProvenanceObserved {
+		t.Fatalf("cooldown weakened without authority: %+v", v)
+	}
+}
+
+// TestZeroAndNegativeUpdatesRefusedAtDurableBoundary proves the single
+// zero/unknown representation holds at the store boundary too.
+func TestZeroAndNegativeUpdatesRefusedAtDurableBoundary(t *testing.T) {
+	identity := testProfileIdentity()
+	ctx := context.Background()
+	store := openTestStore(t)
+	for _, update := range []provider.ProfileUpdate{
+		{Field: provider.FieldMaxRequestBytes, Value: 0, Provenance: provider.ProvenanceConfigured},
+		{Field: provider.FieldMaxRequestBytes, Value: -5, Provenance: provider.ProvenanceConfigured},
+		{Field: provider.FieldCooldownMillis, Value: 0, Provenance: provider.ProvenanceObserved, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000001"}},
+		{Field: provider.FieldTimeoutMillis, Value: 0, Provenance: provider.ProvenanceAuthoritative, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindVerification, ID: "verif-000001"}},
+	} {
+		if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{update}); err == nil {
+			t.Fatalf("non-positive update %+v must fail closed at the durable boundary", update)
+		}
+	}
+}
+
+// TestOperationalProfileUpdatesTimeoutUnknownObservedPersistsNoRow is the
+// #91-review durable-boundary regression: an observed timeout on an unknown
+// field is refused (no automatic safety direction) and NO row is persisted.
+func TestOperationalProfileUpdatesTimeoutUnknownObservedPersistsNoRow(t *testing.T) {
+	identity := testProfileIdentity()
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldTimeoutMillis, Value: 30000, Provenance: provider.ProvenanceObserved, EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000046"},
+	}}); !errors.Is(err, provider.ErrNoAutomaticDirection) {
+		t.Fatalf("unknown timeout -> observed at the durable boundary must fail with ErrNoAutomaticDirection, got %v", err)
+	}
+	// No row exists for any field of that profile: the refused observation
+	// persisted nothing.
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM provider_operational_profiles`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("refused timeout observation persisted %d rows, want 0", count)
+	}
+	loaded, err := store.LoadOperationalProfile(ctx, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded != nil {
+		t.Fatalf("refused observation produced a profile: %+v", loaded)
+	}
+}
+
+// TestOperationalProfileSingleDurableWriteBoundary is the #91-review
+// regression for the removed bypass: the non-monotonic SaveOperationalProfile
+// write path does NOT exist on the store (only ApplyOperationalProfileUpdates
+// can write durable profile state).
+func TestOperationalProfileSingleDurableWriteBoundary(t *testing.T) {
+	storeType := reflect.TypeOf(&Store{})
+	if _, exists := storeType.MethodByName("SaveOperationalProfile"); exists {
+		t.Fatalf("non-monotonic SaveOperationalProfile write path must not exist")
+	}
+	if _, exists := storeType.MethodByName("ApplyOperationalProfileUpdates"); !exists {
+		t.Fatalf("monotonic ApplyOperationalProfileUpdates must be the single write path")
+	}
+}
+
+// TestOperationalProfileTamperedProviderIDFailsClosed is the #91-review
+// regression: a persisted provider_id that does not match the identity it is
+// loaded under is corruption and must never render as valid state.
+func TestOperationalProfileTamperedProviderIDFailsClosed(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	identity := testProfileIdentity()
+	mustSeedProfile(t, store, identity)
+
+	if _, err := store.db.ExecContext(ctx, `UPDATE provider_operational_profiles SET provider_id = 'tampered-provider'`); err != nil {
+		t.Fatal(err)
+	}
+	if loaded, err := store.LoadOperationalProfile(ctx, identity); err == nil && loaded != nil {
+		t.Fatalf("tampered provider_id must fail closed on load")
+	}
+}
+
+// TestOperationalProfileEvidenceRefRejectsPrivateContent is the #91-review
+// regression at the durable boundary: a persisted evidence_ref containing
+// free text (prompt/response/header-like content) is not a structured
+// sanitized reference and fails closed on load; inspect can never render it.
+func TestOperationalProfileEvidenceRefRejectsPrivateContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runstead.db")
+	store, err := Open(Options{Path: path, Clock: newFixedClock()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	ctx := context.Background()
+	identity := testProfileIdentity()
+	mustSeedProfile(t, store, identity)
+
+	// Free text WITH spaces is refused on load.
+	if _, err := store.db.ExecContext(ctx,
+		`UPDATE provider_operational_profiles SET evidence_ref = 'the quick brown fox prompt response text' WHERE field = 'max_request_bytes'`); err != nil {
+		t.Fatal(err)
+	}
+	if loaded, err := store.LoadOperationalProfile(ctx, identity); err == nil && loaded != nil {
+		t.Fatalf("free-text evidence_ref must fail closed on load")
+	}
+	// A private single token WITHOUT spaces (e.g. privatePromptBody) is also
+	// refused: the closed per-kind formats only accept Runstead-produced ids.
+	if _, err := store.db.ExecContext(ctx,
+		`UPDATE provider_operational_profiles SET evidence_ref = 'privatePromptBody' WHERE field = 'max_request_bytes'`); err != nil {
+		t.Fatal(err)
+	}
+	if loaded, err := store.LoadOperationalProfile(ctx, identity); err == nil && loaded != nil {
+		t.Fatalf("private single-token evidence_ref must fail closed on load")
+	}
+	// The raw file never contains the private content.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"the quick brown fox prompt response text", "privatePromptBody"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("durable state contains private evidence content %q", forbidden)
+		}
+	}
+}
+
+// TestOperationalProfileUpdatesRejectsCorruptionBeforeWrite is the
+// #91-review regression for the trust model: when an existing row is
+// corrupted (identity columns tampered), ApplyOperationalProfileUpdates
+// must validate the STORED row in full and fail BEFORE any UPDATE/INSERT —
+// uncertain state is never written to and then discovered only after
+// commit.
+func TestOperationalProfileUpdatesRejectsCorruptionBeforeWrite(t *testing.T) {
+	identity := testProfileIdentity()
+	ctx := context.Background()
+	store := openTestStore(t)
+	mustSeedProfile(t, store, identity)
+
+	// Tamper the stored provider_id.
+	if _, err := store.db.ExecContext(ctx, `UPDATE provider_operational_profiles SET provider_id = 'tampered'`); err != nil {
+		t.Fatal(err)
+	}
+	// A perfectly valid monotonic update (observed tightening of cooldown,
+	// whose direction is defined) must be REFUSED before any write.
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldCooldownMillis, Value: 70000, Provenance: provider.ProvenanceObserved,
+		EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000042"},
+	}}); err == nil {
+		t.Fatalf("tampered row must be refused before write")
+	}
+	// No write happened: the corrupted state is untouched (rollback).
+	var storedProviderID string
+	var cooldown int64
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT provider_id, value FROM provider_operational_profiles WHERE field = 'cooldown_millis'`).Scan(&storedProviderID, &cooldown); err != nil {
+		t.Fatal(err)
+	}
+	if storedProviderID != "tampered" || cooldown != 5000 {
+		t.Fatalf("refused update must not have written anything (provider=%q cooldown=%d)", storedProviderID, cooldown)
+	}
+
+	// Tamper the stored config identity the same way: refused before write.
+	if _, err := store.db.ExecContext(ctx, `UPDATE provider_operational_profiles SET config_identity = 'provider.Config{tampered}'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldCooldownMillis, Value: 70000, Provenance: provider.ProvenanceObserved,
+		EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000042"},
+	}}); err == nil {
+		t.Fatalf("tampered config identity must be refused before write")
+	}
+	var cooldownAfter int64
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT value FROM provider_operational_profiles WHERE field = 'cooldown_millis'`).Scan(&cooldownAfter); err != nil {
+		t.Fatal(err)
+	}
+	if cooldownAfter != 5000 {
+		t.Fatalf("refused update must not have written anything (cooldown=%d)", cooldownAfter)
+	}
+}
+
+// TestOperationalProfileUpdatesValidatesWholeProfileBeforeWrite is the
+// #91-review regression: corruption in ANY row of the profile (not just the
+// field being updated) must abort the transaction BEFORE any write.
+func TestOperationalProfileUpdatesValidatesWholeProfileBeforeWrite(t *testing.T) {
+	identity := testProfileIdentity()
+	ctx := context.Background()
+	store := openTestStore(t)
+	mustSeedProfile(t, store, identity)
+
+	// Corrupt a row that is NOT the update target (max_request_bytes), while
+	// the update targets cooldown_millis.
+	if _, err := store.db.ExecContext(ctx,
+		`UPDATE provider_operational_profiles SET provider_id = 'tampered' WHERE field = 'max_request_bytes'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldCooldownMillis, Value: 70000, Provenance: provider.ProvenanceObserved,
+		EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000042"},
+	}}); err == nil {
+		t.Fatalf("corruption in an unrelated row must abort the transaction before write")
+	}
+	// Nothing was written: cooldown still 5000 and the tampered row intact.
+	var cooldown int64
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT value FROM provider_operational_profiles WHERE field = 'cooldown_millis'`).Scan(&cooldown); err != nil {
+		t.Fatal(err)
+	}
+	if cooldown != 5000 {
+		t.Fatalf("refused update must not have written cooldown (value=%d)", cooldown)
+	}
+	var tamperedProvider int64
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM provider_operational_profiles WHERE field = 'max_request_bytes' AND provider_id = 'tampered'`).Scan(&tamperedProvider); err != nil {
+		t.Fatal(err)
+	}
+	if tamperedProvider != 1 {
+		t.Fatalf("tampered row must remain intact after rollback")
+	}
+}
+
+// TestConfiguredWithEvidenceRefRefusedAtDurableBoundary proves configured +
+// evidence_ref fails closed at the store boundary before any write persists.
+func TestConfiguredWithEvidenceRefRefusedAtDurableBoundary(t *testing.T) {
+	identity := testProfileIdentity()
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldMaxRequestBytes, Value: 8000, Provenance: provider.ProvenanceConfigured,
+		EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000001"},
+	}}); err == nil {
+		t.Fatalf("configured update with evidence ref must fail closed at the durable boundary")
+	}
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM provider_operational_profiles`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("refused update must not have persisted any row (count=%d)", count)
+	}
+}

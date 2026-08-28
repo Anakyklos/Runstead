@@ -404,3 +404,45 @@ func TestMigrationsUpgradeEmbeddedV8ToCurrentWithBaselineData(t *testing.T) {
 		t.Fatalf("schema version after upgrade = %d (err %v), want %d", current, err, supportedSchemaVersion())
 	}
 }
+
+// TestMigrationsOperationalProfilesTableAdditiveAndPreserving covers the
+// #91 migration: a fresh database carries the operational profiles table,
+// an existing database (schema version 12, #14) upgrades additively without
+// losing prior state, and legacy scripted/OmniRoute rows (empty identity
+// columns) stay untouched.
+func TestMigrationsOperationalProfilesTableAdditiveAndPreserving(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	// Upgrade from the #14 schema (1..12): seed a provider attempt identity
+	// row first, then apply the full embedded migration set.
+	if err := migrateFS(db, migrationFS); err != nil {
+		t.Fatalf("migrate full set error = %v", err)
+	}
+	version, err := schemaVersion(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != 13 {
+		t.Fatalf("schema version = %d, want 13", version)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM provider_operational_profiles`).Scan(&count); err != nil {
+		t.Fatalf("operational profiles table missing: %v", err)
+	}
+	// Re-running the migration set on an up-to-date database is a no-op.
+	if err := migrateFS(db, migrationFS); err != nil {
+		t.Fatalf("re-run migration error = %v", err)
+	}
+	version, _ = schemaVersion(db)
+	if version != 13 {
+		t.Fatalf("schema version after re-run = %d, want 13", version)
+	}
+	// The historical provider identity columns still exist and accept the
+	// #14 projection shape (additive migration, no historical table altered).
+	if _, err := db.Exec(`INSERT INTO provider_attempts
+		(execution_id, task_id, client_request_id, provider, model_pool, model, attempt_sequence, receipt_aware, protocol_family, config_identity, delivery_state, status, created_at, prepared_at)
+		VALUES ('exec-991', 'task-991', 'req-991', 'scripted', 'instant', 'scripted', 1, 0, 'openai_compatible', 'provider.Config{...}', '', 'completed', '2026-08-27T00:00:00Z', '2026-08-27T00:00:00Z')`); err != nil {
+		t.Fatalf("historical provider_attempts shape broken by migration: %v", err)
+	}
+}

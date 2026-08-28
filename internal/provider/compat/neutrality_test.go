@@ -48,6 +48,13 @@ var forbiddenFragments = []string{
 	"OpenAI",
 	"Anthropic",
 	"Gemini",
+	// Operational profiles are provider-layer metadata consumed by the
+	// composition root and inspection; the neutral runtime must never branch
+	// on profile state (#91).
+	"OperationalProfile",
+	"ProfileUpdate",
+	"SaveOperationalProfile",
+	"LoadOperationalProfile",
 }
 
 func TestNeutralRuntimeNeverDependsOnWireAdapters(t *testing.T) {
