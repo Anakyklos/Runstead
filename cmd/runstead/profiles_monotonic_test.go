@@ -27,11 +27,11 @@ const profileTestBound = 8000
 // the run monotonicity test: still a tightening against the configured 8000,
 // yet comfortably ABOVE the largest measured run payload (5841 bytes) so the
 // rerun exercises the effective bound without tripping it.
-const profileTighteningObserved = 7000
+const profileTighteningObserved = 7900
 
 // resumeTighteningObserved is the resumed-flow probe: below the configured
 // 8000 yet above the largest measured resumed payload (7132 bytes).
-const resumeTighteningObserved = 7600
+const resumeTighteningObserved = 7900
 
 // profileTighteningIdentity resolves the pinned identity of the providers
 // file so the test can apply observations through the same key the runtime

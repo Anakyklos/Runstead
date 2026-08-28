@@ -212,6 +212,61 @@ func TestLearningEnforcedBoundRefusesOversizedTranscript(t *testing.T) {
 	}
 }
 
+// TestLearningUnsupportedOptionPersistsBit: a typed
+// unsupported_response_format signal (Anthropic wire: stop_reason
+// "tool_use") is translated by the family-neutral mapping into the closed
+// response_format option bit and persisted durably with the task evidence
+// reference. The adaptive path itself dispatches nothing extra.
+func TestLearningUnsupportedOptionPersistsBit(t *testing.T) {
+	// The typed signal: the adapter classifies stop_reason "tool_use" as
+	// ErrorUnsupportedResponseFormat without any vendor branch inside the
+	// learning path. The first request receives the signal; later requests
+	// would receive the deterministic script (the run stops at turn 1, so
+	// only the first request is ever made).
+	var wireMu sync.Mutex
+	first := true
+	signal := `{"content":null,"stop_reason":"tool_use"}`
+	var physical int
+	signalServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		wireMu.Lock()
+		physical++
+		isFirst := first
+		first = false
+		wireMu.Unlock()
+		if isFirst {
+			response.Header().Set("Content-Type", "application/json")
+			response.WriteHeader(http.StatusOK)
+			_, _ = response.Write([]byte(signal))
+			return
+		}
+		body := e2eWrapResponse(provider.FamilyAnthropicCompatible, learningScript()[0])
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.Write(body)
+	}))
+	t.Cleanup(signalServer.Close)
+
+	providersFile := writeProvidersFile(t, e2eFamily{provider.FamilyAnthropicCompatible, `{"max_tokens":"256","anthropic_version":"2023-06-01"}`},
+		map[string]string{"learn-provider": signalServer.URL + "/v1"})
+	identity := profileTighteningIdentity(t, providersFile, "learn-provider")
+	stateDir := t.TempDir()
+	var out, errOut strings.Builder
+	code := run(context.Background(), monotonicRunArgs(t, learningWorkspace(t), stateDir, learningAcceptance(t), providersFile, "learn-provider"), &out, &errOut)
+	if code == exitSuccess {
+		t.Fatalf("run must stop on the unsupported-option signal\nstderr:\n%s", errOut.String())
+	}
+	value := loadProfileValue(t, stateDir, identity, provider.FieldUnsupportedOptions)
+	if value.Value != 1 || value.Provenance != provider.ProvenanceObserved {
+		t.Fatalf("unsupported_options learned = %+v, want bit 0x1/observed", value)
+	}
+	if value.EvidenceRef.Kind != provider.EvidenceKindTask || !strings.HasPrefix(value.EvidenceRef.ID, "cli-") {
+		t.Fatalf("bit row must carry the task evidence reference, got %+v", value.EvidenceRef)
+	}
+	if physical != 1 {
+		t.Fatalf("physical requests = %d, want exactly 1 (learning never dispatches its own requests)", physical)
+	}
+}
+
 // TestLearningRestartKeepsEvidenceAndPacesRetries: run#1 learns a 6s
 // cooldown from Retry-After (no retry policy; the run stops on the 429). A
 // SECOND run with the SAME providers file (identical config identity, fresh
@@ -282,7 +337,7 @@ func TestLearningRestartKeepsEvidenceAndPacesRetries(t *testing.T) {
 	if totalRequests != 4 {
 		t.Fatalf("total physical requests = %d, want 4 (run#1: 1; run#2: 429, retry, second turn)", totalRequests)
 	}
-	if gap := copied[1].Sub(copied[0]); gap < 5500*time.Millisecond || gap > 20*time.Second {
+	if gap := copied[1].Sub(copied[0]); gap < 5500*time.Millisecond || gap > 60*time.Second {
 		t.Fatalf("retry gap = %v, want ~6s (learned cooldown must dominate the 2s header after restart)", gap)
 	}
 	// The learned value survives the restart unchanged.

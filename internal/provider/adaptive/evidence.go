@@ -190,10 +190,16 @@ func Updates(in Evidence) []provider.ProfileUpdate {
 // Updates that the profile already covers more conservatively, or that
 // would not apply, are dropped: the goal state (conservative profile) is
 // already reached, so dropping them is both safe and mandatory. A nil
-// profile means unknown state, where any emitted update is accepted.
-func ConservativeSubset(current *provider.OperationalProfile, updates []provider.ProfileUpdate) []provider.ProfileUpdate {
+// profile means unknown state, where any emitted update is accepted. The
+// clock is only used for the rule engine's bookkeeping fields (discarded
+// here); nil defaults to the real clock, keeping call sites simple.
+func ConservativeSubset(current *provider.OperationalProfile, updates []provider.ProfileUpdate, clock func() time.Time) []provider.ProfileUpdate {
 	if len(updates) == 0 {
 		return nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if clock != nil {
+		now = clock().UTC().Format(time.RFC3339)
 	}
 	accepted := make([]provider.ProfileUpdate, 0, len(updates))
 	for _, update := range updates {
@@ -202,7 +208,7 @@ func ConservativeSubset(current *provider.OperationalProfile, updates []provider
 			continue
 		}
 		fieldValue, exists := current.Values[update.Field]
-		if _, err := provider.ApplyFieldValue(update.Field, fieldValue, exists, update, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		if _, err := provider.ApplyFieldValue(update.Field, fieldValue, exists, update, now); err != nil {
 			// Not conservatively applicable against the effective state:
 			// the profile is already as conservative or more, or the update
 			// cannot be justified (for example an undefined direction).

@@ -241,15 +241,15 @@ func TestConservativeSubsetDropsRefusedUpdates(t *testing.T) {
 		// Undefined-direction field: never accepted automatically, dropped.
 		{Field: provider.FieldTimeoutMillis, Value: 1000, Provenance: provider.ProvenanceObserved, EvidenceRef: obsRef("cli-1000000059")},
 	}
-	kept := ConservativeSubset(profile, updates)
+	kept := ConservativeSubset(profile, updates, clock)
 	if len(kept) != 1 || kept[0].Value != 120000 {
 		t.Fatalf("expected only the 120s tightening to survive, got %+v", kept)
 	}
 
-	if all := ConservativeSubset(nil, updates); len(all) != 3 {
+	if all := ConservativeSubset(nil, updates, clock); len(all) != 3 {
 		t.Fatalf("nil profile must accept every emitted update, got %+v", all)
 	}
-	if out := ConservativeSubset(profile, nil); out != nil {
+	if out := ConservativeSubset(profile, nil, clock); out != nil {
 		t.Fatalf("no updates must produce no subset")
 	}
 }

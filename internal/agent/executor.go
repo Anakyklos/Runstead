@@ -117,7 +117,15 @@ func (e *Executor) Execute(ctx context.Context, request governor.AttemptRequest)
 		// state the observer could not safely account for.
 		if e.observer != nil && result.Admission.Admitted() {
 			if err := e.observer.ObserveAttempt(ctx, attemptRequest, result); err != nil {
-				result.Err = fmt.Errorf("%w: %v", ErrAttemptObservation, err)
+				if errors.Is(result.Err, governor.ErrProviderOutcomePersist) {
+					// Never lose a pre-existing control-plane durability
+					// sentinel when the observation also fails: both the
+					// conservative stop and the underlying persistence
+					// diagnosis must stay detectable via errors.Is.
+					result.Err = fmt.Errorf("%w: %w (admitted outcome also failed durable persist: %w)", ErrAttemptObservation, err, result.Err)
+					return result
+				}
+				result.Err = fmt.Errorf("%w: %w", ErrAttemptObservation, err)
 				return result
 			}
 		}

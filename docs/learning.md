@@ -136,6 +136,10 @@ The adaptive layer has no execution authority:
 - `unsupported_options` currently has one closed bit
   (`response_format`); new options must be added to the closed enum in
   `internal/provider/adaptive` with their own bit, never as free text.
+  The bit is **metadata-only** (durable evidence and provenance): no
+  runtime consumer exists yet, because the CLI never sends
+  `response_format` today. A future option-sending path must read the bit
+  before composing requests; until then nothing else reads it.
 - Concurrency learning is metadata-only until the governor supports lanes
   with `MaxInFlight > 1` (an explicit non-goal of #93).
 

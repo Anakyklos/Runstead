@@ -69,7 +69,7 @@ func (o *profileObserver) ObserveAttempt(ctx context.Context, request governor.A
 	}
 	// Drop everything the effective profile already covers more
 	// conservatively: only genuinely tightening proposals reach the store.
-	updates = adaptive.ConservativeSubset(profile, updates)
+	updates = adaptive.ConservativeSubset(profile, updates, nil)
 	if len(updates) == 0 {
 		return nil
 	}
@@ -113,6 +113,12 @@ func applyEffectiveProfileBounds(ctx context.Context, store *state.Store, identi
 		{provider.FieldMaxResponseBytes, &effective.Profile.MaxResponseBytes},
 	} {
 		if value := profile.Effective(bound.field); value.Known() {
+			// int64 -> int conversion guard: an oversized or negative
+			// learned bound must never be applied (and cannot fit the
+			// adapter's request-builder int on any build target).
+			if value.Value <= 0 || int64(int(value.Value)) != value.Value {
+				continue
+			}
 			*bound.target = int(value.Value)
 			applied = true
 		}

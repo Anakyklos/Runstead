@@ -174,6 +174,40 @@ func TestExecutorObserverCancelDuringBackoffObservesOnce(t *testing.T) {
 	}
 }
 
+// TestExecutorObserverErrorPreservesPersistenceSentinel: when the observer
+// itself fails on a control-plane persistence sentinel (TX2 store error),
+// the terminal error must keep both markers: the observation stopped the
+// loop conservatively AND the underlying persistence cause stays
+// detectable, so the CLI mapping can still classify it as a control-plane
+// failure that must never learn.
+func TestExecutorObserverErrorPreservesPersistenceSentinel(t *testing.T) {
+	client := newScriptedClient(rateClientResults()...)
+	observer := &recordingObserver{errOn: 1}
+	_, clock, executor := newRetryHarnessWithPersistence(t, nil, failFinishedPersistence{}, client,
+		rateThenSuccessClassifier(client), ExecutorOptions{EnableRetry: true, Observer: observer})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan governor.ExecutionResult, 1)
+	go func() { done <- executor.Execute(ctx, retryRequest()) }()
+	waitForCalls(t, client, 1)
+	clock.Advance(2 * time.Second)
+	result := <-done
+
+	if !errors.Is(result.Err, ErrAttemptObservation) {
+		t.Fatalf("result error must wrap ErrAttemptObservation, got %v", result.Err)
+	}
+	if !errors.Is(result.Err, governor.ErrProviderOutcomePersist) {
+		t.Fatalf("result error must preserve ErrProviderOutcomePersist, got %v", result.Err)
+	}
+	if calls := client.callCount(); calls != 1 {
+		t.Fatalf("physical calls = %d, want 1 (observer error stops retry)", calls)
+	}
+	if got := observer.observed(); got != 1 {
+		t.Fatalf("observations = %d, want exactly 1", got)
+	}
+}
+
 // TestExecutorObserverOnFailedDurableFinishStillNoRetry: a failed TX2
 // durable finish (issue #92 sentinel) with an observer attached must still
 // stop retrying; the admitted attempt is observed exactly once (the

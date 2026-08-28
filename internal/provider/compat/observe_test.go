@@ -121,9 +121,10 @@ func TestObservationUnsupportedOptionIsClosed(t *testing.T) {
 	}
 }
 
-// TestObservationUnknownErrorsStayAmbiguous: anything the adapters did not
-// type (including wrapped, cancelled, timeout and auth failures) is
-// ambiguous and never becomes evidence.
+// TestObservationUnknownErrorsStayAmbiguous: outcomes that carry no
+// learnable typed kind (unknown/unwrapped errors) or whose adapter kind has
+// no learnable adaptive mapping (cancelled, timeout, auth, upstream
+// failures) stay ambiguous and never become evidence.
 func TestObservationUnknownErrorsStayAmbiguous(t *testing.T) {
 	for _, err := range []error{
 		errors.New("generic control-plane failure"),
