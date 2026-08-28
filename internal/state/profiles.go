@@ -183,21 +183,27 @@ func (s *Store) ApplyOperationalProfileUpdates(ctx context.Context, identity pro
 
 	applied := make(map[provider.ProfileField]provider.ProfileValue)
 	for _, update := range updates {
+		var storedProviderID, storedFamily, storedConfigIdentity, storedModel, storedVersion string
 		var currentValue int64
 		var currentProvenance, currentEvidence, currentUpdated string
 		var exists bool
 		err := tx.QueryRowContext(ctx,
-			`SELECT value, provenance, evidence_ref, updated_at FROM provider_operational_profiles WHERE profile_key = ? AND field = ?`,
-			key, string(update.Field)).Scan(&currentValue, &currentProvenance, &currentEvidence, &currentUpdated)
+			`SELECT provider_id, protocol_family, config_identity, model, profile_version, value, provenance, evidence_ref, updated_at
+			 FROM provider_operational_profiles WHERE profile_key = ? AND field = ?`,
+			key, string(update.Field)).Scan(&storedProviderID, &storedFamily, &storedConfigIdentity, &storedModel, &storedVersion,
+			&currentValue, &currentProvenance, &currentEvidence, &currentUpdated)
 		currentRef, parseErr := provider.ParseEvidenceRef(currentEvidence)
 		if parseErr != nil {
 			return nil, fmt.Errorf("%w: row for key %s: %v", ErrProfileState, shortKeyRef(key), parseErr)
 		}
 		if err == nil {
-			// Validate the persisted current state before deciding: a
-			// corrupted row is never silently repaired.
-			if err := validatePersistedProfileRow(key, identity.ProviderID, identity.ProviderID, string(identity.ProtocolFamily), identity.ConfigIdentity, identity.Model,
-				provider.ProfileVersion, string(update.Field), currentValue, currentProvenance, currentRef); err != nil {
+			// Validate the STORED row in full (identity columns AND value
+			// columns) against the identity this update is being applied
+			// under, BEFORE any write can touch it: uncertain state must
+			// never be updated/overwritten and then discovered only after
+			// commit (fail-closed before any durable effect).
+			if err := validatePersistedProfileRow(key, identity.ProviderID, storedProviderID, storedFamily, storedConfigIdentity, storedModel,
+				storedVersion, string(update.Field), currentValue, currentProvenance, currentRef); err != nil {
 				return nil, err
 			}
 			exists = true

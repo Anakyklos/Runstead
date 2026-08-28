@@ -535,3 +535,42 @@ func TestEvidenceRefIsStructuredNotFreeText(t *testing.T) {
 		t.Fatalf("typed constructor must still refuse private non-format ids")
 	}
 }
+
+// TestEvidenceRefAcceptsCanonicalCounterIds is the #91-review regression:
+// %06d is a MINIMUM width, so counters above 999999 legitimately produce
+// ids with MORE than six digits (obs-1000000) and those must be accepted,
+// while non-canonical forms (too short, or extraneous leading zeros) must
+// be refused.
+func TestEvidenceRefAcceptsCanonicalCounterIds(t *testing.T) {
+	validIDs := []EvidenceRef{
+		EvidenceEvidenceRef("obs-000001"),
+		EvidenceEvidenceRef("obs-1000000"),
+		EvidenceEvidenceRef("obs-1234567890"),
+		ExecutionEvidenceRef("exec-000001"),
+		ExecutionEvidenceRef("exec-1000000"),
+		VerificationEvidenceRef("verif-000001"),
+		VerificationEvidenceRef("verif-1000000"),
+		TaskEvidenceRef("cli-1787864000000000000"),
+	}
+	for _, ref := range validIDs {
+		if !ref.Valid() {
+			t.Fatalf("canonical counter id %s must be valid", ref.String())
+		}
+		if parsed, err := ParseEvidenceRef(ref.String()); err != nil || !parsed.Valid() {
+			t.Fatalf("canonical counter id %s must parse: %v", ref.String(), err)
+		}
+	}
+	nonCanonical := []EvidenceRef{
+		EvidenceEvidenceRef("obs-00001"),     // too short for the padding minimum
+		EvidenceEvidenceRef("obs-0000010"),   // extraneous leading zero (7 digits)
+		EvidenceEvidenceRef("obs-000000000"), // multiple extraneous zeros
+		ExecutionEvidenceRef("exec-99999"),
+		VerificationEvidenceRef("verif-"),
+		TaskEvidenceRef("cli-0000000000"), // leading zeros are not nanos
+	}
+	for _, ref := range nonCanonical {
+		if ref.Valid() {
+			t.Fatalf("non-canonical id %s must be invalid", ref.String())
+		}
+	}
+}

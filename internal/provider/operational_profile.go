@@ -91,19 +91,27 @@ func (k EvidenceKind) Valid() bool {
 }
 
 // closedEvidenceIDPatterns restrict each EvidenceKind to the CLOSED set of
-// identifier formats the Runstead runtime actually produces (#91 review):
-//   - state.nextIdentity(prefix) emits "<prefix>-%06d" (zero-padded six
-//     digits: obs-000001, exec-000001, verif-000001);
-//   - task ids are the CLI-generated "cli-"+unix-nanos (digits only).
+// canonical identifier formats the Runstead runtime actually produces
+// (#91 review). The counter generator uses fmt.Sprintf("%s-%06d",
+// prefix, next): %06d is a MINIMUM width, NOT a maximum, so counters
+// 0..999999 render as exactly six zero-padded digits and counters
+// >= 1000000 render with more digits and no leading zero. Any shorter
+// form or extraneous leading zeros is not a Runstead-produced id.
+const counterIDPattern = `(?:[0-9]{6}|[1-9][0-9]{5,})`
+
+//   - evidence/execution/verification: "<prefix>-" + counterIDPattern
+//     (obs-000001, exec-000001, verif-1000000, ...);
+//   - task ids are the CLI-generated "cli-"+unix-nanos (digits only,
+//     no leading zero).
 //
 // A token that merely has no spaces (for example "privatePromptBody" or
 // "sensitive-response-content") is NOT a Runstead-produced identifier and is
 // refused: private content has no representation it can smuggle through.
 var closedEvidenceIDPatterns = map[EvidenceKind]*regexp.Regexp{
-	EvidenceKindEvidence:     regexp.MustCompile(`^obs-[0-9]{6}$`),
-	EvidenceKindExecution:    regexp.MustCompile(`^exec-[0-9]{6}$`),
-	EvidenceKindVerification: regexp.MustCompile(`^verif-[0-9]{6}$`),
-	EvidenceKindTask:         regexp.MustCompile(`^cli-[0-9]{10,19}$`),
+	EvidenceKindEvidence:     regexp.MustCompile("^obs-" + counterIDPattern + "$"),
+	EvidenceKindExecution:    regexp.MustCompile("^exec-" + counterIDPattern + "$"),
+	EvidenceKindVerification: regexp.MustCompile("^verif-" + counterIDPattern + "$"),
+	EvidenceKindTask:         regexp.MustCompile(`^cli-[1-9][0-9]{9,18}$`),
 }
 
 // EvidenceRef is a STRUCTURED, sanitized reference to evidence that produced

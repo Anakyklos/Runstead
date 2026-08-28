@@ -567,3 +567,58 @@ func TestOperationalProfileEvidenceRefRejectsPrivateContent(t *testing.T) {
 		}
 	}
 }
+
+// TestOperationalProfileUpdatesRejectsCorruptionBeforeWrite is the
+// #91-review regression for the trust model: when an existing row is
+// corrupted (identity columns tampered), ApplyOperationalProfileUpdates
+// must validate the STORED row in full and fail BEFORE any UPDATE/INSERT —
+// uncertain state is never written to and then discovered only after
+// commit.
+func TestOperationalProfileUpdatesRejectsCorruptionBeforeWrite(t *testing.T) {
+	identity := testProfileIdentity()
+	ctx := context.Background()
+	store := openTestStore(t)
+	mustSeedProfile(t, store, identity)
+
+	// Tamper the stored provider_id.
+	if _, err := store.db.ExecContext(ctx, `UPDATE provider_operational_profiles SET provider_id = 'tampered'`); err != nil {
+		t.Fatal(err)
+	}
+	// A perfectly valid monotonic update (observed tightening of cooldown,
+	// whose direction is defined) must be REFUSED before any write.
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldCooldownMillis, Value: 70000, Provenance: provider.ProvenanceObserved,
+		EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000042"},
+	}}); err == nil {
+		t.Fatalf("tampered row must be refused before write")
+	}
+	// No write happened: the corrupted state is untouched (rollback).
+	var storedProviderID string
+	var cooldown int64
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT provider_id, value FROM provider_operational_profiles WHERE field = 'cooldown_millis'`).Scan(&storedProviderID, &cooldown); err != nil {
+		t.Fatal(err)
+	}
+	if storedProviderID != "tampered" || cooldown != 5000 {
+		t.Fatalf("refused update must not have written anything (provider=%q cooldown=%d)", storedProviderID, cooldown)
+	}
+
+	// Tamper the stored config identity the same way: refused before write.
+	if _, err := store.db.ExecContext(ctx, `UPDATE provider_operational_profiles SET config_identity = 'provider.Config{tampered}'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldCooldownMillis, Value: 70000, Provenance: provider.ProvenanceObserved,
+		EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000042"},
+	}}); err == nil {
+		t.Fatalf("tampered config identity must be refused before write")
+	}
+	var cooldownAfter int64
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT value FROM provider_operational_profiles WHERE field = 'cooldown_millis'`).Scan(&cooldownAfter); err != nil {
+		t.Fatal(err)
+	}
+	if cooldownAfter != 5000 {
+		t.Fatalf("refused update must not have written anything (cooldown=%d)", cooldownAfter)
+	}
+}
