@@ -207,3 +207,6 @@ See [`docs/architecture.md`](docs/architecture.md), [`docs/roadmap.md`](docs/roa
 
 The M1 account-scoped request governor and its internal Account Protection SLO
 are documented in [`docs/account-protection.md`](docs/account-protection.md).
+Bounded governor-owned retry execution is documented in [`docs/retry.md`](docs/retry.md).
+Passive conservative operational envelope learning from typed provider
+evidence is documented in [`docs/learning.md`](docs/learning.md).

@@ -173,3 +173,36 @@ func TestExecutorObserverCancelDuringBackoffObservesOnce(t *testing.T) {
 		t.Fatalf("outcome = %q, want the original attempt outcome", result.Completion.Outcome)
 	}
 }
+
+// TestExecutorObserverOnFailedDurableFinishStillNoRetry: a failed TX2
+// durable finish (issue #92 sentinel) with an observer attached must still
+// stop retrying; the admitted attempt is observed exactly once (the
+// observer cannot know it was control-plane ambiguous, so the CLI mapping
+// treats the non-adapter error as ambiguous and learns nothing).
+func TestExecutorObserverOnFailedDurableFinishStillNoRetry(t *testing.T) {
+	client := newScriptedClient(
+		clientResult{response: provider.Response{Metadata: provider.ResponseMetadata{DeliveryState: provider.DeliveryCompleted}}, err: errors.New("rate-1")},
+		clientResult{response: provider.Response{Metadata: provider.ResponseMetadata{DeliveryState: provider.DeliveryCompleted}}, err: nil},
+	)
+	observer := &recordingObserver{}
+	_, clock, executor := newRetryHarnessWithPersistence(t, nil, failFinishedPersistence{}, client,
+		planClassifier(governor.OutcomeRateCapacity, governor.OutcomeSuccess), ExecutorOptions{EnableRetry: true, Observer: observer})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan governor.ExecutionResult, 1)
+	go func() { done <- executor.Execute(ctx, retryRequest()) }()
+	waitForCalls(t, client, 1)
+	clock.Advance(10 * time.Second)
+	result := <-done
+
+	if calls := client.callCount(); calls != 1 {
+		t.Fatalf("physical calls = %d, want 1 (failed durable finish must stop retry)", calls)
+	}
+	if !errors.Is(result.Err, governor.ErrProviderOutcomePersist) {
+		t.Fatalf("result error must preserve ErrProviderOutcomePersist, got %v", result.Err)
+	}
+	if got := observer.observed(); got != 1 {
+		t.Fatalf("observations = %d, want exactly 1 (the admitted attempt)", got)
+	}
+}
