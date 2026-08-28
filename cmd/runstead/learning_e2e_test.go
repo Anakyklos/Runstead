@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -438,6 +439,77 @@ func TestLearningCorruptProfileFailsClosed(t *testing.T) {
 	}
 	if wire.count() != 2 {
 		t.Fatalf("run#2 dispatched %d requests, want 0 additional (fail closed before execution)", wire.count()-2)
+	}
+}
+
+// TestLearningCorruptProfileFailsClosedOnResume: the same fail-closed
+// guarantee holds on the resume path. A crashed task owns configured
+// profile state; corrupting the rows directly in SQLite must make the
+// resume fail closed BEFORE any execution (zero additional requests),
+// because unknown envelope state is never executed under.
+func TestLearningCorruptProfileFailsClosedOnResume(t *testing.T) {
+	script := learningScript()
+	wire := newE2EWire(provider.FamilyOpenAICompatible, script...)
+	server := newHTTPServerForWire(wire)
+	t.Cleanup(server.Close)
+	providersFile := writeProvidersFileWithBounds(t, provider.FamilyOpenAICompatible, "learn-provider", server.URL+"/v1", 8000)
+	identity := profileTighteningIdentity(t, providersFile, "learn-provider")
+	stateDir := t.TempDir()
+	acceptance := learningAcceptance(t)
+
+	// Crash the run after its first durable provider attempt: the task
+	// exists for resume and the configured bound is already persisted.
+	args := monotonicRunArgs(t, learningWorkspace(t), stateDir, acceptance, providersFile, "learn-provider")
+	command := exec.Command(os.Args[0], "-test.run=TestRuntimeCodingLoopCrashHelper")
+	command.Env = append(os.Environ(),
+		"RUNSTEAD_CODING_CRASH_HELPER=1",
+		"RUNSTEAD_CODING_CRASH_POINT=provider_tx1_after",
+		"RUNSTEAD_CODING_CRASH_AFTER=1",
+		"RUNSTEAD_CODING_CRASH_ARGS="+strings.Join(args, "\x1f"),
+	)
+	output, err := command.CombinedOutput()
+	if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 42 {
+		t.Fatalf("crash helper exit = %v\n%s", err, output)
+	}
+	taskID := taskIDFromOutput(t, string(output))
+	if value := loadProfileValue(t, stateDir, identity, provider.FieldMaxRequestBytes); value.Value != 8000 || value.Provenance != provider.ProvenanceConfigured {
+		t.Fatalf("crashed run must persist configured bound, got %+v", value)
+	}
+
+	// Corrupt the persisted rows directly in SQLite (zero values are invalid
+	// evidence, so every loader/validator must refuse them).
+	db, err := sql.Open("sqlite", filepath.Join(stateDir, "runstead.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE provider_operational_profiles SET value = 0 WHERE provider_id = ?`, state.Redact(identity.ProviderID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Resume with the SAME configuration MUST fail closed before any
+	// execution: corrupt profile state is never executed under.
+	var out, errOut strings.Builder
+	resumeArgs := []string{
+		"resume", taskID,
+		"--state-dir", stateDir,
+		"--providers", providersFile,
+		"--provider-id", "learn-provider",
+		"--acceptance", acceptance,
+		"--log-level", "error",
+	}
+	if code := run(context.Background(), resumeArgs, &out, &errOut); code == exitSuccess {
+		t.Fatalf("resume must fail closed on a corrupt operational profile")
+	}
+	if !strings.Contains(errOut.String(), "operational profile") {
+		t.Fatalf("resume must report the operational profile failure, got:\n%s", errOut.String())
+	}
+	// The crashed run crashes before any physical dispatch and the resume
+	// fails closed, so the wire must never have served a request.
+	if wire.count() != 0 {
+		t.Fatalf("requests served = %d, want 0 (crashed pre-dispatch; fail closed before execution)", wire.count())
 	}
 }
 
