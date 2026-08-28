@@ -100,6 +100,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	acceptanceFile := ""
 	providersFile := ""
 	providerID := ""
+	retryPolicy := ""
 	flags.StringVar(&workspace, "workspace", "", "workspace path (default: RUNSTEAD_WORKSPACE or .)")
 	flags.StringVar(&logLevel, "log-level", "", "log level: debug, info, warn or error")
 	flags.StringVar(&task, "task", "", "task prompt (RUNSTEAD_TASK)")
@@ -111,6 +112,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	flags.StringVar(&acceptanceFile, "acceptance", "", "operator acceptance plan file (RUNSTEAD_ACCEPTANCE_PLAN): versioned JSON of typed acceptance checks; completion requires every check to pass. Without a plan, completion is refused (fail closed)")
 	flags.StringVar(&providersFile, "providers", "", "provider declarations file (RUNSTEAD_PROVIDERS): JSON document of provider_config-style endpoints (provider_id, protocol_family, base_url, model, auth_requirement, profile, ...) resolved through the #79 contract before dispatch")
 	flags.StringVar(&providerID, "provider-id", "", "exactly one configured provider_id to execute with (RUNSTEAD_PROVIDER_ID); incompatible with --scripted and OmniRoute configuration")
+	flags.StringVar(&retryPolicy, "retry-policy", "", "bounded governor-owned retry for configured compatible providers (RUNSTEAD_RETRY_POLICY): off (default) or bounded; every retried physical attempt re-enters the governor with a new admission, accounting and evidence")
 	flags.IntVar(&maxSteps, "max-steps", 0, "maximum model turns (RUNSTEAD_MAX_STEPS, default 24)")
 	flags.IntVar(&maxCorrections, "max-corrections", 0, "protocol correction attempts (RUNSTEAD_MAX_CORRECTIONS, default 2)")
 	flags.IntVar(&maxRepeatedActions, "max-repeated-actions", 0, "repeated-action corrections before stopping (RUNSTEAD_MAX_REPEATED_ACTIONS, default 2)")
@@ -240,6 +242,16 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		resolvedProvider = resolved
 	}
 
+	retriesEnabled, err := resolveRetryPolicy(retryPolicy, flagWasSet(flags, "retry-policy"))
+	if err != nil {
+		fmt.Fprintf(errOut, "run: %v\n", err)
+		return exitUsage
+	}
+	if retriesEnabled && (scriptedSet || cfg.OmniRoute != nil) {
+		fmt.Fprintln(errOut, "run: --retry-policy bounded applies only to configured compatible providers (--providers/--provider-id)")
+		return exitUsage
+	}
+
 	if scriptedSet {
 		if cfg.OmniRoute != nil {
 			fmt.Fprintln(errOut, "run: scripted offline mode cannot be combined with OmniRoute configuration")
@@ -352,7 +364,32 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		model = cfg.OmniRoute.Model
 	}
 
-	executor, err := agent.NewExecutor(accountGovernor, client, nil)
+	// The composition-layer classifier maps typed adapter failures onto the
+	// governor outcome taxonomy (provider-neutral; used whenever a configured
+	// compatible provider executes, independent of retry policy).
+	var outcomeClassifier governor.OutcomeClassifier
+	if resolvedProvider != nil {
+		outcomeClassifier = compat.NewClassifier()
+	}
+	var retryOptions []agent.ExecutorOptions
+	if retriesEnabled && resolvedProvider != nil {
+		var profileCooldown func() time.Duration
+		if providerIdentity.ProviderID != "" && store != nil {
+			profileCooldown = func() time.Duration {
+				profile, loadErr := store.LoadOperationalProfile(ctx, providerIdentity)
+				if loadErr != nil || profile == nil {
+					return 0
+				}
+				value := profile.Effective(provider.FieldCooldownMillis)
+				if !value.Known() {
+					return 0
+				}
+				return time.Duration(value.Value) * time.Millisecond
+			}
+		}
+		retryOptions = append(retryOptions, agent.ExecutorOptions{EnableRetry: true, RetryProfileCooldown: profileCooldown})
+	}
+	executor, err := agent.NewExecutor(accountGovernor, client, outcomeClassifier, retryOptions...)
 	if err != nil {
 		fmt.Fprintf(errOut, "run: executor unavailable: %v\n", err)
 		return exitUnavailable
@@ -466,6 +503,27 @@ func resolveProviderID(flags *flag.FlagSet, providerID string) (string, bool) {
 // resolved separately through the #79 contract before any dispatch.
 func loadProviderRegistry(path string) (*provider.Registry, error) {
 	return config.LoadProvidersFile(path)
+}
+
+// resolveRetryPolicy resolves the bounded retry policy from the flag or
+// RUNSTEAD_RETRY_POLICY. The default is OFF: existing workloads never gain
+// implicit retries just because the feature exists. Only "bounded" enables
+// the governor-owned retry path for configured compatible providers.
+func resolveRetryPolicy(flagValue string, flagSet bool) (bool, error) {
+	value := strings.TrimSpace(flagValue)
+	if value == "" && !flagSet {
+		if env, ok := os.LookupEnv(config.EnvRetryPolicy); ok {
+			value = strings.TrimSpace(env)
+		}
+	}
+	switch value {
+	case "", "off":
+		return false, nil
+	case "bounded":
+		return true, nil
+	default:
+		return false, fmt.Errorf("retry policy %q must be %q or %q", value, "off", "bounded")
+	}
 }
 
 func resolveScripted(flags *flag.FlagSet, scripted string) (string, bool) {
@@ -1248,6 +1306,12 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --omniroute-chat-endpoint PATH       generic endpoint (OMNIROUTE_CHAT_ENDPOINT); incompatible with the pinned live lane")
 	fmt.Fprintln(out, "  --omniroute-timeout DURATION         timeout (OMNIROUTE_TIMEOUT)")
 	fmt.Fprintln(out, "  --omniroute-safe-route               legacy static declaration; cannot authorize the live receipt lane")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Bounded governor-owned retry (#92): --retry-policy bounded (off by default) lets")
+	fmt.Fprintln(out, "a configured compatible provider retry delivery-safe rate/capacity and transient")
+	fmt.Fprintln(out, "server failures strictly under governor authority: every retried physical attempt")
+	fmt.Fprintln(out, "re-enters the governor with a new admission, new accounting and new evidence,")
+	fmt.Fprintln(out, "bounded by the existing retry/elapsed budgets and circuit/cooldown safety.")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "The provider-neutral live surface (#14) selects exactly ONE configured provider")
 	fmt.Fprintln(out, "endpoint per execution:")

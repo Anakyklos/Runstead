@@ -61,6 +61,14 @@ const (
 	// Completion requires every mandatory check to pass.
 	EnvAcceptancePlan = "RUNSTEAD_ACCEPTANCE_PLAN"
 
+	// EnvRetryPolicy configures the bounded governor-owned retry policy for
+	// configured compatible providers (issue #92): "off" (default) keeps the
+	// historical single-attempt behavior; "bounded" enables retries that
+	// re-enter the governor (new admission, new accounting, new evidence)
+	// within the existing retry/task/elapsed budgets and circuit/cooldown
+	// safety.
+	EnvRetryPolicy = "RUNSTEAD_RETRY_POLICY"
+
 	EnvOmniRouteBaseURL           = "OMNIROUTE_BASE_URL"
 	EnvOmniRouteAPIKey            = "OMNIROUTE_API_KEY"
 	EnvOmniRouteModel             = "OMNIROUTE_MODEL"
