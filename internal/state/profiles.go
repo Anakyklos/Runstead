@@ -181,6 +181,42 @@ func (s *Store) ApplyOperationalProfileUpdates(ctx context.Context, identity pro
 		createdAt = now
 	}
 
+	// Validate the WHOLE existing profile (every stored row of this
+	// profile_key) against the identity BEFORE any write. Corruption in ANY
+	// row — not only the field being updated — must abort the transaction:
+	// uncertain state is never committed alongside a legitimate field
+	// update and discovered only by the later load (#91 review).
+	profileRows, err := tx.QueryContext(ctx,
+		`SELECT provider_id, protocol_family, config_identity, model, profile_version, field, value, provenance, evidence_ref
+		 FROM provider_operational_profiles WHERE profile_key = ?`, key)
+	if err != nil {
+		return nil, fmt.Errorf("read operational profile for validation: %w", err)
+	}
+	for profileRows.Next() {
+		var storedProviderID, storedFamily, storedConfigIdentity, storedModel, storedVersion, field, provenance, evidence string
+		var value int64
+		if err := profileRows.Scan(&storedProviderID, &storedFamily, &storedConfigIdentity, &storedModel, &storedVersion, &field,
+			&value, &provenance, &evidence); err != nil {
+			profileRows.Close()
+			return nil, fmt.Errorf("scan operational profile for validation: %w", err)
+		}
+		rowRef, parseErr := provider.ParseEvidenceRef(evidence)
+		if parseErr != nil {
+			profileRows.Close()
+			return nil, fmt.Errorf("%w: row for key %s: %v", ErrProfileState, shortKeyRef(key), parseErr)
+		}
+		if err := validatePersistedProfileRow(key, identity.ProviderID, storedProviderID, storedFamily, storedConfigIdentity, storedModel,
+			storedVersion, field, value, provenance, rowRef); err != nil {
+			profileRows.Close()
+			return nil, err
+		}
+	}
+	if err := profileRows.Err(); err != nil {
+		profileRows.Close()
+		return nil, fmt.Errorf("iterate operational profile for validation: %w", err)
+	}
+	profileRows.Close()
+
 	applied := make(map[provider.ProfileField]provider.ProfileValue)
 	for _, update := range updates {
 		var storedProviderID, storedFamily, storedConfigIdentity, storedModel, storedVersion string

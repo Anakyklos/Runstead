@@ -405,6 +405,12 @@ func (u ProfileUpdate) Validate() error {
 		if !u.EvidenceRef.Valid() {
 			return fmt.Errorf("%w: %s with provenance %q requires a structured sanitized evidence reference (kind:id without free text)", ErrProfileInvalid, u.Field, u.Provenance)
 		}
+	} else if u.Provenance == ProvenanceConfigured && u.EvidenceRef.Kind != "" {
+		// configured is operator declaration, never evidence-derived: an
+		// evidence reference on configured provenance is a contradiction
+		// and must fail before the rules (it would otherwise be persisted
+		// and only discovered at load) (#91 review).
+		return fmt.Errorf("%w: %s with provenance %q must not carry an evidence reference", ErrProfileInvalid, u.Field, u.Provenance)
 	}
 	return nil
 }

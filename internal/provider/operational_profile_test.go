@@ -574,3 +574,25 @@ func TestEvidenceRefAcceptsCanonicalCounterIds(t *testing.T) {
 		}
 	}
 }
+
+// TestConfiguredUpdateMustNotCarryEvidenceRef is the #91-review regression:
+// configured provenance is operator declaration, never evidence-derived; an
+// evidence reference on a configured update must fail before the rules (it
+// would otherwise be persisted and only discovered at load).
+func TestConfiguredUpdateMustNotCarryEvidenceRef(t *testing.T) {
+	profile := NewOperationalProfile(testIdentity("cfg", "model-a", FamilyOpenAICompatible))
+	update := ProfileUpdate{
+		Field: FieldMaxRequestBytes, Value: 8000, Provenance: ProvenanceConfigured,
+		EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000001"},
+	}
+	if _, err := profile.Apply(update, fixedClock()); err == nil {
+		t.Fatalf("configured update with an evidence reference must fail closed")
+	}
+	if profile.Effective(FieldMaxRequestBytes).Known() {
+		t.Fatalf("refused configured update must not produce an effective value")
+	}
+	// The typed configured path stays clean.
+	if _, err := profile.ApplyConfigured(FieldMaxRequestBytes, 8000, fixedClock()); err != nil {
+		t.Fatalf("clean configured update must apply: %v", err)
+	}
+}

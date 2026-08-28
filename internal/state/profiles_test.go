@@ -622,3 +622,65 @@ func TestOperationalProfileUpdatesRejectsCorruptionBeforeWrite(t *testing.T) {
 		t.Fatalf("refused update must not have written anything (cooldown=%d)", cooldownAfter)
 	}
 }
+
+// TestOperationalProfileUpdatesValidatesWholeProfileBeforeWrite is the
+// #91-review regression: corruption in ANY row of the profile (not just the
+// field being updated) must abort the transaction BEFORE any write.
+func TestOperationalProfileUpdatesValidatesWholeProfileBeforeWrite(t *testing.T) {
+	identity := testProfileIdentity()
+	ctx := context.Background()
+	store := openTestStore(t)
+	mustSeedProfile(t, store, identity)
+
+	// Corrupt a row that is NOT the update target (max_request_bytes), while
+	// the update targets cooldown_millis.
+	if _, err := store.db.ExecContext(ctx,
+		`UPDATE provider_operational_profiles SET provider_id = 'tampered' WHERE field = 'max_request_bytes'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldCooldownMillis, Value: 70000, Provenance: provider.ProvenanceObserved,
+		EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000042"},
+	}}); err == nil {
+		t.Fatalf("corruption in an unrelated row must abort the transaction before write")
+	}
+	// Nothing was written: cooldown still 5000 and the tampered row intact.
+	var cooldown int64
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT value FROM provider_operational_profiles WHERE field = 'cooldown_millis'`).Scan(&cooldown); err != nil {
+		t.Fatal(err)
+	}
+	if cooldown != 5000 {
+		t.Fatalf("refused update must not have written cooldown (value=%d)", cooldown)
+	}
+	var tamperedProvider int64
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM provider_operational_profiles WHERE field = 'max_request_bytes' AND provider_id = 'tampered'`).Scan(&tamperedProvider); err != nil {
+		t.Fatal(err)
+	}
+	if tamperedProvider != 1 {
+		t.Fatalf("tampered row must remain intact after rollback")
+	}
+}
+
+// TestConfiguredWithEvidenceRefRefusedAtDurableBoundary proves configured +
+// evidence_ref fails closed at the store boundary before any write persists.
+func TestConfiguredWithEvidenceRefRefusedAtDurableBoundary(t *testing.T) {
+	identity := testProfileIdentity()
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	if _, err := store.ApplyOperationalProfileUpdates(ctx, identity, nil, []provider.ProfileUpdate{{
+		Field: provider.FieldMaxRequestBytes, Value: 8000, Provenance: provider.ProvenanceConfigured,
+		EvidenceRef: provider.EvidenceRef{Kind: provider.EvidenceKindEvidence, ID: "obs-000001"},
+	}}); err == nil {
+		t.Fatalf("configured update with evidence ref must fail closed at the durable boundary")
+	}
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM provider_operational_profiles`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("refused update must not have persisted any row (count=%d)", count)
+	}
+}
