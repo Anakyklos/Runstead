@@ -339,15 +339,6 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		client = provider.NewFake(responses...)
 		model = "scripted"
 	} else if resolvedProvider != nil {
-		// Exactly one configured endpoint: the composition layer selects the
-		// family adapter; the agent loop keeps depending only on
-		// provider.Client and the provider-neutral contract (#14).
-		compatClient, buildErr := compat.New(*resolvedProvider, compat.EnvSecretResolver(os.LookupEnv))
-		if buildErr != nil {
-			fmt.Fprintf(errOut, "run: provider %q unavailable: %v\n", selectedProviderID, buildErr)
-			return exitUnavailable
-		}
-		client = compatClient
 		model = resolvedProvider.Model
 		providerIdentity = provider.IdentityFromResolved(*resolvedProvider, compat.AdapterVersion)
 		// Durable operational profile (#91): configured capability bounds
@@ -356,6 +347,24 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 			fmt.Fprintf(errOut, "run: %v\n", profileErr)
 			return exitUnavailable
 		}
+		// Effective envelope bounds (#93): the profile's effective
+		// request/output size bounds become the execution frontier (adapters
+		// enforce size bounds per request). Unreadable profile state fails
+		// closed before any execution.
+		effectiveProvider, effErr := applyEffectiveProfileBounds(ctx, store, providerIdentity, resolvedProvider)
+		if effErr != nil {
+			fmt.Fprintf(errOut, "run: %v\n", effErr)
+			return exitUnavailable
+		}
+		// Exactly one configured endpoint: the composition layer selects the
+		// family adapter; the agent loop keeps depending only on
+		// provider.Client and the provider-neutral contract (#14).
+		compatClient, buildErr := compat.New(*effectiveProvider, compat.EnvSecretResolver(os.LookupEnv))
+		if buildErr != nil {
+			fmt.Fprintf(errOut, "run: provider %q unavailable: %v\n", selectedProviderID, buildErr)
+			return exitUnavailable
+		}
+		client = compatClient
 	} else {
 		// The protected lane client was constructed and verified above
 		// (gateway contract + preflight); every model request still flows
@@ -371,11 +380,15 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	if resolvedProvider != nil {
 		outcomeClassifier = compat.NewClassifier()
 	}
-	var retryOptions []agent.ExecutorOptions
-	if retriesEnabled && resolvedProvider != nil {
-		var profileCooldown func() time.Duration
-		if providerIdentity.ProviderID != "" && store != nil {
-			profileCooldown = func() time.Duration {
+	var executorOptions []agent.ExecutorOptions
+	if resolvedProvider != nil && store != nil {
+		// Conservative envelope learning (#93) runs for every configured
+		// provider execution, independent of retry policy: admitted attempt
+		// outcomes are observed and durable evidence is persisted.
+		opts := agent.ExecutorOptions{Observer: newProfileObserver(store, providerIdentity, nil)}
+		if retriesEnabled {
+			opts.EnableRetry = true
+			opts.RetryProfileCooldown = func() time.Duration {
 				profile, loadErr := store.LoadOperationalProfile(ctx, providerIdentity)
 				if loadErr != nil || profile == nil {
 					return 0
@@ -387,9 +400,9 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 				return time.Duration(value.Value) * time.Millisecond
 			}
 		}
-		retryOptions = append(retryOptions, agent.ExecutorOptions{EnableRetry: true, RetryProfileCooldown: profileCooldown})
+		executorOptions = append(executorOptions, opts)
 	}
-	executor, err := agent.NewExecutor(accountGovernor, client, outcomeClassifier, retryOptions...)
+	executor, err := agent.NewExecutor(accountGovernor, client, outcomeClassifier, executorOptions...)
 	if err != nil {
 		fmt.Fprintf(errOut, "run: executor unavailable: %v\n", err)
 		return exitUnavailable

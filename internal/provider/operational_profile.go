@@ -259,6 +259,14 @@ const (
 	// authoritative values for it, but observations never auto-adjust it
 	// (no assumption that a smaller timeout is always safer).
 	FieldTimeoutMillis ProfileField = "timeout_millis"
+	// FieldUnsupportedOptions is a CLOSED bitmask of request options that
+	// deterministic typed evidence proved unsupported by this identity
+	// (issue #93). Each option occupies one bit defined by the provider
+	// contract; setting bits is MORE conservative (automatic tightening
+	// from typed evidence only), clearing bits is relaxation and requires
+	// configured/authoritative provenance. The zero value means "no option
+	// is known unsupported" and is never persisted.
+	FieldUnsupportedOptions ProfileField = "unsupported_options"
 )
 
 // AllProfileFields is the deterministic closed vocabulary.
@@ -269,6 +277,7 @@ var AllProfileFields = []ProfileField{
 	FieldCooldownMillis,
 	FieldConcurrencyCeiling,
 	FieldTimeoutMillis,
+	FieldUnsupportedOptions,
 }
 
 // IsProfileField reports whether field belongs to the closed vocabulary.
@@ -293,6 +302,10 @@ const (
 	// DirectionHigherIsConservative: larger effective values are safer
 	// (cooldown wait after rate limiting).
 	DirectionHigherIsConservative
+	// DirectionBitmaskConservative: a superset of set bits is safer
+	// (unsupported request options: marking more options unsupported is
+	// tightening, clearing bits is relaxation).
+	DirectionBitmaskConservative
 	// DirectionNoAutomatic means the field's safety semantics are NOT
 	// assumed; observations are never auto-applied to it.
 	DirectionNoAutomatic
@@ -305,6 +318,8 @@ func SafetyDirection(field ProfileField) FieldSafetyDirection {
 		return DirectionLowerIsConservative
 	case FieldCooldownMillis:
 		return DirectionHigherIsConservative
+	case FieldUnsupportedOptions:
+		return DirectionBitmaskConservative
 	case FieldTimeoutMillis:
 		return DirectionNoAutomatic
 	default:
@@ -421,6 +436,9 @@ func moreConservative(field ProfileField, current, candidate int64) bool {
 	switch SafetyDirection(field) {
 	case DirectionHigherIsConservative:
 		return candidate > current
+	case DirectionBitmaskConservative:
+		// A superset of unsupported-option bits is more conservative.
+		return candidate&current == current
 	default:
 		// lower-is-conservative is the default direction for bounded fields.
 		return candidate < current
@@ -469,6 +487,19 @@ func ApplyFieldValue(field ProfileField, current ProfileValue, exists bool, upda
 		return proposed, nil
 	}
 	if update.Provenance == ProvenanceObserved {
+		if field == FieldUnsupportedOptions {
+			// The stored value is the ACCUMULATED mask of deterministically
+			// proven unsupported options. An observation may only ADD bits
+			// (each attempt proves one more option); it can never clear a
+			// bit, so relaxation through observations is impossible by
+			// construction. The merged value is persisted atomically.
+			added := update.Value &^ current.Value
+			if added == 0 {
+				return ProfileValue{}, fmt.Errorf("%w: %s observed mask 0x%x adds no new unsupported option to the effective mask 0x%x", ErrObservedNotConservative, field, update.Value, current.Value)
+			}
+			proposed.Value = current.Value | added
+			return proposed, nil
+		}
 		if !moreConservative(field, current.Value, update.Value) {
 			return ProfileValue{}, fmt.Errorf("%w: %s observed value %d is not conservative against the effective value %d", ErrObservedNotConservative, field, update.Value, current.Value)
 		}

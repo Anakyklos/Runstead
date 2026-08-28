@@ -596,3 +596,85 @@ func TestConfiguredUpdateMustNotCarryEvidenceRef(t *testing.T) {
 		t.Fatalf("clean configured update must apply: %v", err)
 	}
 }
+
+// TestUnsupportedOptionsBitmaskAccumulatesMonotonically: unsupported_options
+// is an accumulated bitmask. Observations may only ADD proven bits
+// (merge), repeat observations are refused, configured updates may only
+// superset an observed/authoritative mask, and only authoritative input can
+// relax it (#93).
+func TestUnsupportedOptionsBitmaskAccumulatesMonotonically(t *testing.T) {
+	profile := NewOperationalProfile(testIdentity("cfg", "model-a", FamilyOpenAICompatible))
+	var err error
+
+	// unknown -> observed single bit accepted.
+	profile, err = profile.Apply(ProfileUpdate{
+		Field: FieldUnsupportedOptions, Value: 0x1, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000051"},
+	}, fixedClock())
+	if err != nil {
+		t.Fatalf("unknown unsupported_options -> observed bit 0x1 must apply: %v", err)
+	}
+	if v := profile.Effective(FieldUnsupportedOptions); v.Value != 0x1 || v.Provenance != ProvenanceObserved {
+		t.Fatalf("bit not applied: %+v", v)
+	}
+
+	// A later observation adds only its NEW bit: value accumulates (OR).
+	profile, err = profile.Apply(ProfileUpdate{
+		Field: FieldUnsupportedOptions, Value: 0x4, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000052"},
+	}, fixedClock())
+	if err != nil {
+		t.Fatalf("observed new bit must merge onto the mask: %v", err)
+	}
+	if v := profile.Effective(FieldUnsupportedOptions); v.Value != 0x5 {
+		t.Fatalf("mask must accumulate to 0x5, got %+v", v)
+	}
+
+	// Repeating an already-proven bit is not new information: refused.
+	if _, err = profile.Apply(ProfileUpdate{
+		Field: FieldUnsupportedOptions, Value: 0x1, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000053"},
+	}, fixedClock()); !errors.Is(err, ErrObservedNotConservative) {
+		t.Fatalf("repeated observed bit must be refused, got %v", err)
+	}
+	if v := profile.Effective(FieldUnsupportedOptions); v.Value != 0x5 {
+		t.Fatalf("refused repeat must not change the mask: %+v", v)
+	}
+
+	// An observation that would clear a proven bit NEVER clears it: the
+	// merged mask keeps all previously proven bits.
+	profile, err = profile.Apply(ProfileUpdate{
+		Field: FieldUnsupportedOptions, Value: 0x2, Provenance: ProvenanceObserved, EvidenceRef: EvidenceRef{Kind: EvidenceKindEvidence, ID: "obs-000054"},
+	}, fixedClock())
+	if err != nil {
+		t.Fatalf("observed new bit must merge: %v", err)
+	}
+	if v := profile.Effective(FieldUnsupportedOptions); v.Value != 0x7 {
+		t.Fatalf("mask must not lose proven bits: %+v", v)
+	}
+
+	// Configured input that would UNDO proven bits is a replay-undo refusal.
+	if _, err = profile.ApplyConfigured(FieldUnsupportedOptions, 0x1, fixedClock()); !errors.Is(err, ErrProfileReplayUndo) {
+		t.Fatalf("configured mask clearing proven bits must be refused, got %v", err)
+	}
+	if v := profile.Effective(FieldUnsupportedOptions); v.Value != 0x7 {
+		t.Fatalf("refused configured update must not weaken the mask: %+v", v)
+	}
+
+	// Configured input that SUPERSETS the mask replaces it wholesale.
+	profile, err = profile.ApplyConfigured(FieldUnsupportedOptions, 0xF, fixedClock())
+	if err != nil {
+		t.Fatalf("configured superset must replace the mask: %v", err)
+	}
+	if v := profile.Effective(FieldUnsupportedOptions); v.Value != 0xF || v.Provenance != ProvenanceConfigured {
+		t.Fatalf("configured superset not applied: %+v", v)
+	}
+
+	// Only authoritative input can relax previously proven bits.
+	profile, err = profile.Apply(ProfileUpdate{
+		Field: FieldUnsupportedOptions, Value: 0x3, Provenance: ProvenanceAuthoritative, EvidenceRef: EvidenceRef{Kind: EvidenceKindVerification, ID: "verif-000002"},
+	}, fixedClock())
+	if err != nil {
+		t.Fatalf("authoritative relaxation must apply: %v", err)
+	}
+	if v := profile.Effective(FieldUnsupportedOptions); v.Value != 0x3 || v.Provenance != ProvenanceAuthoritative {
+		t.Fatalf("authoritative mask not applied: %+v", v)
+	}
+}
