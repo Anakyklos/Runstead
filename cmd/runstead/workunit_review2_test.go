@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"fmt"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -478,6 +479,92 @@ func TestWorkUnitExplicitEmptyToolsNoTools(t *testing.T) {
 	}
 	if got := workUnitRowCount(t, stateDir, `SELECT COUNT(*) FROM tool_attempts`); got != 0 {
 		t.Fatalf("tool attempts = %d, want 0 (explicit empty envelope is no tools)", got)
+	}
+}
+
+// TestWorkUnitResumedLogicalTurnsExcludeRetryChildren is the configured-
+// provider regression: ONE logical Work Unit turn that incurred a bounded
+// governor retry (2 physical attempts) is, after a process restart, resumed
+// as exactly ONE logical turn consumed. Every physical retry stays fully
+// governor-accounted, and the unit's provider budget is counted in logical
+// model-turn terms (base request ids only).
+func TestWorkUnitResumedLogicalTurnsExcludeRetryChildren(t *testing.T) {
+	workspace := crashWorkspace(t)
+	if err := os.WriteFile(filepath.Join(workspace, "c.txt"), []byte("gamma\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	definitions := `[
+	  {"work_unit_id":"wu-a","objective":"inspect a.txt","tools":["read_file"],"provider_budget":2,"acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"a.txt"}]}}
+	]`
+	workUnitsFile := workUnitsFileFor(t, definitions)
+	acceptance := acceptanceFor(t, "a.txt")
+
+	// Run A: the unit's FIRST logical turn incurs a bounded governor retry:
+	// physical request 1 (429) + retry child (200, the read). Crash after the
+	// tool result TX2 leaves the unit running with ONE logical turn consumed
+	// but TWO physical attempts on the wire. One wire serves the whole
+	// lifecycle (requests 1-2 = run A; 3-5 = resume), so the re-supplied
+	// endpoint keeps an identical config identity.
+	wire := &e2eRetryWire{
+		family: provider.FamilyOpenAICompatible,
+		responses: []string{
+			`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
+			`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"a done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
+			`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"c.txt"}}</runstead_action>`,
+			`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"parent done","evidence":[{"evidence_id":"obs-000002","tool":"read_file"}]}</runstead_final>`,
+		},
+		firstFails: 1, status: 429, retryAfter: "1",
+	}
+	server := httptest.NewServer(wire.handler())
+	t.Cleanup(server.Close)
+	providersFile := writeProvidersFileWithBounds(t, provider.FamilyOpenAICompatible, "wu-provider", server.URL+"/v1", 0)
+
+	stateDir := t.TempDir()
+	runArgs := []string{
+		"run", "--task", "Inspect the workspace.",
+		"--workspace", workspace,
+		"--state-dir", stateDir,
+		"--min-start-interval", "1ms",
+		"--log-level", "error",
+		"--workunits", workUnitsFile,
+		"--acceptance", acceptance,
+		"--providers", providersFile, "--provider-id", "wu-provider",
+		"--retry-policy", "bounded",
+	}
+	code, output := runCrashedRunAfter(t, runArgs, "tool_tx2_after", 1)
+	if code != 42 {
+		t.Fatalf("crash helper exit = %d, want 42\n%s", code, output)
+	}
+	if got := wire.count(); got != 2 {
+		t.Fatalf("run A physical requests = %d, want 2 (base + governor retry child)", got)
+	}
+	taskID := taskIDFromOutput(t, output)
+
+	// Resume: the unit continues under provider_budget=2. Only logical turns
+	// count: 1 consumed + 1 more (its final) fit. If the retry child had been
+	// counted as a turn, the budget would be exhausted before the final and
+	// the unit could never complete.
+	resumeCode, resumeOut, resumeErr := runResume(context.Background(),
+		taskID, "--state-dir", stateDir, "--workunits", workUnitsFile,
+		"--acceptance", acceptance, "--min-start-interval", "1ms",
+		"--providers", providersFile, "--provider-id", "wu-provider",
+		"--retry-policy", "bounded", "--log-level", "error")
+	if resumeCode != exitSuccess {
+		t.Fatalf("resume exit = %d, want 0\nstderr:\n%s\nstdout:\n%s", resumeCode, resumeErr, resumeOut)
+	}
+	if !strings.Contains(resumeOut, "outcome: completed") {
+		t.Fatalf("resume stdout missing completed:\n%s", resumeOut)
+	}
+	if got := wire.count(); got != 5 {
+		t.Fatalf("physical requests = %d, want 5 (2 run A + 3 resumed)", got)
+	}
+
+	// The unit's logical turn count is 2 (base read + final), NOT 3 (the
+	// retry child must not count).
+	if got := workUnitRowCount(t, stateDir,
+		`SELECT COUNT(DISTINCT client_request_id) FROM provider_attempts
+		 WHERE work_unit_id = 'wu-a' AND client_request_id NOT LIKE '%-r%'`); got != 2 {
+		t.Fatalf("wu-a logical request ids = %d, want 2 (base read + final)", got)
 	}
 }
 
