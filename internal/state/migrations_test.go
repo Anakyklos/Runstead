@@ -423,7 +423,7 @@ func TestMigrationsOperationalProfilesTableAdditiveAndPreserving(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 13 {
+	if version != 14 {
 		t.Fatalf("schema version = %d, want 14", version)
 	}
 	var count int
@@ -435,7 +435,7 @@ func TestMigrationsOperationalProfilesTableAdditiveAndPreserving(t *testing.T) {
 		t.Fatalf("re-run migration error = %v", err)
 	}
 	version, _ = schemaVersion(db)
-	if version != 13 {
+	if version != 14 {
 		t.Fatalf("schema version after re-run = %d, want 14", version)
 	}
 	// The historical provider identity columns still exist and accept the
