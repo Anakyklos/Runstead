@@ -71,6 +71,13 @@ func (c Config) String() string {
 
 func (c Config) GoString() string { return c.String() }
 
+// AdapterVersion identifies this legacy OmniRoute adapter build (#39). The
+// web transport is outside the compatible-provider surface (#86), so it owns
+// its own pinned version identity.
+const AdapterVersion = "omniroute-v0.1"
+
+const transportID = "omniroute-http"
+
 type Options struct {
 	HTTPClient Doer
 	Transport  http.RoundTripper
@@ -337,16 +344,28 @@ func responseText(body []byte) (string, *Error) {
 	return text, nil
 }
 
-func responseMetadata(response *http.Response, duration time.Duration, endpoint, model string, now time.Time) provider.ResponseMetadata {
+func responseMetadata(response *http.Response, duration, firstTokenLatency time.Duration, endpoint, model string, now time.Time) provider.ResponseMetadata {
+	metadata := baseMetadata()
+	metadata.StatusCode = response.StatusCode
+	metadata.RequestID = sanitizeOpaque(response.Header.Get(requestIDHeader))
+	// SessionID is the session fingerprint: only the sha256 digest of the
+	// opaque session/connection identity may ever appear here (#39).
+	metadata.SessionID = hashOpaque(response.Header.Get(sessionIDHeader))
+	metadata.Duration = duration
+	metadata.FirstTokenLatency = firstTokenLatency
+	metadata.RetryAfter = parseRetryAfter(response.Header.Get("Retry-After"), now)
+	metadata.ResetAt = parseResetAt(response.Header.Get("X-RateLimit-Reset"))
+	metadata.Endpoint = logicalEndpoint(endpoint)
+	metadata.Model = model
+	return metadata
+}
+
+// baseMetadata stamps the adapter identity that every record carries,
+// including pre-dispatch refusal records (#39).
+func baseMetadata() provider.ResponseMetadata {
 	return provider.ResponseMetadata{
-		StatusCode: response.StatusCode,
-		RequestID:  sanitizeOpaque(response.Header.Get(requestIDHeader)),
-		SessionID:  hashOpaque(response.Header.Get(sessionIDHeader)),
-		Duration:   duration,
-		RetryAfter: parseRetryAfter(response.Header.Get("Retry-After"), now),
-		ResetAt:    parseResetAt(response.Header.Get("X-RateLimit-Reset")),
-		Endpoint:   logicalEndpoint(endpoint),
-		Model:      model,
+		AdapterVersion: AdapterVersion,
+		Transport:      transportID,
 	}
 }
 

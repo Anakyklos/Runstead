@@ -48,17 +48,17 @@ func (c *Client) Snapshot(ctx context.Context) (governor.TelemetrySnapshot, erro
 
 func (c *Client) getTelemetry(ctx context.Context, endpoint string) ([]byte, provider.ResponseMetadata, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, provider.ResponseMetadata{}, contextError(err, false)
+		return nil, baseMetadata(), contextError(err, false)
 	}
 	requestURL, err := joinURL(c.config.ManagementBaseURL, endpoint)
 	if err != nil {
-		return nil, provider.ResponseMetadata{}, &Error{Kind: ErrorTelemetry}
+		return nil, baseMetadata(), &Error{Kind: ErrorTelemetry}
 	}
 	callCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		return nil, provider.ResponseMetadata{}, &Error{Kind: ErrorTelemetry}
+		return nil, baseMetadata(), &Error{Kind: ErrorTelemetry}
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
@@ -66,14 +66,14 @@ func (c *Client) getTelemetry(ctx context.Context, endpoint string) ([]byte, pro
 	response, callErr := c.httpClient.Do(req)
 	if callErr != nil {
 		if errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded) {
-			return nil, provider.ResponseMetadata{}, contextError(callErr, false)
+			return nil, baseMetadata(), contextError(callErr, false)
 		}
-		return nil, provider.ResponseMetadata{}, &Error{Kind: ErrorTelemetry}
+		return nil, baseMetadata(), &Error{Kind: ErrorTelemetry}
 	}
 	if response == nil {
-		return nil, provider.ResponseMetadata{}, &Error{Kind: ErrorTelemetry}
+		return nil, baseMetadata(), &Error{Kind: ErrorTelemetry}
 	}
-	metadata := responseMetadata(response, c.now().Sub(started), endpoint, c.config.Model, c.now())
+	metadata := responseMetadata(response, c.now().Sub(started), 0, endpoint, c.config.Model, c.now())
 	body, readErr := readBody(response, c.config.MaxResponseBytes)
 	if readErr != nil {
 		return nil, metadata, &Error{Kind: ErrorTelemetry, StatusCode: metadata.StatusCode, RequestID: metadata.RequestID}
