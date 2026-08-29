@@ -105,15 +105,15 @@ internal/governor/execute.go:50  admission.Permit.CancelBeforeStart()
 
 # HTTP response body close is best-effort cleanup on the request path; the
 # primary error (or the successful response) is already being returned.
-internal/provider/omniroute/client.go:303  defer response.Body.Close()
-internal/provider/omniroute/client_transport.go:96  response.Body.Close()
+internal/provider/omniroute/client.go:310  defer response.Body.Close()
+internal/provider/omniroute/client_transport.go:111  response.Body.Close()
 
 # Google-compatible adapter (#89): the same reviewed best-effort site as the
 # openai_compatible/anthropic_compatible adapters. The deferred body close is
 # cleanup whose primary path already returns. (The redirect-path ReadAll was
 # only a best-effort discard until the #97 review fix; it now binds readErr
 # and is no longer a swallowed error.)
-internal/provider/googlecompat/client.go:229  defer response.Body.Close()
+internal/provider/googlecompat/client.go:240  defer response.Body.Close()
 
 # Deferred transaction rollback uses the standard commit-then-rollback
 # idiom: Commit's error is checked explicitly at each site, and the
@@ -200,10 +200,10 @@ internal/config/providers.go:73  defer file.Close()
 # ErrorKind vocabulary returned to the governor), and the 3xx Location body
 # is read only to hash the redirect target, so a read failure degrades only
 # the opaque location hash.
-internal/provider/anthropiccompat/client.go:248  defer response.Body.Close()
-internal/provider/anthropiccompat/client.go:257  body, _ := io.ReadAll(io.LimitReader(response.Body, int64(c.maxResponse)+1))
-internal/provider/openaicompat/client.go:215  defer response.Body.Close()
-internal/provider/openaicompat/client.go:224  body, _ := io.ReadAll(io.LimitReader(response.Body, int64(c.maxResponse)+1))
+internal/provider/anthropiccompat/client.go:259  defer response.Body.Close()
+internal/provider/anthropiccompat/client.go:268  body, _ := io.ReadAll(io.LimitReader(response.Body, int64(c.maxResponse)+1))
+internal/provider/openaicompat/client.go:226  defer response.Body.Close()
+internal/provider/openaicompat/client.go:235  body, _ := io.ReadAll(io.LimitReader(response.Body, int64(c.maxResponse)+1))
 
 # Operational profile state paths (#91): rows/tx cleanup follows the same
 # best-effort convention as the other state/* entries; each profileRows close
