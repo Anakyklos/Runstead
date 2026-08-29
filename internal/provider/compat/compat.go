@@ -15,10 +15,12 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/provider/openaicompat"
 )
 
-// AdapterVersion identifies this compatibility composition surface. It is
-// exposed as sanitized execution evidence together with the provider identity
-// (#14); bump it when the adapter set or its behavior changes meaningfully.
-const AdapterVersion = "compatible-provider-v0.1"
+// AdapterVersion identifies this compatibility composition surface. The value
+// lives in internal/provider (provider.CompatAdapterVersion) so adapters and
+// the provider-neutral contract share one version identity without an import
+// cycle. Bump the constant when the adapter set or its behavior changes
+// meaningfully.
+const AdapterVersion = provider.CompatAdapterVersion
 
 // SecretResolver turns a non-secret provider.SecretRef into the actual
 // authentication material at dispatch time. It mirrors the per-adapter

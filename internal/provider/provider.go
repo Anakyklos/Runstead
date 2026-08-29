@@ -157,6 +157,12 @@ func (s RouteSafety) Equal(other RouteSafety) bool {
 	return s == other
 }
 
+// CompatAdapterVersion identifies the compatible-provider composition surface
+// (#14/#86). It is the single adapter-version identity shared by execution
+// evidence and request telemetry; bump it when the adapter set or its
+// behavior changes meaningfully.
+const CompatAdapterVersion = "compatible-provider-v0.1"
+
 // SafetyAware allows an adapter to expose the same executable declaration it
 // was configured with. A governor can reject a mismatch before Complete.
 type SafetyAware interface {
@@ -195,6 +201,38 @@ type ResponseMetadata struct {
 	Model           string
 	DeliveryState   DeliveryState
 	AttemptReceipts *AttemptReceiptSet
+
+	// Issue #39 request telemetry. All fields are conservative zero values
+	// unless the adapter can prove the observation; nothing is ever guessed.
+
+	// AdapterVersion is the pinned adapter/composition version
+	// (CompatAdapterVersion for the compatible families; adapter-owned for
+	// legacy transports). Empty only when the record was never populated.
+	AdapterVersion string
+
+	// Transport is the stable transport identifier (for example
+	// "openaicompat-http"). Empty only when the record was never populated.
+	Transport string
+
+	// FirstTokenLatency is the latency from request start to the first
+	// observed response byte, when the adapter's transport observation
+	// proves it. Zero means not measured, never a claim of instant arrival.
+	FirstTokenLatency time.Duration
+
+	// RetryCount is the number of retries this attempt represents. The
+	// protected lane has no retries outside the governor (#92): every
+	// current adapter leaves it zero so amplification can never hide here.
+	RetryCount int
+
+	// Fallback reports whether this attempt used a fallback route. The
+	// protected lane has no fallbacks: every current adapter leaves it
+	// false.
+	Fallback bool
+
+	// UsageEstimated reports that any usage figures carried by this
+	// transport are estimates rather than metered values. No current
+	// adapter emits usage, so every current adapter leaves it false.
+	UsageEstimated bool
 }
 
 // Client performs one logical completion. Legacy clients configured with

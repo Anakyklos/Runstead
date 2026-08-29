@@ -15,7 +15,9 @@ import (
 // accounts; Complete adds the authoritative receipt gate around this seam.
 func (c *Client) completeOnce(ctx context.Context, request provider.Request) (provider.Response, error) {
 	if err := ctx.Err(); err != nil {
-		return provider.Response{Metadata: provider.ResponseMetadata{DeliveryState: provider.DeliveryNotSent}}, contextError(err, false)
+		metadata := baseMetadata()
+		metadata.DeliveryState = provider.DeliveryNotSent
+		return provider.Response{Metadata: metadata}, contextError(err, false)
 	}
 	model := request.Model
 	if model == "" {
@@ -37,22 +39,35 @@ func (c *Client) completeOnce(ctx context.Context, request provider.Request) (pr
 		Stream: false,
 	})
 	if err != nil {
-		return provider.Response{Metadata: provider.ResponseMetadata{DeliveryState: provider.DeliveryNotSent, Model: model}}, &Error{Kind: ErrorTransport, Cause: err}
+		metadata := baseMetadata()
+		metadata.DeliveryState = provider.DeliveryNotSent
+		metadata.Model = model
+		return provider.Response{Metadata: metadata}, &Error{Kind: ErrorTransport, Cause: err}
 	}
 	if len(body) > c.config.MaxRequestBytes {
-		return provider.Response{Metadata: provider.ResponseMetadata{DeliveryState: provider.DeliveryNotSent, Model: model}}, &Error{Kind: ErrorRequestTooLarge}
+		metadata := baseMetadata()
+		metadata.DeliveryState = provider.DeliveryNotSent
+		metadata.Model = model
+		return provider.Response{Metadata: metadata}, &Error{Kind: ErrorRequestTooLarge}
 	}
 	requestURL, err := chatURL(c.config.BaseURL, c.config.ChatEndpoint)
 	if err != nil {
-		return provider.Response{Metadata: provider.ResponseMetadata{DeliveryState: provider.DeliveryNotSent, Model: model}}, unsafeError(err)
+		metadata := baseMetadata()
+		metadata.DeliveryState = provider.DeliveryNotSent
+		metadata.Model = model
+		return provider.Response{Metadata: metadata}, unsafeError(err)
 	}
 	callCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
 	defer cancel()
-	observation := &deliveryObservation{}
+	observation := &deliveryObservation{now: c.now}
 	callCtx = httptrace.WithClientTrace(callCtx, observation.trace())
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, requestURL, strings.NewReader(string(body)))
 	if err != nil {
-		return provider.Response{Metadata: provider.ResponseMetadata{DeliveryState: provider.DeliveryNotSent, Endpoint: logicalEndpoint(requestURL), Model: model}}, &Error{Kind: ErrorTransport, Cause: err}
+		metadata := baseMetadata()
+		metadata.DeliveryState = provider.DeliveryNotSent
+		metadata.Endpoint = logicalEndpoint(requestURL)
+		metadata.Model = model
+		return provider.Response{Metadata: metadata}, &Error{Kind: ErrorTransport, Cause: err}
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
@@ -72,23 +87,23 @@ func (c *Client) completeOnce(ctx context.Context, request provider.Request) (pr
 	started := c.now()
 	response, callErr := c.httpClient.Do(req)
 	if callErr != nil {
-		return provider.Response{Metadata: provider.ResponseMetadata{
-			DeliveryState: observation.stateAfterError(),
-			Endpoint:      logicalEndpoint(requestURL),
-			Model:         model,
-			Duration:      c.now().Sub(started),
-		}}, transportError(callErr, true)
+		metadata := baseMetadata()
+		metadata.DeliveryState = observation.stateAfterError()
+		metadata.Endpoint = logicalEndpoint(requestURL)
+		metadata.Model = model
+		metadata.Duration = c.now().Sub(started)
+		return provider.Response{Metadata: metadata}, transportError(callErr, true)
 	}
 	if response == nil {
-		return provider.Response{Metadata: provider.ResponseMetadata{
-			DeliveryState: observation.stateAfterError(),
-			Endpoint:      logicalEndpoint(requestURL),
-			Model:         model,
-			Duration:      c.now().Sub(started),
-		}}, &Error{Kind: ErrorTransport, UpstreamReached: true}
+		metadata := baseMetadata()
+		metadata.DeliveryState = observation.stateAfterError()
+		metadata.Endpoint = logicalEndpoint(requestURL)
+		metadata.Model = model
+		metadata.Duration = c.now().Sub(started)
+		return provider.Response{Metadata: metadata}, &Error{Kind: ErrorTransport, UpstreamReached: true}
 	}
 	observation.markResponseStarted()
-	metadata := responseMetadata(response, c.now().Sub(started), requestURL, model, c.now())
+	metadata := responseMetadata(response, c.now().Sub(started), observation.firstTokenLatency(started), requestURL, model, c.now())
 	metadata.DeliveryState = provider.DeliveryResponseStarted
 	if rawReceipts := response.Header.Get(attemptReceiptHeader); rawReceipts != "" {
 		set, receiptErr := provider.DecodeAttemptReceiptSet([]byte(rawReceipts))

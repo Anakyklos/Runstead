@@ -1242,9 +1242,36 @@ func TestSingleAttemptExecutionChargesExactlyOnceAndSanitizesEvents(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The scan covers JSON string VALUES only. Structural field names may
+	// legitimately contain secret-looking words (for example the telemetry
+	// field FirstTokenLatency), so keys are never scanned; secret material
+	// would have to appear as a value (#39).
+	var payload any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatal(err)
+	}
+	var values []string
+	var collectStrings func(any)
+	collectStrings = func(node any) {
+		switch value := node.(type) {
+		case string:
+			values = append(values, value)
+		case []any:
+			for _, item := range value {
+				collectStrings(item)
+			}
+		case map[string]any:
+			for _, item := range value {
+				collectStrings(item)
+			}
+		}
+	}
+	collectStrings(payload)
 	for _, secret := range []string{"private prompt", "private model response", "cookie", "token", "credential", "api key"} {
-		if strings.Contains(strings.ToLower(string(encoded)), strings.ToLower(secret)) {
-			t.Fatalf("sanitized events contain %q: %s", secret, encoded)
+		for _, value := range values {
+			if strings.Contains(strings.ToLower(value), strings.ToLower(secret)) {
+				t.Fatalf("sanitized event value contains %q: %s", secret, encoded)
+			}
 		}
 	}
 }

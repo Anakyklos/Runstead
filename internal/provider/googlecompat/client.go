@@ -23,6 +23,7 @@ const (
 	headerClientRequest  = "X-Runstead-Client-Request-ID"
 	headerRequestID      = "x-request-id"
 	actionSuffix         = ":generateContent"
+	transportID          = "googlecompat-http"
 )
 
 // SecretResolver turns a non-secret provider.SecretRef into the actual
@@ -157,7 +158,9 @@ func (c *Client) RouteSafety() provider.RouteSafety {
 // HTTP request against the configured endpoint.
 func (c *Client) Complete(ctx context.Context, request provider.Request) (provider.Response, error) {
 	notSent := func(kind ErrorKind, cause error) (provider.Response, error) {
-		return provider.Response{Metadata: provider.ResponseMetadata{DeliveryState: provider.DeliveryNotSent}}, &Error{Kind: kind, DeliveryState: provider.DeliveryNotSent, Cause: cause}
+		metadata := c.baseMetadata()
+		metadata.DeliveryState = provider.DeliveryNotSent
+		return provider.Response{Metadata: metadata}, &Error{Kind: kind, DeliveryState: provider.DeliveryNotSent, Cause: cause}
 	}
 
 	// Pre-dispatch refusals: provably zero model-effect requests.
@@ -196,7 +199,7 @@ func (c *Client) Complete(ctx context.Context, request provider.Request) (provid
 
 	callCtx, cancel := context.WithTimeout(ctx, c.resolvedTimeout())
 	defer cancel()
-	observation := &deliveryObservation{}
+	observation := &deliveryObservation{now: c.now}
 	callCtx = httptrace.WithClientTrace(callCtx, observation.trace())
 
 	httpReq, err := newModelEffectRequest(callCtx, endpointURL, payload)
@@ -218,17 +221,25 @@ func (c *Client) Complete(ctx context.Context, request provider.Request) (provid
 	response, callErr := c.httpClient.Do(httpReq)
 	if callErr != nil {
 		state := observation.stateAfterError()
-		metadata := provider.ResponseMetadata{Endpoint: logicalEndpoint(endpointURL), Model: c.resolved.Model, Duration: c.now().Sub(started), DeliveryState: state}
+		metadata := c.baseMetadata()
+		metadata.Endpoint = logicalEndpoint(endpointURL)
+		metadata.Model = c.resolved.Model
+		metadata.Duration = c.now().Sub(started)
+		metadata.DeliveryState = state
 		return provider.Response{Metadata: metadata}, transportError(callErr, state)
 	}
 	if response == nil {
 		state := observation.stateAfterError()
-		metadata := provider.ResponseMetadata{Endpoint: logicalEndpoint(endpointURL), Model: c.resolved.Model, Duration: c.now().Sub(started), DeliveryState: state}
+		metadata := c.baseMetadata()
+		metadata.Endpoint = logicalEndpoint(endpointURL)
+		metadata.Model = c.resolved.Model
+		metadata.Duration = c.now().Sub(started)
+		metadata.DeliveryState = state
 		return provider.Response{Metadata: metadata}, &Error{Kind: ErrorTransport, DeliveryState: state, UpstreamReached: true}
 	}
 	defer response.Body.Close()
 	observation.markResponseStarted()
-	metadata := c.responseMetadata(response, c.now().Sub(started), endpointURL)
+	metadata := c.responseMetadata(response, c.now().Sub(started), observation.firstTokenLatency(started), endpointURL)
 	metadata.DeliveryState = provider.DeliveryResponseStarted
 
 	// A 3xx is refused instead of followed: a second physical request can only
@@ -282,15 +293,23 @@ func (c *Client) resolvedTimeout() time.Duration {
 	return defaultTimeout
 }
 
-func (c *Client) responseMetadata(response *http.Response, duration time.Duration, endpointURL string) provider.ResponseMetadata {
+func (c *Client) baseMetadata() provider.ResponseMetadata {
 	return provider.ResponseMetadata{
-		StatusCode: response.StatusCode,
-		RequestID:  hashOpaque(response.Header.Get(headerRequestID)),
-		Duration:   duration,
-		RetryAfter: parseRetryAfter(response.Header.Get("Retry-After"), c.now()),
-		Endpoint:   logicalEndpoint(endpointURL),
-		Model:      c.resolved.Model,
+		AdapterVersion: provider.CompatAdapterVersion,
+		Transport:      transportID,
 	}
+}
+
+func (c *Client) responseMetadata(response *http.Response, duration, firstTokenLatency time.Duration, endpointURL string) provider.ResponseMetadata {
+	metadata := c.baseMetadata()
+	metadata.StatusCode = response.StatusCode
+	metadata.RequestID = hashOpaque(response.Header.Get(headerRequestID))
+	metadata.Duration = duration
+	metadata.FirstTokenLatency = firstTokenLatency
+	metadata.RetryAfter = parseRetryAfter(response.Header.Get("Retry-After"), c.now())
+	metadata.Endpoint = logicalEndpoint(endpointURL)
+	metadata.Model = c.resolved.Model
+	return metadata
 }
 
 // resolveProtocolOptions enforces the closed protocol-option vocabulary of the
