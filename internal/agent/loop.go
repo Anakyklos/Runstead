@@ -93,6 +93,11 @@ type Task struct {
 	// tool/provider attempt and verification record persisted by this run
 	// (issue #106). Provenance only; the loop behavior is unchanged.
 	WorkUnitID string
+	// SkipTaskFinalize marks a unit-scoped run: the unit loop must NOT
+	// finalize the shared durable task row (the parent loop owns task
+	// finalization). Unit completion/failure is persisted by the Work Unit
+	// driver through the unit lifecycle (issue #106).
+	SkipTaskFinalize bool
 }
 
 // Loop is the bounded read-only agent loop. It owns no provider client, no
@@ -399,6 +404,10 @@ func (l *Loop) Run(ctx context.Context, task Task) Result {
 					result.Outcome = OutcomePersistenceFailure
 					result.StopReason = fmt.Sprintf("durable state could not be persisted: %v", err)
 				}
+			} else if task.SkipTaskFinalize {
+				// Unit-scoped run: the Work Unit driver owns the unit lifecycle
+				// and the shared task row stays durably resumable until the
+				// parent loop finalizes it (issue #106).
 			} else if err := l.state.FinalizeTask(context.Background(), state.TaskFinalize{
 				TaskID:         task.ID,
 				Outcome:        string(result.Outcome),
@@ -562,6 +571,12 @@ func (l *Loop) modelTurn(
 	run.turns++
 	run.attempts++
 	requestID := fmt.Sprintf("%s-%04d", task.ID, run.turns)
+	if task.WorkUnitID != "" {
+		// Work unit runs share the durable task id; the request id namespace
+		// must stay unique per unit so the governor's duplicate-request
+		// protection never flags distinct unit attempts (issue #106).
+		requestID = fmt.Sprintf("%s-%s-%04d", task.ID, task.WorkUnitID, run.turns)
+	}
 	// Account pressure is sampled before admission: when the task deadline
 	// fires while the governor is delaying the request, the delay was caused
 	// by the account lane (pacing, cooldown, circuit, busy lane or budgets).
