@@ -220,10 +220,12 @@ Exit criteria:
 - distributed workers;
 - semantic or vector memory;
 - unattended long-running autonomy;
-- context compaction for long conversations (deferred until context
-  reconstruction exists; when introduced it must preserve tool-call/result
-  pairs, never discard evidence silently, treat model summaries as
-  non-authoritative, and keep required evidence identifiers verifiable);
+- context compaction for long conversations (the deterministic
+  evidence-preserving context reconstruction foundation required by it now
+  exists as issue #51 — see `docs/architecture.md`; compaction itself stays
+  deferred and, when introduced, must preserve tool-call/result pairs, never
+  discard evidence silently, treat model summaries as non-authoritative, and
+  keep required evidence identifiers verifiable);
 - a general-purpose OpenAI-compatible gateway;
 - the first-party ChatGPT Web connector and any OmniRoute-specific live path
   (historical milestones 6 and 7 document that research; see also
