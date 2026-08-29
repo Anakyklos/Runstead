@@ -21,7 +21,7 @@ type ToolSpec struct {
 // its system contract from this list, so tool surface and prompt never drift
 // independently. Describe performs no execution and no workspace access.
 func (r *Registry) Describe() []ToolSpec {
-	return []ToolSpec{
+	all := []ToolSpec{
 		{
 			Name:    ToolReadFile,
 			Summary: "Read a UTF-8 text file inside the workspace.",
@@ -86,4 +86,14 @@ func (r *Registry) Describe() []ToolSpec {
 			ReadOnly: false,
 		},
 	}
+	if r == nil || r.allowed == nil {
+		return all
+	}
+	filtered := make([]ToolSpec, 0, len(all))
+	for _, spec := range all {
+		if _, ok := r.allowed[spec.Name]; ok {
+			filtered = append(filtered, spec)
+		}
+	}
+	return filtered
 }

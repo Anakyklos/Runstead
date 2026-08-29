@@ -291,38 +291,14 @@ func (l *Loop) Run(ctx context.Context, task Task) Result {
 	// A resumed run skips this: the task row already exists and the recovery
 	// pipeline reconciled its interrupted attempts.
 	if l.state != nil && l.recovery == nil {
-		if err := l.state.CreateTask(context.Background(), state.TaskRecord{
+		if err := BootstrapTask(context.Background(), l.state, state.TaskRecord{
 			TaskID:     task.ID,
 			Objective:  task.Prompt,
 			Workspace:  l.registry.Workspace(),
 			Model:      l.model,
 			ConfigJSON: l.configSnapshot(),
-		}); err != nil {
+		}, l.verifier.Plan(), l.registry); err != nil {
 			return persistenceFailure(err)
-		}
-		if err := l.state.StartTask(context.Background(), task.ID); err != nil {
-			return persistenceFailure(err)
-		}
-		// Persist the operator acceptance plan with the task so verification
-		// always reads the same plan (issue #11). The model can never invent
-		// acceptance criteria after execution.
-		if plan := l.verifier.Plan(); plan != nil {
-			spec, err := json.Marshal(plan)
-			if err != nil {
-				return persistenceFailure(fmt.Errorf("marshal acceptance plan: %w", err))
-			}
-			if err := l.state.SaveAcceptancePlan(context.Background(), task.ID, spec, plan.Digest()); err != nil {
-				return persistenceFailure(err)
-			}
-		}
-		// Capture the real git baseline at task start, BEFORE any model turn,
-		// so verification can attribute pre-existing repository changes. The
-		// observation happens outside any SQLite transaction. Truncation flags
-		// are persisted with the baseline (issue #11 review).
-		if status, diff, statusTruncated, diffTruncated, ok := l.captureGitBaseline(); ok {
-			if err := l.state.SaveWorkspaceBaseline(context.Background(), task.ID, status, diff, statusTruncated, diffTruncated); err != nil {
-				return persistenceFailure(err)
-			}
 		}
 	}
 
@@ -477,13 +453,62 @@ type runState struct {
 // fails; verification then reports the git limitation honestly. The truncation
 // flags are returned so the limitation is persisted with the baseline (issue
 // #11 review).
-func (l *Loop) captureGitBaseline() (status, diff string, statusTruncated, diffTruncated bool, ok bool) {
-	statusText, statusFlag, statusFailure := l.registry.GitStatusText()
+func captureGitBaselineFor(registry *tools.Registry) (status, diff string, statusTruncated, diffTruncated bool, ok bool) {
+	statusText, statusFlag, statusFailure := registry.GitStatusText()
 	if statusFailure != nil {
 		return "", "", false, false, false
 	}
-	diffText, diffFlag, _ := l.registry.GitDiffText()
+	diffText, diffFlag, _ := registry.GitDiffText()
 	return statusText, diffText, statusFlag, diffFlag, true
+}
+
+func (l *Loop) captureGitBaseline() (status, diff string, statusTruncated, diffTruncated bool, ok bool) {
+	return captureGitBaselineFor(l.registry)
+}
+
+// BootstrapTask persists the durable task root, the operator acceptance plan
+// and the real git baseline exactly like a normal loop start. It is shared by
+// the loop bootstrap and the Work Unit composition root so both paths persist
+// the SAME authoritative task configuration (issue #106): there is exactly
+// one bootstrap, never a reduced parallel one.
+type TaskBootstrapper interface {
+	CreateTask(context.Context, state.TaskRecord) error
+	StartTask(context.Context, string) error
+	SaveAcceptancePlan(context.Context, string, []byte, string) error
+	SaveWorkspaceBaseline(context.Context, string, string, string, bool, bool) error
+}
+
+func BootstrapTask(ctx context.Context, store TaskBootstrapper, record state.TaskRecord, plan *verifier.Plan, registry *tools.Registry) error {
+	if err := store.CreateTask(ctx, record); err != nil {
+		return fmt.Errorf("persist task root: %w", err)
+	}
+	if err := store.StartTask(ctx, record.TaskID); err != nil {
+		return fmt.Errorf("start task: %w", err)
+	}
+	// Persist the operator acceptance plan with the task so verification
+	// always reads the same plan (issue #11). The model can never invent
+	// acceptance criteria after execution.
+	if plan != nil {
+		spec, err := json.Marshal(plan)
+		if err != nil {
+			return fmt.Errorf("marshal acceptance plan: %w", err)
+		}
+		if err := store.SaveAcceptancePlan(ctx, record.TaskID, spec, plan.Digest()); err != nil {
+			return fmt.Errorf("save acceptance plan: %w", err)
+		}
+	}
+	// Capture the real git baseline at task start, BEFORE any model turn,
+	// so verification can attribute pre-existing repository changes. The
+	// observation happens outside any SQLite transaction. Truncation flags
+	// are persisted with the baseline (issue #11 review).
+	if registry != nil {
+		if status, diff, statusTruncated, diffTruncated, ok := captureGitBaselineFor(registry); ok {
+			if err := store.SaveWorkspaceBaseline(ctx, record.TaskID, status, diff, statusTruncated, diffTruncated); err != nil {
+				return fmt.Errorf("save workspace baseline: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // configSnapshot renders the meaningful execution configuration as a
@@ -494,35 +519,48 @@ func (l *Loop) captureGitBaseline() (status, diff string, statusTruncated, diffT
 // persisted policies and rejects a divergent override (issues #10/#26). The
 // catalog digest lets resume reject catalog drift fail-closed (issue #26
 // review).
-func (l *Loop) configSnapshot() []byte {
+// ConfigSnapshot renders the meaningful execution configuration as a
+// sanitized JSON snapshot for the durable task row. It contains no secrets:
+// workspace, model, the loop limits, the effective write policy, the effective
+// recipe policy and the digest of the effective recipe catalog. Both policies
+// are part of the authoritative task configuration: resume continues under the
+// persisted policies and rejects a divergent override (issues #10/#26). The
+// catalog digest lets resume reject catalog drift fail-closed (issue #26
+// review). The Work Unit composition root persists the SAME snapshot so a Work
+// Unit task proves/resumes the same execution contract (issue #106).
+func ConfigSnapshot(registry *tools.Registry, model string, identity provider.Identity, writePolicy, recipePolicy, recipeCatalogDigest, acceptancePlanDigest string, limits Limits) []byte {
 	snapshot := map[string]any{
-		"workspace":                l.registry.Workspace(),
-		"model":                    l.model,
-		"write_policy":             l.writePolicy,
-		"recipe_policy":            l.recipePolicy,
-		"recipe_catalog_digest":    l.recipeCatalogDigest,
-		"acceptance_plan_digest":   l.acceptancePlanDigest,
-		"max_steps":                l.limits.MaxSteps,
-		"max_corrections":          l.limits.MaxCorrections,
-		"max_repeated_actions":     l.limits.MaxRepeatedActions,
-		"time_budget_ns":           int64(l.limits.TimeBudget),
-		"provider_budget":          l.limits.ProviderBudget,
-		"max_consecutive_failures": l.limits.MaxConsecutiveFailures,
-		"max_verification_retries": l.limits.MaxVerificationRetries,
+		"workspace":                registry.Workspace(),
+		"model":                    model,
+		"write_policy":             writePolicy,
+		"recipe_policy":            recipePolicy,
+		"recipe_catalog_digest":    recipeCatalogDigest,
+		"acceptance_plan_digest":   acceptancePlanDigest,
+		"max_steps":                limits.MaxSteps,
+		"max_corrections":          limits.MaxCorrections,
+		"max_repeated_actions":     limits.MaxRepeatedActions,
+		"time_budget_ns":           int64(limits.TimeBudget),
+		"provider_budget":          limits.ProviderBudget,
+		"max_consecutive_failures": limits.MaxConsecutiveFailures,
+		"max_verification_retries": limits.MaxVerificationRetries,
 	}
-	if !l.providerIdentity.Empty() {
-		snapshot["provider_id"] = l.providerIdentity.ProviderID
-		snapshot["protocol_family"] = string(l.providerIdentity.ProtocolFamily)
-		snapshot["provider_model"] = l.providerIdentity.Model
-		snapshot["provider_config_identity"] = l.providerIdentity.ConfigIdentity
-		snapshot["provider_profile_version"] = l.providerIdentity.ProfileVersion
-		snapshot["provider_adapter_version"] = l.providerIdentity.AdapterVersion
+	if !identity.Empty() {
+		snapshot["provider_id"] = identity.ProviderID
+		snapshot["protocol_family"] = string(identity.ProtocolFamily)
+		snapshot["provider_model"] = identity.Model
+		snapshot["provider_config_identity"] = identity.ConfigIdentity
+		snapshot["provider_profile_version"] = identity.ProfileVersion
+		snapshot["provider_adapter_version"] = identity.AdapterVersion
 	}
 	encoded, err := json.Marshal(snapshot)
 	if err != nil {
 		return []byte("{}")
 	}
 	return encoded
+}
+
+func (l *Loop) configSnapshot() []byte {
+	return ConfigSnapshot(l.registry, l.model, l.providerIdentity, l.writePolicy, l.recipePolicy, l.recipeCatalogDigest, l.acceptancePlanDigest, l.limits)
 }
 
 // persistenceFailure builds the terminal result for a failed persistence
@@ -770,6 +808,7 @@ func (l *Loop) handleAction(
 		var err error
 		actionID, err = l.state.RecordAction(ctx, state.ActionRecord{
 			TaskID:             task.ID,
+			WorkUnitID:         task.WorkUnitID,
 			Tool:               action.Tool,
 			Arguments:          arguments,
 			Fingerprint:        protocol.ActionFingerprint(*action),
@@ -865,6 +904,7 @@ func (l *Loop) handleAction(
 		var err error
 		executionID, err = l.state.PrepareToolAttempt(ctx, state.ToolAttemptPrepared{
 			TaskID:          task.ID,
+			WorkUnitID:      task.WorkUnitID,
 			ActionID:        actionID,
 			Tool:            action.Tool,
 			Arguments:       arguments,
