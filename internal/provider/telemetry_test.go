@@ -13,8 +13,8 @@ func TestResponseMetadataTelemetryZeroValue(t *testing.T) {
 	if metadata.Transport != "" {
 		t.Fatalf("zero Transport = %q, want empty", metadata.Transport)
 	}
-	if metadata.FirstTokenLatency != 0 {
-		t.Fatalf("zero FirstTokenLatency = %v, want 0", metadata.FirstTokenLatency)
+	if metadata.FirstByteLatency != 0 {
+		t.Fatalf("zero FirstByteLatency = %v, want 0", metadata.FirstByteLatency)
 	}
 	if metadata.RetryCount != 0 {
 		t.Fatalf("zero RetryCount = %d, want 0", metadata.RetryCount)

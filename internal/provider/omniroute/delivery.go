@@ -30,8 +30,9 @@ func (o *deliveryObservation) trace() *httptrace.ClientTrace {
 	}
 }
 
-// recordFirstResponseByte keeps the first observed byte time: the first-token
-// latency may never be guessed, so only the first proven observation counts.
+// recordFirstResponseByte keeps the first observed byte time: the
+// first-byte latency may never be guessed, so only the first proven
+// observation counts.
 func (o *deliveryObservation) recordFirstResponseByte() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
