@@ -30,6 +30,10 @@ var workUnitTransitions = map[TransitionKey]bool{
 	{From: "created", To: "ready"}:     true,
 	{From: "ready", To: "running"}:     true,
 	{From: "running", To: "completed"}: true,
+	// Recovery-only: an 'uncertain' unit whose effect records were all
+	// reconciled returns to 'ready' (issue #106 review). No arbitrary reason
+	// bypasses this: only ReconcileUncertainWorkUnits performs it.
+	{From: "uncertain", To: "ready"}:   true,
 	{From: "running", To: "failed"}:    true,
 	{From: "running", To: "blocked"}:   true,
 	{From: "running", To: "uncertain"}: true,
@@ -524,6 +528,65 @@ func (s *Store) ResetInterruptedWorkUnits(ctx context.Context, taskID, reason st
 		return 0, fmt.Errorf("commit interrupted reset: %w", err)
 	}
 	return len(ids), nil
+}
+
+// WorkUnitPendingApprovalCount returns how many control-plane approvals of
+// THIS work unit's actions are still awaiting an operator decision. It is
+// the authoritative resolution state for unblocking an approval-blocked
+// work unit (issue #106 review): the unit moves blocked -> ready only when
+// this reaches zero.
+func (s *Store) WorkUnitPendingApprovalCount(ctx context.Context, taskID, workUnitID string) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*)
+		 FROM write_policy_decisions d
+		 JOIN actions a ON a.task_id = d.task_id AND a.action_id = d.action_id
+		 WHERE d.task_id = ? AND a.work_unit_id = ? AND d.decision = 'approval_required'
+		   AND NOT EXISTS (
+		       SELECT 1 FROM approvals ap
+		       WHERE ap.task_id = d.task_id AND ap.fingerprint = `+effectiveFingerprintExpr+`
+		   )`, taskID, workUnitID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count pending approvals for work unit %s: %w", workUnitID, err)
+	}
+	return count, nil
+}
+
+// ReconcileUncertainWorkUnits is the recovery-only transition for units left
+// in `uncertain` by a terminal-but-conservative loop outcome: once the
+// recovery pipeline has reconciled every effect record of the unit (no tool
+// attempt remains prepared/running/human-review), the unit moves back to
+// `ready` WITHOUT replay. A unit with an unreconcilable or still-unresolved
+// attempt stays uncertain (blocking). Completed effects are never re-run:
+// the resumption seed carries the repeat guard.
+func (s *Store) ReconcileUncertainWorkUnits(ctx context.Context, taskID, reason string) (int, error) {
+	units, err := s.ListWorkUnits(ctx, taskID)
+	if err != nil {
+		return 0, err
+	}
+	changed := 0
+	for _, unit := range units {
+		if unit.Status != "uncertain" {
+			continue
+		}
+		var unresolved int
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*)
+			 FROM tool_attempts
+			 WHERE task_id = ? AND work_unit_id = ?
+			   AND status NOT IN ('completed', 'failed', 'reconciled', 'canceled')`,
+			taskID, unit.WorkUnitID).Scan(&unresolved); err != nil {
+			return changed, fmt.Errorf("check uncertain work unit %s attempts: %w", unit.WorkUnitID, err)
+		}
+		if unresolved > 0 {
+			continue // effect not (yet) reconciled: stays blocking
+		}
+		if err := s.TransitionWorkUnit(ctx, taskID, unit.WorkUnitID, "uncertain", "ready", reason); err != nil {
+			return changed, fmt.Errorf("reconcile uncertain work unit %s: %w", unit.WorkUnitID, err)
+		}
+		changed++
+	}
+	return changed, nil
 }
 
 // loadDependencyEdges loads every (unit -> dependency) edge of a task for

@@ -320,6 +320,15 @@ func Resume(ctx context.Context, store *state.Store, options Options) (*Plan, er
 		return nil, fmt.Errorf("reset interrupted work units: %w", resetErr)
 	}
 
+	// A unit left 'uncertain' by a conservative terminal loop outcome becomes
+	// executable ('ready') again once the pipeline above reconciled every one
+	// of its effect records; an unreconcilable or still-unresolved effect
+	// keeps it blocking. No effect is replayed: the resumption seed carries
+	// the repeat guard (issue #106 review).
+	if _, reconcileErr := store.ReconcileUncertainWorkUnits(ctx, options.TaskID, "effects reconciled by recovery"); reconcileErr != nil {
+		return nil, fmt.Errorf("reconcile uncertain work units: %w", reconcileErr)
+	}
+
 	// The Work Unit lifecycle mutation above (running -> ready) changes the
 	// authoritative state AFTER the post-reconciliation reload. Reload once
 	// more so the reconstructed context, evidence set and repeat guard can
