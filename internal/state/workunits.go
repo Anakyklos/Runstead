@@ -673,3 +673,21 @@ func scanWorkUnit(row rowScanner) (*WorkUnit, error) {
 	}
 	return &unit, nil
 }
+
+// LatestWorkUnitVerification returns the decision of the latest verification
+// attempt tagged with the work unit (” = task-level rows are excluded), or
+// found=false when none exists. It is the driver's evidence-backed completion
+// gate source: a unit without a passed decision can never complete.
+func (s *Store) LatestWorkUnitVerification(ctx context.Context, taskID, workUnitID string) (decision string, found bool, err error) {
+	err = s.db.QueryRowContext(ctx,
+		`SELECT decision FROM verification_attempts
+		 WHERE task_id = ? AND work_unit_id = ?
+		 ORDER BY sequence DESC LIMIT 1`, taskID, workUnitID).Scan(&decision)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("load latest work unit verification: %w", err)
+	}
+	return decision, true, nil
+}

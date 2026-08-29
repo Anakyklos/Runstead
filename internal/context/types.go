@@ -33,6 +33,10 @@ type Input struct {
 	// time. Empty means the current signature is unknown and workspace-derived
 	// facts render as UnverifiedCurrent.
 	CurrentWorkspaceSignature string
+	// WorkUnits are the persisted Runstead-owned Work Units of the task
+	// (issue #106). They are authoritative durable state for the serial
+	// scheduler and the parent completion gate.
+	WorkUnits []state.RecoveryWorkUnit
 	// NonAuthoritativeNotes are model-authored summaries/inferences accepted
 	// for navigation only. They are structurally separated, explicitly
 	// marked, and can never satisfy verification or become facts.
@@ -57,6 +61,7 @@ const (
 	FactAcceptanceCheck FactKind = "acceptance_check"
 	FactVerification    FactKind = "verification_result"
 	FactWorkspace       FactKind = "workspace_fact"
+	FactWorkUnit        FactKind = "work_unit"
 )
 
 // Freshness classifies a workspace-derived fact against the current workspace
@@ -150,5 +155,5 @@ func (c Compiled) RenderDiagnostics() string {
 var sortedFactKinds = []FactKind{
 	FactObjective, FactStatus, FactConstraint, FactAction, FactAttempt,
 	FactEvidence, FactFailure, FactUncertainEffect, FactApproval,
-	FactAcceptanceCheck, FactVerification, FactWorkspace,
+	FactAcceptanceCheck, FactVerification, FactWorkspace, FactWorkUnit,
 }

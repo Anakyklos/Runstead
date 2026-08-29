@@ -117,6 +117,7 @@ type inspectProjection struct {
 	pending              []PendingApproval
 	processEvidence      []inspectProcessEvidence
 	verificationAttempts []VerificationAttemptRow
+	workUnits            []WorkUnit
 	governorState        *inspectGovernor
 }
 
@@ -299,6 +300,26 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 	builder.WriteString("\nProcess attempts:\n")
 	renderProcessEvidence(&builder, processEvidence)
 
+	if len(projection.workUnits) > 0 {
+		builder.WriteString("\nWork Units:\n")
+		for _, unit := range projection.workUnits {
+			objective := unit.Objective
+			if len(objective) > 120 {
+				objective = objective[:120] + "..."
+			}
+			reason := unit.BlockingReason
+			if reason == "" {
+				reason = unit.FailureReason
+			}
+			line := fmt.Sprintf("  work unit %s [%s] parent=%s deps=%s evidence=%s objective=%s",
+				unit.WorkUnitID, unit.Status, unit.ParentWorkUnitID,
+				strings.Join(unit.Dependencies, ","), strings.Join(unit.EvidenceRefs, ","), objective)
+			if reason != "" {
+				line += " reason=" + reason
+			}
+			builder.WriteString(line + "\n")
+		}
+	}
 	builder.WriteString("\nVerification:\n")
 	if len(verificationAttempts) == 0 {
 		builder.WriteString("  (none)\n")
@@ -489,6 +510,10 @@ func (s *Store) loadInspectProjection(ctx context.Context, taskID string) (inspe
 	if err != nil {
 		return inspectProjection{}, err
 	}
+	workUnits, err := s.ListWorkUnits(ctx, taskID)
+	if err != nil {
+		return inspectProjection{}, err
+	}
 	governorState, err := s.loadInspectGovernor(ctx, taskID)
 	if err != nil {
 		return inspectProjection{}, err
@@ -505,6 +530,7 @@ func (s *Store) loadInspectProjection(ctx context.Context, taskID string) (inspe
 		pending:              pending,
 		processEvidence:      processEvidence,
 		verificationAttempts: verificationAttempts,
+		workUnits:            workUnits,
 		governorState:        governorState,
 	}, nil
 }

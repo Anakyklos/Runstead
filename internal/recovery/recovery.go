@@ -311,6 +311,15 @@ func Resume(ctx context.Context, store *state.Store, options Options) (*Plan, er
 		}
 	}
 
+	// A Work Unit interrupted mid-run (status 'running') is reset to 'ready'
+	// AFTER the existing pipeline reconciled its attempt records: completed
+	// units and effects are never touched, and prior attempts are never
+	// re-executed blindly (issue #106). A unit left 'uncertain' stays
+	// blocking.
+	if _, resetErr := store.ResetInterruptedWorkUnits(ctx, options.TaskID, "interrupted; attempts reconciled"); resetErr != nil {
+		return nil, fmt.Errorf("reset interrupted work units: %w", resetErr)
+	}
+
 	// Reconstruct the bounded model context through the evidence-preserving
 	// context compiler (issue #51): a deterministic typed projection of the
 	// authoritative snapshot. Mandatory content that does not fit the budget
