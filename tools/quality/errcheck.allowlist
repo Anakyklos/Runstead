@@ -51,7 +51,7 @@ internal/recipe/recipe.go:701  _ = syscall.Kill(-pgid, syscall.SIGKILL)
 # decodeAny is deliberately documented as non-failing: an undecodable
 # document leaves the target at its zero value and the authoritative
 # expected after-state hash gates reconciliation separately.
-internal/recovery/recovery.go:689  _ = jsonUnmarshal(raw, value)
+internal/recovery/recovery.go:726  _ = jsonUnmarshal(raw, value)
 
 # Verification evidence rendering is best-effort: an undecodable evidence
 # JSON leaves the rendered list empty for inspect output.
