@@ -611,14 +611,15 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 				// protection is authoritative across restart). The counters
 				// are ALWAYS taken from the unit's own history, including
 				// zero: a unit that never dispatched before restart must not
-				// inherit a sibling's/task-level turn/attempt counters or its
-				// budgets could be exhausted before its first dispatch. The
-				// value counts persisted governor attempts; governor retries
-				// inflate but never undercount, keeping request ids unique
-				// and budgets conservative.
+				// inherit a sibling's/task-level counters or its budgets could
+				// be exhausted before its first dispatch. The value is the
+				// unit's own LOGICAL model-turn count: base client request ids
+				// only, so governor retry children (...-rN) stay physical
+				// attempts of one turn and never inflate the unit's budgets
+				// (issue #106 review).
 				unitPieces := pieces
 				unitSeed := *plan.Seed
-				if count, err := store.ProviderAttemptCount(ctx, taskID, unit.WorkUnitID); err != nil {
+				if count, err := store.WorkUnitLogicalTurnCount(ctx, taskID, unit.WorkUnitID); err != nil {
 					return workunit.RunResult{}, fmt.Errorf("work unit %s counters: %w", unit.WorkUnitID, err)
 				} else {
 					unitSeed.Turns = count
