@@ -89,6 +89,10 @@ func DefaultLimits() Limits {
 type Task struct {
 	ID     string
 	Prompt string
+	// WorkUnitID tags the owning Work Unit ('' = task-level) on every action,
+	// tool/provider attempt and verification record persisted by this run
+	// (issue #106). Provenance only; the loop behavior is unchanged.
+	WorkUnitID string
 }
 
 // Loop is the bounded read-only agent loop. It owns no provider client, no
@@ -565,6 +569,7 @@ func (l *Loop) modelTurn(
 
 	execution := l.runner.Execute(ctx, governor.AttemptRequest{
 		TaskID:          task.ID,
+		WorkUnitID:      task.WorkUnitID,
 		ClientRequestID: requestID,
 		ProviderRequest: provider.Request{
 			Protocol: protocol.Current,
@@ -1141,7 +1146,7 @@ func (l *Loop) verifyCompletion(ctx context.Context, task Task, final *protocol.
 			reportJSON = []byte(`{"decision":"` + string(report.Decision) + `"}`)
 		}
 		if err := l.state.SaveVerificationAttempt(ctx, state.VerificationAttemptRecord{
-			TaskID: task.ID, Decision: string(report.Decision), Summary: report.Summary,
+			TaskID: task.ID, WorkUnitID: task.WorkUnitID, Decision: string(report.Decision), Summary: report.Summary,
 			ReportJSON: reportJSON, Checks: checks,
 		}); err != nil {
 			// A failed persistence of verification history is a terminal

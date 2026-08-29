@@ -66,9 +66,9 @@ func (s *Store) RecordProviderPrepared(ctx context.Context, record governor.Prov
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO provider_attempts
-			 (execution_id, task_id, client_request_id, provider, model_pool, model, attempt_sequence, receipt_aware, protocol_family, config_identity, delivery_state, status, created_at, prepared_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'prepared', ?, ?)`,
-		executionID, record.TaskID, record.ClientRequestID, record.ProviderID, record.ModelPool, record.Model,
+			 (execution_id, task_id, work_unit_id, client_request_id, provider, model_pool, model, attempt_sequence, receipt_aware, protocol_family, config_identity, delivery_state, status, created_at, prepared_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'prepared', ?, ?)`,
+		executionID, record.TaskID, Redact(record.WorkUnitID), record.ClientRequestID, record.ProviderID, record.ModelPool, record.Model,
 		record.AttemptSequence, boolInt(record.ReceiptAware), string(record.ProtocolFamily), Redact(record.ConfigIdentity),
 		now, formatTime(record.StartedAt)); err != nil {
 		return fmt.Errorf("insert provider attempt: %w", err)

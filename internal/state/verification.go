@@ -31,6 +31,8 @@ var ErrVerificationNotPassed = errors.New("task completion refused: latest verif
 // VerificationAttemptRecord is one control-plane verification run to persist.
 type VerificationAttemptRecord struct {
 	TaskID string
+	// WorkUnitID tags the owning Work Unit ('' = task-level), issue #106.
+	WorkUnitID string
 	// Decision is the typed verifier decision: passed, failed, blocked or
 	// uncertain.
 	Decision string
@@ -208,9 +210,9 @@ func (s *Store) SaveVerificationAttempt(ctx context.Context, record Verification
 		return fmt.Errorf("allocate verification sequence: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO verification_attempts (attempt_id, task_id, sequence, decision, report_json, summary, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		attemptID, record.TaskID, sequence, Redact(record.Decision),
+		`INSERT INTO verification_attempts (attempt_id, task_id, work_unit_id, sequence, decision, report_json, summary, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		attemptID, record.TaskID, Redact(record.WorkUnitID), sequence, Redact(record.Decision),
 		string(RedactJSON(record.ReportJSON)), Redact(record.Summary), now); err != nil {
 		return fmt.Errorf("insert verification attempt: %w", err)
 	}
