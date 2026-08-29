@@ -384,9 +384,13 @@ plan). `internal/workunit.Driver` owns the unit lifecycle:
   A unit declared with only `read_file` cannot propose or execute `write_file`,
   `apply_patch` or `run_recipe`: the protocol parser rejects the proposal
   deterministically before any action record, policy decision or effect, and
-  the registry refuses to execute it as a second line of defense. An empty
-  tool list is a valid fail-closed envelope (no tools) and never short-circuits
-  workspace-scope containment.
+  the registry refuses to execute it as a second line of defense. Capability
+  contract: OMITTED tools mean the task default surface; EXPLICITLY EMPTY
+  tools (`[]`) are a fail-closed no-tools envelope; a workspace scope without
+  an explicit tool list never grants the parent surface implicitly. The
+  workspace scope is workspace-RELATIVE (canonical single coordinate system,
+  the same resolver every tool uses); absolute paths and `..` traversal are
+  rejected before any effect.
 - **Dependency order** — `work_unit_dependencies` edges are validated
   acyclically at creation (deterministic DFS) and re-supplied definitions are
   created in dependency order regardless of the JSON file ordering; material
@@ -404,6 +408,14 @@ plan). `internal/workunit.Driver` owns the unit lifecycle:
   for the unit). A model summary is never enough: completion is
   evidence-backed per unit, and the parent loop only proceeds after the
   chain gate is closed.
+- **Authoritative resolution of paused units** — an approval-blocked unit
+  (blocked reason `approval`) returns to `ready` only when every pending
+  approval of the unit's own actions is resolved (operator `decide` + resume;
+  the transition is tied to `WorkUnitPendingApprovalCount == 0`, never to an
+  arbitrary reason). A unit left `uncertain` by a conservative terminal
+  outcome returns to `ready` after the recovery pipeline reconciled all of
+  its effect records (`ReconcileUncertainWorkUnits`); an unreconcilable or
+  unresolved effect keeps it blocking (`human_review_required`).
 - **Authoritative parent gate** — parent completion is impossible while any
   persisted work unit is not completed. The gate lives at TWO boundaries:
   `state.Store.FinalizeTask` refuses to persist `completed` while open units

@@ -100,7 +100,14 @@ Every Work Unit carries an explicit tool/workspace envelope that must be a subse
 ## Assumptions
 
 - Work Units are operator/control-plane-defined (file), never model-defined.
-- The tool envelope vocabulary is the registry's tool ids; "" envelope = task default.
+- The tool envelope vocabulary is the registry's tool ids. Single intentional
+  capability contract: OMITTED tools (field absent / null) = the task default
+  surface (no restriction); EXPLICITLY EMPTY tools (`[]`) = a fail-closed
+  no-tools envelope. A workspace scope without an explicit tool list is
+  fail-closed as well (never grants the full parent surface implicitly). The
+  workspace scope is WORKSPACE-RELATIVE (for example `sub`), validated through
+  the same canonical resolver every tool uses; absolute paths and `..`
+  traversal are rejected before any effect.
 - Provider/model budgets per Work Unit default to the task values when zero.
 - Evidence references of a Work Unit are derived from rows tagged with its id (no duplicated truth).
 - The governor's provider-attempt accounting remains authoritative across Work Units; work_unit_id on attempts is provenance only.
