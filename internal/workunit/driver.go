@@ -63,6 +63,12 @@ var ErrWorkUnitBlockedChain = errors.New("work unit chain stopped with open unit
 // required Work Units are unresolved (open units listed in Reason).
 var ErrParentCompletionGated = errors.New("parent completion gated by open work units")
 
+// ErrWorkUnitDefinitionDrift reports that a re-supplied Work Unit id carries
+// a materially different definition than the persisted one. Re-supply is
+// idempotent ONLY for identical definitions; drift fails closed so a changed
+// operator intent can never silently apply to an already-persisted unit.
+var ErrWorkUnitDefinitionDrift = errors.New("work unit definition drift")
+
 // Driver executes the serial Stage A chain for one task. It is a pure
 // coordinator over the durable store; all execution is delegated to RunFunc.
 type Driver struct {
@@ -77,9 +83,6 @@ type Driver struct {
 // ValidateEnvelope checks the containment rule
 // workunit capabilities ⊆ parent task capabilities, fail-before-effect.
 func (d *Driver) ValidateEnvelope(tools []string, workspaceScope string) error {
-	if len(tools) == 0 {
-		return nil // empty = task default
-	}
 	allowed := make(map[string]bool, len(d.AllowedTools))
 	for _, tool := range d.AllowedTools {
 		allowed[tool] = true
@@ -89,6 +92,9 @@ func (d *Driver) ValidateEnvelope(tools []string, workspaceScope string) error {
 			return fmt.Errorf("%w: tool %q is not in the parent task envelope", ErrCapabilityEscalation, tool)
 		}
 	}
+	// The workspace scope is validated unconditionally: an empty tool list
+	// is a valid fail-closed envelope (no tools) and must never short-circuit
+	// scope containment (issue #106 review).
 	if workspaceScope != "" && d.TaskWorkspace != "" && !pathWithin(workspaceScope, d.TaskWorkspace) {
 		return fmt.Errorf("%w: scope %q is outside the parent workspace %q", ErrCapabilityEscalation, workspaceScope, d.TaskWorkspace)
 	}
@@ -111,28 +117,51 @@ func pathWithin(scope, root string) bool {
 
 // EnsureDefinitions idempotently creates the missing operator Work Units. It
 // never mutates existing units; any invalid definition (missing dependency,
-// cycle, capability escalation, malformed acceptance plan) fails the whole
-// call before any unit is executed.
+// cycle, capability escalation, malformed acceptance plan, definition drift)
+// fails the whole call before any unit is executed. A valid DAG is created in
+// dependency order, so the JSON file's own ordering is irrelevant.
 func (d *Driver) EnsureDefinitions(ctx context.Context, definitions []Definition) (created, skipped int, err error) {
-	for _, def := range definitions {
+	ordered, err := topologicalDefinitions(definitions)
+	if err != nil {
+		return 0, 0, err
+	}
+	// Validate every definition (id, envelope, acceptance plan) BEFORE any
+	// unit is persisted: one invalid definition fails the whole call without
+	// leaving partially created units behind.
+	type inspected struct {
+		def    Definition
+		digest string
+	}
+	inspectedDefs := make([]inspected, 0, len(ordered))
+	for _, def := range ordered {
 		if strings.TrimSpace(def.WorkUnitID) == "" {
-			return created, skipped, errors.New("work unit definition requires work_unit_id")
-		}
-		existing, getErr := d.Store.GetWorkUnit(ctx, d.TaskID, def.WorkUnitID)
-		if getErr == nil && existing != nil {
-			skipped++ // idempotent re-supply
-			continue
+			return 0, 0, errors.New("work unit definition requires work_unit_id")
 		}
 		if err := d.ValidateEnvelope(def.Tools, def.WorkspaceScope); err != nil {
-			return created, skipped, err
+			return 0, 0, err
 		}
 		digest := ""
 		if len(def.AcceptancePlan) > 0 {
 			plan, planErr := verifier.ParsePlan(def.AcceptancePlan)
 			if planErr != nil {
-				return created, skipped, fmt.Errorf("work unit %s acceptance plan: %w", def.WorkUnitID, planErr)
+				return 0, 0, fmt.Errorf("work unit %s acceptance plan: %w", def.WorkUnitID, planErr)
 			}
 			digest = plan.Digest()
+		}
+		inspectedDefs = append(inspectedDefs, inspected{def: def, digest: digest})
+	}
+	for _, item := range inspectedDefs {
+		def := item.def
+		existing, getErr := d.Store.GetWorkUnit(ctx, d.TaskID, def.WorkUnitID)
+		if getErr == nil && existing != nil {
+			if err := ensureIdenticalDefinition(*existing, def, item.digest); err != nil {
+				return 0, 0, fmt.Errorf("work unit %s: %w", def.WorkUnitID, err)
+			}
+			skipped++ // idempotent re-supply of the SAME definition
+			continue
+		}
+		if getErr != nil && !errors.Is(getErr, state.ErrWorkUnitNotFound) {
+			return 0, 0, getErr
 		}
 		if _, createErr := d.Store.CreateWorkUnit(ctx, state.WorkUnitCreate{
 			TaskID:           d.TaskID,
@@ -143,7 +172,7 @@ func (d *Driver) EnsureDefinitions(ctx context.Context, definitions []Definition
 			Tools:            def.Tools,
 			WorkspaceScope:   def.WorkspaceScope,
 			AcceptancePlan:   def.AcceptancePlan,
-			AcceptanceDigest: digest,
+			AcceptanceDigest: item.digest,
 			ContextBudget:    def.ContextBudget,
 			ProviderBudget:   def.ProviderBudget,
 			StepBudget:       def.StepBudget,
@@ -153,6 +182,107 @@ func (d *Driver) EnsureDefinitions(ctx context.Context, definitions []Definition
 		created++
 	}
 	return created, skipped, nil
+}
+
+// ensureIdenticalDefinition compares a persisted unit against its re-supplied
+// definition. Any material divergence (objective, tool envelope, workspace
+// scope, dependencies, budgets, acceptance digest) fails closed: replay never
+// mutates a persisted unit, and never silently accepts a changed contract.
+func ensureIdenticalDefinition(existing state.WorkUnit, def Definition, digest string) error {
+	if strings.TrimSpace(existing.Objective) != strings.TrimSpace(def.Objective) {
+		return fmt.Errorf("%w: objective changed", ErrWorkUnitDefinitionDrift)
+	}
+	if strings.TrimSpace(existing.WorkspaceScope) != strings.TrimSpace(def.WorkspaceScope) {
+		return fmt.Errorf("%w: workspace scope changed", ErrWorkUnitDefinitionDrift)
+	}
+	if existing.ContextBudget != def.ContextBudget || existing.ProviderBudget != def.ProviderBudget || existing.StepBudget != def.StepBudget {
+		return fmt.Errorf("%w: budgets changed", ErrWorkUnitDefinitionDrift)
+	}
+	if !stringSetsEqual(existing.Tools, def.Tools) {
+		return fmt.Errorf("%w: tool envelope changed", ErrWorkUnitDefinitionDrift)
+	}
+	if !stringSetsEqual(existing.Dependencies, def.Dependencies) {
+		return fmt.Errorf("%w: dependency set changed", ErrWorkUnitDefinitionDrift)
+	}
+	if existing.AcceptanceDigest != digest {
+		return fmt.Errorf("%w: acceptance plan changed", ErrWorkUnitDefinitionDrift)
+	}
+	return nil
+}
+
+// stringSetsEqual compares two lists as unordered sets with non-empty trimmed
+// elements.
+func stringSetsEqual(a, b []string) bool {
+	left := make(map[string]struct{}, len(a))
+	for _, item := range a {
+		if item = strings.TrimSpace(item); item != "" {
+			left[item] = struct{}{}
+		}
+	}
+	right := make(map[string]struct{}, len(b))
+	for _, item := range b {
+		if item = strings.TrimSpace(item); item != "" {
+			right[item] = struct{}{}
+		}
+	}
+	if len(left) != len(right) {
+		return false
+	}
+	for item := range left {
+		if _, ok := right[item]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// topologicalDefinitions orders the operator definitions so every dependency
+// precedes its dependents, independent of the JSON file ordering. The order
+// is deterministic (lexicographic tie-breaking) and a cycle fails the call.
+func topologicalDefinitions(definitions []Definition) ([]Definition, error) {
+	byID := make(map[string]Definition, len(definitions))
+	for _, def := range definitions {
+		if _, exists := byID[def.WorkUnitID]; exists {
+			return nil, fmt.Errorf("work unit definition %q appears more than once", def.WorkUnitID)
+		}
+		byID[def.WorkUnitID] = def
+	}
+	indegree := make(map[string]int, len(definitions))
+	outgoing := make(map[string][]string)
+	for _, def := range definitions {
+		for _, dep := range def.Dependencies {
+			if _, ok := byID[dep]; !ok {
+				return nil, fmt.Errorf("work unit %s depends on undefined unit %q", def.WorkUnitID, dep)
+			}
+			outgoing[dep] = append(outgoing[dep], def.WorkUnitID)
+			indegree[def.WorkUnitID]++
+		}
+	}
+	queue := make([]string, 0, len(definitions))
+	for _, def := range definitions {
+		if indegree[def.WorkUnitID] == 0 {
+			queue = append(queue, def.WorkUnitID)
+		}
+	}
+	ordered := make([]Definition, 0, len(definitions))
+	for len(queue) > 0 {
+		sort.Strings(queue)
+		current := queue[0]
+		queue = queue[1:]
+		ordered = append(ordered, byID[current])
+		next := append([]string(nil), outgoing[current]...)
+		sort.Strings(next)
+		for _, dependent := range next {
+			indegree[dependent]--
+			if indegree[dependent] == 0 {
+				queue = append(queue, dependent)
+			}
+		}
+	}
+	if len(ordered) != len(definitions) {
+		return nil, fmt.Errorf("work unit dependency cycle detected: %d definition(s) cannot be ordered", len(definitions)-len(ordered))
+	}
+	return ordered, nil
 }
 
 // openUnits lists the units that keep the parent completion gate open, in
