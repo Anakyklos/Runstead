@@ -121,14 +121,14 @@ func TestPolicySinkRendersAttemptTelemetry(t *testing.T) {
 	sink.Emit(governor.Event{
 		Kind: governor.EventAttemptFinished,
 		AttemptMetadata: provider.ResponseMetadata{
-			AdapterVersion:    provider.CompatAdapterVersion,
-			Transport:         "compat-http",
-			SessionID:         "sha256:0123456789abcdef",
-			RequestID:         "sha256:fedcba9876543210",
-			StatusCode:        200,
-			Duration:          12 * time.Millisecond,
-			FirstTokenLatency: 3 * time.Millisecond,
-			DeliveryState:     provider.DeliveryCompleted,
+			AdapterVersion:   provider.CompatAdapterVersion,
+			Transport:        "compat-http",
+			SessionID:        "sha256:0123456789abcdef",
+			RequestID:        "sha256:fedcba9876543210",
+			StatusCode:       200,
+			Duration:         12 * time.Millisecond,
+			FirstByteLatency: 3 * time.Millisecond,
+			DeliveryState:    provider.DeliveryCompleted,
 		},
 	})
 	var record map[string]any
@@ -145,7 +145,7 @@ func TestPolicySinkRendersAttemptTelemetry(t *testing.T) {
 		"session_fingerprint": "sha256:0123456789abcdef",
 		"status_code":         float64(200),
 		"request_id":          "sha256:fedcba9876543210",
-		"first_token_latency": "3ms",
+		"first_byte_latency":  "3ms",
 		"duration":            "12ms",
 		"delivery_state":      "completed",
 		"retry_count":         float64(0),

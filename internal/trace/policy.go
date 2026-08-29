@@ -72,7 +72,7 @@ func (s *PolicySink) Emit(event governor.Event) {
 			"status_code", event.AttemptMetadata.StatusCode,
 			"request_id", event.AttemptMetadata.RequestID,
 			"duration", event.AttemptMetadata.Duration.String(),
-			"first_token_latency", event.AttemptMetadata.FirstTokenLatency.String(),
+			"first_byte_latency", event.AttemptMetadata.FirstByteLatency.String(),
 			"retry_count", event.AttemptMetadata.RetryCount,
 			"fallback", event.AttemptMetadata.Fallback,
 			"usage_estimated", event.AttemptMetadata.UsageEstimated,

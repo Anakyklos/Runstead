@@ -15,8 +15,11 @@ Every `provider.ResponseMetadata` record may carry:
   `anthropiccompat-http`, `googlecompat-http`, `omniroute-http`);
 - `session_fingerprint`: sha256 fingerprint of the opaque session/connection
   identity, never the raw identity;
-- `first_token_latency`: request-start to first-response-byte latency when the
-  adapter's transport observation proves it;
+- `first_byte_latency`: request-start to first observed response byte (HTTP
+  response-header arrival) when the adapter's transport observation proves
+  it. First-TOKEN latency is never claimed: the non-streaming lane cannot
+  observe a model token separately from the body, so any such number would
+  be a guess;
 - `retry_count` and `fallback`: the protected lane has no retries or fallbacks
   outside the governor (#92), so both are always zero;
 - `usage_estimated`: false today (no adapter emits usage); reserved so a
