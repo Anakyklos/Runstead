@@ -3,6 +3,7 @@ package googlecompat
 import (
 	"net/http/httptrace"
 	"sync"
+	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/provider"
 )
@@ -17,6 +18,8 @@ type deliveryObservation struct {
 	wroteHeaders     bool
 	wroteRequestBody bool
 	responseStarted  bool
+	firstByteAt      time.Time
+	now              func() time.Time
 }
 
 func (o *deliveryObservation) trace() *httptrace.ClientTrace {
@@ -31,10 +34,34 @@ func (o *deliveryObservation) trace() *httptrace.ClientTrace {
 			o.wroteRequestBody = true
 			o.mu.Unlock()
 		},
-		GotFirstResponseByte: func() {
-			o.markResponseStarted()
-		},
+		GotFirstResponseByte: func() { o.recordFirstResponseByte() },
 	}
+}
+
+// recordFirstResponseByte keeps the first observed byte time: the first-token
+// latency may never be guessed, so only the first proven observation counts.
+func (o *deliveryObservation) recordFirstResponseByte() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.firstByteAt.IsZero() && o.now != nil {
+		o.firstByteAt = o.now()
+	}
+	o.responseStarted = true
+}
+
+// firstTokenLatency returns the proven started-to-first-byte delta, or zero
+// when no first byte was observed.
+func (o *deliveryObservation) firstTokenLatency(started time.Time) time.Duration {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.firstByteAt.IsZero() {
+		return 0
+	}
+	latency := o.firstByteAt.Sub(started)
+	if latency < 0 {
+		return 0
+	}
+	return latency
 }
 
 func (o *deliveryObservation) markResponseStarted() {
