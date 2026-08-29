@@ -21,6 +21,23 @@ func providerAttemptStatus(outcome governor.OutcomeClass, uncertain bool) string
 	return "failed"
 }
 
+// ProviderAttemptCount returns how many provider attempts one Work Unit has
+// already consumed (issue #106). Resumed unit runs seed their loop counters
+// from this so the request id namespace and budgets continue instead of
+// restarting at the same id the interrupted conversation used.
+func (s *Store) ProviderAttemptCount(ctx context.Context, taskID, workUnitID string) (int, error) {
+	if workUnitID == "" {
+		return 0, fmt.Errorf("ProviderAttemptCount requires a work unit id")
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM provider_attempts WHERE task_id = ? AND work_unit_id = ?`,
+		taskID, workUnitID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count provider attempts for work unit %s: %w", workUnitID, err)
+	}
+	return count, nil
+}
+
 // persistedDeliveryState keeps invalid/zero observations unobserved on disk.
 // Runtime classification may use a conservative effective state, but the
 // durable projection must retain only the raw transport evidence.

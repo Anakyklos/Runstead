@@ -22,6 +22,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/tools"
 	"github.com/RenyEnnos/Runstead/internal/trace"
 	"github.com/RenyEnnos/Runstead/internal/verifier"
+	"github.com/RenyEnnos/Runstead/internal/workunit"
 )
 
 // Resume-specific exit codes. The generic codes (0 success, 1 not found,
@@ -56,6 +57,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	recipesFile := ""
 	recipePolicy := ""
 	acceptanceFile := ""
+	workUnitsFile := ""
 	providersFile := ""
 	providerID := ""
 	retryPolicy := ""
@@ -120,6 +122,12 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			}
 		case strings.HasPrefix(arg, "--recipe-policy="):
 			recipePolicy = strings.TrimPrefix(arg, "--recipe-policy=")
+		case arg == "--workunits":
+			if next, ok := value("--workunits"); ok {
+				workUnitsFile = next
+			} else {
+				return exitUsage
+			}
 		case arg == "--acceptance":
 			if next, ok := value("--acceptance"); ok {
 				acceptanceFile = next
@@ -549,6 +557,55 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	}
 	policyConfig := resumePolicy
 	policyConfig.RecipeModes = resumeRecipePolicy.RecipeModes
+	if workUnitsFile != "" {
+		definitions, err := loadWorkUnitFile(workUnitsFile)
+		if err != nil {
+			fmt.Fprintf(errOut, "resume: %v\n", err)
+			return exitUsage
+		}
+		// Resumed unit runs ground evidence and the repeat guard from the
+		// authoritative recovery seed; counters stay per-unit (task-level
+		// attempt accounting stays authoritative via the restored governor).
+		grounding := &agent.RecoverySeed{Evidence: plan.Seed.Evidence, Guard: plan.Seed.Guard}
+		pieces := unitLoopPieces{
+			runner:              executor,
+			registry:            registry,
+			model:               plan.Task.Model,
+			providerIdentity:    resumeProviderIdentity,
+			trace:               traceSink,
+			store:               store,
+			policy:              policy.NewStatic(policyConfig, storeApprovals(store)),
+			writePolicy:         resumePolicy.Spec(),
+			recipePolicy:        resumeRecipePolicy.RecipeSpec(recipeIDs(resumeRecipes)),
+			recipeCatalogDigest: resumeRecipes.Digest(),
+			limits:              limits,
+			recovery:            grounding,
+		}
+		chainErr := runWorkUnitChain(ctx, store, taskID, workspacePath, registry, definitions,
+			func(ctx context.Context, unit state.WorkUnit) (workunit.RunResult, error) {
+				// Each unit's own loop counters continue from its persisted
+				// attempt history: the request id namespace must not collide
+				// with the interrupted conversation (duplicate-request
+				// protection is authoritative across restart).
+				unitPieces := pieces
+				unitSeed := *grounding
+				if count, err := store.ProviderAttemptCount(ctx, taskID, unit.WorkUnitID); err != nil {
+					return workunit.RunResult{}, fmt.Errorf("work unit %s counters: %w", unit.WorkUnitID, err)
+				} else if count > 0 {
+					unitSeed.Turns = count
+					unitSeed.Attempts = count
+				}
+				unitPieces.recovery = &unitSeed
+				return runUnitLoop(ctx, unitPieces, taskID, unit)
+			})
+		if chainErr != nil {
+			if errors.Is(chainErr, context.Canceled) {
+				return exitWorkUnitCanceled
+			}
+			fmt.Fprintf(errOut, "resume: work units: %v\n", chainErr)
+			return exitWorkUnitGated
+		}
+	}
 	loop, err := agent.NewLoop(agent.Config{
 		Runner:               executor,
 		Registry:             registry,
