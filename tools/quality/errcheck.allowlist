@@ -37,79 +37,129 @@
 # Best-effort baseline capture: the status result is checked, while a diff
 # failure only degrades the rendered baseline (the loop still runs).
 
+
+# CLI database close on all command paths is best-effort cleanup: the
+# command has already returned (or is about to return) its authoritative
+# result or error, and a close failure after that cannot affect it.
 cmd/runstead/main.go:314  defer store.Close()
 
-cmd/runstead/main.go:1070  defer store.Close()
+cmd/runstead/main.go:1072  defer store.Close()
 
-cmd/runstead/main.go:1169  defer store.Close()
 
-cmd/runstead/resume.go:206  defer store.Close()
+cmd/runstead/main.go:1171  defer store.Close()
 
-internal/agent/loop.go:485  diffText, diffFlag, _ := l.registry.GitDiffText()
+# reviewed site (issue #106)
+internal/agent/loop.go:461  diffText, diffFlag, _ := registry.GitDiffText()
+
 
 
 # decodeAny is deliberately documented as non-failing: an undecodable
 # document leaves the target at its zero value and the authoritative
 # expected after-state hash gates reconciliation separately.
-internal/recovery/recovery.go:752  _ = jsonUnmarshal(raw, value)
+internal/recovery/recovery.go:763  _ = jsonUnmarshal(raw, value)
+
+
+internal/state/tasks.go:38  defer tx.Rollback()
+
+
+internal/state/tasks.go:66  defer tx.Rollback()
+
+
+internal/state/tasks.go:100  defer tx.Rollback()
+
+
+
+# ripgrep is optional: when rg is absent the search falls back through the
+# registry's configured run paths instead of failing at construction.
+internal/tools/registry.go:134  rgPath, _ = lookPath("rg")
+
+
+cmd/runstead/resume.go:206  defer store.Close()
+
 
 internal/state/inspect.go:561  defer rows.Close()
 
+
 internal/state/inspect.go:580  defer rows.Close()
+
 
 internal/state/inspect.go:603  defer rows.Close()
 
+
 internal/state/inspect.go:631  defer rows.Close()
+
 
 internal/state/inspect.go:691  defer rows.Close()
 
+
 internal/state/inspect.go:763  defer rows.Close()
+
 
 internal/state/inspect.go:781  defer rows.Close()
 
+
 internal/state/provider_attempts.go:79  defer tx.Rollback()
+
 
 internal/state/provider_attempts.go:131  defer tx.Rollback()
 
+
 internal/state/recovery.go:90  defer tx.Rollback()
+
 
 internal/state/recovery.go:122  defer tx.Rollback()
 
+
 internal/state/recovery.go:173  defer tx.Rollback()
+
 
 internal/state/recovery.go:281  defer tx.Rollback()
 
+
 internal/state/recovery.go:316  defer tx.Rollback()
+
 
 # Work Unit store/driver cleanup path (#106): the error is
 # secondary to the authoritative error being returned.
 internal/state/recovery.go:504  rows.Close()
 
+
 # Work Unit store/driver cleanup path (#106): the error is
 # secondary to the authoritative error being returned.
 internal/state/recovery.go:510  rows.Close()
+
 
 # Work Unit store/driver cleanup path (#106): the error is
 # secondary to the authoritative error being returned.
 internal/state/recovery.go:517  rows.Close()
 
+
 internal/state/recovery.go:553  defer rows.Close()
+
 
 internal/state/recovery.go:572  defer rows.Close()
 
+
 internal/state/recovery.go:593  defer rows.Close()
+
 
 internal/state/recovery.go:621  defer rows.Close()
 
+
 internal/state/verification.go:89  defer tx.Rollback()
+
 
 internal/state/verification.go:148  defer tx.Rollback()
 
+
 internal/state/verification.go:201  defer tx.Rollback()
+
 
 internal/state/verification.go:255  defer rows.Close()
 
+
 internal/state/verification.go:284  defer rows.Close()
+
 
 
 # Verification evidence rendering is best-effort: an undecodable evidence
@@ -117,53 +167,67 @@ internal/state/verification.go:284  defer rows.Close()
 # NOTE: follow-up review worth doing (evidence parse) outside issue #35.
 internal/state/verification.go:292  _ = json.Unmarshal([]byte(evidenceJSON), &check.Evidence)
 
+
 internal/state/verification.go:310  defer tx.Rollback()
 
+
 internal/state/verification.go:345  defer tx.Rollback()
+
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
 internal/state/workunits.go:212  defer tx.Rollback()
 
+
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
 internal/state/workunits.go:330  defer rows.Close()
+
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
 internal/state/workunits.go:368  defer tx.Rollback()
 
+
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
 internal/state/workunits.go:391  if n, _ := result.RowsAffected(); n != 1 {
+
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
 internal/state/workunits.go:403  if n, _ := result.RowsAffected(); n != 1 {
 
+
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
 internal/state/workunits.go:492  defer tx.Rollback()
+
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
 internal/state/workunits.go:502  rows.Close()
 
+
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
 internal/state/workunits.go:507  rows.Close()
+
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
 internal/state/workunits.go:540  defer rows.Close()
 
+
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
 internal/state/workunits.go:616  defer rows.Close()
 
+
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
 internal/state/workunits.go:640  defer rows.Close()
+
 
 
 # Telemetry timestamp is best-effort: a parse failure yields the zero time.
@@ -171,18 +235,17 @@ internal/state/workunits.go:640  defer rows.Close()
 internal/provider/omniroute/telemetry.go:188  when, _ := time.Parse(time.RFC3339, typed)
 
 
+
 # Process/process-group termination on the cleanup path is best-effort; the
 # function is already returning a real error (or none) to its caller.
 internal/recipe/recipe.go:695  _ = process.Kill()
 
+
 internal/recipe/recipe.go:699  _ = syscall.Kill(-pgid, syscall.SIGTERM)
+
 
 internal/recipe/recipe.go:701  _ = syscall.Kill(-pgid, syscall.SIGKILL)
 
-
-# ripgrep is optional: when rg is absent the search falls back through the
-# registry's configured run paths instead of failing at construction.
-internal/tools/registry.go:125  rgPath, _ = lookPath("rg")
 
 
 # Temporary-file cleanup on the write rollback path is best-effort; the
@@ -190,32 +253,45 @@ internal/tools/registry.go:125  rgPath, _ = lookPath("rg")
 internal/tools/write.go:268  _ = os.Remove(tmpName)
 
 
+
 # Argument extraction inside the executor switch: Execute has already run
 # ValidateArguments above, which extracts and checks the same arguments, so
 # the discarded *tools.Failure is nil by construction at these sites.
 internal/tools/execute.go:35  path, _ := stringArgument(action.Arguments, "path")
 
+
 internal/tools/execute.go:38  path, _ := stringArgument(action.Arguments, "path")
+
 
 internal/tools/execute.go:41  query, _ := stringArgument(action.Arguments, "query")
 
+
 internal/tools/execute.go:42  path, _ := stringArgument(action.Arguments, "path")
+
 
 internal/tools/execute.go:47  path, _ := stringArgument(action.Arguments, "path")
 
+
 internal/tools/execute.go:48  content, _ := stringArgumentAllowEmpty(action.Arguments, "content")
+
 
 internal/tools/execute.go:49  expected, _ := stringArgument(action.Arguments, "expected_before_hash")
 
+
 internal/tools/execute.go:52  path, _ := stringArgument(action.Arguments, "path")
+
 
 internal/tools/execute.go:53  patch, _ := stringArgumentAllowEmpty(action.Arguments, "patch")
 
+
 internal/tools/execute.go:54  expected, _ := stringArgument(action.Arguments, "expected_before_hash")
+
 
 internal/tools/execute.go:57  recipeID, _ := stringArgument(action.Arguments, "recipe")
 
+
 cmd/runstead/scripted.go:23  defer file.Close()
+
 
 
 # Governor cancellation bookkeeping is best-effort: the admission error is
@@ -224,11 +300,14 @@ cmd/runstead/scripted.go:23  defer file.Close()
 internal/governor/execute.go:50  admission.Permit.CancelBeforeStart()
 
 
+
 # HTTP response body close is best-effort cleanup on the request path; the
 # primary error (or the successful response) is already being returned.
 internal/provider/omniroute/client.go:310  defer response.Body.Close()
 
+
 internal/provider/omniroute/client_transport.go:111  response.Body.Close()
+
 
 
 # Google-compatible adapter (#89): the same reviewed best-effort site as the
@@ -239,6 +318,7 @@ internal/provider/omniroute/client_transport.go:111  response.Body.Close()
 internal/provider/googlecompat/client.go:240  defer response.Body.Close()
 
 
+
 # Deferred transaction rollback uses the standard commit-then-rollback
 # idiom: Commit's error is checked explicitly at each site, and the
 # deferred Rollback is a no-op (sql.ErrTxDone) after a successful commit.
@@ -246,29 +326,33 @@ internal/provider/googlecompat/client.go:240  defer response.Body.Close()
 # is already being returned.
 internal/state/actions.go:18  defer tx.Rollback()
 
+
 internal/state/actions.go:57  defer tx.Rollback()
+
 
 internal/state/approval_flow.go:49  defer tx.Rollback()
 
+
 internal/state/migrations.go:104  defer tx.Rollback()
 
-internal/state/tasks.go:31  defer tx.Rollback()
-
-internal/state/tasks.go:59  defer tx.Rollback()
-
-internal/state/tasks.go:93  defer tx.Rollback()
 
 internal/state/tool_attempts.go:21  defer tx.Rollback()
 
+
 internal/state/tool_attempts.go:80  defer tx.Rollback()
+
 
 internal/state/write_policy.go:39  defer tx.Rollback()
 
+
 internal/state/write_policy.go:94  defer tx.Rollback()
+
 
 internal/state/write_policy.go:179  defer tx.Rollback()
 
+
 internal/state/write_reconcile.go:49  defer tx.Rollback()
+
 
 
 # Deferred rows close is best-effort cleanup after iteration: scan errors
@@ -276,17 +360,24 @@ internal/state/write_reconcile.go:49  defer tx.Rollback()
 # on paths whose primary error is already being returned.
 internal/state/approval_flow.go:100  defer rows.Close()
 
+
 internal/state/events.go:43  defer rows.Close()
+
 
 internal/state/governor_state.go:191  defer rows.Close()
 
+
 internal/state/governor_state.go:210  defer rows.Close()
+
 
 internal/state/governor_state.go:229  defer rows.Close()
 
+
 internal/state/governor_state.go:248  defer rows.Close()
 
+
 internal/state/governor_state.go:267  defer rows.Close()
+
 
 
 # Store-open failure paths close the just-created database before
@@ -294,11 +385,15 @@ internal/state/governor_state.go:267  defer rows.Close()
 # secondary to the error being returned.
 internal/state/store.go:155  db.Close()
 
+
 internal/state/store.go:159  db.Close()
+
 
 internal/state/store.go:163  db.Close()
 
+
 internal/state/store.go:167  db.Close()
+
 
 
 # File and temp-file close on read/write paths is best-effort cleanup: the
@@ -307,24 +402,33 @@ internal/state/store.go:167  db.Close()
 # used here and is ignored by convention.
 internal/tools/read_file.go:62  defer file.Close()
 
+
 internal/tools/read_file.go:79  hasher.Write(chunk)
+
 
 internal/tools/search_text.go:293  defer file.Close()
 
+
 internal/tools/write.go:184  defer file.Close()
+
 
 internal/tools/write.go:272  tmp.Close()
 
+
 internal/tools/write.go:276  tmp.Close()
+
 
 internal/tools/write.go:282  tmp.Close()
 
+
 internal/tools/write_file.go:316  defer file.Close()
+
 
 
 # providers.go: closing the providers declarations document is best-effort
 # on a read-only parse path; a close failure cannot affect the parsed result.
 internal/config/providers.go:73  defer file.Close()
+
 
 
 # Compatible adapter response handling (#87/#88): closing the response body
@@ -334,11 +438,15 @@ internal/config/providers.go:73  defer file.Close()
 # the opaque location hash.
 internal/provider/anthropiccompat/client.go:259  defer response.Body.Close()
 
+
 internal/provider/anthropiccompat/client.go:268  body, _ := io.ReadAll(io.LimitReader(response.Body, int64(c.maxResponse)+1))
+
 
 internal/provider/openaicompat/client.go:226  defer response.Body.Close()
 
+
 internal/provider/openaicompat/client.go:235  body, _ := io.ReadAll(io.LimitReader(response.Body, int64(c.maxResponse)+1))
+
 
 
 # Operational profile state paths (#91): rows/tx cleanup follows the same
@@ -347,14 +455,20 @@ internal/provider/openaicompat/client.go:235  body, _ := io.ReadAll(io.LimitRead
 # authoritative error, and rows.Err() is checked before the final close.
 internal/state/profiles.go:38  defer rows.Close()
 
+
 internal/state/profiles.go:173  defer tx.Rollback()
+
 
 internal/state/profiles.go:200  profileRows.Close()
 
+
 internal/state/profiles.go:205  profileRows.Close()
+
 
 internal/state/profiles.go:210  profileRows.Close()
 
+
 internal/state/profiles.go:215  profileRows.Close()
+
 
 internal/state/profiles.go:218  profileRows.Close()
