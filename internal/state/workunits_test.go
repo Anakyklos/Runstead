@@ -279,22 +279,19 @@ func TestWorkUnitsEvidenceRefsDerivedFromTaggedRows(t *testing.T) {
 	unit := mustWorkUnit(t, store, WorkUnitCreate{TaskID: wuTaskID, WorkUnitID: "wu-1", Objective: "x"})
 
 	actionID, err := store.RecordAction(ctx, ActionRecord{
-		TaskID: wuTaskID, Tool: "read_file", Arguments: []byte(`{"path":"a.txt"}`),
+		TaskID:     wuTaskID,
+		WorkUnitID: unit.WorkUnitID,
+		Tool:       "read_file", Arguments: []byte(`{"path":"a.txt"}`),
 		Fingerprint: "fp-1",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	executionID, err := store.PrepareToolAttempt(ctx, ToolAttemptPrepared{
-		TaskID: wuTaskID, ActionID: actionID, Tool: "read_file", Arguments: []byte(`{"path":"a.txt"}`),
+		TaskID: wuTaskID, WorkUnitID: unit.WorkUnitID, ActionID: actionID,
+		Tool: "read_file", Arguments: []byte(`{"path":"a.txt"}`),
 	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	// Tag the attempt row as belonging to wu-1 (the loop threads this field in
-	// production; here we simulate the persisted provenance directly).
-	if _, err := store.db.ExecContext(ctx,
-		`UPDATE tool_attempts SET work_unit_id = ? WHERE execution_id = ?`, unit.WorkUnitID, executionID); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CompleteToolAttempt(ctx, ToolAttemptCompleted{
@@ -318,6 +315,21 @@ func TestWorkUnitsEvidenceRefsDerivedFromTaggedRows(t *testing.T) {
 	}
 	if len(completed.EvidenceRefs) != 1 || completed.EvidenceRefs[0] != "obs-000001" {
 		t.Fatalf("evidence refs = %v, want [obs-000001]", completed.EvidenceRefs)
+	}
+
+	// The provenance rows themselves carry the unit id (production-style
+	// threading through the record structs, never manual SQL mutation).
+	var actionUnit, attemptUnit string
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT work_unit_id FROM actions WHERE action_id = ?`, actionID).Scan(&actionUnit); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT work_unit_id FROM tool_attempts WHERE execution_id = ?`, executionID).Scan(&attemptUnit); err != nil {
+		t.Fatal(err)
+	}
+	if actionUnit != unit.WorkUnitID || attemptUnit != unit.WorkUnitID {
+		t.Fatalf("provenance = action %q attempt %q, want %q", actionUnit, attemptUnit, unit.WorkUnitID)
 	}
 }
 
@@ -385,5 +397,50 @@ func completeUnit(t *testing.T, store *Store, id string) {
 	}
 	if err := store.TransitionWorkUnit(ctx, wuTaskID, id, "running", "completed", ""); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestFinalizeTaskGatedByOpenWorkUnits proves the authoritative completion
+// boundary: a task with persisted open Work Units can NEVER be finalized as
+// 'completed', and once every unit is completed the same finalize succeeds
+// (issue #106 review).
+func TestFinalizeTaskGatedByOpenWorkUnits(t *testing.T) {
+	store := openTestStore(t)
+	mustWorkUnitTask(t, store, wuTaskID)
+	ctx := context.Background()
+	mustWorkUnit(t, store, WorkUnitCreate{TaskID: wuTaskID, WorkUnitID: "wu-open", Objective: "x"})
+	bringTo(t, store, "wu-open", "running") // interrupted mid-run
+	mustPassVerification(t, store, wuTaskID)
+	if err := store.FinalizeTask(ctx, TaskFinalize{TaskID: wuTaskID, Outcome: "completed", StopReason: "done"}); !errors.Is(err, ErrOpenWorkUnitsBlockFinalize) {
+		t.Fatalf("FinalizeTask with open work unit error = %v, want ErrOpenWorkUnitsBlockFinalize", err)
+	}
+	status, err := store.TaskStatus(ctx, wuTaskID)
+	if err != nil || status != "running" {
+		t.Fatalf("task status = %q, %v; must stay running", status, err)
+	}
+
+	// Resolve the open unit; the same finalize now succeeds.
+	if err := store.TransitionWorkUnit(ctx, wuTaskID, "wu-open", "running", "completed", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinalizeTask(ctx, TaskFinalize{TaskID: wuTaskID, Outcome: "completed", StopReason: "done"}); err != nil {
+		t.Fatalf("FinalizeTask after all units completed: %v", err)
+	}
+	status, _ = store.TaskStatus(ctx, wuTaskID)
+	if status != "completed" {
+		t.Fatalf("task status after finalize = %q, want completed", status)
+	}
+
+	// A task WITHOUT any work unit is unaffected.
+	store2 := openTestStore(t)
+	if err := store2.CreateTask(ctx, TaskRecord{TaskID: "plain", Objective: "x", Workspace: "/ws"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store2.StartTask(ctx, "plain"); err != nil {
+		t.Fatal(err)
+	}
+	mustPassVerification(t, store2, "plain")
+	if err := store2.FinalizeTask(ctx, TaskFinalize{TaskID: "plain", Outcome: "completed", StopReason: "done"}); err != nil {
+		t.Fatalf("plain task finalize: %v", err)
 	}
 }

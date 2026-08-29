@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/RenyEnnos/Runstead/internal/agent"
+
+	_ "modernc.org/sqlite"
 )
 
 // workUnitsFileFor writes the operator Work Unit definitions for the e2e
@@ -51,8 +54,9 @@ func TestWorkUnitRunSerialExecutesBothUnitsThenParent(t *testing.T) {
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"b.txt"}}</runstead_action>`,
 		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"parent done","evidence":[{"evidence_id":"obs-000003","tool":"read_file"}]}</runstead_final>`,
 	)
+	stateDir := t.TempDir()
 	var out, errOut strings.Builder
-	code := run(context.Background(), withStateDir(t, []string{
+	code := run(context.Background(), []string{
 		"run", "--task", "complete the parent task",
 		"--workspace", workspace,
 		"--scripted", script,
@@ -60,13 +64,65 @@ func TestWorkUnitRunSerialExecutesBothUnitsThenParent(t *testing.T) {
 		"--acceptance", acceptanceFor(t, "a.txt"),
 		"--min-start-interval", "1ms",
 		"--log-level", "error",
-	}), &out, &errOut)
+		"--state-dir", stateDir,
+	}, &out, &errOut)
 	if code != agent.OutcomeCompleted.ExitCode() {
 		t.Fatalf("run exit = %d, want 0\nstderr:\n%s\nstdout:\n%s", code, errOut.String(), out.String())
 	}
 	if !strings.Contains(out.String(), "outcome: completed") {
 		t.Fatalf("stdout missing completion:\n%s", out.String())
 	}
+	// Production-style provenance through the REAL loop: every action, tool
+	// attempt and verification row carries its owning unit, and a completed
+	// unit's evidence refs come from the rows the unit itself produced.
+	taskID := mustTaskID(t, out.String())
+	store := openWorkUnitStore(t, stateDir)
+	ctx := context.Background()
+	wuA, err := store.GetWorkUnit(ctx, taskID, "wu-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wuB, err := store.GetWorkUnit(ctx, taskID, "wu-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wuA.EvidenceRefs) != 1 || wuA.EvidenceRefs[0] != "obs-000001" {
+		t.Fatalf("wu-a evidence refs = %v, want [obs-000001] (from the unit's own rows)", wuA.EvidenceRefs)
+	}
+	if len(wuB.EvidenceRefs) != 1 || wuB.EvidenceRefs[0] != "obs-000002" {
+		t.Fatalf("wu-b evidence refs = %v, want [obs-000002]", wuB.EvidenceRefs)
+	}
+	var actionUnit, attemptUnit, verificationUnit string
+	db, dbErr := sql.Open("sqlite", filepath.Join(stateDir, "runstead.db"))
+	if dbErr != nil {
+		t.Fatal(dbErr)
+	}
+	defer db.Close()
+	if err := db.QueryRow(`SELECT work_unit_id FROM actions ORDER BY created_at LIMIT 1`).Scan(&actionUnit); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT work_unit_id FROM tool_attempts ORDER BY created_at LIMIT 1`).Scan(&attemptUnit); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT work_unit_id FROM verification_attempts ORDER BY sequence LIMIT 1`).Scan(&verificationUnit); err != nil {
+		t.Fatal(err)
+	}
+	if actionUnit != "wu-a" || attemptUnit != "wu-a" || verificationUnit != "wu-a" {
+		t.Fatalf("provenance = action %q attempt %q verification %q, want wu-a/wu-a/wu-a", actionUnit, attemptUnit, verificationUnit)
+	}
+}
+
+// mustTaskID extracts the task id from the run stdout ("task: <id>").
+func mustTaskID(t *testing.T, output string) string {
+	t.Helper()
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "task: ") {
+			return strings.TrimPrefix(line, "task: ")
+		}
+	}
+	t.Fatalf("no task id in output:\n%s", output)
+	return ""
 }
 
 // TestWorkUnitRecoveryWithNewConversation is the central recovery gate

@@ -58,6 +58,97 @@ func TestValidateEnvelopeEscalation(t *testing.T) {
 	}
 }
 
+// TestValidateEnvelopeEmptyToolsDoesNotShortCircuitScope proves an empty
+// tool list is a VALID fail-closed envelope (no tools) that must never
+// bypass workspace containment (issue #106 review).
+func TestValidateEnvelopeEmptyToolsDoesNotShortCircuitScope(t *testing.T) {
+	driver, _ := newDriver(t, "wu-task")
+	if err := driver.ValidateEnvelope(nil, "/workspace/inside"); err != nil {
+		t.Fatalf("empty tools with contained scope rejected: %v", err)
+	}
+	if err := driver.ValidateEnvelope(nil, "/other"); !errors.Is(err, ErrCapabilityEscalation) {
+		t.Fatalf("empty tools must NOT short-circuit an out-of-parent scope; err = %v", err)
+	}
+	if err := driver.ValidateEnvelope([]string{}, "/other"); !errors.Is(err, ErrCapabilityEscalation) {
+		t.Fatalf("explicit empty tool list must NOT short-circuit an out-of-parent scope; err = %v", err)
+	}
+}
+
+// TestEnsureDefinitionsDriftFailsClosed proves a re-supplied Work Unit id
+// with a materially different definition is rejected instead of silently
+// skipped (issue #106 review).
+func TestEnsureDefinitionsDriftFailsClosed(t *testing.T) {
+	driver, _ := newDriver(t, "wu-task")
+	ctx := context.Background()
+	created, _, err := driver.EnsureDefinitions(ctx, []Definition{
+		{WorkUnitID: "wu-1", Objective: "original", Tools: []string{"read_file"}, WorkspaceScope: "/workspace"},
+	})
+	if err != nil || created != 1 {
+		t.Fatalf("EnsureDefinitions() = %d, %v", created, err)
+	}
+	// Identical re-supply stays idempotent.
+	created, skipped, err := driver.EnsureDefinitions(ctx, []Definition{
+		{WorkUnitID: "wu-1", Objective: "original", Tools: []string{"read_file"}, WorkspaceScope: "/workspace"},
+	})
+	if err != nil || created != 0 || skipped != 1 {
+		t.Fatalf("identical re-supply = %d/%d, %v", created, skipped, err)
+	}
+	for _, drifted := range []Definition{
+		{WorkUnitID: "wu-1", Objective: "changed"},
+		{WorkUnitID: "wu-1", Objective: "original", Tools: []string{"read_file", "list_files"}},
+		{WorkUnitID: "wu-1", Objective: "original", Tools: []string{"read_file"}, WorkspaceScope: "/workspace/other"},
+		{WorkUnitID: "wu-1", Objective: "original", Tools: []string{"read_file"}, ProviderBudget: 9},
+	} {
+		if _, _, err := driver.EnsureDefinitions(ctx, []Definition{drifted}); !errors.Is(err, ErrWorkUnitDefinitionDrift) {
+			t.Fatalf("drift %+v error = %v, want ErrWorkUnitDefinitionDrift", drifted, err)
+		}
+	}
+}
+
+// TestEnsureDefinitionsDAGOrderIndependent proves a valid dependency graph
+// is created regardless of the JSON file ordering, and a cycle fails the
+// whole call (issue #106 review; no scheduler/concurrency added).
+func TestEnsureDefinitionsDAGOrderIndependent(t *testing.T) {
+	driver, _ := newDriver(t, "wu-task")
+	ctx := context.Background()
+	// Deliberately reverse-ordered input: dependents first.
+	created, _, err := driver.EnsureDefinitions(ctx, []Definition{
+		{WorkUnitID: "wu-3", Objective: "third", Dependencies: []string{"wu-2"}},
+		{WorkUnitID: "wu-2", Objective: "second", Dependencies: []string{"wu-1"}},
+		{WorkUnitID: "wu-1", Objective: "first"},
+	})
+	if err != nil || created != 3 {
+		t.Fatalf("reverse-ordered EnsureDefinitions() = %d, %v", created, err)
+	}
+	units, err := driver.Store.ListWorkUnits(ctx, "wu-task")
+	if err != nil || len(units) != 3 {
+		t.Fatalf("ListWorkUnits() = %v, %v", units, err)
+	}
+	byID := map[string]state.WorkUnit{}
+	for _, unit := range units {
+		byID[unit.WorkUnitID] = unit
+	}
+	if got := byID["wu-3"].Dependencies; len(got) != 1 || got[0] != "wu-2" {
+		t.Fatalf("wu-3 dependencies = %v", got)
+	}
+	if got := byID["wu-2"].Dependencies; len(got) != 1 || got[0] != "wu-1" {
+		t.Fatalf("wu-2 dependencies = %v", got)
+	}
+
+	// A cycle across the definitions fails before any creation.
+	cycleDriver, cycleStore := newDriver(t, "wu-cycle")
+	t.Cleanup(func() { cycleStore.Close() })
+	if _, _, err := cycleDriver.EnsureDefinitions(ctx, []Definition{
+		{WorkUnitID: "c-a", Objective: "a", Dependencies: []string{"c-b"}},
+		{WorkUnitID: "c-b", Objective: "b", Dependencies: []string{"c-a"}},
+	}); err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("cycle error = %v, want cycle failure", err)
+	}
+	if got, _ := cycleStore.ListWorkUnits(ctx, "wu-cycle"); len(got) != 0 {
+		t.Fatalf("cycle must create nothing, got %v", got)
+	}
+}
+
 // TestDriverSerialDependencyOrder proves multiple units execute in dependency
 // order, strictly one at a time, through a real store (issue #106 test
 // classes 2/6).
