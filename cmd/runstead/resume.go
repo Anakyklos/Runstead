@@ -608,12 +608,19 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 				// Each unit's own loop counters continue from its persisted
 				// attempt history: the request id namespace must not collide
 				// with the interrupted conversation (duplicate-request
-				// protection is authoritative across restart).
+				// protection is authoritative across restart). The counters
+				// are ALWAYS taken from the unit's own history, including
+				// zero: a unit that never dispatched before restart must not
+				// inherit a sibling's/task-level turn/attempt counters or its
+				// budgets could be exhausted before its first dispatch. The
+				// value counts persisted governor attempts; governor retries
+				// inflate but never undercount, keeping request ids unique
+				// and budgets conservative.
 				unitPieces := pieces
 				unitSeed := *plan.Seed
 				if count, err := store.ProviderAttemptCount(ctx, taskID, unit.WorkUnitID); err != nil {
 					return workunit.RunResult{}, fmt.Errorf("work unit %s counters: %w", unit.WorkUnitID, err)
-				} else if count > 0 {
+				} else {
 					unitSeed.Turns = count
 					unitSeed.Attempts = count
 				}

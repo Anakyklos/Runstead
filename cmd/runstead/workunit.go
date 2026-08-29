@@ -126,9 +126,15 @@ func runUnitLoop(ctx context.Context, pieces unitLoopPieces, taskID string, unit
 	// correction) BEFORE any action record, policy decision or effect, and
 	// the registry refuses to execute them as a second line of defense.
 	// WorkspaceScope bounds every tool to a sub-root of the task workspace.
-	// An empty tool list is a valid fail-closed envelope (no tools at all).
+	//
+	// Tool-list semantics (single intentional contract, aligned with
+	// spec.md/docs/tests): OMITTED tools (nil) mean the task default surface
+	// (no restriction); EXPLICITLY EMPTY tools ([]) mean a fail-closed
+	// no-tools envelope. A scope restriction without an explicit tool list
+	// is fail-closed as well: declaring a boundary but no tools never grants
+	// the full parent surface implicitly.
 	registry := pieces.registry
-	if len(unit.Tools) > 0 || strings.TrimSpace(unit.WorkspaceScope) != "" {
+	if unit.Tools != nil || strings.TrimSpace(unit.WorkspaceScope) != "" {
 		restricted, err := pieces.registry.Restricted(unit.Tools, unit.WorkspaceScope)
 		if err != nil {
 			return workunit.RunResult{}, fmt.Errorf("work unit %s capability envelope: %w", unit.WorkUnitID, err)
