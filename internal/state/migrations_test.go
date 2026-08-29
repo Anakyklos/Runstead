@@ -424,7 +424,7 @@ func TestMigrationsOperationalProfilesTableAdditiveAndPreserving(t *testing.T) {
 		t.Fatal(err)
 	}
 	if version != 13 {
-		t.Fatalf("schema version = %d, want 13", version)
+		t.Fatalf("schema version = %d, want 14", version)
 	}
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM provider_operational_profiles`).Scan(&count); err != nil {
@@ -436,7 +436,7 @@ func TestMigrationsOperationalProfilesTableAdditiveAndPreserving(t *testing.T) {
 	}
 	version, _ = schemaVersion(db)
 	if version != 13 {
-		t.Fatalf("schema version after re-run = %d, want 13", version)
+		t.Fatalf("schema version after re-run = %d, want 14", version)
 	}
 	// The historical provider identity columns still exist and accept the
 	// #14 projection shape (additive migration, no historical table altered).
