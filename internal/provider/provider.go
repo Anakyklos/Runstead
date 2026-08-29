@@ -214,10 +214,14 @@ type ResponseMetadata struct {
 	// "openaicompat-http"). Empty only when the record was never populated.
 	Transport string
 
-	// FirstTokenLatency is the latency from request start to the first
-	// observed response byte, when the adapter's transport observation
-	// proves it. Zero means not measured, never a claim of instant arrival.
-	FirstTokenLatency time.Duration
+	// FirstByteLatency is the latency from request start to the first
+	// observed response byte (HTTP response-header arrival), when the
+	// adapter's transport observation proves it. Zero means not measured,
+	// never a claim of instant arrival. First-TOKEN latency is never
+	// claimed: the non-streaming lane cannot observe a model token
+	// separately from the body, so any such number would be a guess (#39
+	// maintainer review).
+	FirstByteLatency time.Duration
 
 	// RetryCount is the number of retries this attempt represents. The
 	// protected lane has no retries outside the governor (#92): every
