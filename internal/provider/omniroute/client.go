@@ -344,7 +344,7 @@ func responseText(body []byte) (string, *Error) {
 	return text, nil
 }
 
-func responseMetadata(response *http.Response, duration, firstTokenLatency time.Duration, endpoint, model string, now time.Time) provider.ResponseMetadata {
+func responseMetadata(response *http.Response, duration, firstByteLatency time.Duration, endpoint, model string, now time.Time) provider.ResponseMetadata {
 	metadata := baseMetadata()
 	metadata.StatusCode = response.StatusCode
 	metadata.RequestID = sanitizeOpaque(response.Header.Get(requestIDHeader))
@@ -352,7 +352,7 @@ func responseMetadata(response *http.Response, duration, firstTokenLatency time.
 	// opaque session/connection identity may ever appear here (#39).
 	metadata.SessionID = hashOpaque(response.Header.Get(sessionIDHeader))
 	metadata.Duration = duration
-	metadata.FirstTokenLatency = firstTokenLatency
+	metadata.FirstByteLatency = firstByteLatency
 	metadata.RetryAfter = parseRetryAfter(response.Header.Get("Retry-After"), now)
 	metadata.ResetAt = parseResetAt(response.Header.Get("X-RateLimit-Reset"))
 	metadata.Endpoint = logicalEndpoint(endpoint)

@@ -103,7 +103,7 @@ func (c *Client) completeOnce(ctx context.Context, request provider.Request) (pr
 		return provider.Response{Metadata: metadata}, &Error{Kind: ErrorTransport, UpstreamReached: true}
 	}
 	observation.markResponseStarted()
-	metadata := responseMetadata(response, c.now().Sub(started), observation.firstTokenLatency(started), requestURL, model, c.now())
+	metadata := responseMetadata(response, c.now().Sub(started), observation.firstByteLatency(started), requestURL, model, c.now())
 	metadata.DeliveryState = provider.DeliveryResponseStarted
 	if rawReceipts := response.Header.Get(attemptReceiptHeader); rawReceipts != "" {
 		set, receiptErr := provider.DecodeAttemptReceiptSet([]byte(rawReceipts))
@@ -117,6 +117,7 @@ func (c *Client) completeOnce(ctx context.Context, request provider.Request) (pr
 	result := provider.Response{Metadata: metadata}
 	if readErr != nil {
 		result.Metadata.DeliveryState = observation.stateAfterBody(false)
+		result.Metadata.Duration = c.now().Sub(started)
 		if errors.Is(readErr, errResponseTooLarge) {
 			return result, &Error{Kind: ErrorResponseTooLarge, StatusCode: metadata.StatusCode, RequestID: metadata.RequestID, UpstreamReached: true}
 		}
@@ -124,16 +125,19 @@ func (c *Client) completeOnce(ctx context.Context, request provider.Request) (pr
 	}
 	if metadata.StatusCode < http.StatusOK || metadata.StatusCode >= http.StatusMultipleChoices {
 		result.Metadata.DeliveryState = observation.stateAfterBody(true)
+		result.Metadata.Duration = c.now().Sub(started)
 		return result, httpError(metadata, responseBody)
 	}
 	result.Metadata.DeliveryState = observation.stateAfterBody(true)
 	text, parseErr := responseText(responseBody)
 	if parseErr != nil {
+		result.Metadata.Duration = c.now().Sub(started)
 		parseErr.StatusCode = metadata.StatusCode
 		parseErr.RequestID = metadata.RequestID
 		parseErr.UpstreamReached = true
 		return result, parseErr
 	}
 	result.Text = text
+	result.Metadata.Duration = c.now().Sub(started)
 	return result, nil
 }

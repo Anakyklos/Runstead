@@ -38,8 +38,9 @@ func (o *deliveryObservation) trace() *httptrace.ClientTrace {
 	}
 }
 
-// recordFirstResponseByte keeps the first observed byte time: the first-token
-// latency may never be guessed, so only the first proven observation counts.
+// recordFirstResponseByte keeps the first observed byte time: the
+// first-byte latency may never be guessed, so only the first proven
+// observation counts.
 func (o *deliveryObservation) recordFirstResponseByte() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -49,9 +50,10 @@ func (o *deliveryObservation) recordFirstResponseByte() {
 	o.responseStarted = true
 }
 
-// firstTokenLatency returns the proven started-to-first-byte delta, or zero
-// when no first byte was observed.
-func (o *deliveryObservation) firstTokenLatency(started time.Time) time.Duration {
+// firstByteLatency returns the proven started-to-first-byte delta, or zero
+// when no first byte was observed. The latency is the HTTP response-header
+// arrival, never a model-token claim (#39 maintainer review).
+func (o *deliveryObservation) firstByteLatency(started time.Time) time.Duration {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.firstByteAt.IsZero() {

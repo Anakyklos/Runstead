@@ -13,12 +13,12 @@ type telemetryProbeClient struct{}
 
 func (c *telemetryProbeClient) Complete(_ context.Context, _ provider.Request) (provider.Response, error) {
 	return provider.Response{Text: "ok", Metadata: provider.ResponseMetadata{
-		AdapterVersion:    provider.CompatAdapterVersion,
-		Transport:         "test-http",
-		StatusCode:        200,
-		Duration:          12 * time.Millisecond,
-		FirstTokenLatency: 3 * time.Millisecond,
-		DeliveryState:     provider.DeliveryCompleted,
+		AdapterVersion:   provider.CompatAdapterVersion,
+		Transport:        "test-http",
+		StatusCode:       200,
+		Duration:         12 * time.Millisecond,
+		FirstByteLatency: 3 * time.Millisecond,
+		DeliveryState:    provider.DeliveryCompleted,
 	}}, nil
 }
 
@@ -51,8 +51,8 @@ func TestExecuteEventCarriesAttemptMetadata(t *testing.T) {
 		if event.AttemptMetadata.Transport != "test-http" {
 			t.Fatalf("AttemptMetadata.Transport = %q, want test-http", event.AttemptMetadata.Transport)
 		}
-		if event.AttemptMetadata.FirstTokenLatency != 3*time.Millisecond {
-			t.Fatalf("AttemptMetadata.FirstTokenLatency = %v, want 3ms", event.AttemptMetadata.FirstTokenLatency)
+		if event.AttemptMetadata.FirstByteLatency != 3*time.Millisecond {
+			t.Fatalf("AttemptMetadata.FirstByteLatency = %v, want 3ms", event.AttemptMetadata.FirstByteLatency)
 		}
 		if event.AttemptMetadata.DeliveryState != provider.DeliveryCompleted {
 			t.Fatalf("AttemptMetadata.DeliveryState = %v, want completed", event.AttemptMetadata.DeliveryState)
@@ -84,7 +84,7 @@ func TestRefusedExecutionNeverFabricatesAttemptMetadata(t *testing.T) {
 			continue
 		}
 		if event.AttemptMetadata.AdapterVersion != "" || event.AttemptMetadata.Transport != "" ||
-			event.AttemptMetadata.FirstTokenLatency != 0 || event.AttemptMetadata.RetryCount != 0 ||
+			event.AttemptMetadata.FirstByteLatency != 0 || event.AttemptMetadata.RetryCount != 0 ||
 			event.AttemptMetadata.Fallback || event.AttemptMetadata.UsageEstimated {
 			t.Fatalf("refused attempt fabricated metadata: %#v", event.AttemptMetadata)
 		}
@@ -95,7 +95,7 @@ func TestRefusedExecutionNeverFabricatesAttemptMetadata(t *testing.T) {
 // new Outcome field.
 func TestOutcomeCarriesMetadataZeroByDefault(t *testing.T) {
 	var outcome policy.Outcome
-	if outcome.Metadata.AdapterVersion != "" || outcome.Metadata.Transport != "" || outcome.Metadata.FirstTokenLatency != 0 {
+	if outcome.Metadata.AdapterVersion != "" || outcome.Metadata.Transport != "" || outcome.Metadata.FirstByteLatency != 0 {
 		t.Fatalf("zero outcome metadata = %+v, want empty", outcome.Metadata)
 	}
 }

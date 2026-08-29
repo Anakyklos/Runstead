@@ -211,5 +211,5 @@ Bounded governor-owned retry execution is documented in [`docs/retry.md`](docs/r
 Passive conservative operational envelope learning from typed provider
 evidence is documented in [`docs/learning.md`](docs/learning.md). Sanitized
 per-attempt request telemetry (adapter version, transport, session
-fingerprint, first-token latency and the protected-lane zero fields) is
+fingerprint, first-byte latency and the protected-lane zero fields) is
 documented in [`docs/telemetry.md`](docs/telemetry.md).

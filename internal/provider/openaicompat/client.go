@@ -225,7 +225,7 @@ func (c *Client) Complete(ctx context.Context, request provider.Request) (provid
 	}
 	defer response.Body.Close()
 	observation.markResponseStarted()
-	metadata := c.responseMetadata(response, c.now().Sub(started), observation.firstTokenLatency(started), endpointURL)
+	metadata := c.responseMetadata(response, c.now().Sub(started), observation.firstByteLatency(started), endpointURL)
 	metadata.DeliveryState = provider.DeliveryResponseStarted
 
 	// A 3xx is refused instead of followed: a second physical request can only
@@ -242,6 +242,7 @@ func (c *Client) Complete(ctx context.Context, request provider.Request) (provid
 	if readErr != nil {
 		state := observation.stateAfterBody(false)
 		metadata.DeliveryState = state
+		metadata.Duration = c.now().Sub(started)
 		kind := ErrorTransport
 		if errors.Is(readErr, errResponseTooLarge) {
 			kind = ErrorResponseTooLarge
@@ -251,12 +252,14 @@ func (c *Client) Complete(ctx context.Context, request provider.Request) (provid
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		metadata.DeliveryState = provider.DeliveryCompleted
+		metadata.Duration = c.now().Sub(started)
 		return provider.Response{Metadata: metadata}, httpError(metadata, response.StatusCode)
 	}
 
 	text, parseErr := decodeChatCompletionResponse(body)
 	if parseErr != nil {
 		metadata.DeliveryState = provider.DeliveryCompleted
+		metadata.Duration = c.now().Sub(started)
 		var adapterErr *Error
 		if errors.As(parseErr, &adapterErr) {
 			adapterErr.StatusCode = response.StatusCode
@@ -268,6 +271,7 @@ func (c *Client) Complete(ctx context.Context, request provider.Request) (provid
 	}
 
 	metadata.DeliveryState = provider.DeliveryCompleted
+	metadata.Duration = c.now().Sub(started)
 	return provider.Response{Text: text, Metadata: metadata}, nil
 }
 
@@ -282,12 +286,12 @@ func (c *Client) baseMetadata() provider.ResponseMetadata {
 	}
 }
 
-func (c *Client) responseMetadata(response *http.Response, duration, firstTokenLatency time.Duration, endpointURL string) provider.ResponseMetadata {
+func (c *Client) responseMetadata(response *http.Response, duration, firstByteLatency time.Duration, endpointURL string) provider.ResponseMetadata {
 	metadata := c.baseMetadata()
 	metadata.StatusCode = response.StatusCode
 	metadata.RequestID = hashOpaque(response.Header.Get("X-Request-Id"))
 	metadata.Duration = duration
-	metadata.FirstTokenLatency = firstTokenLatency
+	metadata.FirstByteLatency = firstByteLatency
 	metadata.RetryAfter = parseRetryAfter(response.Header.Get("Retry-After"), c.now())
 	metadata.Endpoint = logicalEndpoint(endpointURL)
 	metadata.Model = c.resolved.Model
