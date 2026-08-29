@@ -132,3 +132,59 @@ func TestPreDispatchRefusalStillStampsIdentityAndKeepsLatencyZero(t *testing.T) 
 		t.Fatalf("FirstByteLatency = %v, want 0 (nothing observed)", response.Metadata.FirstByteLatency)
 	}
 }
+
+// TestRedirectBodyGatedTotalsDuration proves the #39 maintainer follow-up:
+// a refused 3xx reads its body before returning unsafeRedirectError, so
+// Duration must include the body wait, not stop at header arrival.
+func TestRedirectBodyGatedTotalsDuration(t *testing.T) {
+	clock := &gatedClock{current: time.Unix(1700000000, 0)}
+	entered := make(chan struct{})
+	headersGate := make(chan struct{})
+	headersSent := make(chan struct{})
+	bodyGate := make(chan struct{})
+	recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-headersGate
+		w.Header().Set("Location", "/elsewhere")
+		w.WriteHeader(http.StatusFound)
+		// HTTP/1.1 defers the header flush to the first body write, so the
+		// flush is explicit: the client observes the 3xx headers only after
+		// this gate opens.
+		w.(http.Flusher).Flush()
+		close(headersSent)
+		<-bodyGate
+		_, _ = w.Write([]byte("redirect body"))
+	})
+	resolved := resolvedForBase(t, recorder.server.URL)
+	client, err := anthropiccompat.New(resolved, nil, anthropiccompat.Options{Now: clock.now})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+	done := make(chan struct{})
+	var response provider.Response
+	go func() {
+		response, _ = client.Complete(context.Background(), provider.Request{Prompt: "hi", Model: "model-a"})
+		close(done)
+	}()
+	<-entered
+	clock.advance(20 * time.Millisecond) // 3xx headers gate
+	close(headersGate)
+	<-headersSent
+	// Let the transport parse the flushed headers before advancing: without
+	// the Duration fix the value is read at Do-return, so this biases the
+	// regression test to fail on the unfixed code. With the fix the clock is
+	// read only after the body gate, so the green result is deterministic.
+	time.Sleep(50 * time.Millisecond)
+	clock.advance(20 * time.Millisecond) // 3xx body gate: body lands at +40ms
+	close(bodyGate)
+	<-done
+	if response.Metadata.DeliveryState != provider.DeliveryCompleted {
+		t.Fatalf("DeliveryState = %v, want completed (redirect body fully read)", response.Metadata.DeliveryState)
+	}
+	if response.Metadata.FirstByteLatency < 20*time.Millisecond || response.Metadata.FirstByteLatency > 40*time.Millisecond {
+		t.Fatalf("FirstByteLatency = %v, want within [20ms, 40ms]", response.Metadata.FirstByteLatency)
+	}
+	if response.Metadata.Duration != 40*time.Millisecond {
+		t.Fatalf("Duration = %v, want 40ms (redirect body consumption included)", response.Metadata.Duration)
+	}
+}

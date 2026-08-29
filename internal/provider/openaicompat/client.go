@@ -235,6 +235,7 @@ func (c *Client) Complete(ctx context.Context, request provider.Request) (provid
 		body, _ := io.ReadAll(io.LimitReader(response.Body, int64(c.maxResponse)+1))
 		readComplete := len(body) <= c.maxResponse
 		metadata.DeliveryState = observation.stateAfterBody(readComplete)
+		metadata.Duration = c.now().Sub(started)
 		return provider.Response{Metadata: metadata}, unsafeRedirectError(metadata, statusCode, locationHash)
 	}
 
