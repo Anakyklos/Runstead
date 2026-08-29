@@ -101,6 +101,14 @@ type Options struct {
 	// (current/needs-refresh/unverified-current). Empty leaves them
 	// unverified-current.
 	CurrentWorkspaceSignature string
+	// WorkspaceSignature optionally observes the CURRENT workspace
+	// signature through the same bounded marker the loop records on
+	// accepted actions (agent.WorkspaceSignature in the CLI wiring). The
+	// observation belongs to the caller/workspace-capable layer; the
+	// compiler stays pure. When nil, or when the observation fails, the
+	// signature is treated as unavailable and workspace facts render as
+	// unverified-current (never guessed).
+	WorkspaceSignature func(ctx context.Context, workspace string) (string, error)
 	// Blocked is an optional callback over the restored account governor
 	// reporting whether automatic continuation is currently blocked by
 	// account-protection policy. When it reports blocked, the pipeline
@@ -308,7 +316,16 @@ func Resume(ctx context.Context, store *state.Store, options Options) (*Plan, er
 	// authoritative snapshot. Mandatory content that does not fit the budget
 	// fails the resume closed BEFORE any provider dispatch; no truncated
 	// projection is ever presented to the model.
-	contextOptions := []InputOption{WithCurrentWorkspaceSignature(options.CurrentWorkspaceSignature)}
+	currentSignature := options.CurrentWorkspaceSignature
+	if currentSignature == "" && options.WorkspaceSignature != nil && snapshot.Task.Workspace != "" {
+		observed, signatureErr := options.WorkspaceSignature(ctx, snapshot.Task.Workspace)
+		if signatureErr == nil {
+			currentSignature = observed
+		}
+		// An observation error leaves the signature unavailable: workspace
+		// facts render as unverified-current instead of being guessed.
+	}
+	contextOptions := []InputOption{WithCurrentWorkspaceSignature(currentSignature)}
 	if options.PendingApprovals != nil {
 		approvals, approvalErr := options.PendingApprovals(ctx, options.TaskID)
 		if approvalErr != nil {

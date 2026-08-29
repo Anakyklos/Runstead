@@ -90,3 +90,11 @@ description: "Task list for the evidence-preserving context compiler (#51)"
 - No new Go dependency; no migration; no SQL inside `internal/context`.
 - Every task ends with `go test` for the touched packages green.
 - The `recovery.Budget` alias keeps existing callers (`recovery.Resume`, CLI resume path) compiling unchanged.
+---
+
+## Maintainer review fixes (PR #105, all completed)
+
+- [x] R01 [US2] Emit typed `FactAttempt` facts for every `snapshot.ToolAttempts` and `snapshot.ProviderAttempts` (execution id origin, action/tool/provider identity, status/outcome, evidence id relation, client request id); tests: `TestFactAttemptsForToolAndProviderAttempts`, strengthened `TestProvenanceComplete`.
+- [x] R02 [US4] Emit typed `FactWorkspace` facts (origin, recorded `Signature`, `Freshness` current/needs-refresh/unverified-current) so render and `Compiled.Authoritative` share one authority boundary; tests: `TestFactWorkspaceStructural`.
+- [x] R03 [US3] Fix `renderCompiled` omission algorithm: record only the failing line and genuinely-not-selected lines after it, each once; tests: `TestOmittedNeverContainsRenderedNorDuplicates`, `TestOmittedDiscardedItemsAppearExactlyOnce`.
+- [x] R04 [US4] Feed the current workspace signature through the real resume path (`agent.WorkspaceSignature` exported helper; `recovery.Options.WorkspaceSignature` observer wired by `cmd/runstead/resume.go`; compiler stays pure); integration test `TestResumeContextWorkspaceFreshnessThroughRealPipeline` proves current/needs-refresh/unverified-current across `recovery.Resume` with real signatures.

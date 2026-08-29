@@ -120,14 +120,16 @@ func renderCompiled(model model, budget Budget) (string, []OmittedItem, error) {
 		for _, line := range sec.pinned {
 			builder.write(line)
 		}
-		for _, line := range sec.degradable {
+		for index, line := range sec.degradable {
 			if !builder.tryWrite(line.text) {
+				// The failing line is recorded once, and only the lines
+				// genuinely after it (never selected) are recorded, each
+				// exactly once: rendered lines and duplicates never appear
+				// in Diagnostics.Omitted (issue #51 review).
 				if line.id != "" {
 					omitted = append(omitted, OmittedItem{Kind: sec.kind, ID: line.id})
 				}
-				// Deterministic stop: once a line does not fit, nothing
-				// after it is selected either.
-				for _, rest := range sec.degradable {
+				for _, rest := range sec.degradable[index+1:] {
 					if rest.id != "" {
 						omitted = append(omitted, OmittedItem{Kind: sec.kind, ID: rest.id})
 					}

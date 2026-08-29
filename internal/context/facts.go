@@ -74,6 +74,7 @@ func selectAcceptance(snapshot *state.RecoverySnapshot) acceptanceState {
 type workspaceFacts struct {
 	pinned string
 	detail []degradableLine
+	facts  []Fact
 }
 
 // selectWorkspaceFacts derives unique recorded workspace signatures from
@@ -90,6 +91,7 @@ func selectWorkspaceFacts(snapshot *state.RecoverySnapshot, current string) work
 	if len(seen) == 0 {
 		return workspaceFacts{pinned: "workspace signatures: none recorded"}
 	}
+	facts := make([]Fact, 0, len(seen))
 	signatures := make([]string, 0, len(seen))
 	for signature := range seen {
 		signatures = append(signatures, signature)
@@ -102,10 +104,18 @@ func selectWorkspaceFacts(snapshot *state.RecoverySnapshot, current string) work
 		parts = append(parts, fmt.Sprintf("%s(%s)", signature, freshness))
 		line := fmt.Sprintf("signature %s: %d action(s) recorded under this workspace state", signature, seen[signature])
 		detail = append(detail, degradableLine{text: line, id: signature})
+		facts = append(facts, Fact{
+			Kind:      FactWorkspace,
+			Origin:    "workspace-signature:" + signature,
+			Value:     fmt.Sprintf("%d recorded action(s)", seen[signature]),
+			Signature: signature,
+			Freshness: freshness,
+		})
 	}
 	return workspaceFacts{
 		pinned: "workspace signatures: " + strings.Join(parts, ", "),
 		detail: detail,
+		facts:  facts,
 	}
 }
 
@@ -208,6 +218,23 @@ func extract(input Input, budget Budget) model {
 		})
 	}
 	sections = append(sections, actionSection)
+
+	// Concrete attempts: typed authoritative facts preserving the
+	// action -> attempt -> result/evidence relation (issue #51 review).
+	for _, attempt := range snapshot.ToolAttempts {
+		value := fmt.Sprintf("tool %s action %s status %s", attempt.Tool, attempt.ActionID, attempt.Status)
+		if attempt.EvidenceID != "" {
+			value += " evidence " + attempt.EvidenceID
+		}
+		facts = append(facts, Fact{Kind: FactAttempt, Origin: attempt.ExecutionID, Value: value})
+	}
+	for _, attempt := range snapshot.ProviderAttempts {
+		value := fmt.Sprintf("provider outcome %s", attempt.Outcome)
+		if attempt.ClientRequestID != "" {
+			value = fmt.Sprintf("provider request %s outcome %s", attempt.ClientRequestID, attempt.Outcome)
+		}
+		facts = append(facts, Fact{Kind: FactAttempt, Origin: attempt.ExecutionID, Value: value})
+	}
 
 	// Failures: all failure IDs pinned; detail degradable (capped).
 	failures := selectFailures(snapshot)
@@ -316,8 +343,10 @@ func extract(input Input, budget Budget) model {
 	}
 	sections = append(sections, verificationSection)
 
-	// Workspace facts.
+	// Workspace facts: the typed facts and the render share the same
+	// authority boundary (issue #51 review).
 	workspace := selectWorkspaceFacts(snapshot, input.CurrentWorkspaceSignature)
+	facts = append(facts, workspace.facts...)
 	sections = append(sections, section{kind: FactWorkspace, pinned: []string{workspace.pinned}, degradable: workspace.detail})
 
 	// Non-authoritative section: the marker is pinned; notes degrade by byte

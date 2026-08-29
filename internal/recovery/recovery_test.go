@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -971,5 +972,84 @@ func TestResumeContextBudgetExhaustionFailsClosed(t *testing.T) {
 	})
 	if err == nil || !recovery.IsBudgetExhausted(err) {
 		t.Fatalf("Resume() error = %v, want context budget exhaustion before dispatch", err)
+	}
+}
+
+// TestResumeContextWorkspaceFreshnessThroughRealPipeline proves the current
+// workspace signature reaches the compiled context through the real
+// recovery/resume path (recovery.Resume with the same bounded marker the loop
+// records on accepted actions):
+//
+//   - recorded == current signature -> "current";
+//   - recorded != current signature -> "needs_refresh";
+//   - no signature available (nil observer) -> "unverified_current".
+//
+// The assertions read the rendered projection from the actual resume seed,
+// not from a direct Compiler.Compile call.
+func TestResumeContextWorkspaceFreshnessThroughRealPipeline(t *testing.T) {
+	ctx := context.Background()
+	ws := t.TempDir()
+	if err := os.WriteFile(ws+"/a.txt", []byte("alpha\n"), 0o644); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+	recorded, err := agent.WorkspaceSignature(ctx, ws)
+	if err != nil {
+		t.Fatalf("WorkspaceSignature(): %v", err)
+	}
+
+	newStore := func(t *testing.T) *state.Store {
+		t.Helper()
+		store := openStore(t)
+		if err := store.CreateTask(ctx, state.TaskRecord{
+			TaskID: fixtureTask, Objective: "inspect the workspace", Workspace: ws, Model: "scripted",
+			ConfigJSON: []byte(`{"max_steps":24}`),
+		}); err != nil {
+			t.Fatalf("CreateTask(): %v", err)
+		}
+		if err := store.StartTask(ctx, fixtureTask); err != nil {
+			t.Fatalf("StartTask(): %v", err)
+		}
+		mustAction(t, store, fixtureTask, "read_file", `{"path":"a.txt"}`, "fp-read-a", recorded)
+		return store
+	}
+
+	// Case 1: the workspace is unchanged, so the observed signature equals
+	// the recorded one.
+	storeCurrent := newStore(t)
+	plan, err := recovery.Resume(ctx, storeCurrent, recovery.Options{
+		TaskID:             fixtureTask,
+		WorkspaceSignature: agent.WorkspaceSignature,
+	})
+	if err != nil {
+		t.Fatalf("Resume (current): %v", err)
+	}
+	if !strings.Contains(plan.Seed.Context, recorded+"(current)") {
+		t.Fatalf("current classification missing %q:\n%s", recorded+"(current)", plan.Seed.Context)
+	}
+
+	// Case 2: modify the workspace AFTER the signature was recorded.
+	if err := os.WriteFile(ws+"/a.txt", []byte("alpha\nchanged\n"), 0o644); err != nil {
+		t.Fatalf("modify workspace file: %v", err)
+	}
+	storeChanged := newStore(t)
+	plan, err = recovery.Resume(ctx, storeChanged, recovery.Options{
+		TaskID:             fixtureTask,
+		WorkspaceSignature: agent.WorkspaceSignature,
+	})
+	if err != nil {
+		t.Fatalf("Resume (needs_refresh): %v", err)
+	}
+	if !strings.Contains(plan.Seed.Context, recorded+"(needs_refresh)") {
+		t.Fatalf("needs_refresh classification missing %q:\n%s", recorded+"(needs_refresh)", plan.Seed.Context)
+	}
+
+	// Case 3: the signature is genuinely unavailable (no observer wired).
+	storeUnavailable := newStore(t)
+	plan, err = recovery.Resume(ctx, storeUnavailable, recovery.Options{TaskID: fixtureTask})
+	if err != nil {
+		t.Fatalf("Resume (unverified): %v", err)
+	}
+	if !strings.Contains(plan.Seed.Context, recorded+"(unverified_current)") {
+		t.Fatalf("unverified_current classification missing %q:\n%s", recorded+"(unverified_current)", plan.Seed.Context)
 	}
 }

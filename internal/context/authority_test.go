@@ -32,20 +32,57 @@ func TestNonAuthoritativeIsolation(t *testing.T) {
 }
 
 // TestProvenanceComplete proves every authoritative fact carries a non-empty
-// origin tracing it to persisted state or environment evidence.
+// origin tracing it to persisted state or environment evidence, and that the
+// required structural kinds (objective, actions, attempts, evidence,
+// workspace) are actually present with their provenance identities.
 func TestProvenanceComplete(t *testing.T) {
 	compiled := compileOK(t, Input{
-		Snapshot: testSnapshot(),
-		PendingApprovals: []state.PendingApproval{
-			{ActionID: "action-000002", Tool: "write_file", Fingerprint: "fp-1"},
-		},
+		Snapshot:                  testSnapshot(),
+		PendingApprovals:          []state.PendingApproval{{ActionID: "action-000002", Tool: "write_file", Fingerprint: "fp-1"}},
+		CurrentWorkspaceSignature: "sig-a",
 	})
 	if len(compiled.Authoritative) == 0 {
 		t.Fatal("no authoritative facts compiled")
 	}
+	byKind := make(map[FactKind][]Fact)
 	for _, fact := range compiled.Authoritative {
 		if strings.TrimSpace(fact.Origin) == "" {
 			t.Fatalf("authoritative fact without provenance: %+v", fact)
+		}
+		byKind[fact.Kind] = append(byKind[fact.Kind], fact)
+	}
+	// Required structural kinds with their provenance identities.
+	if len(byKind[FactObjective]) != 1 || byKind[FactObjective][0].Origin != "task-1" {
+		t.Fatalf("objective facts = %+v, want one with origin task-1", byKind[FactObjective])
+	}
+	if len(byKind[FactAction]) != 3 {
+		t.Fatalf("action facts = %d, want 3", len(byKind[FactAction]))
+	}
+	for _, origin := range []string{"action-000001", "action-000002", "action-000003"} {
+		if _, ok := factsByOrigin(t, compiled, FactAction)[origin]; !ok {
+			t.Fatalf("action fact %q missing", origin)
+		}
+	}
+	if len(byKind[FactAttempt]) != 5 {
+		t.Fatalf("attempt facts = %d, want 5 (3 tool + 2 provider)", len(byKind[FactAttempt]))
+	}
+	for _, origin := range []string{"exec-000001", "exec-000002", "exec-000003", "prov-000001", "prov-000002"} {
+		if _, ok := factsByOrigin(t, compiled, FactAttempt)[origin]; !ok {
+			t.Fatalf("attempt fact %q missing", origin)
+		}
+	}
+	for _, origin := range []string{"obs-000001", "obs-000002"} {
+		if _, ok := factsByOrigin(t, compiled, FactEvidence)[origin]; !ok {
+			t.Fatalf("evidence fact %q missing", origin)
+		}
+	}
+	workspaces := factsByOrigin(t, compiled, FactWorkspace)
+	if len(workspaces) != 2 {
+		t.Fatalf("workspace facts = %d, want 2", len(workspaces))
+	}
+	for _, fact := range workspaces {
+		if fact.Signature == "" || (fact.Freshness != FreshnessCurrent && fact.Freshness != FreshnessNeedsRefresh && fact.Freshness != FreshnessUnverifiedCurrent) {
+			t.Fatalf("workspace fact lacks signature/freshness: %+v", fact)
 		}
 	}
 }
