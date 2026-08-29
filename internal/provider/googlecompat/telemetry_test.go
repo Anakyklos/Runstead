@@ -3,6 +3,7 @@ package googlecompat_test
 import (
 	"context"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,8 +29,8 @@ func TestResponseMetadataTelemetryOnSuccess(t *testing.T) {
 	if response.Metadata.Transport != "googlecompat-http" {
 		t.Fatalf("Transport = %q, want googlecompat-http", response.Metadata.Transport)
 	}
-	if response.Metadata.FirstTokenLatency < 0 {
-		t.Fatalf("FirstTokenLatency = %v, want >= 0", response.Metadata.FirstTokenLatency)
+	if response.Metadata.FirstByteLatency < 0 {
+		t.Fatalf("FirstByteLatency = %v, want >= 0", response.Metadata.FirstByteLatency)
 	}
 	if response.Metadata.RetryCount != 0 || response.Metadata.Fallback || response.Metadata.UsageEstimated {
 		t.Fatalf("protected lane telemetry nonzero: retry=%d fallback=%v usage_estimated=%v",
@@ -37,21 +38,51 @@ func TestResponseMetadataTelemetryOnSuccess(t *testing.T) {
 	}
 }
 
-// TestFirstTokenLatencyUsesInjectedClock proves FirstTokenLatency equals the
-// proven started-to-first-byte delta under the deterministic injected clock.
-func TestFirstTokenLatencyUsesInjectedClock(t *testing.T) {
-	current := time.Unix(1700000000, 0)
-	clock := func() time.Time { return current }
+// gatedClock is an injected adapter clock that the test advances between the
+// header and body gates. The transport readLoop reads it concurrently, so
+// access is mutex-protected (deterministic values come from the channel
+// gates; the mutex only orders the reads).
+type gatedClock struct {
+	mu      sync.Mutex
+	current time.Time
+}
+
+func (c *gatedClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.current
+}
+
+func (c *gatedClock) advance(delta time.Duration) {
+	c.mu.Lock()
+	c.current = c.current.Add(delta)
+	c.mu.Unlock()
+}
+
+// TestFirstByteLatencyAndTotalDurationAreHeaderAndBodyGated proves the #39
+// maintainer-review semantics: FirstByteLatency reflects only the HTTP
+// response-header arrival (never a guessed model-token latency), and
+// Duration covers the whole attempt including body consumption.
+func TestFirstByteLatencyAndTotalDurationAreHeaderAndBodyGated(t *testing.T) {
+	clock := &gatedClock{current: time.Unix(1700000000, 0)}
 	entered := make(chan struct{})
-	firstByteGate := make(chan struct{})
+	headersGate := make(chan struct{})
+	headersSent := make(chan struct{})
+	bodyGate := make(chan struct{})
 	recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
 		close(entered)
-		<-firstByteGate
+		<-headersGate
 		w.WriteHeader(http.StatusOK)
+		// HTTP/1.1 defers the header flush to the first body write, so the
+		// flush is explicit: the client observes the header event only after
+		// this gate opens.
+		w.(http.Flusher).Flush()
+		close(headersSent)
+		<-bodyGate
 		_, _ = w.Write([]byte(validGenerateBody))
 	})
 	resolved := resolvedForBase(t, recorder.server.URL)
-	client, err := googlecompat.New(resolved, nil, googlecompat.Options{Now: clock})
+	client, err := googlecompat.New(resolved, nil, googlecompat.Options{Now: clock.now})
 	if err != nil {
 		t.Fatalf("new adapter: %v", err)
 	}
@@ -62,11 +93,20 @@ func TestFirstTokenLatencyUsesInjectedClock(t *testing.T) {
 		close(done)
 	}()
 	<-entered
-	current = current.Add(50 * time.Millisecond)
-	close(firstByteGate)
+	clock.advance(20 * time.Millisecond) // headers gate: earliest header arrival
+	close(headersGate)
+	<-headersSent
+	clock.advance(20 * time.Millisecond) // body gate: body lands at +40ms
+	close(bodyGate)
 	<-done
-	if response.Metadata.FirstTokenLatency != 50*time.Millisecond {
-		t.Fatalf("FirstTokenLatency = %v, want 50ms", response.Metadata.FirstTokenLatency)
+	if response.Metadata.FirstByteLatency < 20*time.Millisecond || response.Metadata.FirstByteLatency > 40*time.Millisecond {
+		t.Fatalf("FirstByteLatency = %v, want within [20ms, 40ms] (header-gated arrival)", response.Metadata.FirstByteLatency)
+	}
+	if response.Metadata.Duration != 40*time.Millisecond {
+		t.Fatalf("Duration = %v, want 40ms (includes body consumption)", response.Metadata.Duration)
+	}
+	if response.Metadata.Duration < response.Metadata.FirstByteLatency {
+		t.Fatalf("Duration %v precedes FirstByteLatency %v", response.Metadata.Duration, response.Metadata.FirstByteLatency)
 	}
 }
 
@@ -88,7 +128,7 @@ func TestPreDispatchRefusalStillStampsIdentityAndKeepsLatencyZero(t *testing.T) 
 	if response.Metadata.Transport != "googlecompat-http" {
 		t.Fatalf("Transport = %q, want googlecompat-http", response.Metadata.Transport)
 	}
-	if response.Metadata.FirstTokenLatency != 0 {
-		t.Fatalf("FirstTokenLatency = %v, want 0 (nothing observed)", response.Metadata.FirstTokenLatency)
+	if response.Metadata.FirstByteLatency != 0 {
+		t.Fatalf("FirstByteLatency = %v, want 0 (nothing observed)", response.Metadata.FirstByteLatency)
 	}
 }
