@@ -204,6 +204,8 @@ proves the deterministic #12 core.
 
 Not implemented here: generic shell, automatic git commit/push, deploy,
 network tools, first-party ChatGPT Web connector, browser automation, the M8
-context compiler, Work Units, multi-agent, capability-package frameworks,
-automatic model routing, self-improvement, the full #13 chaos suite and the
-#35 CI overhaul.
+context compiler (implemented separately in #51, see
+`docs/architecture.md`), Work Units (Stage A implemented separately in
+#106; Stage B concurrency stays deferred), multi-agent,
+capability-package frameworks, automatic model routing, self-improvement,
+the full #13 chaos suite and the #35 CI overhaul.

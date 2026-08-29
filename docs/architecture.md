@@ -365,6 +365,53 @@ signature is supplied by the pipeline when known; otherwise workspace facts
 render as unverified-current. Context compaction of long conversations
 remains deferred to the plugin/composable-provider tracks.
 
+## Work Units (issue #106)
+
+Work Units are operator-defined, durable subtasks of one task, executed
+**serially** (Stage A) by the same governed agent loop. Stage B
+(concurrency/delegation) is explicitly out of scope.
+
+`runstead run --workunits FILE` (and `runstead resume --workunits FILE`)
+loads a strict JSON definition file (`work_unit_id`, `objective`,
+`dependencies`, optional tool/workspace/budget limits, per-unit acceptance
+plan). `internal/workunit.Driver` owns the unit lifecycle:
+
+- **Capability containment** — each unit's enabled tools, workspace scope
+  and budgets are validated against the parent envelope before anything runs
+  (`ValidateEnvelope`); a unit can never grant more than its parent owns.
+- **Dependency order** — `work_unit_dependencies` edges are validated
+  acyclically at creation (deterministic DFS); `ReadyWorkUnits` exposes only
+  units whose dependencies are completed/failed, so the chain makes progress
+  serially without a scheduler.
+- **Durable lifecycle** — `created -> ready -> running -> completed | failed
+  | blocked | uncertain`, with `blocked -> ready` after operator decision and
+  `running -> ready` as the interrupted-run recovery transition. The unit
+  row, its evidence refs and its provenance-tagged actions/attempts live in
+  SQLite (`work_units`, `work_unit_dependencies`, `work_unit_id` columns on
+  `actions`, `tool_attempts`, `provider_attempts`, `verification_attempts`).
+- **Verification-gated completion** — a unit completes only when its own
+  acceptance plan passes (the driver reads the latest verification attempt
+  for the unit). A model summary is never enough: completion is
+  evidence-backed per unit, and the parent loop only proceeds after the
+  chain gate is closed.
+- **Unit-scoped execution** — each unit runs through `agent.NewLoop` with
+  its own objective and budgets but the same durable task row. Unit loops
+  carry `SkipTaskFinalize`: they never finalize the shared task; the parent
+  loop owns task finalization. Client request ids are namespaced per unit
+  (`task-workunit-turn`) so the governor's duplicate-request protection
+  never conflates unit attempts.
+- **Recovery without replay** — interruption leaves the interrupted unit
+  `running`; `recovery.Resume` resets it to `ready` before building the
+  context. The resumed conversation re-runs only the interrupted unit: its
+  loop counters continue from the unit's persisted attempt history (so
+  request ids never collide with the interrupted session) and the evidence
+  seed grounds finals against completed historical observations without
+  re-executing them. Completed units, their rows and their effects are never
+  replayed.
+
+`runstead inspect` renders a "Work Units:" section (unit id, status, scope)
+derived from the durable rows.
+
 ## Verification
 
 Model statements are not evidence.
