@@ -268,6 +268,7 @@ func (p *Permit) Finish(outcome Outcome) FinishResult {
 		BudgetsAfter:     g.budgetLocked(g.clock.Now(), p.request.TaskID),
 		Telemetry:        g.telemetrySummaryLocked(),
 		TelemetryHealthy: p.telemetryHealthy,
+		AttemptMetadata:  outcome.Metadata,
 	})
 	return result
 }
@@ -460,6 +461,7 @@ func (p *Permit) FinishWithAttemptReceipts(outcome Outcome, set *provider.Attemp
 		BudgetsAfter:     g.budgetLocked(g.clock.Now(), p.request.TaskID),
 		Telemetry:        g.telemetrySummaryLocked(),
 		TelemetryHealthy: p.telemetryHealthy,
+		AttemptMetadata:  outcome.Metadata,
 	})
 	return result
 }

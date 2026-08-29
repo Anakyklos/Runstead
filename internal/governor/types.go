@@ -368,6 +368,10 @@ type Outcome struct {
 	ResetAt         time.Time
 	UpstreamReached bool
 	DeliveryState   provider.DeliveryState
+	// Metadata is the sanitized provider response metadata of the classified
+	// attempt (#39). It is copied by Execute after classification and flows
+	// into emitted events; it never gates execution or accounting.
+	Metadata provider.ResponseMetadata
 }
 
 func effectiveDeliveryState(state provider.DeliveryState) provider.DeliveryState {
@@ -541,6 +545,11 @@ type Event struct {
 	CircuitReason         OutcomeClass
 	TelemetryHealthy      bool
 	GatewayContractHealth *provider.GatewayContractHealthResult
+	// AttemptMetadata is the sanitized provider response metadata of the
+	// classified attempt (#39). Paths where no classified outcome exists
+	// (cancel-before-start, receipt-protection failures) leave it zero
+	// rather than inventing evidence.
+	AttemptMetadata provider.ResponseMetadata
 }
 
 type EventSink interface {

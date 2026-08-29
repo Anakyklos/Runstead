@@ -106,6 +106,7 @@ func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client p
 	}
 	outcome := classifier(response, callErr)
 	outcome.DeliveryState = response.Metadata.DeliveryState
+	outcome.Metadata = response.Metadata
 	outcome = applyDeliveryEvidence(outcome)
 	var completion FinishResult
 	if receiptAware {
