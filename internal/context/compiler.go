@@ -109,38 +109,35 @@ func renderCompiled(model model, budget Budget) (string, []OmittedItem, error) {
 		return "", nil, fmt.Errorf("mandatory content requires %d bytes, budget is %d", required, budget.MaxContextBytes)
 	}
 
-	// Byte accounting is single-charge and all-pinned-first: the builder
-	// starts with the full budget, pass 1 writes every pinned line (they fit
-	// by the preflight above; write() is unconditional for pinned lines), so
-	// the degradable capacity is exactly budget - required. Pass 2 selects
-	// degradable lines in deterministic section order under the remaining
-	// budget (issue #51 review: no 2*required charge, output always <=
-	// MaxContextBytes).
+	// Single-charge byte accounting that preserves the semantic SECTION
+	// ORDER (issue #51 review, round 3): every section writes its pinned
+	// lines first, and a degradable line is admitted only when it fits IN
+	// ADDITION TO all pinned bytes of the sections that still follow
+	// (futurePinned reservation). This keeps every authoritative section
+	// (and its degradable details) before the final NON-AUTHORITATIVE
+	// marker, keeps the output <= MaxContextBytes, and leaves the exact
+	// degradable capacity at budget - required.
 	builder := newDeterministicBuilder(budget.MaxContextBytes)
+	futurePinned := required
+	var omitted []OmittedItem
 	for _, sec := range model.sections {
 		for _, line := range sec.pinned {
 			builder.write(line)
+			futurePinned -= len(line) + 1
 		}
-	}
-
-	var omitted []OmittedItem
-	for _, sec := range model.sections {
-		for index, line := range sec.degradable {
-			if !builder.tryWrite(line.text) {
-				// The failing line is recorded once, and only the lines
-				// genuinely after it (never selected) are recorded, each
-				// exactly once: rendered lines and duplicates never appear
-				// in Diagnostics.Omitted (issue #51 review).
+		for _, line := range sec.degradable {
+			need := len(line.text) + 1
+			if need > builder.remaining-futurePinned {
+				// The line cannot be admitted without endangering a future
+				// mandatory section. Record it (and only it) as omitted;
+				// each line is checked independently, so a shorter later
+				// line can still be admitted truthfully.
 				if line.id != "" {
 					omitted = append(omitted, OmittedItem{Kind: sec.kind, ID: line.id})
 				}
-				for _, rest := range sec.degradable[index+1:] {
-					if rest.id != "" {
-						omitted = append(omitted, OmittedItem{Kind: sec.kind, ID: rest.id})
-					}
-				}
-				break
+				continue
 			}
+			builder.write(line.text)
 		}
 	}
 	return builder.String(), omitted, nil

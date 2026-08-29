@@ -290,3 +290,47 @@ func TestBudgetBoundarySingleDegradableLineExactFit(t *testing.T) {
 		t.Fatalf("omission count for %q = %d, want exactly 1", target.id, count)
 	}
 }
+
+// TestNonAuthoritativeBoundaryInRender proves the semantic section order is
+// preserved in the rendered model-facing text (issue #51 review, round 3):
+// every authoritative degradable detail appears BEFORE the NON-AUTHORITATIVE
+// marker, and only the non-authoritative notes appear after it.
+func TestNonAuthoritativeBoundaryInRender(t *testing.T) {
+	compiled := compileOK(t, Input{
+		Snapshot:              testSnapshot(),
+		NonAuthoritativeNotes: []string{"note-1: a model hypothesis"},
+	})
+	text := compiled.Text()
+	marker := "NON-AUTHORITATIVE"
+	// The authority preamble also mentions the boundary; the SECTION marker
+	// is the last occurrence and must terminate the authoritative material.
+	markerIndex := strings.LastIndex(text, marker)
+	if markerIndex < 0 {
+		t.Fatalf("NON-AUTHORITATIVE marker missing:\n%s", text)
+	}
+	before := text[:markerIndex]
+	after := text[markerIndex:]
+	// Authoritative degradable material must precede the marker.
+	for _, want := range []string{
+		"evidence obs-000001:",
+		"action action-000001:",
+		"attempt exec-000001:",
+		"failure exec-000002:",
+		"execution prov-000002",
+		"verification ver-000002:",
+		"signature sig-a:",
+	} {
+		if !strings.Contains(before, want) {
+			t.Fatalf("authoritative degradable detail %q appears after the NON-AUTHORITATIVE marker:\n%s", want, text)
+		}
+	}
+	// Only non-authoritative notes follow the marker.
+	if !strings.Contains(after, "note-1: a model hypothesis") {
+		t.Fatalf("non-authoritative note missing after the marker:\n%s", text)
+	}
+	for _, forbidden := range []string{"evidence obs-000001:", "attempt exec-000001:", "signature sig-a:"} {
+		if strings.Contains(after, forbidden) {
+			t.Fatalf("authoritative detail %q appears AFTER the NON-AUTHORITATIVE marker:\n%s", forbidden, text)
+		}
+	}
+}
