@@ -14,7 +14,7 @@ type telemetryProbeClient struct{}
 func (c *telemetryProbeClient) Complete(_ context.Context, _ provider.Request) (provider.Response, error) {
 	return provider.Response{Text: "ok", Metadata: provider.ResponseMetadata{
 		AdapterVersion:    provider.CompatAdapterVersion,
-		Transport:         "openaicompat-http",
+		Transport:         "test-http",
 		StatusCode:        200,
 		Duration:          12 * time.Millisecond,
 		FirstTokenLatency: 3 * time.Millisecond,
@@ -48,8 +48,8 @@ func TestExecuteEventCarriesAttemptMetadata(t *testing.T) {
 		if event.AttemptMetadata.AdapterVersion != provider.CompatAdapterVersion {
 			t.Fatalf("AttemptMetadata.AdapterVersion = %q, want %q", event.AttemptMetadata.AdapterVersion, provider.CompatAdapterVersion)
 		}
-		if event.AttemptMetadata.Transport != "openaicompat-http" {
-			t.Fatalf("AttemptMetadata.Transport = %q, want openaicompat-http", event.AttemptMetadata.Transport)
+		if event.AttemptMetadata.Transport != "test-http" {
+			t.Fatalf("AttemptMetadata.Transport = %q, want test-http", event.AttemptMetadata.Transport)
 		}
 		if event.AttemptMetadata.FirstTokenLatency != 3*time.Millisecond {
 			t.Fatalf("AttemptMetadata.FirstTokenLatency = %v, want 3ms", event.AttemptMetadata.FirstTokenLatency)
