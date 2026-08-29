@@ -1,6 +1,6 @@
 # Minimal Request Telemetry Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Extend the provider-neutral sanitized `provider.ResponseMetadata` with a small typed request-telemetry surface (`AdapterVersion`, `Transport`, `FirstTokenLatency`, retry/fallback zero-fields, `UsageEstimated`, session-fingerprint semantics) and surface it through governor attempt events and trace output, without storing or rendering any sensitive content.
 
@@ -37,7 +37,7 @@
 - `compat.AdapterVersion` is redefined as an alias of `provider.CompatAdapterVersion`; its existing callers (`cmd/runstead/main.go:343`, `cmd/runstead/resume.go:302`) keep compiling unchanged.
 - Consumes: nothing new.
 
-- [ ] **Step 1: Write the failing provider telemetry contract tests**
+- [x] **Step 1: Write the failing provider telemetry contract tests**
 
 Create `internal/provider/telemetry_test.go`:
 
@@ -109,12 +109,12 @@ func isFingerprint(value string) bool {
 }
 ```
 
-- [ ] **Step 2: Run the test and verify the expected missing-symbol failure**
+- [x] **Step 2: Run the test and verify the expected missing-symbol failure**
 
 Run: `go test ./internal/provider -run 'TestResponseMetadataTelemetryZeroValue|TestCompatAdapterVersionIsCanonical|TestSessionIDIsSanitizedFingerprint' -count=1`
 Expected: FAIL to compile (`CompatAdapterVersion` undefined).
 
-- [ ] **Step 3: Implement the canonical constant and fields**
+- [x] **Step 3: Implement the canonical constant and fields**
 
 In `internal/provider/provider.go`, add the version constant near the top-level contract types:
 
@@ -187,12 +187,12 @@ In `internal/provider/compat/compat.go`, replace the constant definition with th
 const AdapterVersion = provider.CompatAdapterVersion
 ```
 
-- [ ] **Step 4: Run the test and verify it passes**
+- [x] **Step 4: Run the test and verify it passes**
 
 Run: `go test ./internal/provider -run 'TestResponseMetadataTelemetryZeroValue|TestCompatAdapterVersionIsCanonical|TestSessionIDIsSanitizedFingerprint' -count=1` and `go test ./internal/provider/... ./cmd/runstead -run 'TestNonexistent' -count=1` (compile check: `compat.AdapterVersion` alias must keep `cmd/runstead` building).
 Expected: PASS and clean compile.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/provider/provider.go internal/provider/compat/compat.go internal/provider/telemetry_test.go
@@ -212,7 +212,7 @@ git commit -m "feat(provider): add sanitized request telemetry contract to metad
 - Consumes: `provider.CompatAdapterVersion`, new `ResponseMetadata` fields (Task 1).
 - Produces: const `transportID = "openaicompat-http"`; method `(*Client).baseMetadata() provider.ResponseMetadata`; `responseMetadata(response *http.Response, duration, firstTokenLatency time.Duration, endpointURL string) provider.ResponseMetadata`; `(*deliveryObservation).firstTokenLatency(started time.Time) time.Duration`.
 
-- [ ] **Step 1: Write the failing adapter telemetry tests**
+- [x] **Step 1: Write the failing adapter telemetry tests**
 
 Create `internal/provider/openaicompat/telemetry_test.go`:
 
@@ -311,12 +311,12 @@ func TestPreDispatchRefusalStillStampsIdentityAndKeepsLatencyZero(t *testing.T) 
 }
 ```
 
-- [ ] **Step 2: Run the tests and verify the expected failures**
+- [x] **Step 2: Run the tests and verify the expected failures**
 
 Run: `go test ./internal/provider/openaicompat -run 'TestResponseMetadataTelemetry|TestFirstTokenLatency|TestPreDispatchRefusal' -count=1`
 Expected: FAIL (`response.Metadata.AdapterVersion` does not exist).
 
-- [ ] **Step 3: Implement first-byte observation in delivery.go**
+- [x] **Step 3: Implement first-byte observation in delivery.go**
 
 Modify `internal/provider/openaicompat/delivery.go`:
 
@@ -409,7 +409,7 @@ func (o *deliveryObservation) stateAfterBody(readComplete bool) provider.Deliver
 }
 ```
 
-- [ ] **Step 4: Implement stamping and latency wiring in client.go**
+- [x] **Step 4: Implement stamping and latency wiring in client.go**
 
 In `internal/provider/openaicompat/client.go`:
 
@@ -485,12 +485,12 @@ func (c *Client) responseMetadata(response *http.Response, duration, firstTokenL
 
 Update any other callers of `responseMetadata` found in the package (including tests) to the new signature.
 
-- [ ] **Step 5: Run the tests and verify they pass**
+- [x] **Step 5: Run the tests and verify they pass**
 
 Run: `go test ./internal/provider/openaicompat -count=1`
 Expected: PASS (all existing and new tests).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/provider/openaicompat/client.go internal/provider/openaicompat/delivery.go internal/provider/openaicompat/telemetry_test.go
@@ -510,7 +510,7 @@ git commit -m "feat(provider): stamp telemetry identity and first-token latency 
 - Consumes: Task 1 fields; the Anthropic adapter's existing `deliveryObservation`, `responseMetadata`, `notSent` and `Complete` mirror the OpenAI-compatible shapes (same file layout, same `httptrace` pattern, verified in `internal/provider/anthropiccompat/delivery.go`).
 - Produces: const `transportID = "anthropiccompat-http"`; the same `baseMetadata`, observation latency and `responseMetadata` surfacing as Task 2, adapted to the Anthropic file layout.
 
-- [ ] **Step 1: Write the failing adapter telemetry tests**
+- [x] **Step 1: Write the failing adapter telemetry tests**
 
 Create `internal/provider/anthropiccompat/telemetry_test.go` (same shape as Task 2, with these differences: transport `"anthropiccompat-http"`, success body `validMessagesBody`, and the success-path handler does not need `X-Request-Id`):
 
@@ -601,25 +601,25 @@ func TestPreDispatchRefusalStillStampsIdentityAndKeepsLatencyZero(t *testing.T) 
 }
 ```
 
-- [ ] **Step 2: Run the tests and verify the expected failures**
+- [x] **Step 2: Run the tests and verify the expected failures**
 
 Run: `go test ./internal/provider/anthropiccompat -run 'TestResponseMetadataTelemetry|TestFirstTokenLatency|TestPreDispatchRefusal' -count=1`
 Expected: FAIL (fields do not exist).
 
-- [ ] **Step 3: Implement observation latency in delivery.go**
+- [x] **Step 3: Implement observation latency in delivery.go**
 
 Apply the Task 2 Step 3 changes to `internal/provider/anthropiccompat/delivery.go`: add `firstByteAt time.Time` and `now func() time.Time` to `deliveryObservation`, `recordFirstResponseByte` (via `GotFirstResponseByte`), `firstTokenLatency(started time.Time) time.Duration` with the same zero/negative guards, and wire `now` from the client clock at the observation construction site in `Complete`.
 
-- [ ] **Step 4: Implement stamping and latency wiring in client.go**
+- [x] **Step 4: Implement stamping and latency wiring in client.go**
 
 Apply the Task 2 Step 4 changes to `internal/provider/anthropiccompat/client.go`: add `transportID = "anthropiccompat-http"` to the package consts, add `baseMetadata`, replace the `notSent` closure, replace the two transport-error metadata constructions, construct the observation with the injected clock, and change `responseMetadata(response, duration, firstTokenLatency, endpointURL)` to stamp identity plus latency. Update any existing test callers of `responseMetadata` to the new signature.
 
-- [ ] **Step 5: Run the tests and verify they pass**
+- [x] **Step 5: Run the tests and verify they pass**
 
 Run: `go test ./internal/provider/anthropiccompat -count=1`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/provider/anthropiccompat/client.go internal/provider/anthropiccompat/delivery.go internal/provider/anthropiccompat/telemetry_test.go
@@ -639,7 +639,7 @@ git commit -m "feat(provider): stamp telemetry identity and first-token latency 
 - Consumes: Task 1 fields; same mirror layout as Tasks 2-3 (verified for `internal/provider/googlecompat/`).
 - Produces: const `transportID = "googlecompat-http"` plus the same `baseMetadata`/latency/`responseMetadata` surfacing.
 
-- [ ] **Step 1: Write the failing adapter telemetry tests**
+- [x] **Step 1: Write the failing adapter telemetry tests**
 
 Create `internal/provider/googlecompat/telemetry_test.go` (same shape as Task 3, differences: transport `"googlecompat-http"`, success body `validGenerateBody`):
 
@@ -730,25 +730,25 @@ func TestPreDispatchRefusalStillStampsIdentityAndKeepsLatencyZero(t *testing.T) 
 }
 ```
 
-- [ ] **Step 2: Run the tests and verify the expected failures**
+- [x] **Step 2: Run the tests and verify the expected failures**
 
 Run: `go test ./internal/provider/googlecompat -run 'TestResponseMetadataTelemetry|TestFirstTokenLatency|TestPreDispatchRefusal' -count=1`
 Expected: FAIL (fields do not exist).
 
-- [ ] **Step 3: Implement observation latency in delivery.go**
+- [x] **Step 3: Implement observation latency in delivery.go**
 
 Apply the Task 2 Step 3 changes to `internal/provider/googlecompat/delivery.go` (same `deliveryObservation` extension and guards).
 
-- [ ] **Step 4: Implement stamping and latency wiring in client.go**
+- [x] **Step 4: Implement stamping and latency wiring in client.go**
 
 Apply the Task 2 Step 4 changes to `internal/provider/googlecompat/client.go` with `transportID = "googlecompat-http"`. Update any existing test callers of `responseMetadata` to the new signature.
 
-- [ ] **Step 5: Run the tests and verify they pass**
+- [x] **Step 5: Run the tests and verify they pass**
 
 Run: `go test ./internal/provider/googlecompat -count=1`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/provider/googlecompat/client.go internal/provider/googlecompat/delivery.go internal/provider/googlecompat/telemetry_test.go
@@ -769,7 +769,7 @@ git commit -m "feat(provider): stamp telemetry identity and first-token latency 
 - Consumes: Task 1 fields. The OmniRoute adapter has its own `AdapterVersion` (legacy transport, owns its version identity) and its own `responseMetadata(response, duration, endpoint, model string, now time.Time)` helper plus `deliveryObservation` (fields `writeObserved`, `responseStarted`) in `delivery.go`.
 - Produces: consts `AdapterVersion = "omniroute-v0.1"` and `transportID = "omniroute-http"`; `baseMetadata()`-style stamping on every path; first-byte latency via its `GotFirstResponseByte` observation; `SessionID` documented as the sha256 session fingerprint.
 
-- [ ] **Step 1: Write the failing telemetry tests**
+- [x] **Step 1: Write the failing telemetry tests**
 
 Create `internal/provider/omniroute/telemetry_test.go` using the package's existing helpers `newTransportClient`, `safeHandler`, `testConfig` and the `completeOnce` transport method (the full `Complete` wrapper is fail-closed for test configs because the receipt lane requires a pinned connection id):
 
@@ -850,16 +850,16 @@ func TestPreDispatchRefusalStampsIdentityAndKeepsLatencyZero(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests and verify the expected failures**
+- [x] **Step 2: Run the tests and verify the expected failures**
 
 Run: `go test ./internal/provider/omniroute -run 'TestResponseMetadataTelemetryShape|TestPreDispatchRefusalStamps' -count=1`
 Expected: FAIL (fields do not exist; possibly missing helper to be added per the note).
 
-- [ ] **Step 3: Implement observation latency in delivery.go**
+- [x] **Step 3: Implement observation latency in delivery.go**
 
 Apply the Task 2 step-3 pattern to `internal/provider/omniroute/delivery.go`: add `firstByteAt time.Time` and `now func() time.Time` to `deliveryObservation`, record the first byte in `GotFirstResponseByte` (keeping `markResponseStarted`), add `firstTokenLatency(started time.Time) time.Duration` with the same guards.
 
-- [ ] **Step 4: Implement stamping and latency wiring**
+- [x] **Step 4: Implement stamping and latency wiring**
 
 In `internal/provider/omniroute/client.go`:
 
@@ -905,12 +905,12 @@ func responseMetadata(response *http.Response, duration, firstTokenLatency time.
 
 In `internal/provider/omniroute/client_transport.go`: construct the observation with the injected clock (`observation := &deliveryObservation{now: c.now}`), stamp identity on the transport-error and nil-response records (via `baseMetadata()`), and update the `responseMetadata` call to pass `observation.firstTokenLatency(started)`. The pre-dispatch records in `client_transport.go` and `telemetry.go` that build `provider.ResponseMetadata{DeliveryState: ..., Model: ...}` must also stamp `AdapterVersion`/`Transport`.
 
-- [ ] **Step 5: Run the tests and verify they pass**
+- [x] **Step 5: Run the tests and verify they pass**
 
 Run: `go test ./internal/provider/omniroute -count=1`
 Expected: PASS (all existing and new tests).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/provider/omniroute/client.go internal/provider/omniroute/client_transport.go internal/provider/omniroute/delivery.go internal/provider/omniroute/telemetry_test.go
@@ -931,7 +931,7 @@ git commit -m "feat(provider): stamp telemetry identity and first-token latency 
 - Consumes: `provider.ResponseMetadata` (Task 1); `OutcomeClassifier` and `Permit.Finish`/`FinishWithAttemptReceipts` signatures stay unchanged.
 - Produces: `Outcome.Metadata provider.ResponseMetadata`; `Event.AttemptMetadata provider.ResponseMetadata`; `Execute` populates `outcome.Metadata` from the response right after classification; `Finish` and `FinishWithAttemptReceipts` copy `outcome.Metadata` into the emitted `attempt_finished` event. `CancelAfterStart` and `finishReceiptFailureLocked` leave `AttemptMetadata` zero (metadata provably unavailable on those paths).
 
-- [ ] **Step 1: Write the failing propagation tests**
+- [x] **Step 1: Write the failing propagation tests**
 
 Create `internal/governor/request_telemetry_test.go` as an external test package (`governor_test`) reusing the existing `instantGovernor`, `eventSink` and the `policy` alias already used across `governor_test.go` and `attempt_receipts_test.go`:
 
@@ -1041,12 +1041,12 @@ func TestOutcomeCarriesMetadataZeroByDefault(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests and verify the expected failures**
+- [x] **Step 2: Run the tests and verify the expected failures**
 
 Run: `go test ./internal/governor -run 'TestExecuteEventCarriesAttemptMetadata|TestCancelEventMetadataStaysZero|TestOutcomeCarriesMetadataZeroByDefault' -count=1`
 Expected: FAIL (`Outcome.Metadata` / `Event.AttemptMetadata` do not exist).
 
-- [ ] **Step 3: Add the fields to Outcome and Event**
+- [x] **Step 3: Add the fields to Outcome and Event**
 
 In `internal/governor/types.go`:
 
@@ -1074,7 +1074,7 @@ Add to `Event` (after `GatewayContractHealth`):
 	AttemptMetadata provider.ResponseMetadata
 ```
 
-- [ ] **Step 4: Populate the outcome in Execute**
+- [x] **Step 4: Populate the outcome in Execute**
 
 In `internal/governor/execute.go`, right after classification:
 
@@ -1085,7 +1085,7 @@ In `internal/governor/execute.go`, right after classification:
 	outcome = applyDeliveryEvidence(outcome)
 ```
 
-- [ ] **Step 5: Copy the metadata into the emitted events**
+- [x] **Step 5: Copy the metadata into the emitted events**
 
 In `internal/governor/permit.go`, in `Finish(outcome)` add to the `Event` literal after `TelemetryHealthy`:
 
@@ -1095,12 +1095,12 @@ In `internal/governor/permit.go`, in `Finish(outcome)` add to the `Event` litera
 
 In `FinishWithAttemptReceipts`, add the same field (from the `outcome` parameter) to the final `EventAttemptFinished` literal.
 
-- [ ] **Step 6: Run the tests and verify they pass**
+- [x] **Step 6: Run the tests and verify they pass**
 
 Run: `go test ./internal/governor -count=1`
 Expected: PASS (all existing and new tests).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/governor/types.go internal/governor/execute.go internal/governor/permit.go internal/governor/request_telemetry_test.go
@@ -1119,7 +1119,7 @@ git commit -m "feat(governor): propagate sanitized attempt metadata through outc
 - Consumes: `governor.Event.AttemptMetadata` (Task 6).
 - Produces: a sanitized `attempt` slog group on every rendered event; redaction tests covering the new fields.
 
-- [ ] **Step 1: Write the failing rendering and redaction tests**
+- [x] **Step 1: Write the failing rendering and redaction tests**
 
 Append to `internal/trace/policy_test.go`:
 
@@ -1185,12 +1185,12 @@ func TestPolicySinkAttemptTelemetryRedaction(t *testing.T) {
 
 Add the missing imports (`bytes`, `log/slog`, `strings`, `time`, `github.com/RenyEnnos/Runstead/internal/governor`, `github.com/RenyEnnos/Runstead/internal/provider`) to `policy_test.go` as needed.
 
-- [ ] **Step 2: Run the tests and verify the expected failures**
+- [x] **Step 2: Run the tests and verify the expected failures**
 
 Run: `go test ./internal/trace -run 'TestPolicySinkRendersAttemptTelemetry|TestPolicySinkAttemptTelemetryRedaction' -count=1`
 Expected: FAIL (fields not rendered).
 
-- [ ] **Step 3: Render the sanitized attempt group**
+- [x] **Step 3: Render the sanitized attempt group**
 
 In `internal/trace/policy.go`, add to the `args` slice in `Emit`:
 
@@ -1210,12 +1210,12 @@ In `internal/trace/policy.go`, add to the `args` slice in `Emit`:
 		),
 ```
 
-- [ ] **Step 4: Run the tests and verify they pass**
+- [x] **Step 4: Run the tests and verify they pass**
 
 Run: `go test ./internal/trace -count=1`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/trace/policy.go internal/trace/policy_test.go
@@ -1230,7 +1230,7 @@ git commit -m "feat(trace): render sanitized attempt telemetry with redaction co
 - Create: `docs/telemetry.md`
 - Modify: `README.md`
 
-- [ ] **Step 1: Write the telemetry contract documentation**
+- [x] **Step 1: Write the telemetry contract documentation**
 
 Create `docs/telemetry.md` (style mirrors `docs/retry.md` / `docs/learning.md`):
 
@@ -1286,7 +1286,7 @@ conversation references, bounded retention) are deferred to the
 plugin/composable-provider track (#80, #82, #83, #74, #86).
 ```
 
-- [ ] **Step 2: Link the documentation from the README**
+- [x] **Step 2: Link the documentation from the README**
 
 In `README.md`, after the `docs/learning.md` pointer (end of the "Project status" section, lines around 208-212), add:
 
@@ -1296,7 +1296,7 @@ fingerprint, first-token latency and the protected-lane zero fields) is
 documented in [`docs/telemetry.md`](docs/telemetry.md).
 ```
 
-- [ ] **Step 3: Run the full verification suite**
+- [x] **Step 3: Run the full verification suite**
 
 Run, from the repository root:
 
@@ -1315,18 +1315,18 @@ go build -o /tmp/quality-gates ./tools/quality
 
 Expected: all green. If `errcheck` reports new swallowed-error sites, add each site to `tools/quality/errcheck.allowlist` with the `#39` rationale in a separate commit. If `growth` reports a size limit hit, raise the limit in `tools/quality/limits.json` with a comment in the same commit.
 
-- [ ] **Step 4: Re-run the spec's integration checks**
+- [x] **Step 4: Re-run the spec's integration checks**
 
 Run: `bash experiments/protocol/test.sh` and `go test -count=1 ./internal/protocol/ -run '^(TestCorpusFixtures|TestParseValidAction|TestParseValidFinal|TestEnvelopeMarkersInsideJSONStringsAreContent)$'`
 Expected: all green (protocol surfaces are untouched, but the gate must stay green).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/telemetry.md README.md tools/quality/ 2>/dev/null
 git commit -m "docs: document the sanitized request telemetry contract (#39)"
 ```
 
-- [ ] **Step 6: Final review pass**
+- [x] **Step 6: Final review pass**
 
 Run `git log --oneline main..HEAD` and verify every commit is present, then follow the finishing-a-development-branch skill (push, PR against `main` with a description referencing #39, close out review feedback).
