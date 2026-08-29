@@ -219,6 +219,10 @@ func extract(input Input, budget Budget) model {
 	}
 	failureSection.degradable = failures.detail
 	modelOmitted = append(modelOmitted, failures.capOmitted...)
+	for _, rest := range failures.detail[capLimit(len(failures.detail), budget.MaxFailureLines):] {
+		modelOmitted = append(modelOmitted, OmittedItem{Kind: FactFailure, ID: rest.id})
+	}
+	failureSection.degradable = failures.detail[:capLimit(len(failures.detail), budget.MaxFailureLines)]
 	sections = append(sections, failureSection)
 	for _, failure := range failures.items {
 		facts = append(facts, Fact{Kind: FactFailure, Origin: failure.executionID, Value: failure.line})
@@ -234,6 +238,10 @@ func extract(input Input, budget Budget) model {
 	}
 	uncertainSection.degradable = uncertain.detail
 	modelOmitted = append(modelOmitted, uncertain.capOmitted...)
+	for _, rest := range uncertain.detail[capLimit(len(uncertain.detail), budget.MaxUncertainLines):] {
+		modelOmitted = append(modelOmitted, OmittedItem{Kind: FactUncertainEffect, ID: rest.id})
+	}
+	uncertainSection.degradable = uncertain.detail[:capLimit(len(uncertain.detail), budget.MaxUncertainLines)]
 	sections = append(sections, uncertainSection)
 	for _, item := range uncertain.items {
 		facts = append(facts, Fact{Kind: FactUncertainEffect, Origin: item.id, Value: item.line})

@@ -97,6 +97,18 @@ func compactJSON(value string) string {
 	return buffer.String()
 }
 
+// capLimit clamps a length to the maximum line cap; a non-positive cap
+// degrades every detail line (the pinned id list still survives).
+func capLimit(length, maximum int) int {
+	if maximum <= 0 {
+		return 0
+	}
+	if length <= maximum {
+		return length
+	}
+	return maximum
+}
+
 // capChars caps a string to max runes with an explicit marker when truncated.
 // Truncation here only affects degradable content detail, never pinned IDs.
 func capChars(value string, max int) string {
