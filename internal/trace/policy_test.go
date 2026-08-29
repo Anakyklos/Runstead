@@ -50,10 +50,40 @@ func TestPolicySinkEmitsSanitizedStructuredEvent(t *testing.T) {
 		t.Fatalf("telemetry group = %#v", telemetry)
 	}
 	for _, forbidden := range []string{"prompt", "response", "token", "cookie", "credential", "api_key", "body"} {
-		if strings.Contains(strings.ToLower(output.String()), forbidden) {
-			t.Fatalf("policy event contains forbidden field %q: %s", forbidden, output.String())
+		// Scan string VALUES only: structural keys (for example
+		// first_token_latency) may contain secret-looking words without
+		// carrying secret material (#39).
+		for _, value := range jsonStringValues(t, record) {
+			if strings.Contains(strings.ToLower(value), forbidden) {
+				t.Fatalf("policy event contains forbidden value %q: %s", forbidden, output.String())
+			}
 		}
 	}
+}
+
+// jsonStringValues returns every string value reachable in a decoded JSON
+// record. Structural keys are excluded so field names such as
+// first_token_latency never count as leaked material (#39).
+func jsonStringValues(t *testing.T, node any) []string {
+	t.Helper()
+	var values []string
+	var collect func(any)
+	collect = func(current any) {
+		switch value := current.(type) {
+		case string:
+			values = append(values, value)
+		case []any:
+			for _, item := range value {
+				collect(item)
+			}
+		case map[string]any:
+			for _, item := range value {
+				collect(item)
+			}
+		}
+	}
+	collect(node)
+	return values
 }
 
 func TestPolicySinkEmitsGatewayContractHealthWithSanitizedName(t *testing.T) {
@@ -81,6 +111,70 @@ func TestPolicySinkEmitsGatewayContractHealthWithSanitizedName(t *testing.T) {
 	for _, forbidden := range []string{"upstream_health", "chatgpt_health", "synthetic-secret", "raw-management-body", "api-key"} {
 		if strings.Contains(strings.ToLower(output.String()), strings.ToLower(forbidden)) {
 			t.Fatalf("trace contains forbidden value %q: %s", forbidden, output.String())
+		}
+	}
+}
+
+func TestPolicySinkRendersAttemptTelemetry(t *testing.T) {
+	var output bytes.Buffer
+	sink := NewPolicySink(NewLogger(&output, 0))
+	sink.Emit(governor.Event{
+		Kind: governor.EventAttemptFinished,
+		AttemptMetadata: provider.ResponseMetadata{
+			AdapterVersion:    provider.CompatAdapterVersion,
+			Transport:         "compat-http",
+			SessionID:         "sha256:0123456789abcdef",
+			RequestID:         "sha256:fedcba9876543210",
+			StatusCode:        200,
+			Duration:          12 * time.Millisecond,
+			FirstTokenLatency: 3 * time.Millisecond,
+			DeliveryState:     provider.DeliveryCompleted,
+		},
+	})
+	var record map[string]any
+	if err := json.Unmarshal(output.Bytes(), &record); err != nil {
+		t.Fatalf("policy log is not JSON: %v; output=%q", err, output.String())
+	}
+	attempt, ok := record["attempt"].(map[string]any)
+	if !ok {
+		t.Fatalf("attempt group = %#v", record["attempt"])
+	}
+	checks := map[string]any{
+		"adapter_version":     provider.CompatAdapterVersion,
+		"transport":           "compat-http",
+		"session_fingerprint": "sha256:0123456789abcdef",
+		"status_code":         float64(200),
+		"request_id":          "sha256:fedcba9876543210",
+		"first_token_latency": "3ms",
+		"duration":            "12ms",
+		"delivery_state":      "completed",
+		"retry_count":         float64(0),
+		"fallback":            false,
+		"usage_estimated":     false,
+	}
+	for key, want := range checks {
+		if attempt[key] != want {
+			t.Fatalf("attempt[%q] = %#v, want %#v", key, attempt[key], want)
+		}
+	}
+}
+
+func TestPolicySinkAttemptTelemetryRedaction(t *testing.T) {
+	var output bytes.Buffer
+	sink := NewPolicySink(NewLogger(&output, 0))
+	sink.Emit(governor.Event{
+		Kind: governor.EventAttemptFinished,
+		AttemptMetadata: provider.ResponseMetadata{
+			AdapterVersion: provider.CompatAdapterVersion,
+			Transport:      "compat-http",
+			SessionID:      "sha256:0123456789abcdef",
+			RequestID:      "sha256:fedcba9876543210",
+		},
+	})
+	outputText := strings.ToLower(output.String())
+	for _, forbidden := range []string{"live-session", "bearer", "authorization", "api_key", "cookie", "prompt", "credential", "raw-header"} {
+		if strings.Contains(outputText, forbidden) {
+			t.Fatalf("attempt telemetry leaked %q: %s", forbidden, output.String())
 		}
 	}
 }
