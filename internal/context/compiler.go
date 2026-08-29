@@ -101,12 +101,7 @@ type degradableLine struct {
 // records. When the pinned content alone exceeds the budget it returns an
 // error and no text.
 func renderCompiled(model model, budget Budget) (string, []OmittedItem, error) {
-	var required int
-	for _, sec := range model.sections {
-		for _, line := range sec.pinned {
-			required += len(line) + 1
-		}
-	}
+	required := pinnedBytes(model.sections)
 	// The pinned sections always include the authority preamble and the
 	// explicit non-authoritative marker, which the extractor places in
 	// pinned lines; an empty model still has a required minimum.
@@ -114,12 +109,22 @@ func renderCompiled(model model, budget Budget) (string, []OmittedItem, error) {
 		return "", nil, fmt.Errorf("mandatory content requires %d bytes, budget is %d", required, budget.MaxContextBytes)
 	}
 
-	var omitted []OmittedItem
-	builder := newDeterministicBuilder(budget.MaxContextBytes - required)
+	// Byte accounting is single-charge and all-pinned-first: the builder
+	// starts with the full budget, pass 1 writes every pinned line (they fit
+	// by the preflight above; write() is unconditional for pinned lines), so
+	// the degradable capacity is exactly budget - required. Pass 2 selects
+	// degradable lines in deterministic section order under the remaining
+	// budget (issue #51 review: no 2*required charge, output always <=
+	// MaxContextBytes).
+	builder := newDeterministicBuilder(budget.MaxContextBytes)
 	for _, sec := range model.sections {
 		for _, line := range sec.pinned {
 			builder.write(line)
 		}
+	}
+
+	var omitted []OmittedItem
+	for _, sec := range model.sections {
 		for index, line := range sec.degradable {
 			if !builder.tryWrite(line.text) {
 				// The failing line is recorded once, and only the lines
@@ -174,4 +179,16 @@ func (b *deterministicBuilder) tryWrite(line string) bool {
 
 func (b *deterministicBuilder) String() string {
 	return string(b.buf)
+}
+
+// pinnedBytes sums the mandatory bytes of the sections (pinned lines only),
+// used for the fail-closed preflight and by the exact boundary tests.
+func pinnedBytes(sections []section) int {
+	total := 0
+	for _, sec := range sections {
+		for _, line := range sec.pinned {
+			total += len(line) + 1
+		}
+	}
+	return total
 }

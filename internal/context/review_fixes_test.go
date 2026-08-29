@@ -43,8 +43,8 @@ func TestFactAttemptsForToolAndProviderAttempts(t *testing.T) {
 		}
 	}
 	wantProvider := map[string]string{
-		"prov-000001": "provider outcome success",
-		"prov-000002": "provider outcome unknown",
+		"prov-000001": "provider status completed outcome success",
+		"prov-000002": "provider status uncertain outcome unknown",
 	}
 	for origin, wantSub := range wantProvider {
 		fact, ok := attempts[origin]
@@ -61,8 +61,9 @@ func TestFactAttemptsForToolAndProviderAttempts(t *testing.T) {
 		{ExecutionID: "prov-000009", ClientRequestID: "cr-0009", Status: "uncertain", Outcome: "unknown", Uncertain: true},
 	}
 	compiledRequest := compileOK(t, Input{Snapshot: &withRequest})
-	if fact, ok := factsByOrigin(t, compiledRequest, FactAttempt)["prov-000009"]; !ok || !strings.Contains(fact.Value, "provider request cr-0009") {
-		t.Fatalf("provider client request identity not preserved: %+v", fact)
+	if fact, ok := factsByOrigin(t, compiledRequest, FactAttempt)["prov-000009"]; !ok ||
+		!strings.Contains(fact.Value, "provider request cr-0009") || !strings.Contains(fact.Value, "status uncertain") {
+		t.Fatalf("provider client request/status not preserved: %+v", fact)
 	}
 }
 
@@ -136,10 +137,15 @@ func degradedMarker(kind FactKind, id string) string {
 	}
 }
 
+// omissionKey is the identity of one degradable line: the same raw id can
+// legitimately appear in different sections (an execution id is shared by the
+// attempt, failure and uncertain sections), so uniqueness is per (kind, id).
+func omissionKey(item OmittedItem) string { return string(item.Kind) + "\x00" + item.ID }
+
 // TestOmittedNeverContainsRenderedNorDuplicates proves the byte-budget
 // omission algorithm records exactly the degradable lines genuinely not
 // selected: no id whose degradable line was rendered appears in
-// Diagnostics.Omitted, and no omission id is duplicated.
+// Diagnostics.Omitted, and no omission line identity is duplicated.
 func TestOmittedNeverContainsRenderedNorDuplicates(t *testing.T) {
 	for _, bytes := range []int{512, 768, 1024, 1536, 2048, 32 << 10} {
 		compiled, err := (&Compiler{}).Compile(Input{
@@ -155,10 +161,10 @@ func TestOmittedNeverContainsRenderedNorDuplicates(t *testing.T) {
 			if omitted.ID == "" {
 				t.Fatalf("budget %d: omission without id: %+v", bytes, omitted)
 			}
-			if seen[omitted.ID] {
-				t.Fatalf("budget %d: duplicated omission id %q", bytes, omitted.ID)
+			if seen[omissionKey(omitted)] {
+				t.Fatalf("budget %d: duplicated omission record (%s, %s)", bytes, omitted.Kind, omitted.ID)
 			}
-			seen[omitted.ID] = true
+			seen[omissionKey(omitted)] = true
 			marker := degradedMarker(omitted.Kind, omitted.ID)
 			if marker != "" && strings.Contains(text, marker) {
 				t.Fatalf("budget %d: rendered degradable line %q also marked omitted", bytes, marker)
@@ -179,16 +185,108 @@ func TestOmittedDiscardedItemsAppearExactlyOnce(t *testing.T) {
 	}
 	omitted := make(map[string]int)
 	for _, item := range first.Diagnostics.Omitted {
-		omitted[item.ID]++
+		omitted[omissionKey(item)]++
 	}
-	for id, count := range omitted {
+	for key, count := range omitted {
 		if count != 1 {
-			t.Fatalf("omission id %q appears %d times, want exactly once", id, count)
+			t.Fatalf("omission record %q appears %d times, want exactly once", key, count)
 		}
 	}
 	for _, item := range first.Diagnostics.Omitted {
 		if marker := degradedMarker(item.Kind, item.ID); marker != "" && strings.Contains(first.Text(), marker) {
 			t.Fatalf("discarded item id %q appears rendered with marker %q", item.ID, marker)
 		}
+	}
+}
+
+// TestAttemptsReachModelFacingContext proves the concrete attempts and their
+// action -> execution -> evidence/result relations are part of the RENDERED
+// model-facing context (not only Compiled.Authoritative), through the
+// recovery BuildContext boundary.
+func TestAttemptsReachModelFacingContext(t *testing.T) {
+	input := Input{Snapshot: testSnapshot()}
+	compiled := compileOK(t, input)
+	text := compiled.Text()
+	for _, want := range []string{
+		"attempt exec-000001: tool read_file action action-000001 status completed evidence obs-000001",
+		"attempt exec-000002: tool run_recipe action action-000003 status failed",
+		"attempt exec-000003: tool run_recipe action action-000003 status completed evidence obs-000002",
+		"attempt prov-000001: provider status completed outcome success",
+		"attempt prov-000002: provider status uncertain outcome unknown",
+		"concrete attempts: 3 tool, 2 provider",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("rendered context missing attempt relation %q:\n%s", want, text)
+		}
+	}
+}
+
+// boundaryBudget returns the default budget with only MaxContextBytes
+// overridden, keeping the section caps identical for exact-fit accounting.
+func boundaryBudget(bytes int) Budget {
+	base := DefaultBudget()
+	base.MaxContextBytes = bytes
+	return base
+}
+
+// TestBudgetBoundarySingleDegradableLineExactFit proves the byte accounting is
+// single-charge: with budget == mandatory bytes + one identifiable degradable
+// line, that line is rendered (not omitted) and the output is exactly the
+// budget. One byte below that capacity, the line is omitted exactly once and
+// the output stays within budget (issue #51 review: no 2*required charge).
+func TestBudgetBoundarySingleDegradableLineExactFit(t *testing.T) {
+	input := Input{Snapshot: testSnapshot()}
+	model := extract(input, DefaultBudget())
+	required := pinnedBytes(model.sections)
+
+	var target degradableLine
+	for _, sec := range model.sections {
+		if sec.kind == FactEvidence && len(sec.degradable) > 0 {
+			target = sec.degradable[0]
+			break
+		}
+	}
+	if target.id == "" || target.text == "" {
+		t.Fatal("no identifiable degradable evidence line found")
+	}
+
+	// Exact fit: mandatory + the single earliest degradable line.
+	exact := required + len(target.text) + 1
+	compiled, err := (&Compiler{}).Compile(Input{Snapshot: testSnapshot(), Budget: boundaryBudget(exact)})
+	if err != nil {
+		t.Fatalf("exact-fit budget %d failed: %v", exact, err)
+	}
+	if len(compiled.Text()) != exact {
+		t.Fatalf("render = %d bytes, want exactly %d (single-charge accounting)", len(compiled.Text()), exact)
+	}
+	if !strings.Contains(compiled.Text(), target.text) {
+		t.Fatalf("exactly-fitted line missing from render:\n%s", compiled.Text())
+	}
+	for _, omitted := range compiled.Diagnostics.Omitted {
+		if omitted.ID == target.id {
+			t.Fatalf("fitted line %q wrongly marked omitted", target.id)
+		}
+	}
+
+	// One byte below the capacity the same line no longer fits.
+	below := required + len(target.text)
+	compiledBelow, err := (&Compiler{}).Compile(Input{Snapshot: testSnapshot(), Budget: boundaryBudget(below)})
+	if err != nil {
+		t.Fatalf("below-capacity budget %d failed: %v", below, err)
+	}
+	if len(compiledBelow.Text()) > below {
+		t.Fatalf("render = %d bytes, exceeds budget %d", len(compiledBelow.Text()), below)
+	}
+	if strings.Contains(compiledBelow.Text(), target.text) {
+		t.Fatalf("line rendered under a budget that cannot fit it:\n%s", compiledBelow.Text())
+	}
+	count := 0
+	for _, omitted := range compiledBelow.Diagnostics.Omitted {
+		if omitted.ID == target.id {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("omission count for %q = %d, want exactly 1", target.id, count)
 	}
 }

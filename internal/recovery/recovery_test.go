@@ -1053,3 +1053,23 @@ func TestResumeContextWorkspaceFreshnessThroughRealPipeline(t *testing.T) {
 		t.Fatalf("unverified_current classification missing %q:\n%s", recorded+"(unverified_current)", plan.Seed.Context)
 	}
 }
+
+// TestAttemptsReachRecoverySeedContext proves the relation reaches the new
+// model after recovery through the real pipeline boundary:
+// recovery.Resume(...).Seed.Context.
+func TestAttemptsReachRecoverySeedContext(t *testing.T) {
+	store := openStore(t)
+	mustCreate(t, store, fixtureTask)
+	actionID := mustAction(t, store, fixtureTask, "read_file", `{"path":"a.txt"}`, "fp-read-a", "sig-alpha")
+	execID := mustToolAttempt(t, store, fixtureTask, actionID, "read_file", `{"path":"a.txt"}`, 1)
+	mustCompleteTool(t, store, fixtureTask, execID, "obs-000001", "read_file", "alpha\n")
+
+	plan, err := recovery.Resume(context.Background(), store, recovery.Options{TaskID: fixtureTask})
+	if err != nil {
+		t.Fatalf("Resume(): %v", err)
+	}
+	want := "attempt " + execID + ": tool read_file action " + actionID + " status completed evidence obs-000001"
+	if !strings.Contains(plan.Seed.Context, want) {
+		t.Fatalf("Seed.Context missing attempt relation %q:\n%s", want, plan.Seed.Context)
+	}
+}

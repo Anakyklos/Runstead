@@ -220,7 +220,25 @@ func extract(input Input, budget Budget) model {
 	sections = append(sections, actionSection)
 
 	// Concrete attempts: typed authoritative facts preserving the
-	// action -> attempt -> result/evidence relation (issue #51 review).
+	// action -> attempt -> result/evidence relation (issue #51 review), and
+	// the same attempts as degradable render lines so the relation actually
+	// reaches the model-facing context after resume.
+	attemptSection := section{kind: FactAttempt, pinned: []string{fmt.Sprintf(
+		"concrete attempts: %d tool, %d provider", toolCount, providerCount)}}
+	for _, attempt := range snapshot.ToolAttempts {
+		line := fmt.Sprintf("attempt %s: tool %s action %s status %s", attempt.ExecutionID, attempt.Tool, attempt.ActionID, attempt.Status)
+		if attempt.EvidenceID != "" {
+			line += " evidence " + attempt.EvidenceID
+		}
+		attemptSection.degradable = append(attemptSection.degradable, degradableLine{text: line, id: attempt.ExecutionID})
+	}
+	for _, attempt := range snapshot.ProviderAttempts {
+		line := fmt.Sprintf("attempt %s: provider status %s outcome %s", attempt.ExecutionID, attempt.Status, attempt.Outcome)
+		if attempt.ClientRequestID != "" {
+			line = fmt.Sprintf("attempt %s: provider request %s status %s outcome %s", attempt.ExecutionID, attempt.ClientRequestID, attempt.Status, attempt.Outcome)
+		}
+		attemptSection.degradable = append(attemptSection.degradable, degradableLine{text: line, id: attempt.ExecutionID})
+	}
 	for _, attempt := range snapshot.ToolAttempts {
 		value := fmt.Sprintf("tool %s action %s status %s", attempt.Tool, attempt.ActionID, attempt.Status)
 		if attempt.EvidenceID != "" {
@@ -229,12 +247,14 @@ func extract(input Input, budget Budget) model {
 		facts = append(facts, Fact{Kind: FactAttempt, Origin: attempt.ExecutionID, Value: value})
 	}
 	for _, attempt := range snapshot.ProviderAttempts {
-		value := fmt.Sprintf("provider outcome %s", attempt.Outcome)
+		value := fmt.Sprintf("provider status %s outcome %s", attempt.Status, attempt.Outcome)
 		if attempt.ClientRequestID != "" {
-			value = fmt.Sprintf("provider request %s outcome %s", attempt.ClientRequestID, attempt.Outcome)
+			value = fmt.Sprintf("provider request %s status %s outcome %s", attempt.ClientRequestID, attempt.Status, attempt.Outcome)
 		}
 		facts = append(facts, Fact{Kind: FactAttempt, Origin: attempt.ExecutionID, Value: value})
 	}
+
+	sections = append(sections, attemptSection)
 
 	// Failures: all failure IDs pinned; detail degradable (capped).
 	failures := selectFailures(snapshot)
