@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -676,8 +677,9 @@ func TestResumeFailedToolAttemptIsUnresolvedFailure(t *testing.T) {
 	if snapshot := mustLoadSnapshot(t, store, fixtureTask); snapshot.ToolAttempts[0].Status != "failed" {
 		t.Errorf("failed attempt status = %q, want failed (untouched)", snapshot.ToolAttempts[0].Status)
 	}
-	// The context renders it as an unresolved failure with the typed code.
-	if !strings.Contains(plan.Seed.Context, "Unresolved failures:") {
+	// The context renders it as an unresolved failure with the typed code
+	// (issue #51: deterministic typed projection, lower-case section keys).
+	if !strings.Contains(plan.Seed.Context, "unresolved failures:") {
 		t.Error("reconstructed context must include the unresolved failures section")
 	}
 	if !strings.Contains(plan.Seed.Context, "path_not_found") {
@@ -879,5 +881,195 @@ func TestResumeCredentialShapedStateIsRedacted(t *testing.T) {
 		if strings.Contains(rendered, secret) {
 			t.Fatalf("inspect output leaked %q", secret)
 		}
+	}
+}
+
+// TestResumeContextCompilerReconstructsMaterialFromRealStore is the issue #51
+// integration scenario with a real SQLite store: persisted material (objective,
+// completed evidence, an interrupted provider request) is projected by the
+// context compiler without ANY provider conversation input, the seed keeps
+// grounding/repeat-guard/budgets, and re-rendering the same snapshot is
+// deterministic.
+func TestResumeContextCompilerReconstructsMaterialFromRealStore(t *testing.T) {
+	store := openStore(t)
+	mustCreate(t, store, fixtureTask)
+	actionID := mustAction(t, store, fixtureTask, "read_file", `{"path":"a.txt"}`, "fp-read-a", "sig-alpha")
+	execID := mustToolAttempt(t, store, fixtureTask, actionID, "read_file", `{"path":"a.txt"}`, 1)
+	mustCompleteTool(t, store, fixtureTask, execID, "obs-000001", "read_file", "alpha\n")
+	mustProviderPrepared(t, store, fixtureTask, "cr-0002", 1)
+
+	plan, err := recovery.Resume(context.Background(), store, recovery.Options{
+		TaskID:           fixtureTask,
+		PendingApprovals: store.PendingApprovals,
+	})
+	if err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	if plan.Decision != recovery.DecisionContinue {
+		t.Fatalf("decision = %q, want continue", plan.Decision)
+	}
+	text := plan.Seed.Context
+	// The compiled material is derived from durable state only: objective,
+	// lifecycle, evidence ids, constraints and the uncertain effect all
+	// survive into the new session's context.
+	for _, want := range []string{
+		"objective: inspect the workspace",
+		"task status:",
+		"evidence ids: obs-000001",
+		"provider turns 1",
+		"uncertain effects:",
+		"pending approvals: none recorded",
+		"NON-AUTHORITATIVE",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("compiled context missing %q:\n%s", want, text)
+		}
+	}
+	// The new session contributes nothing to the projection: no transcript,
+	// no conversation text was ever an input.
+	// Grounding without replay: the citable id seeds the grounding set and
+	// the action seeds the repeat guard, while historical effects stay
+	// un-executed (budgets continue, not reset).
+	if len(plan.Seed.Evidence) != 1 || plan.Seed.Evidence[0].ID != "obs-000001" {
+		t.Fatalf("seeded evidence = %+v, want obs-000001", plan.Seed.Evidence)
+	}
+	if plan.Seed.Guard["fp-read-a"] != "sig-alpha" {
+		t.Fatalf("repeat guard seed missing: %v", plan.Seed.Guard)
+	}
+	if plan.Seed.Attempts != 1 {
+		t.Fatalf("attempt counter = %d, want 1 (continued, not reset)", plan.Seed.Attempts)
+	}
+	// Deterministic projection at the pipeline boundary: the same snapshot
+	// re-renders byte-identically.
+	snapshot := mustLoadSnapshot(t, store, fixtureTask)
+	first := recovery.BuildContext(snapshot, recovery.DefaultBudget())
+	second := recovery.BuildContext(snapshot, recovery.DefaultBudget())
+	if first.Err != nil {
+		t.Fatalf("BuildContext() error = %v", first.Err)
+	}
+	if first.Text == "" || first.Text != second.Text {
+		t.Fatalf("projection not deterministic:\n--- first ---\n%s\n--- second ---\n%s", first.Text, second.Text)
+	}
+	if len(first.EvidenceIDs) != 1 || first.EvidenceIDs[0] != "obs-000001" {
+		t.Fatalf("evidence ids = %v, want [obs-000001]", first.EvidenceIDs)
+	}
+}
+
+// TestResumeContextBudgetExhaustionFailsClosed proves the fail-closed rule at
+// the pipeline boundary: a budget that cannot hold the mandatory content makes
+// Resume fail with the typed exhaustion error, and no loop (and therefore no
+// provider dispatch) can start.
+func TestResumeContextBudgetExhaustionFailsClosed(t *testing.T) {
+	store := openStore(t)
+	mustCreate(t, store, fixtureTask)
+	actionID := mustAction(t, store, fixtureTask, "read_file", `{"path":"a.txt"}`, "fp-read-a", "sig-alpha")
+	execID := mustToolAttempt(t, store, fixtureTask, actionID, "read_file", `{"path":"a.txt"}`, 1)
+	mustCompleteTool(t, store, fixtureTask, execID, "obs-000001", "read_file", "alpha\n")
+
+	_, err := recovery.Resume(context.Background(), store, recovery.Options{
+		TaskID: fixtureTask,
+		Budget: recovery.Budget{MaxContextBytes: 64},
+	})
+	if err == nil || !recovery.IsBudgetExhausted(err) {
+		t.Fatalf("Resume() error = %v, want context budget exhaustion before dispatch", err)
+	}
+}
+
+// TestResumeContextWorkspaceFreshnessThroughRealPipeline proves the current
+// workspace signature reaches the compiled context through the real
+// recovery/resume path (recovery.Resume with the same bounded marker the loop
+// records on accepted actions):
+//
+//   - recorded == current signature -> "current";
+//   - recorded != current signature -> "needs_refresh";
+//   - no signature available (nil observer) -> "unverified_current".
+//
+// The assertions read the rendered projection from the actual resume seed,
+// not from a direct Compiler.Compile call.
+func TestResumeContextWorkspaceFreshnessThroughRealPipeline(t *testing.T) {
+	ctx := context.Background()
+	ws := t.TempDir()
+	if err := os.WriteFile(ws+"/a.txt", []byte("alpha\n"), 0o644); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+	recorded, err := agent.WorkspaceSignature(ctx, ws)
+	if err != nil {
+		t.Fatalf("WorkspaceSignature(): %v", err)
+	}
+
+	newStore := func(t *testing.T) *state.Store {
+		t.Helper()
+		store := openStore(t)
+		if err := store.CreateTask(ctx, state.TaskRecord{
+			TaskID: fixtureTask, Objective: "inspect the workspace", Workspace: ws, Model: "scripted",
+			ConfigJSON: []byte(`{"max_steps":24}`),
+		}); err != nil {
+			t.Fatalf("CreateTask(): %v", err)
+		}
+		if err := store.StartTask(ctx, fixtureTask); err != nil {
+			t.Fatalf("StartTask(): %v", err)
+		}
+		mustAction(t, store, fixtureTask, "read_file", `{"path":"a.txt"}`, "fp-read-a", recorded)
+		return store
+	}
+
+	// Case 1: the workspace is unchanged, so the observed signature equals
+	// the recorded one.
+	storeCurrent := newStore(t)
+	plan, err := recovery.Resume(ctx, storeCurrent, recovery.Options{
+		TaskID:             fixtureTask,
+		WorkspaceSignature: agent.WorkspaceSignature,
+	})
+	if err != nil {
+		t.Fatalf("Resume (current): %v", err)
+	}
+	if !strings.Contains(plan.Seed.Context, recorded+"(current)") {
+		t.Fatalf("current classification missing %q:\n%s", recorded+"(current)", plan.Seed.Context)
+	}
+
+	// Case 2: modify the workspace AFTER the signature was recorded.
+	if err := os.WriteFile(ws+"/a.txt", []byte("alpha\nchanged\n"), 0o644); err != nil {
+		t.Fatalf("modify workspace file: %v", err)
+	}
+	storeChanged := newStore(t)
+	plan, err = recovery.Resume(ctx, storeChanged, recovery.Options{
+		TaskID:             fixtureTask,
+		WorkspaceSignature: agent.WorkspaceSignature,
+	})
+	if err != nil {
+		t.Fatalf("Resume (needs_refresh): %v", err)
+	}
+	if !strings.Contains(plan.Seed.Context, recorded+"(needs_refresh)") {
+		t.Fatalf("needs_refresh classification missing %q:\n%s", recorded+"(needs_refresh)", plan.Seed.Context)
+	}
+
+	// Case 3: the signature is genuinely unavailable (no observer wired).
+	storeUnavailable := newStore(t)
+	plan, err = recovery.Resume(ctx, storeUnavailable, recovery.Options{TaskID: fixtureTask})
+	if err != nil {
+		t.Fatalf("Resume (unverified): %v", err)
+	}
+	if !strings.Contains(plan.Seed.Context, recorded+"(unverified_current)") {
+		t.Fatalf("unverified_current classification missing %q:\n%s", recorded+"(unverified_current)", plan.Seed.Context)
+	}
+}
+
+// TestAttemptsReachRecoverySeedContext proves the relation reaches the new
+// model after recovery through the real pipeline boundary:
+// recovery.Resume(...).Seed.Context.
+func TestAttemptsReachRecoverySeedContext(t *testing.T) {
+	store := openStore(t)
+	mustCreate(t, store, fixtureTask)
+	actionID := mustAction(t, store, fixtureTask, "read_file", `{"path":"a.txt"}`, "fp-read-a", "sig-alpha")
+	execID := mustToolAttempt(t, store, fixtureTask, actionID, "read_file", `{"path":"a.txt"}`, 1)
+	mustCompleteTool(t, store, fixtureTask, execID, "obs-000001", "read_file", "alpha\n")
+
+	plan, err := recovery.Resume(context.Background(), store, recovery.Options{TaskID: fixtureTask})
+	if err != nil {
+		t.Fatalf("Resume(): %v", err)
+	}
+	want := "attempt " + execID + ": tool read_file action " + actionID + " status completed evidence obs-000001"
+	if !strings.Contains(plan.Seed.Context, want) {
+		t.Fatalf("Seed.Context missing attempt relation %q:\n%s", want, plan.Seed.Context)
 	}
 }

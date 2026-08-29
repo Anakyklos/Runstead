@@ -309,17 +309,61 @@ They are never the source of task truth.
 
 A remote session or provider adapter can fail without invalidating the task.
 
-On recovery, Runstead reconstructs a bounded context from:
+On recovery, Runstead reconstructs model context through the
+evidence-preserving context compiler (issue #51, below) and may create a new
+upstream conversation, use the same provider with a new session or resume
+through another compatible adapter. Reconstruction never means re-executing
+historical calls: the run counters, grounding set and repeat guard continue
+seeded from persisted state.
 
-- original objective;
-- current plan or working summary;
-- relevant files and hashes;
-- completed actions;
-- latest verified observations;
-- unresolved errors;
-- remaining constraints.
+## Context compiler (issue #51)
 
-It may create a new upstream conversation, use the same provider with a new session or resume through another compatible adapter.
+The model-facing context is a deterministic, bounded projection of
+authoritative durable task state, not an ever-growing transcript.
+
+`internal/context` compiles the persisted `state.RecoverySnapshot` (plus
+typed pending approvals and the workspace signature known at compile time)
+into a typed `Compiled` projection with:
+
+- **Authority model** — authoritative facts (objective, lifecycle, consumed
+  constraints, actions and attempts, evidence ids and bounded content,
+  failures, uncertain effects, pending approvals, remaining acceptance
+  checks, latest verification decision, workspace signatures) are separated
+  structurally from non-authoritative notes (model summaries/inferences),
+  which are explicitly marked and can never satisfy verification.
+- **Provenance** — every authoritative fact carries an origin (evidence,
+  execution, action id, plan digest, approval row, snapshot task) tracing it
+  to persisted state or environment evidence.
+- **Boundedness** — mandatory/pinned content (including every evidence id
+  required by pending checks) is byte-accounted before rendering; if it does
+  not fit the budget the compile fails with `ErrBudgetExhausted` before any
+  provider dispatch. Degradable detail (observation content, per-item detail
+  lines) is selected in fixed order until the budget is exhausted; every
+  skip is recorded in the diagnostics. No silent truncation exists.
+- **Determinism** — equal input + equal budget + equal compiler version
+  produce byte-identical output; explicit sort keys (evidence id, execution
+  id, action id, approval order) and no map-order dependence.
+- **Staleness** — workspace-derived facts carry their recorded signature and
+  a classification (current / needs-refresh / unverified-current) derived
+  from the current signature; classification is presentation only and never
+  alters verifier authority.
+- **Diagnostics** — `Compiled.RenderDiagnostics()` exposes sanitized
+  metadata (version, budget bytes, per-kind counts, omission count) through
+  the recovery trace (`recovery_context` line); full context and item values
+  are never dumped.
+
+`internal/recovery.BuildContext` is the adapter over the compiler: it keeps
+the `Context{Text, EvidenceIDs, Chars}` seed contract consumed by the agent
+loop (`transcript.recovery(...)`), adds `Diagnostics`, and propagates budget
+exhaustion as a fail-closed resume error. The compiler introduces no
+persistence, no migration, no SQL and no new dependency.
+
+Limitations: acceptance per-check status is derived from the latest
+verification attempt; an unparseable plan renders as explicitly unavailable
+("acceptance plan unavailable"), never as all-passed. The current workspace
+signature is supplied by the pipeline when known; otherwise workspace facts
+render as unverified-current. Context compaction of long conversations
+remains deferred to the plugin/composable-provider tracks.
 
 ## Verification
 

@@ -72,6 +72,15 @@ func (g *repeatGuard) seed(fingerprint, signature string) {
 	g.seen[fingerprint] = signature
 }
 
+// WorkspaceSignature is the exported form of workspaceSignature: the same
+// bounded, deterministic marker the loop records on accepted actions. The
+// recovery pipeline feeds it as the current workspace signature so compiled
+// workspace facts can be classified (current / needs-refresh /
+// unverified-current) without the compiler ever touching the workspace.
+func WorkspaceSignature(ctx context.Context, root string) (string, error) {
+	return workspaceSignature(ctx, root)
+}
+
 // workspaceSignature is a bounded, deterministic marker of workspace state used
 // only as a loop-guard input. It hashes sorted relative paths with type, size,
 // modification time and small-file content, skipping the git directory.

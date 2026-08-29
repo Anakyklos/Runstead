@@ -452,8 +452,14 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	// store: reconciliation may have applied a conservative debit (receipt-aware
 	// attempts) that the pre-pipeline restored governor cannot see.
 	plan, err := recovery.Resume(ctx, store, recovery.Options{
-		TaskID: taskID,
-		Trace:  traceSink,
+		TaskID:           taskID,
+		Trace:            traceSink,
+		PendingApprovals: store.PendingApprovals,
+		// The current workspace signature is observed through the same
+		// bounded marker the loop records on accepted actions; the compiler
+		// only receives the typed value. Observation failures keep the
+		// signature unavailable (unverified-current), never a guess.
+		WorkspaceSignature: agent.WorkspaceSignature,
 		Blocked: func() (bool, string) {
 			snapshot, ok, loadErr := store.GovernorState(ctx)
 			if loadErr != nil || !ok {

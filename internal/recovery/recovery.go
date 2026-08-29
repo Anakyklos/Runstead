@@ -91,6 +91,24 @@ type Options struct {
 	Trace agent.TraceSink
 	// Budget bounds the reconstructed model context. Zero uses DefaultBudget.
 	Budget Budget
+	// PendingApprovals optionally loads the typed pending approval rows of
+	// the task for the context projection. When non-nil, a load error fails
+	// the resume closed. When nil, the projection renders approvals as
+	// explicitly absent.
+	PendingApprovals func(ctx context.Context, taskID string) ([]state.PendingApproval, error)
+	// CurrentWorkspaceSignature optionally supplies the workspace signature
+	// known at compile time so workspace-derived facts are classified
+	// (current/needs-refresh/unverified-current). Empty leaves them
+	// unverified-current.
+	CurrentWorkspaceSignature string
+	// WorkspaceSignature optionally observes the CURRENT workspace
+	// signature through the same bounded marker the loop records on
+	// accepted actions (agent.WorkspaceSignature in the CLI wiring). The
+	// observation belongs to the caller/workspace-capable layer; the
+	// compiler stays pure. When nil, or when the observation fails, the
+	// signature is treated as unavailable and workspace facts render as
+	// unverified-current (never guessed).
+	WorkspaceSignature func(ctx context.Context, workspace string) (string, error)
 	// Blocked is an optional callback over the restored account governor
 	// reporting whether automatic continuation is currently blocked by
 	// account-protection policy. When it reports blocked, the pipeline
@@ -293,9 +311,32 @@ func Resume(ctx context.Context, store *state.Store, options Options) (*Plan, er
 		}
 	}
 
-	// Reconstruct the bounded model context from verified progress, unresolved
-	// failures, uncertain attempts and the persisted objective/constraints.
-	context := BuildContext(snapshot, budget)
+	// Reconstruct the bounded model context through the evidence-preserving
+	// context compiler (issue #51): a deterministic typed projection of the
+	// authoritative snapshot. Mandatory content that does not fit the budget
+	// fails the resume closed BEFORE any provider dispatch; no truncated
+	// projection is ever presented to the model.
+	currentSignature := options.CurrentWorkspaceSignature
+	if currentSignature == "" && options.WorkspaceSignature != nil && snapshot.Task.Workspace != "" {
+		observed, signatureErr := options.WorkspaceSignature(ctx, snapshot.Task.Workspace)
+		if signatureErr == nil {
+			currentSignature = observed
+		}
+		// An observation error leaves the signature unavailable: workspace
+		// facts render as unverified-current instead of being guessed.
+	}
+	contextOptions := []InputOption{WithCurrentWorkspaceSignature(currentSignature)}
+	if options.PendingApprovals != nil {
+		approvals, approvalErr := options.PendingApprovals(ctx, options.TaskID)
+		if approvalErr != nil {
+			return nil, fmt.Errorf("load pending approvals for context projection: %w", approvalErr)
+		}
+		contextOptions = append(contextOptions, WithPendingApprovals(approvals))
+	}
+	context := BuildContext(snapshot, budget, contextOptions...)
+	if context.Err != nil {
+		return nil, fmt.Errorf("reconstruct model context: %w", context.Err)
+	}
 	if err := store.AppendRecoveryEvent(ctx, options.TaskID, "recovery_context_reconstructed", map[string]any{
 		"evidence_ids":                 context.EvidenceIDs,
 		"reconciled_tool_attempts":     plan.ReconciledToolAttempts,
@@ -305,8 +346,9 @@ func Resume(ctx context.Context, store *state.Store, options Options) (*Plan, er
 	}); err != nil {
 		return nil, fmt.Errorf("persist recovery context event: %w", err)
 	}
-	trace.emit(agent.TraceRecoveryContext, fmt.Sprintf("reconstructed %d-byte context with %d evidence ids",
-		context.Chars, len(context.EvidenceIDs)))
+	trace.emit(agent.TraceRecoveryContext, fmt.Sprintf(
+		"reconstructed %d-byte context with %d evidence ids; compiler %s",
+		context.Chars, len(context.EvidenceIDs), context.Diagnostics.CompilerVersion))
 
 	seed := buildSeed(snapshot, context, trace.sequence)
 	plan.NextEvidenceSequence = nextEvidence
@@ -515,6 +557,18 @@ func classifyProviderAttempt(attempt state.RecoveryProviderAttempt) providerClas
 		// planned/prepared/running/uncertain
 		return providerConservative
 	}
+}
+
+// rejectedCount counts persisted actions that were rejected by policy; it
+// seeds the repeated-action budget so the resumed run continues the guard.
+func rejectedCount(snapshot *state.RecoverySnapshot) int {
+	count := 0
+	for _, action := range snapshot.Actions {
+		if action.Status == "rejected" {
+			count++
+		}
+	}
+	return count
 }
 
 // buildSeed reconstructs the agent loop seed from the persisted snapshot:
