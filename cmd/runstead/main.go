@@ -484,7 +484,9 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 			fmt.Fprintf(errOut, "run: %v\n", err)
 			return exitUsage
 		}
-		if err := bootstrapTaskForWorkUnits(ctx, store, taskID, taskPrompt, cfg.Workspace, model, acceptance); err != nil {
+		if err := bootstrapTaskForWorkUnits(ctx, store, taskID, taskPrompt, cfg.Workspace, model, acceptance,
+			providerIdentity, writePolicyConfig.Spec(), recipePolicyConfig.RecipeSpec(recipeIDs(recipes)),
+			recipes.Digest(), acceptanceDigest, limits, registry); err != nil {
 			fmt.Fprintf(errOut, "run: %v\n", err)
 			return exitUnavailable
 		}

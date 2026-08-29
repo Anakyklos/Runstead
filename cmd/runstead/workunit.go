@@ -89,26 +89,21 @@ func registryToolIDs(registry *tools.Registry) []string {
 // parent loop (which normally bootstraps the task), so the durable task row
 // must exist for CreateWorkUnit. Unit and parent loops receive a non-nil
 // (possibly empty) Recovery seed to skip the loop-internal re-bootstrap.
-func bootstrapTaskForWorkUnits(ctx context.Context, store *state.Store, taskID, objective, workspace, model string, plan *verifier.Plan) error {
-	if err := store.CreateTask(ctx, state.TaskRecord{
-		TaskID: taskID, Objective: objective, Workspace: workspace, Model: model,
-		ConfigJSON: []byte(`{"max_steps":24}`),
-	}); err != nil {
-		return fmt.Errorf("persist task root before work units: %w", err)
-	}
-	if err := store.StartTask(ctx, taskID); err != nil {
-		return fmt.Errorf("start task before work units: %w", err)
-	}
-	if plan != nil {
-		spec, err := json.Marshal(plan)
-		if err != nil {
-			return fmt.Errorf("marshal acceptance plan: %w", err)
-		}
-		if err := store.SaveAcceptancePlan(ctx, taskID, spec, plan.Digest()); err != nil {
-			return fmt.Errorf("save acceptance plan before work units: %w", err)
-		}
-	}
-	return nil
+// It reuses agent.BootstrapTask + agent.ConfigSnapshot, the SAME bootstrap
+// the normal loop uses, so a Work Unit task persists the full authoritative
+// execution configuration (provider identity, protocol/config identity,
+// exact model, policies, recipe catalog digest, acceptance digest, limits).
+// Resume then validates provider/model/config continuity and rejects drift
+// exactly like a normal task (issue #106 review). There is deliberately no
+// reduced parallel bootstrap.
+func bootstrapTaskForWorkUnits(ctx context.Context, store *state.Store, taskID, objective, workspace, model string, plan *verifier.Plan, identity provider.Identity, writePolicy, recipePolicy, recipeCatalogDigest, acceptanceDigest string, limits agent.Limits, registry *tools.Registry) error {
+	return agent.BootstrapTask(ctx, store, state.TaskRecord{
+		TaskID:     taskID,
+		Objective:  objective,
+		Workspace:  workspace,
+		Model:      model,
+		ConfigJSON: agent.ConfigSnapshot(registry, model, identity, writePolicy, recipePolicy, recipeCatalogDigest, acceptanceDigest, limits),
+	}, plan, registry)
 }
 
 // runUnitLoop executes ONE Work Unit through the existing agent loop with the
@@ -123,6 +118,23 @@ func runUnitLoop(ctx context.Context, pieces unitLoopPieces, taskID string, unit
 	if unit.StepBudget > 0 {
 		limits.MaxSteps = unit.StepBudget
 	}
+	// Capability/workspace enforcement (issue #106 review): the unit runs
+	// inside a RESTRICTED registry view. Driver.ValidateEnvelope validates
+	// the declaration; this is the runtime boundary. Tools outside the
+	// unit's declared envelope are not registered for the unit's session:
+	// the protocol parser rejects them deterministically (unknown_tool
+	// correction) BEFORE any action record, policy decision or effect, and
+	// the registry refuses to execute them as a second line of defense.
+	// WorkspaceScope bounds every tool to a sub-root of the task workspace.
+	// An empty tool list is a valid fail-closed envelope (no tools at all).
+	registry := pieces.registry
+	if len(unit.Tools) > 0 || strings.TrimSpace(unit.WorkspaceScope) != "" {
+		restricted, err := pieces.registry.Restricted(unit.Tools, unit.WorkspaceScope)
+		if err != nil {
+			return workunit.RunResult{}, fmt.Errorf("work unit %s capability envelope: %w", unit.WorkUnitID, err)
+		}
+		registry = restricted
+	}
 	var plan *verifier.Plan
 	if strings.TrimSpace(unit.AcceptancePlanSpec) != "" {
 		parsed, err := verifier.ParsePlan([]byte(unit.AcceptancePlanSpec))
@@ -133,7 +145,7 @@ func runUnitLoop(ctx context.Context, pieces unitLoopPieces, taskID string, unit
 	}
 	loop, err := agent.NewLoop(agent.Config{
 		Runner:               pieces.runner,
-		Registry:             pieces.registry,
+		Registry:             registry,
 		Limits:               limits,
 		Model:                pieces.model,
 		ProviderIdentity:     pieces.providerIdentity,
@@ -143,7 +155,7 @@ func runUnitLoop(ctx context.Context, pieces unitLoopPieces, taskID string, unit
 		WritePolicy:          pieces.writePolicy,
 		RecipePolicy:         pieces.recipePolicy,
 		RecipeCatalogDigest:  pieces.recipeCatalogDigest,
-		Verifier:             verifier.New(pieces.registry, plan),
+		Verifier:             verifier.New(registry, plan),
 		AcceptancePlanDigest: unit.AcceptanceDigest,
 		Recovery:             pieces.recovery,
 	})

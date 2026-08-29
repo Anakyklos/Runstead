@@ -453,6 +453,26 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		}
 	}
 
+	// Authoritative Work Unit parent gate (issue #106 review): persisted Work
+	// Units that are not all completed keep the parent completion gate open
+	// REGARDLESS of whether the operator re-supplies --workunits. Omitting the
+	// file can never let the parent loop run around open units. The gate sits
+	// before the recovery pipeline so a gated resume does not journal recovery
+	// events or dispatch the parent. (The state-layer FinalizeTask guard is
+	// the second line: no code path can persist 'completed' around open
+	// units.)
+	if workUnitsFile == "" {
+		open, openErr := store.HasOpenWorkUnits(ctx, taskID)
+		if openErr != nil {
+			fmt.Fprintf(errOut, "resume: work units: %v\n", openErr)
+			return exitCorrupt
+		}
+		if open {
+			fmt.Fprintf(errOut, "resume: task %q has persisted open work units; the parent cannot run until they are resolved. Re-supply --workunits to continue the serial chain.\n", taskID)
+			return exitWorkUnitGated
+		}
+	}
+
 	// The recovery pipeline: load persisted history, classify and reconcile
 	// interrupted attempts, decide whether automatic continuation is safe, and
 	// reconstruct the bounded model context. All transitions are journaled.
@@ -563,10 +583,12 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			fmt.Fprintf(errOut, "resume: %v\n", err)
 			return exitUsage
 		}
-		// Resumed unit runs ground evidence and the repeat guard from the
-		// authoritative recovery seed; counters stay per-unit (task-level
-		// attempt accounting stays authoritative via the restored governor).
-		grounding := &agent.RecoverySeed{Evidence: plan.Seed.Evidence, Guard: plan.Seed.Guard}
+		// Resumed unit runs receive the FULL authoritative recovery seed:
+		// the #51-reconstructed model context, the persisted evidence, the
+		// repeat/streak guards and the task counters. Only the turn/attempt
+		// counters are pinned to the unit's OWN persisted history so the
+		// unit's budgets and request-id namespace continue per unit (issue
+		// #106 review).
 		pieces := unitLoopPieces{
 			runner:              executor,
 			registry:            registry,
@@ -579,7 +601,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			recipePolicy:        resumeRecipePolicy.RecipeSpec(recipeIDs(resumeRecipes)),
 			recipeCatalogDigest: resumeRecipes.Digest(),
 			limits:              limits,
-			recovery:            grounding,
+			recovery:            plan.Seed,
 		}
 		chainErr := runWorkUnitChain(ctx, store, taskID, workspacePath, registry, definitions,
 			func(ctx context.Context, unit state.WorkUnit) (workunit.RunResult, error) {
@@ -588,12 +610,29 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 				// with the interrupted conversation (duplicate-request
 				// protection is authoritative across restart).
 				unitPieces := pieces
-				unitSeed := *grounding
+				unitSeed := *plan.Seed
 				if count, err := store.ProviderAttemptCount(ctx, taskID, unit.WorkUnitID); err != nil {
 					return workunit.RunResult{}, fmt.Errorf("work unit %s counters: %w", unit.WorkUnitID, err)
 				} else if count > 0 {
 					unitSeed.Turns = count
 					unitSeed.Attempts = count
+				}
+				// The Work Unit context budget bounds the model-facing
+				// projection of THIS unit's resumed session: the context is
+				// recompiled through the evidence-preserving compiler (#51)
+				// from the CURRENT authoritative snapshot (units already
+				// reset to ready), and mandatory content that does not fit
+				// fails the resume closed before any provider dispatch.
+				if unit.ContextBudget > 0 {
+					snapshot, snapshotErr := store.LoadRecoverySnapshot(ctx, taskID)
+					if snapshotErr != nil {
+						return workunit.RunResult{}, fmt.Errorf("work unit %s context snapshot: %w", unit.WorkUnitID, snapshotErr)
+					}
+					unitContext := recovery.BuildContext(snapshot, recovery.Budget{MaxContextBytes: unit.ContextBudget})
+					if unitContext.Err != nil {
+						return workunit.RunResult{}, fmt.Errorf("work unit %s context: %w", unit.WorkUnitID, unitContext.Err)
+					}
+					unitSeed.Context = unitContext.Text
 				}
 				unitPieces.recovery = &unitSeed
 				return runUnitLoop(ctx, unitPieces, taskID, unit)
