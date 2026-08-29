@@ -44,14 +44,19 @@ func newDriver(t *testing.T, taskID string) (*Driver, *state.Store) {
 // any effect (issue #106 test class 4).
 func TestValidateEnvelopeEscalation(t *testing.T) {
 	driver, _ := newDriver(t, "wu-task")
-	if err := driver.ValidateEnvelope([]string{"read_file"}, "/workspace/sub"); err != nil {
+	if err := driver.ValidateEnvelope([]string{"read_file"}, "sub/dir"); err != nil {
 		t.Fatalf("contained envelope rejected: %v", err)
 	}
 	if err := driver.ValidateEnvelope([]string{"write_file"}, ""); !errors.Is(err, ErrCapabilityEscalation) {
 		t.Fatalf("tool escalation error = %v", err)
 	}
+	// The canonical scope representation is workspace-relative: absolute
+	// paths and traversal are escalation, exactly like the tool resolver.
 	if err := driver.ValidateEnvelope([]string{"read_file"}, "/other"); !errors.Is(err, ErrCapabilityEscalation) {
-		t.Fatalf("workspace escalation error = %v", err)
+		t.Fatalf("absolute workspace scope error = %v", err)
+	}
+	if err := driver.ValidateEnvelope([]string{"read_file"}, "../escape"); !errors.Is(err, ErrCapabilityEscalation) {
+		t.Fatalf("traversal workspace scope error = %v", err)
 	}
 	if err := driver.ValidateEnvelope(nil, ""); err != nil {
 		t.Fatalf("empty envelope (task default) rejected: %v", err)
@@ -63,14 +68,14 @@ func TestValidateEnvelopeEscalation(t *testing.T) {
 // bypass workspace containment (issue #106 review).
 func TestValidateEnvelopeEmptyToolsDoesNotShortCircuitScope(t *testing.T) {
 	driver, _ := newDriver(t, "wu-task")
-	if err := driver.ValidateEnvelope(nil, "/workspace/inside"); err != nil {
+	if err := driver.ValidateEnvelope(nil, "inside"); err != nil {
 		t.Fatalf("empty tools with contained scope rejected: %v", err)
 	}
 	if err := driver.ValidateEnvelope(nil, "/other"); !errors.Is(err, ErrCapabilityEscalation) {
-		t.Fatalf("empty tools must NOT short-circuit an out-of-parent scope; err = %v", err)
+		t.Fatalf("empty tools must NOT short-circuit an absolute scope; err = %v", err)
 	}
-	if err := driver.ValidateEnvelope([]string{}, "/other"); !errors.Is(err, ErrCapabilityEscalation) {
-		t.Fatalf("explicit empty tool list must NOT short-circuit an out-of-parent scope; err = %v", err)
+	if err := driver.ValidateEnvelope([]string{}, "../escape"); !errors.Is(err, ErrCapabilityEscalation) {
+		t.Fatalf("explicit empty tool list must NOT short-circuit a traversing scope; err = %v", err)
 	}
 }
 
@@ -81,14 +86,14 @@ func TestEnsureDefinitionsDriftFailsClosed(t *testing.T) {
 	driver, _ := newDriver(t, "wu-task")
 	ctx := context.Background()
 	created, _, err := driver.EnsureDefinitions(ctx, []Definition{
-		{WorkUnitID: "wu-1", Objective: "original", Tools: []string{"read_file"}, WorkspaceScope: "/workspace"},
+		{WorkUnitID: "wu-1", Objective: "original", Tools: []string{"read_file"}, WorkspaceScope: "sub"},
 	})
 	if err != nil || created != 1 {
 		t.Fatalf("EnsureDefinitions() = %d, %v", created, err)
 	}
 	// Identical re-supply stays idempotent.
 	created, skipped, err := driver.EnsureDefinitions(ctx, []Definition{
-		{WorkUnitID: "wu-1", Objective: "original", Tools: []string{"read_file"}, WorkspaceScope: "/workspace"},
+		{WorkUnitID: "wu-1", Objective: "original", Tools: []string{"read_file"}, WorkspaceScope: "sub"},
 	})
 	if err != nil || created != 0 || skipped != 1 {
 		t.Fatalf("identical re-supply = %d/%d, %v", created, skipped, err)
@@ -96,7 +101,7 @@ func TestEnsureDefinitionsDriftFailsClosed(t *testing.T) {
 	for _, drifted := range []Definition{
 		{WorkUnitID: "wu-1", Objective: "changed"},
 		{WorkUnitID: "wu-1", Objective: "original", Tools: []string{"read_file", "list_files"}},
-		{WorkUnitID: "wu-1", Objective: "original", Tools: []string{"read_file"}, WorkspaceScope: "/workspace/other"},
+		{WorkUnitID: "wu-1", Objective: "original", Tools: []string{"read_file"}, WorkspaceScope: "sub/other"},
 		{WorkUnitID: "wu-1", Objective: "original", Tools: []string{"read_file"}, ProviderBudget: 9},
 	} {
 		if _, _, err := driver.EnsureDefinitions(ctx, []Definition{drifted}); !errors.Is(err, ErrWorkUnitDefinitionDrift) {

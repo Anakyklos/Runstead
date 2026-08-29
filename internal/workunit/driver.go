@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/RenyEnnos/Runstead/internal/state"
+	"github.com/RenyEnnos/Runstead/internal/tools"
 	"github.com/RenyEnnos/Runstead/internal/verifier"
 )
 
@@ -82,37 +83,29 @@ type Driver struct {
 
 // ValidateEnvelope checks the containment rule
 // workunit capabilities ⊆ parent task capabilities, fail-before-effect.
-func (d *Driver) ValidateEnvelope(tools []string, workspaceScope string) error {
+func (d *Driver) ValidateEnvelope(toolList []string, workspaceScope string) error {
 	allowed := make(map[string]bool, len(d.AllowedTools))
 	for _, tool := range d.AllowedTools {
 		allowed[tool] = true
 	}
-	for _, tool := range tools {
+	for _, tool := range toolList {
 		if !allowed[tool] {
 			return fmt.Errorf("%w: tool %q is not in the parent task envelope", ErrCapabilityEscalation, tool)
 		}
 	}
 	// The workspace scope is validated unconditionally: an empty tool list
 	// is a valid fail-closed envelope (no tools) and must never short-circuit
-	// scope containment (issue #106 review).
-	if workspaceScope != "" && d.TaskWorkspace != "" && !pathWithin(workspaceScope, d.TaskWorkspace) {
-		return fmt.Errorf("%w: scope %q is outside the parent workspace %q", ErrCapabilityEscalation, workspaceScope, d.TaskWorkspace)
+	// scope containment (issue #106 review). The canonical representation is
+	// WORKSPACE-RELATIVE (matching tools.NormalizeWorkspacePath): absolute
+	// paths and ".." traversal are rejected here, and every tool execution
+	// resolves through the same resolver so a scope can never escape the
+	// parent workspace.
+	if strings.TrimSpace(workspaceScope) != "" {
+		if _, failure := tools.NormalizeWorkspacePath(workspaceScope); failure != nil {
+			return fmt.Errorf("%w: workspace scope %q must be a valid relative path inside the task workspace (%v)", ErrCapabilityEscalation, workspaceScope, failure)
+		}
 	}
 	return nil
-}
-
-// pathWithin reports whether scope is inside root (both are slash-separated
-// workspace-relative paths).
-func pathWithin(scope, root string) bool {
-	scope = strings.TrimSuffix(strings.TrimSpace(scope), "/")
-	root = strings.TrimSuffix(strings.TrimSpace(root), "/")
-	if scope == "" {
-		return false
-	}
-	if root == "" || scope == root || strings.HasPrefix(scope, root+"/") {
-		return true
-	}
-	return false
 }
 
 // EnsureDefinitions idempotently creates the missing operator Work Units. It
@@ -328,6 +321,13 @@ func (d *Driver) RunAll(ctx context.Context, run RunFunc) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		// Operator-resolved approvals unblock units that paused on
+		// approval_required: the transition is tied to authoritative
+		// resolution state (zero pending approvals for the unit's own
+		// actions), never to an arbitrary blocked reason.
+		if err := d.resolveBlockedWorkUnits(ctx); err != nil {
+			return err
+		}
 		ready, err := d.Store.ReadyWorkUnits(ctx, d.TaskID)
 		if err != nil {
 			return err
@@ -410,6 +410,32 @@ func (d *Driver) RunAll(ctx context.Context, run RunFunc) error {
 			return fmt.Errorf("work unit %s interrupted before a terminal outcome", unit.WorkUnitID)
 		}
 	}
+}
+
+// resolveBlockedWorkUnits moves approval-blocked units back to ready after
+// the operator resolved every pending approval of the unit's actions. Any
+// other blocking reason stays untouched: the transition requires BOTH the
+// persisted approval cause AND the authoritative zero-pending state.
+func (d *Driver) resolveBlockedWorkUnits(ctx context.Context) error {
+	units, err := d.Store.ListWorkUnits(ctx, d.TaskID)
+	if err != nil {
+		return err
+	}
+	for _, unit := range units {
+		if unit.Status != "blocked" || !strings.Contains(unit.BlockingReason, "approval") {
+			continue
+		}
+		pending, err := d.Store.WorkUnitPendingApprovalCount(ctx, d.TaskID, unit.WorkUnitID)
+		if err != nil {
+			return err
+		}
+		if pending == 0 {
+			if err := d.Store.TransitionWorkUnit(ctx, d.TaskID, unit.WorkUnitID, "blocked", "ready", "operator approval resolved"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // OpenUnits returns the currently open units (diagnostics).

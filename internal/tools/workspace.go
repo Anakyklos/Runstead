@@ -149,6 +149,15 @@ func (w workspace) resolve(input string) (resolvedPath, *Failure) {
 }
 
 func normalizeRelativePath(input string) (string, *Failure) {
+	return NormalizeWorkspacePath(input)
+}
+
+// NormalizeWorkspacePath is the canonical workspace-relative path check used
+// by every tool and by Work Unit workspace-scope validation (issue #106):
+// relative only (no absolute paths, no volume names), no ".." traversal, no
+// embedded NUL. The returned value is the slash-form cleaned path. This is
+// the SINGLE coordinate system for workspace scopes.
+func NormalizeWorkspacePath(input string) (string, *Failure) {
 	if input == "" || strings.IndexByte(input, 0) >= 0 {
 		return "", newFailure(FailureInvalidArguments)
 	}
