@@ -320,6 +320,17 @@ func Resume(ctx context.Context, store *state.Store, options Options) (*Plan, er
 		return nil, fmt.Errorf("reset interrupted work units: %w", resetErr)
 	}
 
+	// The Work Unit lifecycle mutation above (running -> ready) changes the
+	// authoritative state AFTER the post-reconciliation reload. Reload once
+	// more so the reconstructed context, evidence set and repeat guard can
+	// NEVER project a unit as 'running' that SQLite already persisted as
+	// 'ready' (issue #106 review): context is compiled from the same state
+	// the resumed loop will read.
+	snapshot, err = store.LoadRecoverySnapshot(ctx, options.TaskID)
+	if err != nil {
+		return nil, fmt.Errorf("reload recovery snapshot after work unit reset: %w", err)
+	}
+
 	// Reconstruct the bounded model context through the evidence-preserving
 	// context compiler (issue #51): a deterministic typed projection of the
 	// authoritative snapshot. Mandatory content that does not fit the budget
