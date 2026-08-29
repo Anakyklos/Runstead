@@ -185,13 +185,20 @@ func ensureIdenticalDefinition(existing state.WorkUnit, def Definition, digest s
 	if strings.TrimSpace(existing.Objective) != strings.TrimSpace(def.Objective) {
 		return fmt.Errorf("%w: objective changed", ErrWorkUnitDefinitionDrift)
 	}
+	if strings.TrimSpace(existing.ParentWorkUnitID) != strings.TrimSpace(def.ParentWorkUnitID) {
+		return fmt.Errorf("%w: parent work unit changed", ErrWorkUnitDefinitionDrift)
+	}
 	if strings.TrimSpace(existing.WorkspaceScope) != strings.TrimSpace(def.WorkspaceScope) {
 		return fmt.Errorf("%w: workspace scope changed", ErrWorkUnitDefinitionDrift)
 	}
 	if existing.ContextBudget != def.ContextBudget || existing.ProviderBudget != def.ProviderBudget || existing.StepBudget != def.StepBudget {
 		return fmt.Errorf("%w: budgets changed", ErrWorkUnitDefinitionDrift)
 	}
-	if !stringSetsEqual(existing.Tools, def.Tools) {
+	// The nil-vs-explicit-empty distinction is SECURITY-SIGNIFICANT (issue
+	// #106 review): omitted tools = task default surface, explicit [] =
+	// no tools. A persisted omitted envelope re-supplied as [] is material
+	// narrowing and must fail, never be treated as identical.
+	if !toolEnvelopeIdentical(existing.Tools, def.Tools) {
 		return fmt.Errorf("%w: tool envelope changed", ErrWorkUnitDefinitionDrift)
 	}
 	if !stringSetsEqual(existing.Dependencies, def.Dependencies) {
@@ -201,6 +208,16 @@ func ensureIdenticalDefinition(existing state.WorkUnit, def Definition, digest s
 		return fmt.Errorf("%w: acceptance plan changed", ErrWorkUnitDefinitionDrift)
 	}
 	return nil
+}
+
+// toolEnvelopeIdentical preserves the nil (omitted = task default) versus
+// explicitly-empty ([]) identity of the tool envelope: both the nil-ness and
+// the unordered set must match.
+func toolEnvelopeIdentical(a, b []string) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	return stringSetsEqual(a, b)
 }
 
 // stringSetsEqual compares two lists as unordered sets with non-empty trimmed
@@ -248,6 +265,17 @@ func topologicalDefinitions(definitions []Definition) ([]Definition, error) {
 				return nil, fmt.Errorf("work unit %s depends on undefined unit %q", def.WorkUnitID, dep)
 			}
 			outgoing[dep] = append(outgoing[dep], def.WorkUnitID)
+			indegree[def.WorkUnitID]++
+		}
+		// Parent relationships are graph edges of the same durable contract
+		// (CreateWorkUnit requires the parent to exist), so ordering and
+		// cycle validation cover them identically to dependencies.
+		if strings.TrimSpace(def.ParentWorkUnitID) != "" {
+			parent := def.ParentWorkUnitID
+			if _, ok := byID[parent]; !ok {
+				return nil, fmt.Errorf("work unit %s references undefined parent %q", def.WorkUnitID, parent)
+			}
+			outgoing[parent] = append(outgoing[parent], def.WorkUnitID)
 			indegree[def.WorkUnitID]++
 		}
 	}
