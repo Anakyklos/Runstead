@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -247,50 +248,246 @@ func TestWorkUnitConcurrencyInspectShowsEffective(t *testing.T) {
 	}
 }
 
-// TestWorkUnitConcurrencyResumeDriftFailsClosed proves acceptance item 17:
-// resume REJECTS an explicitly different scheduler configuration instead of
-// silently changing the task contract, and adopts the persisted value when
-// the flag is omitted. The fixture crashes with two open units under
-// concurrency=2 (deterministic: both units are 'running' when the crash
-// fires after their first tool results).
-func TestWorkUnitConcurrencyResumeDriftFailsClosed(t *testing.T) {
-	workspace := crashWorkspace(t)
+// testUnitDefinition builds one unit-definition string for the shared
+// interrupted-chain fixture.
+func testUnitDefinition(id, objective, path string) string {
+	return `  {"work_unit_id":"` + id + `","objective":"` + objective + `","tools":["read_file"],"acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"` + path + `"}]}}`
+}
+
+// cancelOnSecondTurn cancels the run context at the first SECOND-TURN
+// provider request of either unit (detected from the loop's per-unit request
+// id `taskID-unitID-turn`). Whatever the governor queue interleaving, the
+// units' FIRST turns are always served (each executes its scripted read), so
+// both units are durably 'running' with their first reads committed when the
+// chain stops: the exact durable state of a crash with two active units,
+// produced without wall-clock waits. The only interleaving variance is
+// whether the cancel lands before or after the second unit's first turn; the
+// fixture returns the observed committed counts so every assertion is exact.
+type cancelOnSecondTurn struct {
+	mu       sync.Mutex
+	canceled bool
+	cancel   context.CancelFunc
+}
+
+// reject reports whether this request must be rejected because it is a
+// second-turn request (the interruption point).
+func (p *cancelOnSecondTurn) reject(requestID string) bool {
+	index := strings.LastIndex(requestID, "-")
+	if index < 0 {
+		return false
+	}
+	turn := strings.TrimPrefix(requestID[index:], "-")
+	if turn == "1" || turn == "0001" || turn == "01" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.canceled {
+		p.canceled = true
+		p.cancel()
+	}
+	return true
+}
+
+// interruptedConcurrentChainFixture builds a task with two independent
+// read-only units under the PERSISTED concurrency=2 contract, executes the
+// REAL governed loops through properly keyed scripted responses, and
+// interrupts the chain deterministically after both units dispatched and
+// executed their first read (canceled context; the durable state is
+// byte-identical to a multi-active crash: both units 'running' with their
+// tool results committed). It returns stateDir and taskID.
+func interruptedConcurrentChainFixture(t *testing.T) (string, string, int, int) {
+	t.Helper()
+	workspace := t.TempDir()
 	for _, file := range []string{"a.txt", "b.txt", "c.txt", "d.txt"} {
 		if err := os.WriteFile(filepath.Join(workspace, file), []byte(file+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	definitions := `[
-	  {"work_unit_id":"wu-a","objective":"inspect a.txt","tools":["read_file"],"acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"a.txt"}]}},
-	  {"work_unit_id":"wu-b","objective":"inspect b.txt","tools":["read_file"],"acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"b.txt"}]}}
-	]`
-	workUnitsFile := workUnitsFileFor(t, definitions)
-	runScript := crashScript(t,
-		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"b.txt"}}</runstead_action>`,
-	)
-	stateDir := t.TempDir()
-	code, output := runCrashedRunAfter(t,
-		append(crashRunArgs(runScript, workspace, stateDir), "--workunits", workUnitsFile,
-			"--workunit-concurrency", "2", "--acceptance", acceptanceFor(t, "a.txt"), "--min-start-interval", "1ms"),
-		"tool_tx2_after", 2)
-	if code != 42 {
-		t.Fatalf("crash helper exit = %d, want 42\n%s", code, output)
+	plan, err := verifier.ParsePlan([]byte(wuAcceptedPlan))
+	if err != nil {
+		t.Fatal(err)
 	}
-	taskID := taskIDFromOutput(t, output)
+	stateDir := t.TempDir()
+	store := openWorkUnitStore(t, stateDir)
+	ctx := context.Background()
+	taskID := "wu-interrupted"
+	registry, err := tools.NewRegistry(tools.Options{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Mirror the production bootstrap exactly (wuRealConfigSnapshot's
+	// resolution), plus the PERSISTED scheduler contract N=2.
+	writePolicyConfig, err := resolveWritePolicy("", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipes, err := resolveRecipeCatalog("", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipePolicyConfig, err := resolveRecipePolicy("", false, recipes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bootstrapTaskForWorkUnits(ctx, store, taskID, "parent", workspace, "scripted", plan,
+		provider.Identity{}, writePolicyConfig.Spec(), recipePolicyConfig.RecipeSpec(recipeIDs(recipes)),
+		recipes.Digest(), plan.Digest(), agent.DefaultLimits(), registry, 2); err != nil {
+		t.Fatal(err)
+	}
+	definitions := []workunit.Definition{
+		{WorkUnitID: "wu-a", Objective: "inspect a.txt", Tools: []string{"read_file"}, AcceptancePlan: []byte(wuAcceptedPlan)},
+		{WorkUnitID: "wu-b", Objective: "inspect b.txt", Tools: []string{"read_file"}, AcceptancePlan: []byte(wuAcceptedPlan)},
+	}
+	driver := &workunit.Driver{
+		Store:         store,
+		TaskID:        taskID,
+		AllowedTools:  registryToolIDs(registry),
+		TaskWorkspace: workspace,
+		Concurrency:   2,
+	}
+	if _, _, err := driver.EnsureDefinitions(ctx, definitions); err != nil {
+		t.Fatal(err)
+	}
 
-	// Explicit drift must fail closed (usage) before the recovery pipeline
-	// journals anything.
-	resumeScript := crashScript(t,
+	// Each unit's queue has exactly ONE response (its first action). The
+	// cancel-on-second-turn gate cancels the context at the first second-turn
+	// request; every later request is rejected by the canceled context
+	// (admission), never reaching the provider.
+	keyed := &evidenceAwareKeyedClient{
+		db:     openReviewDB(t, stateDir),
+		taskID: taskID,
+		queues: map[string][]string{
+			taskID + "-wu-a": {`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`},
+			taskID + "-wu-b": {`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"b.txt"}}</runstead_action>`},
+		},
+	}
+	interruptCtx, cancel := context.WithCancel(ctx)
+	gate := &cancelOnSecondTurn{cancel: cancel}
+	executor := newPersistentScriptedExecutorFor(t, store, requestBridge{keyed: keyed, gate: gate})
+	pieces := unitLoopPieces{
+		runner:           executor,
+		registry:         registry,
+		model:            "scripted",
+		providerIdentity: provider.Identity{},
+		trace:            func(agent.TraceLine) {},
+		store:            store,
+		policy:           policy.NewStatic(policy.Config{}, nil),
+		limits:           agent.DefaultLimits(),
+		recovery:         &agent.RecoverySeed{},
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- driver.RunAll(interruptCtx, func(ctx context.Context, unit state.WorkUnit) (workunit.RunResult, error) {
+			return runUnitLoop(ctx, pieces, taskID, unit)
+		})
+	}()
+	err = <-errCh
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("interrupted chain error = %v, want wrapped context.Canceled", err)
+	}
+	// Durable state of the multi-active interruption: both units running and
+	// their first reads committed. The only variance across governor queue
+	// interleavings is whether the cancel landed before the second unit's
+	// first turn (attempts=2/tools=1) or after it (attempts=3/tools=2); the
+	// fixture returns the observed committed counts so every later assertion
+	// is exact.
+	db := openReviewDB(t, stateDir)
+	var running int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_units WHERE task_id = ? AND status = 'running'`, taskID).Scan(&running); err != nil {
+		t.Fatal(err)
+	}
+	if running != 2 {
+		t.Fatalf("running units after interruption = %d, want 2 (multi-active)", running)
+	}
+	attemptsPre := workUnitRowCount(t, stateDir, `SELECT COUNT(*) FROM provider_attempts WHERE task_id = ?`, taskID)
+	toolsPre := workUnitRowCount(t, stateDir, `SELECT COUNT(*) FROM tool_results WHERE task_id = ?`, taskID)
+	if attemptsPre < 2 || attemptsPre > 3 || toolsPre < 1 || toolsPre > 2 {
+		t.Fatalf("unexpected interruption shape: attempts=%d tools=%d (want attempts 2..3, tools 1..2)", attemptsPre, toolsPre)
+	}
+	return stateDir, taskID, attemptsPre, toolsPre
+}
+
+// interruptedFixture returns the fixture state variables.
+type interruptedFixture struct {
+	stateDir    string
+	taskID      string
+	attemptsPre int
+	toolsPre    int
+}
+
+func makeInterruptedFixture(t *testing.T) interruptedFixture {
+	t.Helper()
+	stateDir, taskID, attemptsPre, toolsPre := interruptedConcurrentChainFixture(t)
+	return interruptedFixture{stateDir: stateDir, taskID: taskID, attemptsPre: attemptsPre, toolsPre: toolsPre}
+}
+
+// requestBridge forwards provider calls to the cancel gate (which cancels
+// the context at the first second-turn request) and to the keyed client for
+// the first turns.
+type requestBridge struct {
+	keyed *evidenceAwareKeyedClient
+	gate  *cancelOnSecondTurn
+}
+
+func (b requestBridge) RouteSafety() provider.RouteSafety { return provider.SafeRouteSafety() }
+
+func (b requestBridge) Complete(ctx context.Context, request provider.Request) (provider.Response, error) {
+	if b.gate.reject(request.ClientRequestID) {
+		return provider.Response{}, context.Canceled
+	}
+	return b.keyed.Complete(ctx, request)
+}
+
+// wuAcceptedPlanFile writes the exact acceptance document the fixture
+// persisted (wuAcceptedPlan), so `resume --acceptance` matches the persisted
+// digest.
+func wuAcceptedPlanFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "acceptance.json")
+	if err := os.WriteFile(path, []byte(wuAcceptedPlan), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// interruptedResumeScript is the deterministic new-conversation script for a
+// fixture interrupted with two committed reads (obs-000001/2): one resumed
+// read of d.txt (inside every unit's read_file envelope, a new fingerprint),
+// both units' finals citing the seeded obs-000001, then the parent's read of
+// c.txt and its final citing the same seeded value. Every unit's recovery
+// seed contains obs-000001, so no citation depends on queue interleaving.
+func interruptedResumeScript(t *testing.T) string {
+	return writeScript(t,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"d.txt"}}</runstead_action>`,
 		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"unit continued","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"unit continued","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"c.txt"}}</runstead_action>`,
 		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"parent done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
 	)
+}
+
+// TestWorkUnitConcurrencyResumeDriftFailsClosed proves acceptance item 17:
+// resume REJECTS an explicitly different scheduler configuration instead of
+// silently changing the task contract, and adopts the persisted value when
+// the flag is omitted. The fixture interrupts the chain with two open units
+// under the persisted concurrency=2 contract.
+func TestWorkUnitConcurrencyResumeDriftFailsClosed(t *testing.T) {
+	fixture := makeInterruptedFixture(t)
+	stateDir, taskID := fixture.stateDir, fixture.taskID
+	definitions := `[
+	  {"work_unit_id":"wu-a","objective":"inspect a.txt","tools":["read_file"],"acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"a.txt"}]}},
+	  {"work_unit_id":"wu-b","objective":"inspect b.txt","tools":["read_file"],"acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"a.txt"}]}}
+	]`
+	workUnitsFile := workUnitsFileFor(t, definitions)
+	resumeScript := interruptedResumeScript(t)
+	acceptanceFile := wuAcceptedPlanFile(t)
+
+	// Explicit drift must fail closed (usage) before the recovery pipeline
+	// journals anything.
 	driftCode, _, driftErr := runResume(context.Background(),
 		taskID, "--state-dir", stateDir, "--scripted", resumeScript, "--workunits", workUnitsFile,
-		"--workunit-concurrency", "1", "--acceptance", acceptanceFor(t, "a.txt"),
+		"--workunit-concurrency", "1", "--acceptance", acceptanceFile,
 		"--min-start-interval", "1ms", "--log-level", "error")
 	if driftCode != exitUsage {
 		t.Fatalf("drift resume exit = %d, want %d (usage)\nstderr:\n%s", driftCode, exitUsage, driftErr)
@@ -309,13 +506,94 @@ func TestWorkUnitConcurrencyResumeDriftFailsClosed(t *testing.T) {
 	// Omitting the flag adopts the persisted contract (2) and completes.
 	resumeCode, resumeOut, resumeErr := runResume(context.Background(),
 		taskID, "--state-dir", stateDir, "--scripted", resumeScript, "--workunits", workUnitsFile,
-		"--acceptance", acceptanceFor(t, "a.txt"),
+		"--acceptance", acceptanceFile,
 		"--min-start-interval", "1ms", "--log-level", "error")
 	if resumeCode != exitSuccess {
 		t.Fatalf("resume exit = %d, want 0\nstderr:\n%s", resumeCode, resumeErr)
 	}
 	if !strings.Contains(resumeOut, "outcome: completed") {
 		t.Fatalf("resume stdout missing completion:\n%s", resumeOut)
+	}
+}
+
+// TestWorkUnitCrashRestartWithTwoRunningUnits proves acceptance item 14: an
+// interruption with TWO simultaneously active run-only units (durable state
+// identical to a crash: both units 'running', effects committed) is
+// reconstructed from SQLite, never replays completed effects, never blindly
+// replays provider attempts, and reaches parent completion through a brand
+// new conversation via the REAL resume path.
+func TestWorkUnitCrashRestartWithTwoRunningUnits(t *testing.T) {
+	fixture := makeInterruptedFixture(t)
+	stateDir, taskID := fixture.stateDir, fixture.taskID
+	definitions := `[
+	  {"work_unit_id":"wu-a","objective":"inspect a.txt","tools":["read_file"],"acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"a.txt"}]}},
+	  {"work_unit_id":"wu-b","objective":"inspect b.txt","tools":["read_file"],"acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"a.txt"}]}}
+	]`
+	workUnitsFile := workUnitsFileFor(t, definitions)
+
+	// New conversation, same durable contract (the concurrency flag is
+	// OMITTED: the resume adopts the persisted value 2).
+	resumeCode, resumeOut, resumeErr := runResume(context.Background(),
+		taskID, "--state-dir", stateDir, "--scripted", interruptedResumeScript(t), "--workunits", workUnitsFile,
+		"--acceptance", wuAcceptedPlanFile(t), "--min-start-interval", "1ms", "--log-level", "error")
+	if resumeCode != exitSuccess {
+		t.Fatalf("resume exit = %d, want 0\nstderr:\n%s", resumeCode, resumeErr)
+	}
+	if !strings.Contains(resumeOut, "outcome: completed") {
+		t.Fatalf("resume stdout missing completion:\n%s", resumeOut)
+	}
+
+	db := openReviewDB(t, stateDir)
+	// No blind provider replay: every persisted client request id is unique
+	// (resumed loops continue their OWN counters, so no interrupted request
+	// is re-issued under a new identity).
+	var totalRequests, distinctRequests int
+	if err := db.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT client_request_id) FROM provider_attempts WHERE task_id = ?`, taskID).Scan(&totalRequests, &distinctRequests); err != nil {
+		t.Fatal(err)
+	}
+	if totalRequests != distinctRequests {
+		t.Fatalf("provider request ids = %d total / %d distinct; a resumed attempt was re-issued", totalRequests, distinctRequests)
+	}
+	// Exactly-once accounting across the interruption and the resume: the
+	// observed interrupted attempts (2 or 3) plus 3 resumed unit turns and 2
+	// parent turns.
+	if want := fixture.attemptsPre + 5; totalRequests != want {
+		t.Fatalf("provider attempts = %d, want %d (interrupted %d + 3 resumed unit + 2 parent)", totalRequests, want, fixture.attemptsPre)
+	}
+	// Completed effects are never replayed: evidence ids are unique and the
+	// totals are exactly the interrupted reads (2) plus one resumed read and
+	// the parent read.
+	var duplicateEvidence int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM (
+		SELECT evidence_id FROM tool_results WHERE task_id = ?
+		GROUP BY evidence_id HAVING COUNT(*) > 1)`, taskID).Scan(&duplicateEvidence); err != nil {
+		t.Fatal(err)
+	}
+	if duplicateEvidence != 0 {
+		t.Fatalf("duplicated evidence ids = %d (an effect was replayed)", duplicateEvidence)
+	}
+	if got := workUnitRowCount(t, stateDir, `SELECT COUNT(*) FROM tool_results WHERE task_id = ?`, taskID); got != fixture.toolsPre+2 {
+		t.Fatalf("tool_results after resume = %d, want %d (interrupted reads %d + 1 resumed read + 1 parent read)", got, fixture.toolsPre+2, fixture.toolsPre)
+	}
+	// Each unit completed exactly once with its own verification; the parent
+	// completed too.
+	ctx := context.Background()
+	store := openWorkUnitStore(t, stateDir)
+	for _, id := range []string{"wu-a", "wu-b"} {
+		unit, err := store.GetWorkUnit(ctx, taskID, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if unit.Status != "completed" {
+			t.Fatalf("%s = %s, want completed", id, unit.Status)
+		}
+		var verifications int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM verification_attempts WHERE task_id = ? AND work_unit_id = ? AND decision = 'passed'`, taskID, id).Scan(&verifications); err != nil {
+			t.Fatal(err)
+		}
+		if verifications != 1 {
+			t.Fatalf("%s passed verifications = %d, want 1", id, verifications)
+		}
 	}
 }
 
@@ -477,128 +755,5 @@ func TestWorkUnitConcurrentReadOnlyLoopsE2E(t *testing.T) {
 	}
 	if misDebited != 0 {
 		t.Fatalf("under/over-debited attempts = %d", misDebited)
-	}
-}
-
-// TestWorkUnitCrashRestartWithTwoRunningUnits proves acceptance item 14: a
-// crash with TWO simultaneously active read-only units reconstructs both
-// from SQLite, never replays completed effects, never blindly replays
-// provider attempts, and reaches parent completion through a new
-// conversation.
-func TestWorkUnitCrashRestartWithTwoRunningUnits(t *testing.T) {
-	workspace := crashWorkspace(t)
-	for _, file := range []string{"a.txt", "b.txt", "c.txt", "d.txt"} {
-		if err := os.WriteFile(filepath.Join(workspace, file), []byte(file+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	definitions := `[
-	  {"work_unit_id":"wu-a","objective":"inspect a.txt","tools":["read_file"],"acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"a.txt"}]}},
-	  {"work_unit_id":"wu-b","objective":"inspect b.txt","tools":["read_file"],"acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"b.txt"}]}}
-	]`
-	workUnitsFile := workUnitsFileFor(t, definitions)
-
-	// Run A (crash subprocess): two read-only units are dispatched together
-	// and each executes its first read; then the process dies after the
-	// second tool result. Both units are durably 'running' when the crash
-	// fires.
-	scriptA := crashScript(t,
-		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
-		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"b.txt"}}</runstead_action>`,
-	)
-	stateDir := t.TempDir()
-	code, output := runCrashedRunAfter(t,
-		append(crashRunArgs(scriptA, workspace, stateDir), "--workunits", workUnitsFile,
-			"--workunit-concurrency", "2", "--acceptance", acceptanceFor(t, "a.txt"), "--min-start-interval", "1ms"),
-		"tool_tx2_after", 2)
-	if code != 42 {
-		t.Fatalf("crash helper exit = %d, want 42\n%s", code, output)
-	}
-	taskID := taskIDFromOutput(t, output)
-	db := openReviewDB(t, stateDir)
-	var running int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM work_units WHERE task_id = ? AND status = 'running'`, taskID).Scan(&running); err != nil {
-		t.Fatal(err)
-	}
-	if running != 2 {
-		t.Fatalf("running units after crash = %d, want 2 (multi-active crash)", running)
-	}
-	var toolResults int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM tool_results WHERE task_id = ?`, taskID).Scan(&toolResults); err != nil {
-		t.Fatal(err)
-	}
-	if toolResults != 2 {
-		t.Fatalf("tool_results after crash = %d, want 2 (each unit's first action)", toolResults)
-	}
-
-	// Run B (new conversation): both units reconcile and re-run only from
-	// durable evidence. The resumed actions stay INSIDE each unit's read_file
-	// envelope (restricted views reject out-of-envelope tools), use files the
-	// units never read before (no repeated-action correction can depend on
-	// queue interleaving), and the finals cite the historical seeded evidence
-	// (obs-000001) every resumed loop carries. Exactly one unit performs the
-	// resumed read (whichever also consumes the first final); the other
-	// completes on its first-turn final. The parent inspects c.txt.
-	scriptB := crashScript(t,
-		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"d.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"unit continued","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"unit continued","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
-		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"c.txt"}}</runstead_action>`,
-		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"parent done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
-	)
-	resumeCode, resumeOut, resumeErr := runResume(context.Background(),
-		taskID, "--state-dir", stateDir, "--scripted", scriptB, "--workunits", workUnitsFile,
-		"--acceptance", acceptanceFor(t, "a.txt"), "--min-start-interval", "1ms", "--log-level", "error")
-	if resumeCode != exitSuccess {
-		t.Fatalf("resume exit = %d, want 0\nstderr:\n%s", resumeCode, resumeErr)
-	}
-	if !strings.Contains(resumeOut, "outcome: completed") {
-		t.Fatalf("resume stdout missing completion:\n%s", resumeOut)
-	}
-
-	// No blind provider replay: every persisted client request id is unique
-	// (resumed loops continue their OWN counters, so no interrupted request
-	// is re-issued under a new identity).
-	var totalRequests, distinctRequests int
-	if err := db.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT client_request_id) FROM provider_attempts WHERE task_id = ?`, taskID).Scan(&totalRequests, &distinctRequests); err != nil {
-		t.Fatal(err)
-	}
-	if totalRequests != distinctRequests {
-		t.Fatalf("provider request ids = %d total / %d distinct; a resumed attempt was re-issued", totalRequests, distinctRequests)
-	}
-	// Completed effects are never replayed: the two pre-crash reads are the
-	// only read_file tool attempts of a.txt/b.txt; the resumed session only
-	// adds list_files and the parent's c.txt read (unique evidence ids).
-	var duplicateEvidence int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM (
-		SELECT evidence_id FROM tool_results WHERE task_id = ?
-		GROUP BY evidence_id HAVING COUNT(*) > 1)`, taskID).Scan(&duplicateEvidence); err != nil {
-		t.Fatal(err)
-	}
-	if duplicateEvidence != 0 {
-		t.Fatalf("duplicated evidence ids = %d (an effect was replayed)", duplicateEvidence)
-	}
-	totalToolResults := workUnitRowCount(t, stateDir, `SELECT COUNT(*) FROM tool_results WHERE task_id = ?`, taskID)
-	if totalToolResults != 4 {
-		t.Fatalf("tool_results after resume = %d, want 4 (2 pre-crash reads + 1 resumed unit read + 1 parent read)", totalToolResults)
-	}
-	// Each unit completed exactly once with its own verification.
-	ctx := context.Background()
-	store := openWorkUnitStore(t, stateDir)
-	for _, id := range []string{"wu-a", "wu-b"} {
-		unit, err := store.GetWorkUnit(ctx, taskID, id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if unit.Status != "completed" {
-			t.Fatalf("%s = %s, want completed", id, unit.Status)
-		}
-		var verifications int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM verification_attempts WHERE task_id = ? AND work_unit_id = ? AND decision = 'passed'`, taskID, id).Scan(&verifications); err != nil {
-			t.Fatal(err)
-		}
-		if verifications != 1 {
-			t.Fatalf("%s passed verifications = %d, want 1", id, verifications)
-		}
 	}
 }

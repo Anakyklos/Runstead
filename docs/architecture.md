@@ -441,7 +441,13 @@ lifecycle and the scheduler:
   for the unit). A model summary is never enough and a sibling's evidence
   never satisfies another unit's acceptance: completion is
   evidence-backed per unit, and the parent loop only proceeds after the
-  chain gate is closed.
+  chain gate is closed. Under concurrency the uncertain-effect gate of a
+  unit's completion verification is scoped to the unit's OWN tool attempts
+  (per-unit work_unit_id): a sibling's attempt can legitimately be in
+  flight at that exact moment, and the batch-settle semantics allow a
+  sibling to complete while another unit is durably uncertain. The parent
+  gate still fails closed on every open/uncertain unit, and durable
+  evidence remains task-wide and citable.
 - **Authoritative resolution of paused units** — an approval-blocked unit
   (blocked reason `approval`) returns to `ready` only when every pending
   approval of the unit's own actions is resolved (operator `decide` + resume;

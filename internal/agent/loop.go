@@ -1156,12 +1156,33 @@ func (l *Loop) verifyCompletion(ctx context.Context, task Task, final *protocol.
 		snapshot, err := l.state.LoadRecoverySnapshot(ctx, task.ID)
 		if err == nil {
 			input.Actions = snapshot.Actions
-			input.ToolAttempts = snapshot.ToolAttempts
 			input.Evidence = snapshot.Evidence
 			input.BaselineGitStatus = snapshot.BaselineGitStatus
 			input.BaselineGitDiff = snapshot.BaselineGitDiff
 			input.BaselineGitStatusTruncated = snapshot.BaselineGitStatusTruncated
 			input.BaselineGitDiffTruncated = snapshot.BaselineGitDiffTruncated
+			if task.WorkUnitID != "" {
+				// Unit-scoped completion view (issue #109): the uncertain-effect
+				// gate sees ONLY this unit's own tool attempts. Under the
+				// bounded shared lane a sibling's attempt can legitimately be
+				// in flight (or durably uncertain) at the exact moment this
+				// unit's own evidence-backed completion is verified; a
+				// task-wide view would refuse completion on a transient
+				// sibling state and stale-block the whole batch. Durable
+				// evidence stays task-wide and citable (a sibling's committed
+				// observations remain evidence), and the parent gate still
+				// fails closed on any open/uncertain unit. Task-level rows
+				// ('' = parent effects) are excluded from a unit view: they
+				// cannot be in flight while a unit runs, and completed parent
+				// effects are already durable evidence.
+				for _, attempt := range snapshot.ToolAttempts {
+					if attempt.WorkUnitID == task.WorkUnitID {
+						input.ToolAttempts = append(input.ToolAttempts, attempt)
+					}
+				}
+			} else {
+				input.ToolAttempts = snapshot.ToolAttempts
+			}
 			if pending, pendingErr := l.state.PendingApprovals(ctx, task.ID); pendingErr == nil {
 				for _, item := range pending {
 					input.PendingApprovals = append(input.PendingApprovals, item.ActionID)
