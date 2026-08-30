@@ -684,3 +684,52 @@ func TestSchedulerVerificationStillGatesUnderConcurrency(t *testing.T) {
 		t.Fatalf("wu-2 = %s, want blocked (verification missing)", unit2.Status)
 	}
 }
+
+// TestSchedulerCeilingConcurrencyFour proves the ceiling bound (4) is
+// usable and never exceeded WHEN the operator configures it: six ready
+// read-only units at concurrency=4 run in waves that never exceed 4 active,
+// and all complete.
+func TestSchedulerCeilingConcurrencyFour(t *testing.T) {
+	driver, store := newSchedulerDriver(t, "wu-ceiling", 4)
+	ctx := context.Background()
+	if _, _, err := driver.EnsureDefinitions(ctx, readOnlyDefs("wu", 6)); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var active, maxActive int
+	wave := newBarrier(4)
+	run := func(ctx context.Context, unit state.WorkUnit) (RunResult, error) {
+		mu.Lock()
+		active++
+		if active > maxActive {
+			maxActive = active
+		}
+		exceeded := active > 4
+		mu.Unlock()
+		if exceeded {
+			return violation("ceiling exceeded: 5 active", make(chan struct{}, 1))
+		}
+		wave.wait()
+		if err := store.SaveVerificationAttempt(context.Background(), state.VerificationAttemptRecord{
+			TaskID: unit.TaskID, WorkUnitID: unit.WorkUnitID, Decision: "passed", Summary: "verified",
+		}); err != nil {
+			return RunResult{}, err
+		}
+		mu.Lock()
+		active--
+		mu.Unlock()
+		return RunResult{Outcome: "completed"}, nil
+	}
+	err := waitChain(t, runChain(t, driver, ctx, run))
+	if err != nil {
+		t.Fatalf("RunAll(): %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if maxActive != 4 {
+		t.Fatalf("maxActive = %d, want 4 (operator ceiling)", maxActive)
+	}
+	if err := driver.GateParent(ctx); err != nil {
+		t.Fatalf("GateParent(): %v", err)
+	}
+}
