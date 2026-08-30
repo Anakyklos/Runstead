@@ -376,10 +376,10 @@ func TestEnsureDefinitionsParentDriftAndOrder(t *testing.T) {
 	}); !errors.Is(err, ErrWorkUnitDefinitionDrift) {
 		t.Fatalf("removed-parent re-supply error = %v, want drift", err)
 	}
-	if _, _, err := driver.EnsureDefinitions(ctx, []Definition{
+	if _, skipped, err := driver.EnsureDefinitions(ctx, []Definition{
 		{WorkUnitID: "wu-child", Objective: "child", ParentWorkUnitID: "wu-parent"},
-	}); err != nil || err == nil {
-		// identical re-supply is idempotent
+	}); err != nil || skipped != 1 {
+		t.Fatalf("identical parent re-supply = %d skipped, %v; want 1 skipped (idempotent)", skipped, err)
 	}
 	// A parent cycle fails before any creation.
 	cycleDriver, cycleStore := newDriver(t, "wu-cycle-parent")
@@ -392,5 +392,46 @@ func TestEnsureDefinitionsParentDriftAndOrder(t *testing.T) {
 	}
 	if got, _ := cycleStore.ListWorkUnits(ctx, "wu-cycle-parent"); len(got) != 0 {
 		t.Fatalf("parent cycle must create nothing, got %v", got)
+	}
+}
+
+// TestDriverCancellationPreservesSignal proves a real Work Unit cancellation
+// survives the driver boundary: the driver wraps context.Canceled (so the CLI
+// returns the stable 130), never dispatches the next unit, never fabricates a
+// terminal unit state (the interrupted unit stays 'running' for recovery),
+// and no tool effect runs after the cancellation.
+func TestDriverCancellationPreservesSignal(t *testing.T) {
+	driver, store := newDriver(t, "wu-task")
+	ctx := context.Background()
+	if _, _, err := driver.EnsureDefinitions(ctx, []Definition{
+		{WorkUnitID: "wu-1", Objective: "first"},
+		{WorkUnitID: "wu-2", Objective: "second", Dependencies: []string{"wu-1"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	run := func(ctx context.Context, unit state.WorkUnit) (RunResult, error) {
+		calls++
+		if calls == 1 {
+			return RunResult{Outcome: "canceled", Reason: "context canceled"}, nil
+		}
+		return RunResult{Outcome: "completed"}, nil
+	}
+	err := driver.RunAll(ctx, run)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunAll() = %v, want wrapped context.Canceled (cancellation must survive the driver)", err)
+	}
+	if calls != 1 {
+		t.Fatalf("dispatches after cancellation = %d, want 1 (no next WU dispatch)", calls)
+	}
+	unit, err := store.GetWorkUnit(ctx, "wu-task", "wu-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unit.Status != "running" {
+		t.Fatalf("interrupted unit = %s, want running (durably recoverable, no fabricated terminal state)", unit.Status)
+	}
+	if gate := driver.GateParent(ctx); !errors.Is(gate, ErrParentCompletionGated) {
+		t.Fatalf("GateParent() = %v, want gated", gate)
 	}
 }

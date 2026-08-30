@@ -261,19 +261,24 @@ func topologicalDefinitions(definitions []Definition) ([]Definition, error) {
 	outgoing := make(map[string][]string)
 	for _, def := range definitions {
 		for _, dep := range def.Dependencies {
+			// A dependency outside this batch is a PRE-EXISTING persisted
+			// unit (partial re-supply); its actual existence is validated by
+			// CreateWorkUnit against the store. Only batch-internal edges
+			// constrain ordering.
 			if _, ok := byID[dep]; !ok {
-				return nil, fmt.Errorf("work unit %s depends on undefined unit %q", def.WorkUnitID, dep)
+				continue
 			}
 			outgoing[dep] = append(outgoing[dep], def.WorkUnitID)
 			indegree[def.WorkUnitID]++
 		}
 		// Parent relationships are graph edges of the same durable contract
 		// (CreateWorkUnit requires the parent to exist), so ordering and
-		// cycle validation cover them identically to dependencies.
+		// cycle validation cover them identically to dependencies. An
+		// out-of-batch parent is assumed pre-existing; the store validates it.
 		if strings.TrimSpace(def.ParentWorkUnitID) != "" {
 			parent := def.ParentWorkUnitID
 			if _, ok := byID[parent]; !ok {
-				return nil, fmt.Errorf("work unit %s references undefined parent %q", def.WorkUnitID, parent)
+				continue
 			}
 			outgoing[parent] = append(outgoing[parent], def.WorkUnitID)
 			indegree[def.WorkUnitID]++
@@ -433,8 +438,17 @@ func (d *Driver) RunAll(ctx context.Context, run RunFunc) error {
 				return err
 			}
 			return fmt.Errorf("%w: %s", ErrWorkUnitBlockedChain, unit.WorkUnitID)
+		case "canceled":
+			// The unit stays 'running' for recovery reset (conservative, no
+			// fabricated terminal state) BUT the cancellation signal must
+			// survive the composition boundary: wrapping context.Canceled
+			// lets run/resume return the stable 130 exit instead of
+			// reclassifying a real cancellation as the generic open-units
+			// gate (issue #106 review).
+			return fmt.Errorf("%w: work unit %s canceled", context.Canceled, unit.WorkUnitID)
 		default:
-			// canceled / aborted: leave the unit 'running' for recovery reset.
+			// aborted with an unknown outcome: leave the unit 'running' for
+			// recovery reset.
 			return fmt.Errorf("work unit %s interrupted before a terminal outcome", unit.WorkUnitID)
 		}
 	}
