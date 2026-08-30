@@ -365,17 +365,46 @@ signature is supplied by the pipeline when known; otherwise workspace facts
 render as unverified-current. Context compaction of long conversations
 remains deferred to the plugin/composable-provider tracks.
 
-## Work Units (issue #106)
+## Work Units (issues #106/#109)
 
-Work Units are operator-defined, durable subtasks of one task, executed
-**serially** (Stage A) by the same governed agent loop. Stage B
-(concurrency/delegation) is explicitly out of scope.
+Work Units are operator-defined, durable subtasks of one task, executed by
+the same governed agent loop under a **bounded shared/exclusive scheduler**
+(Stage B1, issue #109) on top of the Stage A serial contract (issue #106).
+Stage A behavior is exactly the `--workunit-concurrency 1` case; general
+multi-agent orchestration, parallel writes and concurrent `run_recipe` remain
+out of scope.
 
-`runstead run --workunits FILE` (and `runstead resume --workunits FILE`)
-loads a strict JSON definition file (`work_unit_id`, `objective`,
-`dependencies`, optional tool/workspace/budget limits, per-unit acceptance
-plan). `internal/workunit.Driver` owns the unit lifecycle:
+`runstead run --workunits FILE [--workunit-concurrency N]` (and
+`runstead resume --workunits FILE`) loads a strict JSON definition file
+(`work_unit_id`, `objective`, `dependencies`, optional tool/workspace/budget
+limits, per-unit acceptance plan). `internal/workunit.Driver` owns the unit
+lifecycle and the scheduler:
 
+- **Shared/exclusive policy** — a unit is eligible for the concurrent
+  (shared) lane ONLY when its tool envelope is explicit and contains
+  exclusively the closed observational set (`read_file`, `list_files`,
+  `search_text`, `git_status`, `git_diff`); an explicitly empty envelope is
+  also read-only. An OMITTED envelope (task default surface), any effectful
+  tool (`write_file`, `apply_patch`, `run_recipe`) and any
+  future/unknown tool are EXCLUSIVE: they never overlap another unit, and
+  unknown capabilities fail closed instead of becoming concurrent because
+  the scheduler does not recognize their effects. The classification is
+  derived deterministically from the persisted `tools_json`; it is never
+  stored separately and never supplied by a model. `workspace_scope` does
+  NOT authorize parallel writers: even apparently disjoint write scopes
+  remain exclusive.
+- **Bounded scheduling** — shared/read-only units run concurrently up to the
+  operator bound (`--workunit-concurrency N`: default 1, minimum 1, initial
+  hard ceiling 4); the bound is never exceeded and is never inferred from
+  provider/model identity or observed success. An exclusive unit starts only
+  when no other unit is active, and while one is active nothing else starts.
+  A ready exclusive unit blocks NEW shared dispatch until it runs, so a
+  later read-only unit can never starve it. Ready selection continues to
+  come exclusively from persisted state (`ReadyWorkUnits`, deterministic
+  creation order) and a unit never starts before every required dependency
+  is durably `completed`. The scheduler is a narrow extension of the Stage A
+  driver: one goroutine per dispatched unit (bounded by `concurrency`), no
+  worker framework, daemon or external concurrency dependency.
 - **Capability containment** — `Driver.ValidateEnvelope` validates the
   declaration against the parent envelope (a unit can never grant more than
   its parent owns), AND the runtime enforces it: each unit loop runs inside a
@@ -397,19 +426,28 @@ plan). `internal/workunit.Driver` owns the unit lifecycle:
   drift on a re-supplied id fails closed instead of being silently skipped.
   `ReadyWorkUnits` exposes only units whose dependencies are all
   `completed` (a dependency that failed/blocked/uncertain keeps its dependents
-  from becoming ready and the parent gate open), so the chain makes progress
-  serially without a scheduler.
+  from becoming ready and the parent gate open).
 - **Durable lifecycle** — `created -> ready -> running -> completed | failed
   | blocked | uncertain`, with `blocked -> ready` after operator decision and
-  `running -> ready` as the interrupted-run recovery transition. The unit
-  row, its evidence refs and its provenance-tagged actions/attempts live in
-  SQLite (`work_units`, `work_unit_dependencies`, `work_unit_id` columns on
-  `actions`, `tool_attempts`, `provider_attempts`, `verification_attempts`).
+  `running -> ready` as the interrupted-run recovery transition. `created ->
+  ready -> running` is persisted BEFORE a unit is dispatched (a `running`
+  row is durable before its loop starts), and every outcome transition is
+  journaled. The unit row, its evidence refs and its provenance-tagged
+  actions/attempts live in SQLite (`work_units`, `work_unit_dependencies`,
+  `work_unit_id` columns on `actions`, `tool_attempts`, `provider_attempts`,
+  `verification_attempts`).
 - **Verification-gated completion** — a unit completes only when its own
   acceptance plan passes (the driver reads the latest verification attempt
-  for the unit). A model summary is never enough: completion is
+  for the unit). A model summary is never enough and a sibling's evidence
+  never satisfies another unit's acceptance: completion is
   evidence-backed per unit, and the parent loop only proceeds after the
-  chain gate is closed.
+  chain gate is closed. Under concurrency the uncertain-effect gate of a
+  unit's completion verification is scoped to the unit's OWN tool attempts
+  (per-unit work_unit_id): a sibling's attempt can legitimately be in
+  flight at that exact moment, and the batch-settle semantics allow a
+  sibling to complete while another unit is durably uncertain. The parent
+  gate still fails closed on every open/uncertain unit, and durable
+  evidence remains task-wide and citable.
 - **Authoritative resolution of paused units** — an approval-blocked unit
   (blocked reason `approval`) returns to `ready` only when every pending
   approval of the unit's own actions is resolved (operator `decide` + resume;
@@ -418,6 +456,14 @@ plan). `internal/workunit.Driver` owns the unit lifecycle:
   outcome returns to `ready` after the recovery pipeline reconciled all of
   its effect records (`ReconcileUncertainWorkUnits`); an unreconcilable or
   unresolved effect keeps it blocking (`human_review_required`).
+- **Failure/cancellation semantics** — a failed/blocked/uncertain outcome in
+  one unit stops NEW scheduling (no new batches), lets the already-dispatched
+  bounded batch settle to durable states (no artificial sibling cancellation
+  that would manufacture uncertain effects), then returns the typed
+  open-units gate error with the parent gate closed. Real operator/context
+  cancellation propagates to every active unit, starts no new unit, leaves
+  interrupted units durably `running` for recovery, and the scheduler drains
+  every worker goroutine before returning (no leaks).
 - **Authoritative parent gate** — parent completion is impossible while any
   persisted work unit is not completed. The gate lives at TWO boundaries:
   `state.Store.FinalizeTask` refuses to persist `completed` while open units
@@ -433,28 +479,46 @@ plan). `internal/workunit.Driver` owns the unit lifecycle:
   carry `SkipTaskFinalize`: they never finalize the shared task; the parent
   loop owns task finalization. Client request ids are namespaced per unit
   (`task-workunit-turn`) so the governor's duplicate-request protection
-  never conflates unit attempts.
-- **Recovery without replay** — interruption leaves the interrupted unit
-  `running`; `recovery.Resume` resets it to `ready` before building the
-  context, then RELOADS the authoritative snapshot so the compiled context
-  can never project `running` that SQLite already persisted as `ready`. The
-  resumed conversation re-runs only the interrupted unit: its
-  loop counters continue from the unit's persisted attempt history (so
-  request ids never collide with the interrupted session) and the evidence
-  seed grounds finals against completed historical observations without
-  re-executing them. Completed units, their rows and their effects are never
-  replayed.
+  never conflates unit attempts. Evidence ids stay unique across concurrent
+  units through the registry's shared atomic evidence sequence.
+- **Governor authority unchanged** — every provider attempt of every
+  concurrent unit flows through the SAME account-scoped governor-owned
+  executor; the scheduler adds no second admission path and cannot bypass
+  `MaxInFlight`/pacing/circuit authority. One governed physical attempt
+  remains one accounted attempt, with the existing delivery-state and retry
+  semantics. The scheduler never rotates providers/models/keys/accounts to
+  force parallelism.
+- **Recovery without replay** — interruption leaves the interrupted units
+  `running` (possibly several, under concurrency); `recovery.Resume` resets
+  ALL interrupted units to `ready` before building the context, then
+  RELOADS the authoritative snapshot so the compiled context can never
+  project `running` that SQLite already persisted as `ready`. The resumed
+  conversation re-runs only the interrupted units: each unit's
+  loop counters continue from ITS OWN persisted attempt history (so
+  request ids never collide with the interrupted session and no provider
+  request is blindly re-issued) and the evidence seed grounds finals against
+  completed historical observations without re-executing them. Completed
+  units, their rows and their effects are never replayed; a provider attempt
+  is never assumed NOT to have reached the provider merely because its
+  worker disappeared.
 
 Work Unit tasks bootstrap through the SAME path as a normal task
 (`agent.BootstrapTask` + `agent.ConfigSnapshot`): the durable row carries the
 full authoritative execution configuration (provider identity,
 protocol/config identity, exact model, policies, recipe catalog digest,
-acceptance digest, limits and git baseline), so resume validates
-provider/model/config continuity and rejects drift exactly like a normal
-task.
+acceptance digest, limits, git baseline AND the effective Work Unit
+scheduler bound under the durable `workunit_concurrency` key in
+`tasks.config_json`), so resume validates provider/model/config continuity
+and rejects drift exactly like a normal task. `resume` REJECTS an explicitly
+supplied `--workunit-concurrency` that differs from the persisted value
+(fail-closed before the recovery pipeline); omitting the flag adopts the
+persisted contract, so a task can never silently change its scheduler
+configuration across restart. A present-but-corrupted persisted value (invalid type, non-integral or outside the operator contract) is refused as corrupted state in the resume pre-flight, BEFORE the recovery pipeline journals anything; only a genuinely absent key maps to the Stage A serial contract.
 
 `runstead inspect` renders a "Work Units:" section (unit id, status, scope)
-derived from the durable rows.
+derived from the durable rows, and the effective concurrency appears in the
+Configuration section (from the same durable `config_json`), without
+secrets.
 
 ## Verification
 

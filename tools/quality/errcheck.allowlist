@@ -59,9 +59,9 @@
 # secondary to the authoritative error being returned.
 # Recovery loader rows close on validation error paths is best-effort
 # cleanup; the unsupported-version error is already being returned.
-internal/state/recovery.go:504  rows.Close()
+internal/state/recovery.go:511  rows.Close()
 
-internal/state/recovery.go:508  rows.Close()
+internal/state/recovery.go:515  rows.Close()
 
 
 
@@ -69,7 +69,7 @@ internal/state/recovery.go:508  rows.Close()
 
 # Work Unit store/driver cleanup path (#106): the error is
 # secondary to the authoritative error being returned.
-internal/state/recovery.go:514  rows.Close()
+internal/state/recovery.go:528  rows.Close()
 
 
 
@@ -83,33 +83,25 @@ internal/state/recovery.go:521  rows.Close()
 
 
 
-internal/state/recovery.go:557  defer rows.Close()
+internal/state/recovery.go:564  defer rows.Close()
 
 
 
 
 
-internal/state/recovery.go:576  defer rows.Close()
+internal/state/recovery.go:583  defer rows.Close()
 
 
 
 
 
-internal/state/recovery.go:597  defer rows.Close()
+internal/state/recovery.go:604  defer rows.Close()
 
 
 
 
 
-internal/state/recovery.go:625  defer rows.Close()
-
-
-
-
-
-# Work Unit store paths (#106): transaction/row cleanup follows the
-# same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:234  defer tx.Rollback()
+internal/state/recovery.go:632  defer rows.Close()
 
 
 
@@ -117,7 +109,7 @@ internal/state/workunits.go:234  defer tx.Rollback()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:355  defer rows.Close()
+internal/state/workunits.go:284  defer tx.Rollback()
 
 
 
@@ -125,7 +117,7 @@ internal/state/workunits.go:355  defer rows.Close()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:393  defer tx.Rollback()
+internal/state/workunits.go:405  defer rows.Close()
 
 
 
@@ -133,7 +125,7 @@ internal/state/workunits.go:393  defer tx.Rollback()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:416  if n, _ := result.RowsAffected(); n != 1 {
+internal/state/workunits.go:443  defer tx.Rollback()
 
 
 
@@ -141,7 +133,7 @@ internal/state/workunits.go:416  if n, _ := result.RowsAffected(); n != 1 {
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:428  if n, _ := result.RowsAffected(); n != 1 {
+internal/state/workunits.go:466  if n, _ := result.RowsAffected(); n != 1 {
 
 
 
@@ -149,7 +141,7 @@ internal/state/workunits.go:428  if n, _ := result.RowsAffected(); n != 1 {
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:517  defer tx.Rollback()
+internal/state/workunits.go:478  if n, _ := result.RowsAffected(); n != 1 {
 
 
 
@@ -157,7 +149,7 @@ internal/state/workunits.go:517  defer tx.Rollback()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:527  rows.Close()
+internal/state/workunits.go:567  defer tx.Rollback()
 
 
 
@@ -165,7 +157,7 @@ internal/state/workunits.go:527  rows.Close()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:532  rows.Close()
+internal/state/workunits.go:577  rows.Close()
 
 
 
@@ -173,7 +165,7 @@ internal/state/workunits.go:532  rows.Close()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:624  defer rows.Close()
+internal/state/workunits.go:582  rows.Close()
 
 
 
@@ -181,7 +173,7 @@ internal/state/workunits.go:624  defer rows.Close()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:700  defer rows.Close()
+internal/state/workunits.go:674  defer rows.Close()
 
 
 
@@ -189,7 +181,15 @@ internal/state/workunits.go:700  defer rows.Close()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:724  defer rows.Close()
+internal/state/workunits.go:750  defer rows.Close()
+
+
+
+
+
+# Work Unit store paths (#106): transaction/row cleanup follows the
+# same best-effort convention as the other state/* entries; the
+internal/state/workunits.go:774  defer rows.Close()
 
 internal/state/provider_attempts.go:46  defer rows.Close()
 
@@ -210,18 +210,18 @@ internal/recovery/recovery.go:772  _ = jsonUnmarshal(raw, value)
 
 
 
-cmd/runstead/main.go:314  defer store.Close()
+cmd/runstead/main.go:324  defer store.Close()
 
 
 
 
-cmd/runstead/main.go:1072  defer store.Close()
+cmd/runstead/main.go:1082  defer store.Close()
 
 
 
 
 
-cmd/runstead/main.go:1171  defer store.Close()
+cmd/runstead/main.go:1181  defer store.Close()
 
 
 
@@ -260,7 +260,7 @@ internal/tools/registry.go:134  rgPath, _ = lookPath("rg")
 
 
 
-cmd/runstead/resume.go:206  defer store.Close()
+cmd/runstead/resume.go:235  defer store.Close()
 
 
 

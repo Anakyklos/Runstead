@@ -143,6 +143,56 @@ const maxWorkUnitObjectiveBytes = 4096
 // whose semantics it does not understand.
 const supportedWorkUnitVersion = 1
 
+// WorkUnitConcurrencyKey is the tasks.config_json key holding the effective
+// scheduler concurrency of a task that ran Work Units (issue #109). It is a
+// versioned durable contract: resume reads it to adopt the SAME concurrency
+// the task started under and rejects an explicitly different operator value
+// fail-closed. No new table/migration is needed: the task configuration
+// snapshot is the existing authoritative durable structure resume already
+// validates for provider/model/policy continuity.
+const WorkUnitConcurrencyKey = "workunit_concurrency"
+
+// WorkUnitConcurrencyFromConfigJSON reads the persisted effective scheduler
+// concurrency from the task configuration snapshot, explicitly
+// DISTINGUISHING absence from corruption (issue #109 review):
+//
+//   - present=false, err=nil: the key is absent -> the task is Stage A
+//     legacy: serial contract, DefaultConcurrency (1). This is the ONLY
+//     absence allowed to map to the default.
+//   - present=true, err=nil: the key is present with an integer value
+//     (range validation stays in the callers/workunit bounds; state cannot
+//     import workunit).
+//   - present=true, err!=nil: the key is present with a non-integer value
+//     (string, float, bool, null): incompatible persisted state, NEVER
+//     silently reinterpreted as the default.
+//   - present=false, err!=nil: the whole snapshot cannot be read (empty or
+//     malformed JSON): the authoritative configuration is un-inspectable and
+//     the caller fails closed.
+//
+// Every error path returns present=true or a non-nil err so resume can
+// reject BEFORE the recovery pipeline journals anything.
+func WorkUnitConcurrencyFromConfigJSON(configJSON string) (value int, present bool, err error) {
+	if strings.TrimSpace(configJSON) == "" {
+		return 0, false, errors.New("task configuration snapshot is empty; the scheduler contract cannot be inspected")
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal([]byte(configJSON), &snapshot); err != nil {
+		return 0, false, fmt.Errorf("task configuration snapshot is not valid JSON: %w", err)
+	}
+	raw, keyPresent := snapshot[WorkUnitConcurrencyKey]
+	if !keyPresent {
+		return 0, false, nil // Stage A legacy task: serial contract.
+	}
+	number, ok := raw.(float64)
+	if !ok {
+		return 0, true, fmt.Errorf("persisted %s has an invalid type %T, want an integer", WorkUnitConcurrencyKey, raw)
+	}
+	if number != float64(int(number)) {
+		return 0, true, fmt.Errorf("persisted %s is not an integer: %v", WorkUnitConcurrencyKey, number)
+	}
+	return int(number), true, nil
+}
+
 // ErrUnsupportedWorkUnitVersion is returned by the authoritative load
 // boundaries (GetWorkUnit, ListWorkUnits, ReadyWorkUnits and the recovery
 // snapshot loader) when a persisted Work Unit carries a version the runtime

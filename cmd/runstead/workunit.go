@@ -1,20 +1,24 @@
 package main
 
-// Work Unit Stage A wiring (issue #106): the operator supplies a --workunits
-// JSON file; the driver persists the definitions, executes them serially by
-// building one bounded agent.Loop per unit (the EXISTING loop, never a second
-// engine), each with the unit acceptance plan as its verifier and the unit
-// budgets in its limits, and keeps the parent completion gate closed while
-// any unit is unresolved. Every provider attempt still flows through the
-// governor-owned executor constructed by run/resume.
+// Work Unit wiring (issues #106/#109): the operator supplies a --workunits
+// JSON file; the driver persists the definitions, executes them through the
+// bounded shared/exclusive scheduler by building one bounded agent.Loop per
+// unit (the EXISTING loop, never a second engine), each with the unit
+// acceptance plan as its verifier and the unit budgets in its limits, and
+// keeps the parent completion gate closed while any unit is unresolved.
+// Every provider attempt still flows through the governor-owned executor
+// constructed by run/resume; the scheduler bound is operator configuration
+// persisted with the task and enforced fail-closed on resume.
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/RenyEnnos/Runstead/internal/agent"
 	"github.com/RenyEnnos/Runstead/internal/policy"
@@ -85,25 +89,65 @@ func registryToolIDs(registry *tools.Registry) []string {
 }
 
 // bootstrapTaskForWorkUnits persists the task root and operator acceptance
-// plan BEFORE the serial chain in work unit mode: the chain runs before the
-// parent loop (which normally bootstraps the task), so the durable task row
+// plan BEFORE the chain in work unit mode: the chain runs before the parent
+// loop (which normally bootstraps the task), so the durable task row
 // must exist for CreateWorkUnit. Unit and parent loops receive a non-nil
 // (possibly empty) Recovery seed to skip the loop-internal re-bootstrap.
 // It reuses agent.BootstrapTask + agent.ConfigSnapshot, the SAME bootstrap
 // the normal loop uses, so a Work Unit task persists the full authoritative
 // execution configuration (provider identity, protocol/config identity,
-// exact model, policies, recipe catalog digest, acceptance digest, limits).
-// Resume then validates provider/model/config continuity and rejects drift
-// exactly like a normal task (issue #106 review). There is deliberately no
-// reduced parallel bootstrap.
-func bootstrapTaskForWorkUnits(ctx context.Context, store *state.Store, taskID, objective, workspace, model string, plan *verifier.Plan, identity provider.Identity, writePolicy, recipePolicy, recipeCatalogDigest, acceptanceDigest string, limits agent.Limits, registry *tools.Registry) error {
+// exact model, policies, recipe catalog digest, acceptance digest, limits)
+// PLUS the effective Work Unit scheduler bound (issue #109) as a durable,
+// inspectable, resume-safe configuration.
+func bootstrapTaskForWorkUnits(ctx context.Context, store *state.Store, taskID, objective, workspace, model string, plan *verifier.Plan, identity provider.Identity, writePolicy, recipePolicy, recipeCatalogDigest, acceptanceDigest string, limits agent.Limits, registry *tools.Registry, workUnitConcurrency int) error {
+	snapshot := agent.ConfigSnapshot(registry, model, identity, writePolicy, recipePolicy, recipeCatalogDigest, acceptanceDigest, limits)
+	merged, err := withWorkUnitConcurrency(snapshot, workUnitConcurrency)
+	if err != nil {
+		return err
+	}
+	snapshot = merged
 	return agent.BootstrapTask(ctx, store, state.TaskRecord{
 		TaskID:     taskID,
 		Objective:  objective,
 		Workspace:  workspace,
 		Model:      model,
-		ConfigJSON: agent.ConfigSnapshot(registry, model, identity, writePolicy, recipePolicy, recipeCatalogDigest, acceptanceDigest, limits),
+		ConfigJSON: snapshot,
 	}, plan, registry)
+}
+
+// withWorkUnitConcurrency merges the effective scheduler bound into the
+// task configuration snapshot under the durable key (issue #109). It is the
+// ONLY place the bound is persisted; resume reads it back from the same
+// key and rejects an explicitly different operator value fail-closed.
+func withWorkUnitConcurrency(snapshot []byte, concurrency int) ([]byte, error) {
+	var values map[string]any
+	if err := json.Unmarshal(snapshot, &values); err != nil {
+		// The snapshot is produced by agent.ConfigSnapshot: it is always
+		// valid JSON. A corrupt render must FAIL, never silently drop the
+		// scheduler contract (issue #109 review).
+		return nil, fmt.Errorf("encode work unit scheduler configuration: %w", err)
+	}
+	values[state.WorkUnitConcurrencyKey] = concurrency
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return nil, fmt.Errorf("encode work unit scheduler configuration: %w", err)
+	}
+	return encoded, nil
+}
+
+// unitChainTraceSink wraps the CLI trace sink so concurrent unit loops of
+// one chain can emit lifecycle lines safely (issue #109): under concurrency
+// several loop goroutines share the sink, and io.Writers such as the test
+// strings.Builder are not safe for concurrent writes. The mutex serializes
+// emission only; it changes no trace content.
+func unitChainTraceSink(errOut io.Writer) agent.TraceSink {
+	var mu sync.Mutex
+	base := cliTraceSink(errOut)
+	return func(line agent.TraceLine) {
+		mu.Lock()
+		defer mu.Unlock()
+		base(line)
+	}
 }
 
 // runUnitLoop executes ONE Work Unit through the existing agent loop with the
@@ -197,15 +241,16 @@ func mapUnitLoopResult(result agent.Result) (workunit.RunResult, error) {
 	}
 }
 
-// runWorkUnitChain runs the serial Stage A chain for one task and returns the
-// open-units gate state. The parent loop ONLY proceeds when the gate is
-// closed (no error and no open units).
-func runWorkUnitChain(ctx context.Context, store *state.Store, taskID, workspace string, registry *tools.Registry, definitions []workunit.Definition, unitRun func(context.Context, state.WorkUnit) (workunit.RunResult, error)) error {
+// runWorkUnitChain runs the bounded shared/exclusive chain for one task and
+// returns the open-units gate state. The parent loop ONLY proceeds when the
+// gate is closed (no error and no open units).
+func runWorkUnitChain(ctx context.Context, store *state.Store, taskID, workspace string, registry *tools.Registry, definitions []workunit.Definition, concurrency int, unitRun func(context.Context, state.WorkUnit) (workunit.RunResult, error)) error {
 	driver := &workunit.Driver{
 		Store:         store,
 		TaskID:        taskID,
 		AllowedTools:  registryToolIDs(registry),
 		TaskWorkspace: workspace,
+		Concurrency:   concurrency,
 	}
 	if _, _, err := driver.EnsureDefinitions(ctx, definitions); err != nil {
 		return fmt.Errorf("work unit definitions: %w", err)

@@ -7,3 +7,7 @@
 
 # Local agent scratch (never part of the repository)
 /scratch/
+
+# Python bytecode and bytecode caches (never part of the repository)
+__pycache__/
+*.py[cod]

@@ -401,6 +401,13 @@ type RecoveryToolAttempt struct {
 	// run_recipe attempts (empty otherwise): resolved recipe, argv,
 	// capabilities and policy decision. Intent evidence only.
 	ProcessIntentJSON string
+	// WorkUnitID is the owning Work Unit ('' = task-level). Unit completion
+	// verification filters the uncertain-effect gate to the unit's OWN
+	// attempts (issue #109): a sibling's concurrent in-flight attempt must
+	// not refuse this unit's evidence-backed completion, and the batch
+	// settle semantics allow a sibling to complete while another unit is
+	// durably uncertain (the parent gate still fails closed).
+	WorkUnitID string
 }
 
 // RecoveryProviderAttempt is one concrete governed provider execution.
@@ -568,7 +575,7 @@ func (s *Store) loadRecoveryActions(ctx context.Context, taskID string) ([]Recov
 
 func (s *Store) loadRecoveryToolAttempts(ctx context.Context, taskID string) ([]RecoveryToolAttempt, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT execution_id, action_id, tool, arguments_json, status, classification, recovery_class, evidence_id, recovery_reason, effect_after_hash, planned_diff_json, process_intent_json
+		`SELECT execution_id, action_id, tool, arguments_json, status, classification, recovery_class, evidence_id, recovery_reason, effect_after_hash, planned_diff_json, process_intent_json, work_unit_id
 		 FROM tool_attempts WHERE task_id = ? ORDER BY created_at, execution_id`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load recovery tool attempts: %w", err)
@@ -579,7 +586,7 @@ func (s *Store) loadRecoveryToolAttempts(ctx context.Context, taskID string) ([]
 		var attempt RecoveryToolAttempt
 		if err := rows.Scan(&attempt.ExecutionID, &attempt.ActionID, &attempt.Tool, &attempt.ArgumentsJSON,
 			&attempt.Status, &attempt.Classification, &attempt.RecoveryClass, &attempt.EvidenceID, &attempt.RecoveryReason,
-			&attempt.EffectAfterHash, &attempt.PlannedEffectJSON, &attempt.ProcessIntentJSON); err != nil {
+			&attempt.EffectAfterHash, &attempt.PlannedEffectJSON, &attempt.ProcessIntentJSON, &attempt.WorkUnitID); err != nil {
 			return nil, fmt.Errorf("scan recovery tool attempt: %w", err)
 		}
 		attempts = append(attempts, attempt)
