@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,6 +59,9 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	recipePolicy := ""
 	acceptanceFile := ""
 	workUnitsFile := ""
+	workUnitConcurrency := workunit.DefaultConcurrency
+	workUnitConcurrencySet := false
+	effectiveWorkUnitConcurrency := workunit.DefaultConcurrency
 	providersFile := ""
 	providerID := ""
 	retryPolicy := ""
@@ -128,6 +132,26 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			} else {
 				return exitUsage
 			}
+		case arg == "--workunit-concurrency":
+			if next, ok := value("--workunit-concurrency"); ok {
+				parsed, parseErr := strconv.Atoi(next)
+				if parseErr != nil {
+					fmt.Fprintf(errOut, "resume: --workunit-concurrency requires an integer\n")
+					return exitUsage
+				}
+				workUnitConcurrency = parsed
+				workUnitConcurrencySet = true
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--workunit-concurrency="):
+			parsed, parseErr := strconv.Atoi(strings.TrimPrefix(arg, "--workunit-concurrency="))
+			if parseErr != nil {
+				fmt.Fprintf(errOut, "resume: --workunit-concurrency requires an integer\n")
+				return exitUsage
+			}
+			workUnitConcurrency = parsed
+			workUnitConcurrencySet = true
 		case arg == "--acceptance":
 			if next, ok := value("--acceptance"); ok {
 				acceptanceFile = next
@@ -186,6 +210,11 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	if taskID == "" {
 		fmt.Fprintln(errOut, "resume: exactly one task id is required")
 		printResumeHelp(errOut)
+		return exitUsage
+	}
+	if workUnitConcurrencySet && (workUnitConcurrency < workunit.MinConcurrency || workUnitConcurrency > workunit.MaxConcurrency) {
+		fmt.Fprintf(errOut, "resume: --workunit-concurrency must be between %d and %d (got %d)\n",
+			workunit.MinConcurrency, workunit.MaxConcurrency, workUnitConcurrency)
 		return exitUsage
 	}
 	if err := ctx.Err(); err != nil {
@@ -468,8 +497,32 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			return exitCorrupt
 		}
 		if open {
-			fmt.Fprintf(errOut, "resume: task %q has persisted open work units; the parent cannot run until they are resolved. Re-supply --workunits to continue the serial chain.\n", taskID)
+			fmt.Fprintf(errOut, "resume: task %q has persisted open work units; the parent cannot run until they are resolved. Re-supply --workunits to continue the chain.\n", taskID)
 			return exitWorkUnitGated
+		}
+	}
+
+	// Scheduler configuration continuity (issue #109): a resumed chain runs
+	// under the DURABLE concurrency contract the task started with (the key
+	// is absent for a Stage A task = serial 1). An explicitly supplied
+	// --workunit-concurrency that differs from the persisted value fails
+	// closed here, BEFORE the recovery pipeline journals anything or any
+	// unit executes: resume never silently adopts a materially different
+	// scheduler contract. An omitted flag adopts the persisted value (the
+	// task's own contract, not a change).
+	if workUnitsFile != "" {
+		persisted, hasPersisted := state.WorkUnitConcurrencyFromConfigJSON(preload.Task.ConfigJSON)
+		if !hasPersisted {
+			persisted = workunit.DefaultConcurrency
+		}
+		if workUnitConcurrencySet && workUnitConcurrency != persisted {
+			fmt.Fprintf(errOut, "resume: --workunit-concurrency %d conflicts with the persisted scheduler configuration %d of task %q; refusing to silently change the task contract\n",
+				workUnitConcurrency, persisted, taskID)
+			return exitUsage
+		}
+		effectiveWorkUnitConcurrency = persisted
+		if workUnitConcurrencySet {
+			effectiveWorkUnitConcurrency = workUnitConcurrency
 		}
 	}
 
@@ -594,7 +647,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			registry:            registry,
 			model:               plan.Task.Model,
 			providerIdentity:    resumeProviderIdentity,
-			trace:               traceSink,
+			trace:               unitChainTraceSink(errOut),
 			store:               store,
 			policy:              policy.NewStatic(policyConfig, storeApprovals(store)),
 			writePolicy:         resumePolicy.Spec(),
@@ -603,7 +656,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			limits:              limits,
 			recovery:            plan.Seed,
 		}
-		chainErr := runWorkUnitChain(ctx, store, taskID, workspacePath, registry, definitions,
+		chainErr := runWorkUnitChain(ctx, store, taskID, workspacePath, registry, definitions, effectiveWorkUnitConcurrency,
 			func(ctx context.Context, unit state.WorkUnit) (workunit.RunResult, error) {
 				// Each unit's own loop counters continue from its persisted
 				// attempt history: the request id namespace must not collide
@@ -1130,6 +1183,8 @@ func printResumeHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --recipes FILE            operator-controlled recipe catalog (RUNSTEAD_RECIPES); re-supplied at resume")
 	fmt.Fprintln(out, "  --recipe-policy SPEC      recipe modes, e.g. test=allow (RUNSTEAD_RECIPE_POLICY; must match the persisted policy)")
 	fmt.Fprintln(out, "  --acceptance FILE         operator acceptance plan (RUNSTEAD_ACCEPTANCE_PLAN; must match the persisted plan; loaded from state when omitted; may ATTACH a plan to a task that started without one, since completion fails closed without acceptance criteria)")
+	fmt.Fprintln(out, "  --workunits FILE          operator Work Unit definitions (M9, issues #106/#109): re-supply to continue a chain with open units")
+	fmt.Fprintln(out, "  --workunit-concurrency N  scheduler bound (default 1, range 1..4): must equal the task's persisted scheduler configuration; a different explicit value fails closed")
 	fmt.Fprintln(out, "  --retry-policy SPEC         bounded governor-owned retry for compatible providers (RUNSTEAD_RETRY_POLICY); re-supplied at resume, must match the run intent")
 	fmt.Fprintln(out, "  --min-start-interval DURATION  account governor pacing override (RUNSTEAD_MIN_START_INTERVAL)")
 	fmt.Fprintln(out, "  allowance profile is reconstructed from the persisted governor state (RUNSTEAD_ALLOWANCE_PROFILE applies to `run` only)")
