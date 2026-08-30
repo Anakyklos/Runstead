@@ -950,6 +950,20 @@ func TestRedirectIsRefusedNotFollowed(t *testing.T) {
 // itself is still refused with zero replay.
 func TestRedirectWithTruncatedBodyNeverClaimsCompleted(t *testing.T) {
 	recorder := newRequestRecorder(t, func(w http.ResponseWriter, r *http.Request) {
+		// Drain the entire request body BEFORE hijacking. The adapter sends a
+		// chunked POST whose tail can still be in flight when this handler
+		// runs; closing the connection without consuming that body races the
+		// client's write loop, and closing a connection with unread request
+		// data can surface as RST/ECONNRESET on the client before the 307 is
+		// materialized (the flaky "google_compatible transport" outcome).
+		// Reading the body to completion synchronizes deterministically: TCP
+		// ordering then proves the client's write loop finished, so the close
+		// below can only produce a clean EOF on the client read side, after
+		// the truncated response headers and bytes were delivered.
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			t.Errorf("drain request body: %v", err)
+			return
+		}
 		conn, _, err := w.(http.Hijacker).Hijack()
 		if err != nil {
 			t.Errorf("hijack: %v", err)
