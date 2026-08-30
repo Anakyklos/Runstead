@@ -897,3 +897,43 @@ func TestWorkUnitConcurrencyResumeAcceptsExplicitEqualFlag(t *testing.T) {
 		t.Fatalf("resume stdout missing completion:\n%s", out)
 	}
 }
+
+// TestWorkUnitConcurrencyFlagIgnoredWithoutWorkUnits pins the behavior of a
+// plain (no --workunits) task when the scheduler flag is supplied: the run
+// completes normally, the flag has no effect, and the durable config_json
+// does NOT gain the scheduler key (the contract is only persisted for tasks
+// that actually ran Work Units).
+func TestWorkUnitConcurrencyFlagIgnoredWithoutWorkUnits(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "a.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
+	)
+	stateDir := t.TempDir()
+	var out, errOut strings.Builder
+	code := run(context.Background(), []string{
+		"run", "--task", "inspect a.txt",
+		"--workspace", workspace,
+		"--scripted", script,
+		"--workunit-concurrency", "2",
+		"--acceptance", acceptanceFor(t, "a.txt"),
+		"--min-start-interval", "1ms",
+		"--log-level", "error",
+		"--state-dir", stateDir,
+	}, &out, &errOut)
+	if code != agent.OutcomeCompleted.ExitCode() {
+		t.Fatalf("run exit = %d, want 0\nstderr:\n%s", code, errOut.String())
+	}
+	taskID := mustTaskID(t, out.String())
+	db := openReviewDB(t, stateDir)
+	var configJSON string
+	if err := db.QueryRow(`SELECT config_json FROM tasks WHERE task_id = ?`, taskID).Scan(&configJSON); err != nil {
+		t.Fatal(err)
+	}
+	if _, present, err := state.WorkUnitConcurrencyFromConfigJSON(configJSON); err != nil || present {
+		t.Fatalf("plain task scheduler key = present:%t err:%v, want absent (flag only applies to work unit chains)", present, err)
+	}
+}
