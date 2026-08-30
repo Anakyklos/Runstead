@@ -395,8 +395,10 @@ plan). `internal/workunit.Driver` owns the unit lifecycle:
   acyclically at creation (deterministic DFS) and re-supplied definitions are
   created in dependency order regardless of the JSON file ordering; material
   drift on a re-supplied id fails closed instead of being silently skipped.
-  `ReadyWorkUnits` exposes only units whose dependencies are completed/failed,
-  so the chain makes progress serially without a scheduler.
+  `ReadyWorkUnits` exposes only units whose dependencies are all
+  `completed` (a dependency that failed/blocked/uncertain keeps its dependents
+  from becoming ready and the parent gate open), so the chain makes progress
+  serially without a scheduler.
 - **Durable lifecycle** — `created -> ready -> running -> completed | failed
   | blocked | uncertain`, with `blocked -> ready` after operator decision and
   `running -> ready` as the interrupted-run recovery transition. The unit

@@ -444,3 +444,32 @@ func TestFinalizeTaskGatedByOpenWorkUnits(t *testing.T) {
 		t.Fatalf("plain task finalize: %v", err)
 	}
 }
+
+// TestWorkUnitsUnsupportedVersionFailsClosed proves the durable contract
+// version gate: a persisted Work Unit with a version the runtime does not
+// implement fails closed at every authoritative load boundary (Get, List,
+// Ready selection, recovery snapshot) instead of executing as v1 (issue #106
+// review).
+func TestWorkUnitsUnsupportedVersionFailsClosed(t *testing.T) {
+	store := openTestStore(t)
+	mustWorkUnitTask(t, store, wuTaskID)
+	ctx := context.Background()
+	mustWorkUnit(t, store, WorkUnitCreate{TaskID: wuTaskID, WorkUnitID: "wu-v9", Objective: "x"})
+	bringTo(t, store, "wu-v9", "ready")
+	if _, err := store.db.ExecContext(ctx,
+		`UPDATE work_units SET version = 999 WHERE work_unit_id = 'wu-v9'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetWorkUnit(ctx, wuTaskID, "wu-v9"); !errors.Is(err, ErrUnsupportedWorkUnitVersion) {
+		t.Fatalf("GetWorkUnit error = %v, want ErrUnsupportedWorkUnitVersion", err)
+	}
+	if _, err := store.ListWorkUnits(ctx, wuTaskID); !errors.Is(err, ErrUnsupportedWorkUnitVersion) {
+		t.Fatalf("ListWorkUnits error = %v, want ErrUnsupportedWorkUnitVersion", err)
+	}
+	if _, err := store.ReadyWorkUnits(ctx, wuTaskID); !errors.Is(err, ErrUnsupportedWorkUnitVersion) {
+		t.Fatalf("ReadyWorkUnits error = %v, want ErrUnsupportedWorkUnitVersion", err)
+	}
+	if _, err := store.LoadRecoverySnapshot(ctx, wuTaskID); !errors.Is(err, ErrUnsupportedWorkUnitVersion) {
+		t.Fatalf("LoadRecoverySnapshot error = %v, want ErrUnsupportedWorkUnitVersion", err)
+	}
+}

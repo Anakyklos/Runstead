@@ -50,7 +50,7 @@ CREATE TABLE work_units (
     objective         TEXT NOT NULL,
     status            TEXT NOT NULL CHECK (status IN
       ('created','ready','running','completed','failed','blocked','uncertain')),
-    tools_json        TEXT NOT NULL DEFAULT '[]',   -- allowed tool envelope ([] = task default)
+    tools_json        TEXT NOT NULL DEFAULT '[]',   -- allowed tool envelope: omitted/null = task default surface; explicit [] = NO tools (fail-closed)
     workspace_scope   TEXT NOT NULL DEFAULT '',     -- write ownership scope ('' = task scope)
     acceptance_plan   TEXT NOT NULL DEFAULT '{}',   -- versioned typed plan spec for this unit
     acceptance_digest TEXT NOT NULL DEFAULT '',

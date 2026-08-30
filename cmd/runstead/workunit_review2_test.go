@@ -11,11 +11,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +30,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
 	"github.com/RenyEnnos/Runstead/internal/verifier"
+	"github.com/RenyEnnos/Runstead/internal/workunit"
 
 	_ "modernc.org/sqlite"
 )
@@ -729,4 +733,217 @@ func newScriptedExecutorFor(t *testing.T, client provider.Client) agent.AttemptR
 		t.Fatal(err)
 	}
 	return executor
+}
+
+// TestWorkUnitCancellationNoDispatchNoReplay is the real cancellation gate:
+// the run context is canceled DURING the first unit's first model turn
+// (blocking provider). The cancellation signal survives the driver boundary
+// (wrapped context.Canceled, stable 130 semantics), no next unit or parent
+// dispatches, no tool effect runs, the interrupted unit stays durably
+// recoverable, and the real CLI resume reconciles and completes the chain
+// without replay (exactly six new provider attempts, three effects).
+func TestWorkUnitCancellationNoDispatchNoReplay(t *testing.T) {
+	workspace := t.TempDir()
+	for _, file := range []string{"a.txt", "b.txt", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(workspace, file), []byte(file+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan, err := verifier.ParsePlan([]byte(wuAcceptedPlan))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := t.TempDir()
+	store := openWorkUnitStore(t, stateDir)
+	ctx := context.Background()
+	taskID := "wu-cancel-task"
+	registry, err := tools.NewRegistry(tools.Options{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.BootstrapTask(ctx, store, state.TaskRecord{
+		TaskID: taskID, Objective: "parent", Workspace: workspace, Model: "scripted",
+		ConfigJSON: wuRealConfigSnapshot(t, registry, plan),
+	}, plan, registry); err != nil {
+		t.Fatal(err)
+	}
+	definitions := []workunit.Definition{
+		{WorkUnitID: "wu-a", Objective: "first", AcceptancePlan: json.RawMessage(wuAcceptedPlan)},
+		{WorkUnitID: "wu-b", Objective: "second", Dependencies: []string{"wu-a"}, AcceptancePlan: json.RawMessage(wuAcceptedPlan)},
+	}
+	driver := &workunit.Driver{
+		Store: store, TaskID: taskID,
+		AllowedTools:  registryToolIDs(registry),
+		TaskWorkspace: workspace,
+	}
+	if _, _, err := driver.EnsureDefinitions(ctx, definitions); err != nil {
+		t.Fatal(err)
+	}
+
+	// The first unit's first MODEL TURN reaches the provider, which cancels
+	// the run context deterministically at that moment and then blocks until
+	// the cancellation propagates: the unit is mid-turn with an admit
+	// persisted, before any effect.
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	blockingExecutor := newPersistentScriptedExecutorFor(t, store, &cancelOnFirstCall{cancel: cancel})
+	pieces := unitLoopPieces{
+		runner:              blockingExecutor,
+		registry:            registry,
+		model:               "scripted",
+		providerIdentity:    provider.Identity{},
+		trace:               func(agent.TraceLine) {},
+		store:               store,
+		policy:              policy.NewStatic(policy.Config{}, nil),
+		writePolicy:         "",
+		recipePolicy:        "",
+		recipeCatalogDigest: "",
+		limits:              agent.DefaultLimits(),
+		recovery:            &agent.RecoverySeed{},
+	}
+	chainErr := driver.RunAll(cancelCtx, func(ctx context.Context, unit state.WorkUnit) (workunit.RunResult, error) {
+		return runUnitLoop(ctx, pieces, taskID, unit)
+	})
+	if !errors.Is(chainErr, context.Canceled) {
+		t.Fatalf("canceled chain error = %v, want wrapped context.Canceled", chainErr)
+	}
+	// The canceled turn admitted exactly ONE provider attempt; no tool effect
+	// ever ran; no next unit dispatched.
+	if got := workUnitRowCount(t, stateDir, `SELECT COUNT(*) FROM provider_attempts`); got != 1 {
+		t.Fatalf("provider attempts = %d, want 1 (only the canceled turn's admission)", got)
+	}
+	if got := workUnitRowCount(t, stateDir, `SELECT COUNT(*) FROM tool_attempts`); got != 0 {
+		t.Fatalf("tool attempts = %d, want 0 (no effect before cancellation)", got)
+	}
+	interrupted, err := store.GetWorkUnit(ctx, taskID, "wu-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if interrupted.Status != "running" {
+		t.Fatalf("interrupted unit = %s, want running (durably recoverable)", interrupted.Status)
+	}
+
+	// The real CLI resume reconciles (running -> ready) and continues both
+	// units and the parent with exactly six NEW provider attempts and three
+	// effects: no replay of the canceled turn.
+	resumeScript := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"a","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"b.txt"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"b","evidence":[{"evidence_id":"obs-000002","tool":"read_file"}]}</runstead_final>`,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"c.txt"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"parent","evidence":[{"evidence_id":"obs-000003","tool":"read_file"}]}</runstead_final>`,
+	)
+	workUnitsFile := workUnitsFileFor(t, `[
+	  {"work_unit_id":"wu-a","objective":"first","acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"a.txt"}]}},
+	  {"work_unit_id":"wu-b","objective":"second","dependencies":["wu-a"],"acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"a.txt"}]}}
+	]`)
+	// The acceptance plan is the one persisted at task start (wuAcceptedPlan).
+	resumeCode, resumeOut, resumeErr := runResume(context.Background(),
+		taskID, "--state-dir", stateDir, "--scripted", resumeScript, "--workunits", workUnitsFile,
+		"--min-start-interval", "1ms", "--log-level", "error")
+	if resumeCode != exitSuccess {
+		t.Fatalf("resume exit = %d, want 0\nstderr:\n%s", resumeCode, resumeErr)
+	}
+	if !strings.Contains(resumeOut, "outcome: completed") {
+		t.Fatalf("resume stdout missing completed:\n%s", resumeOut)
+	}
+	if got := workUnitRowCount(t, stateDir, `SELECT COUNT(*) FROM provider_attempts`); got != 7 {
+		t.Fatalf("provider attempts total = %d, want 7 (1 canceled admission + 6 resumed, no replay)", got)
+	}
+	if got := workUnitRowCount(t, stateDir, `SELECT COUNT(*) FROM tool_attempts`); got != 3 {
+		t.Fatalf("tool attempts = %d, want 3 (no duplicate effects)", got)
+	}
+}
+
+// TestWorkUnitUnsupportedVersionBlocksResume proves the durable contract
+// version gate at the recovery boundary: a persisted Work Unit mutated to an
+// unsupported version fails the resume BEFORE any provider dispatch or
+// effect.
+func TestWorkUnitUnsupportedVersionBlocksResume(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "a.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := verifier.ParsePlan([]byte(wuAcceptedPlan))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := t.TempDir()
+	store := openWorkUnitStore(t, stateDir)
+	ctx := context.Background()
+	taskID := "wu-version-task"
+	registry, err := tools.NewRegistry(tools.Options{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.BootstrapTask(ctx, store, state.TaskRecord{
+		TaskID: taskID, Objective: "parent", Workspace: workspace, Model: "scripted",
+		ConfigJSON: wuRealConfigSnapshot(t, registry, plan),
+	}, plan, registry); err != nil {
+		t.Fatal(err)
+	}
+	mustCreateUnit(t, store, state.WorkUnitCreate{
+		TaskID: taskID, WorkUnitID: "wu-v9", Objective: "future version",
+		AcceptancePlan: []byte(wuAcceptedPlan), AcceptanceDigest: plan.Digest(),
+	})
+	if _, err := openReviewDB(t, stateDir).Exec(`UPDATE work_units SET version = 999 WHERE work_unit_id = 'wu-v9'`); err != nil {
+		t.Fatal(err)
+	}
+	definitions := `[
+	  {"work_unit_id":"wu-v9","objective":"future version","acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"a.txt"}]}}
+	]`
+	workUnitsFile := workUnitsFileFor(t, definitions)
+	resumeScript := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"v9","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
+	)
+	resumeCode, _, resumeErr := runResume(context.Background(),
+		taskID, "--state-dir", stateDir, "--scripted", resumeScript, "--workunits", workUnitsFile,
+		"--acceptance", acceptanceFor(t, "a.txt"), "--min-start-interval", "1ms", "--log-level", "error")
+	if resumeCode == exitSuccess {
+		t.Fatalf("unsupported-version resume must not succeed\nstderr:\n%s", resumeErr)
+	}
+	if !strings.Contains(resumeErr, "unsupported work unit version") {
+		t.Fatalf("resume stderr missing version gate reason:\n%s", resumeErr)
+	}
+	if got := workUnitRowCount(t, stateDir, `SELECT COUNT(*) FROM provider_attempts`); got != 0 {
+		t.Fatalf("provider attempts = %d, want 0 (version gate fails before dispatch)", got)
+	}
+}
+
+// newPersistentScriptedExecutorFor builds the governor-owned executor over
+// the fake client WITH the durable governor Persistence wired to the store,
+// exactly like the production composition root (provider attempts persist).
+func newPersistentScriptedExecutorFor(t *testing.T, store *state.Store, client provider.Client) agent.AttemptRunner {
+	t.Helper()
+	config := governor.DefaultInstantConfig("wu-review-policy", "fake", "instant", provider.SafeRouteSafety())
+	config.MinimumStartInterval = time.Nanosecond
+	accountGovernor, err := governor.New(config, governor.Options{Persistence: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := agent.NewExecutor(accountGovernor, client, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return executor
+}
+
+// cancelOnFirstCall is a deterministic provider double: on the FIRST
+// physical request it cancels the run context (the unit is mid-turn) and
+// then blocks until the cancellation propagates through the governor-owned
+// executor.
+type cancelOnFirstCall struct {
+	cancel context.CancelFunc
+	once   atomic.Bool
+}
+
+func (p *cancelOnFirstCall) RouteSafety() provider.RouteSafety { return provider.SafeRouteSafety() }
+
+func (p *cancelOnFirstCall) Complete(ctx context.Context, request provider.Request) (provider.Response, error) {
+	if p.once.CompareAndSwap(false, true) {
+		p.cancel()
+	}
+	<-ctx.Done()
+	return provider.Response{}, ctx.Err()
 }
