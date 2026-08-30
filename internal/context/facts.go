@@ -369,6 +369,40 @@ func extract(input Input, budget Budget) model {
 	facts = append(facts, workspace.facts...)
 	sections = append(sections, section{kind: FactWorkspace, pinned: []string{workspace.pinned}, degradable: workspace.detail})
 
+	// Work Units (issue #106): the pinned line carries every unit id with its
+	// status and blocking/failure reason; per-unit detail is degradable in
+	// deterministic id order.
+	workUnitSection := section{kind: FactWorkUnit}
+	if len(input.WorkUnits) == 0 {
+		workUnitSection.pinned = []string{"work units: none"}
+	} else {
+		parts := make([]string, 0, len(input.WorkUnits))
+		for _, unit := range input.WorkUnits {
+			state := unit.Status
+			if unit.BlockingReason != "" {
+				state += " (" + unit.BlockingReason + ")"
+			} else if unit.FailureReason != "" {
+				state += " (" + unit.FailureReason + ")"
+			}
+			parts = append(parts, unit.WorkUnitID+"("+state+")")
+			value := unit.Status
+			if unit.BlockingReason != "" {
+				value += " blocking " + unit.BlockingReason
+			}
+			if unit.FailureReason != "" {
+				value += " failure " + unit.FailureReason
+			}
+			facts = append(facts, Fact{Kind: FactWorkUnit, Origin: unit.WorkUnitID, Value: value})
+			detail := fmt.Sprintf("work unit %s: objective=%s deps=%s tools=%s digest=%s",
+				unit.WorkUnitID, capChars(unit.Objective, 256),
+				joinIDs(unit.Dependencies), joinIDs(unit.Tools), unit.AcceptanceDigest)
+			workUnitSection.degradable = append(workUnitSection.degradable, degradableLine{text: detail, id: unit.WorkUnitID})
+		}
+		sort.Strings(parts)
+		workUnitSection.pinned = []string{"work units: " + strings.Join(parts, ", ")}
+	}
+	sections = append(sections, workUnitSection)
+
 	// Non-authoritative section: the marker is pinned; notes degrade by byte
 	// budget only (they are navigation, never requirements).
 	nonAuthoritativeSection := section{kind: FactObjective}
@@ -497,4 +531,14 @@ func selectUncertain(snapshot *state.RecoverySnapshot) uncertainSelection {
 		}
 	}
 	return selection
+}
+
+// joinIDs renders a bounded, deterministic id list for detail lines.
+func joinIDs(ids []string) string {
+	if len(ids) == 0 {
+		return "-"
+	}
+	sorted := append([]string(nil), ids...)
+	sort.Strings(sorted)
+	return strings.Join(sorted, ",")
 }

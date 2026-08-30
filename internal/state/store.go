@@ -372,7 +372,11 @@ type TaskFinalize struct {
 // ActionRecord is one accepted logical action envelope.
 type ActionRecord struct {
 	TaskID string
-	Tool   string
+	// WorkUnitID tags the owning Work Unit ('' = task-level) for durable
+	// provenance (issue #106). Provenance only; policy/evidence semantics
+	// are unchanged.
+	WorkUnitID string
+	Tool       string
 	// Arguments is the sanitized canonical JSON of the accepted arguments.
 	Arguments []byte
 	// Fingerprint is repeat/loop evidence only.
@@ -393,7 +397,9 @@ type ActionRecord struct {
 
 // ToolAttemptPrepared is the TX 1 intent for one concrete tool execution.
 type ToolAttemptPrepared struct {
-	TaskID        string
+	TaskID string
+	// WorkUnitID tags the owning Work Unit ('' = task-level), issue #106.
+	WorkUnitID    string
 	ActionID      string
 	Tool          string
 	Arguments     []byte

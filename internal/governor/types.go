@@ -304,7 +304,10 @@ const (
 )
 
 type AttemptRequest struct {
-	TaskID          string
+	TaskID string
+	// WorkUnitID tags the owning Work Unit ('' = task-level) on governed
+	// provider attempts (issue #106). Provenance only.
+	WorkUnitID      string
 	ClientRequestID string
 	ModelPool       string
 	Retry           bool

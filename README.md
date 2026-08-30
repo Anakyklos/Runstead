@@ -133,6 +133,8 @@ The provider-neutral v0.1 should be able to:
 - edit files safely;
 - run tests and inspect exit codes;
 - verify changes through files, hashes and Git diffs;
+- decompose a task into durable, serial Work Units with per-unit acceptance
+  plans (issue #106);
 - persist every meaningful event;
 - survive interruption and resume from a checkpoint;
 - detect malformed actions, repeated actions and false completion claims;
@@ -215,4 +217,10 @@ fingerprint, first-byte latency and the protected-lane zero fields) is
 documented in [`docs/telemetry.md`](docs/telemetry.md). The deterministic,
 evidence-preserving model-context reconstruction from durable task state
 (issue #51) is implemented in `internal/context` and documented in
-[`docs/architecture.md`](docs/architecture.md).
+[`docs/architecture.md`](docs/architecture.md). Durable serial Work Units
+subdivide a task into operator-defined subtasks with per-unit acceptance
+plans, capability containment and interruption recovery without replay
+(issue #106): `runstead run --workunits FILE`, `runstead resume
+--workunits FILE` and the `inspect` Work Units section are documented in
+[`docs/architecture.md`](docs/architecture.md) (Stage B concurrency stays
+out of scope).

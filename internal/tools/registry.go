@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 	"sync/atomic"
@@ -103,7 +104,15 @@ type Registry struct {
 	runGit    GitRunner
 	recipes   *recipe.Catalog
 	runRecipe RecipeRunner
-	nextID    atomic.Uint64
+	// allowed is the capability envelope of this registry view. nil means the
+	// full parent surface (task-level registry); a non-nil map (possibly
+	// empty) restricts execution to the listed tools. Work Unit restricted
+	// views never grant a tool the parent does not own (issue #106).
+	allowed map[string]struct{}
+	// nextID is SHARED across restricted Work Unit views of the same task
+	// registry: evidence identifiers stay unique across units and the parent
+	// loop (issue #106).
+	nextID *atomic.Uint64
 }
 
 func NewRegistry(options Options) (*Registry, error) {
@@ -150,6 +159,10 @@ func NewRegistry(options Options) (*Registry, error) {
 			return recipe.Run(ctx, r, cwd, env)
 		}
 	}
+	next := new(atomic.Uint64)
+	if options.NextEvidenceSequence > 0 {
+		next.Store(uint64(options.NextEvidenceSequence))
+	}
 	registry := &Registry{
 		workspace: workspace,
 		limits:    limits,
@@ -158,9 +171,7 @@ func NewRegistry(options Options) (*Registry, error) {
 		runGit:    runGit,
 		recipes:   options.Recipes,
 		runRecipe: runRecipe,
-	}
-	if options.NextEvidenceSequence > 0 {
-		registry.nextID.Store(uint64(options.NextEvidenceSequence))
+		nextID:    next,
 	}
 	return registry, nil
 }
@@ -216,6 +227,13 @@ func normalizeLimits(limits Limits) (Limits, error) {
 // accepts the envelope and the attempt records the typed failure.
 func (r *Registry) ValidateArguments(tool string, arguments protocol.Arguments) (bool, error) {
 	if r == nil {
+		return false, nil
+	}
+	// Capability envelope: a tool outside this view's allowed surface is not
+	// registered for this run (Work Unit enforcement). The protocol parser
+	// and Execute both consult this single predicate, so the rejection is
+	// deterministic and happens before any effect (issue #106).
+	if !r.Allows(tool) {
 		return false, nil
 	}
 	switch tool {
@@ -322,6 +340,57 @@ func (r *Registry) IsRecipeTool(tool string) bool {
 // before execution.
 func (r *Registry) IsPolicyGated(tool string) bool {
 	return r.IsWriteTool(tool) || r.IsRecipeTool(tool)
+}
+
+// Allows reports whether the tool is inside this registry view's capability
+// envelope. A nil envelope (task-level registry) allows every registered
+// tool; a restricted Work Unit view allows only the declared tools.
+func (r *Registry) Allows(tool string) bool {
+	if r == nil {
+		return false
+	}
+	if r.allowed == nil {
+		return true
+	}
+	_, ok := r.allowed[tool]
+	return ok
+}
+
+// Restricted returns a capability- and workspace-limited view of the
+// registry for one Work Unit (issue #106). Only the listed tools can ever
+// execute through the view, and workspaceScope (workspace-relative) bounds
+// every tool to a sub-root of the parent workspace. The view shares the
+// parent runners, recipe catalog, limits and the task evidence counter;
+// it never invents capabilities the parent does not own.
+func (r *Registry) Restricted(allowed []string, workspaceScope string) (*Registry, error) {
+	if r == nil {
+		return nil, errors.New("registry is nil")
+	}
+	base := r.workspace
+	if strings.TrimSpace(workspaceScope) != "" {
+		sub, failure := r.workspace.subRoot(workspaceScope)
+		if failure != nil {
+			return nil, fmt.Errorf("work unit workspace scope %q: %v", workspaceScope, failure)
+		}
+		base = sub
+	}
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, tool := range allowed {
+		if tool = strings.TrimSpace(tool); tool != "" {
+			allowedSet[tool] = struct{}{}
+		}
+	}
+	return &Registry{
+		workspace: base,
+		limits:    r.limits,
+		rgPath:    r.rgPath,
+		runRG:     r.runRG,
+		runGit:    r.runGit,
+		recipes:   r.recipes,
+		runRecipe: r.runRecipe,
+		allowed:   allowedSet,
+		nextID:    r.nextID,
+	}, nil
 }
 
 func stringArgument(arguments protocol.Arguments, name string) (string, *Failure) {

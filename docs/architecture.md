@@ -365,6 +365,97 @@ signature is supplied by the pipeline when known; otherwise workspace facts
 render as unverified-current. Context compaction of long conversations
 remains deferred to the plugin/composable-provider tracks.
 
+## Work Units (issue #106)
+
+Work Units are operator-defined, durable subtasks of one task, executed
+**serially** (Stage A) by the same governed agent loop. Stage B
+(concurrency/delegation) is explicitly out of scope.
+
+`runstead run --workunits FILE` (and `runstead resume --workunits FILE`)
+loads a strict JSON definition file (`work_unit_id`, `objective`,
+`dependencies`, optional tool/workspace/budget limits, per-unit acceptance
+plan). `internal/workunit.Driver` owns the unit lifecycle:
+
+- **Capability containment** — `Driver.ValidateEnvelope` validates the
+  declaration against the parent envelope (a unit can never grant more than
+  its parent owns), AND the runtime enforces it: each unit loop runs inside a
+  restricted registry view (`tools.Registry.Restricted`) whose tool surface,
+  workspace root and system prompt are limited to the unit's declaration.
+  A unit declared with only `read_file` cannot propose or execute `write_file`,
+  `apply_patch` or `run_recipe`: the protocol parser rejects the proposal
+  deterministically before any action record, policy decision or effect, and
+  the registry refuses to execute it as a second line of defense. Capability
+  contract: OMITTED tools mean the task default surface; EXPLICITLY EMPTY
+  tools (`[]`) are a fail-closed no-tools envelope; a workspace scope without
+  an explicit tool list never grants the parent surface implicitly. The
+  workspace scope is workspace-RELATIVE (canonical single coordinate system,
+  the same resolver every tool uses); absolute paths and `..` traversal are
+  rejected before any effect.
+- **Dependency order** — `work_unit_dependencies` edges are validated
+  acyclically at creation (deterministic DFS) and re-supplied definitions are
+  created in dependency order regardless of the JSON file ordering; material
+  drift on a re-supplied id fails closed instead of being silently skipped.
+  `ReadyWorkUnits` exposes only units whose dependencies are all
+  `completed` (a dependency that failed/blocked/uncertain keeps its dependents
+  from becoming ready and the parent gate open), so the chain makes progress
+  serially without a scheduler.
+- **Durable lifecycle** — `created -> ready -> running -> completed | failed
+  | blocked | uncertain`, with `blocked -> ready` after operator decision and
+  `running -> ready` as the interrupted-run recovery transition. The unit
+  row, its evidence refs and its provenance-tagged actions/attempts live in
+  SQLite (`work_units`, `work_unit_dependencies`, `work_unit_id` columns on
+  `actions`, `tool_attempts`, `provider_attempts`, `verification_attempts`).
+- **Verification-gated completion** — a unit completes only when its own
+  acceptance plan passes (the driver reads the latest verification attempt
+  for the unit). A model summary is never enough: completion is
+  evidence-backed per unit, and the parent loop only proceeds after the
+  chain gate is closed.
+- **Authoritative resolution of paused units** — an approval-blocked unit
+  (blocked reason `approval`) returns to `ready` only when every pending
+  approval of the unit's own actions is resolved (operator `decide` + resume;
+  the transition is tied to `WorkUnitPendingApprovalCount == 0`, never to an
+  arbitrary reason). A unit left `uncertain` by a conservative terminal
+  outcome returns to `ready` after the recovery pipeline reconciled all of
+  its effect records (`ReconcileUncertainWorkUnits`); an unreconcilable or
+  unresolved effect keeps it blocking (`human_review_required`).
+- **Authoritative parent gate** — parent completion is impossible while any
+  persisted work unit is not completed. The gate lives at TWO boundaries:
+  `state.Store.FinalizeTask` refuses to persist `completed` while open units
+  exist (so omitting `--workunits` on resume can never finalize the parent),
+  and `resume` without `--workunits` on a task with open units exits gated
+  before the recovery pipeline or any parent dispatch. Resumed units carry
+  the FULL recovery seed (the #51-reconstructed context, persisted evidence,
+  repeat/streak guards and counters; per-unit turn/attempt counters continue
+  from the unit's own history), and a unit `context_budget` recompiles the
+  model-facing context under that budget, failing closed if it does not fit.
+- **Unit-scoped execution** — each unit runs through `agent.NewLoop` with
+  its own objective and budgets but the same durable task row. Unit loops
+  carry `SkipTaskFinalize`: they never finalize the shared task; the parent
+  loop owns task finalization. Client request ids are namespaced per unit
+  (`task-workunit-turn`) so the governor's duplicate-request protection
+  never conflates unit attempts.
+- **Recovery without replay** — interruption leaves the interrupted unit
+  `running`; `recovery.Resume` resets it to `ready` before building the
+  context, then RELOADS the authoritative snapshot so the compiled context
+  can never project `running` that SQLite already persisted as `ready`. The
+  resumed conversation re-runs only the interrupted unit: its
+  loop counters continue from the unit's persisted attempt history (so
+  request ids never collide with the interrupted session) and the evidence
+  seed grounds finals against completed historical observations without
+  re-executing them. Completed units, their rows and their effects are never
+  replayed.
+
+Work Unit tasks bootstrap through the SAME path as a normal task
+(`agent.BootstrapTask` + `agent.ConfigSnapshot`): the durable row carries the
+full authoritative execution configuration (provider identity,
+protocol/config identity, exact model, policies, recipe catalog digest,
+acceptance digest, limits and git baseline), so resume validates
+provider/model/config continuity and rejects drift exactly like a normal
+task.
+
+`runstead inspect` renders a "Work Units:" section (unit id, status, scope)
+derived from the durable rows.
+
 ## Verification
 
 Model statements are not evidence.

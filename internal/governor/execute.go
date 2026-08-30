@@ -72,6 +72,7 @@ func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client p
 	if g.persistence != nil {
 		prepared := ProviderPrepared{
 			TaskID:           request.TaskID,
+			WorkUnitID:       request.WorkUnitID,
 			ClientRequestID:  request.ClientRequestID,
 			ProviderID:       g.config.ProviderID,
 			ModelPool:        g.config.ModelPool,
@@ -125,6 +126,7 @@ func (g *Governor) Execute(ctx context.Context, request AttemptRequest, client p
 	if g.persistence != nil {
 		finished := ProviderFinished{
 			TaskID:           request.TaskID,
+			WorkUnitID:       request.WorkUnitID,
 			ClientRequestID:  request.ClientRequestID,
 			Outcome:          completion.Outcome,
 			ProtocolFamily:   g.config.ProtocolFamily,

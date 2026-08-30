@@ -51,7 +51,7 @@ type Context struct {
 // typed projection, and mandatory content that does not fit the budget fails
 // explicitly (Context.Err) instead of truncating silently.
 func BuildContext(snapshot *state.RecoverySnapshot, budget Budget, optional ...InputOption) Context {
-	base := Input{Snapshot: snapshot, Budget: budget}
+	base := Input{Snapshot: snapshot, Budget: budget, WorkUnits: snapshot.WorkUnits}
 	for _, apply := range optional {
 		apply(&base)
 	}

@@ -26,6 +26,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/tools"
 	"github.com/RenyEnnos/Runstead/internal/trace"
 	"github.com/RenyEnnos/Runstead/internal/verifier"
+	"github.com/RenyEnnos/Runstead/internal/workunit"
 )
 
 const (
@@ -98,6 +99,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	recipesFile := ""
 	recipePolicy := ""
 	acceptanceFile := ""
+	workUnitsFile := ""
 	providersFile := ""
 	providerID := ""
 	retryPolicy := ""
@@ -110,6 +112,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	flags.StringVar(&recipesFile, "recipes", "", "operator-controlled recipe catalog file (RUNSTEAD_RECIPES): JSON array of recipes; run_recipe fails closed without it")
 	flags.StringVar(&recipePolicy, "recipe-policy", "", "recipe policy modes, e.g. test=allow,vet=approval_required (RUNSTEAD_RECIPE_POLICY; default: approval_required for every recipe)")
 	flags.StringVar(&acceptanceFile, "acceptance", "", "operator acceptance plan file (RUNSTEAD_ACCEPTANCE_PLAN): versioned JSON of typed acceptance checks; completion requires every check to pass. Without a plan, completion is refused (fail closed)")
+	flags.StringVar(&workUnitsFile, "workunits", "", "operator Work Unit file (M9 Stage A, issue #106): versioned JSON of bounded subtask definitions executed serially before the parent task run")
 	flags.StringVar(&providersFile, "providers", "", "provider declarations file (RUNSTEAD_PROVIDERS): JSON document of provider_config-style endpoints (provider_id, protocol_family, base_url, model, auth_requirement, profile, ...) resolved through the #79 contract before dispatch")
 	flags.StringVar(&providerID, "provider-id", "", "exactly one configured provider_id to execute with (RUNSTEAD_PROVIDER_ID); incompatible with --scripted and OmniRoute configuration")
 	flags.StringVar(&retryPolicy, "retry-policy", "", "bounded governor-owned retry for configured compatible providers (RUNSTEAD_RETRY_POLICY): off (default) or bounded; every retried physical attempt re-enters the governor with a new admission, accounting and evidence")
@@ -438,6 +441,13 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "run: %v\n", err)
 		return exitUsage
 	}
+	// In work unit mode the parent loop skips the in-loop task bootstrap
+	// (the durable task root was persisted before the serial chain) by
+	// carrying a non-nil empty recovery seed.
+	var parentRecovery *agent.RecoverySeed
+	if workUnitsFile != "" {
+		parentRecovery = &agent.RecoverySeed{}
+	}
 	loop, err := agent.NewLoop(agent.Config{
 		Runner:               executor,
 		Registry:             registry,
@@ -452,6 +462,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		RecipeCatalogDigest:  recipes.Digest(),
 		Verifier:             verifier.New(registry, acceptance),
 		AcceptancePlanDigest: acceptanceDigest,
+		Recovery:             parentRecovery,
 	})
 	if err != nil {
 		fmt.Fprintf(errOut, "run: loop unavailable: %v\n", err)
@@ -467,6 +478,48 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	}
 	logger.InfoContext(ctx, "run started", "task_id", taskID, "provider", providerLabel, "workspace", cfg.Workspace)
 	fmt.Fprintf(errOut, "task: %s\n", taskID)
+	if workUnitsFile != "" {
+		definitions, err := loadWorkUnitFile(workUnitsFile)
+		if err != nil {
+			fmt.Fprintf(errOut, "run: %v\n", err)
+			return exitUsage
+		}
+		if err := bootstrapTaskForWorkUnits(ctx, store, taskID, taskPrompt, cfg.Workspace, model, acceptance,
+			providerIdentity, writePolicyConfig.Spec(), recipePolicyConfig.RecipeSpec(recipeIDs(recipes)),
+			recipes.Digest(), acceptanceDigest, limits, registry); err != nil {
+			fmt.Fprintf(errOut, "run: %v\n", err)
+			return exitUnavailable
+		}
+		// Unit loops skip the in-loop bootstrap by carrying a non-nil
+		// (empty) recovery seed; the task row already exists.
+		emptySeed := &agent.RecoverySeed{}
+		pieces := unitLoopPieces{
+			runner:              executor,
+			registry:            registry,
+			model:               model,
+			providerIdentity:    providerIdentity,
+			trace:               cliTraceSink(errOut),
+			store:               store,
+			policy:              policy.NewStatic(policyConfig, storeApprovals(store)),
+			writePolicy:         writePolicyConfig.Spec(),
+			recipePolicy:        recipePolicyConfig.RecipeSpec(recipeIDs(recipes)),
+			recipeCatalogDigest: recipes.Digest(),
+			limits:              limits,
+			recovery:            emptySeed,
+		}
+		chainErr := runWorkUnitChain(ctx, store, taskID, cfg.Workspace, registry, definitions,
+			func(ctx context.Context, unit state.WorkUnit) (workunit.RunResult, error) {
+				return runUnitLoop(ctx, pieces, taskID, unit)
+			})
+		if chainErr != nil {
+			if errors.Is(chainErr, context.Canceled) {
+				return exitWorkUnitCanceled
+			}
+			fmt.Fprintf(errOut, "run: work units: %v\n", chainErr)
+			return exitWorkUnitGated
+		}
+	}
+
 	result := loop.Run(ctx, agent.Task{ID: taskID, Prompt: taskPrompt})
 	if err := printFinalRuntimeResult(ctx, out, errOut, store, taskID, result, "run"); err != nil {
 		return exitUnavailable

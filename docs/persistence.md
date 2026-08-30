@@ -19,7 +19,8 @@ projections** in one SQLite database:
 - operational tables (`tasks`, `actions`, `tool_attempts`, `tool_results`,
   `provider_attempts`, `provider_attempt_receipts`, `governor_state`,
   `governor_ledger`, `governor_task_states`, `governor_request_records`,
-  `governor_attempt_ids`, `governor_rate_events`) hold the current state the
+  `governor_attempt_ids`, `governor_rate_events`, `work_units`,
+  `work_unit_dependencies`) hold the current state the
   runtime needs directly;
 - an append-only `events` journal records meaningful transitions with
   deterministic task-scoped ordering `UNIQUE(task_id, sequence)`;
@@ -366,6 +367,13 @@ implemented:
   the verification schema (migrations 0008-0009: `acceptance_plans`,
   `workspace_baselines` with its git truncation flags,
   `verification_attempts`, `verification_checks`).
+
+Work Units (issue #106) add two migration-0014 tables (`work_units` with the
+typed lifecycle status check and `work_unit_dependencies` as a table-valued
+DAG edge set) and `work_unit_id` provenance columns (default `''`) on
+`actions`, `tool_attempts`, `provider_attempts` and `verification_attempts`,
+so every row a unit produces stays attributable to the unit without
+re-execution.
 
 The schema keeps a compatible seam for those milestones (for example
 `provider_attempt_receipts` is one-to-many and `recovery_class` is stored on

@@ -218,6 +218,10 @@ Exit criteria:
 - automatic model routing;
 - graphical interfaces;
 - distributed workers;
+- Work Unit Stage B (concurrent/delegated execution of subtasks): Stage A
+  (durable serial Work Units with per-unit acceptance plans, capability
+  containment and recovery without replay) is implemented in #106 — see
+  `docs/architecture.md`;
 - semantic or vector memory;
 - unattended long-running autonomy;
 - context compaction for long conversations (the deterministic

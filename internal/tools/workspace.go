@@ -97,6 +97,23 @@ func newWorkspace(configured string) (workspace, error) {
 	return workspace{root: filepath.Clean(canonical)}, nil
 }
 
+// subRoot returns the workspace view rooted at a workspace-relative scope
+// path (Work Unit WorkspaceScope). The scope must stay inside the parent
+// root. The sub-root may not exist yet (a unit scope can be created by a
+// permitted write inside it); containment is enforced lexically so no
+// evaluation or symlink resolution of the not-yet-existing root happens.
+func (w workspace) subRoot(scope string) (workspace, *Failure) {
+	normalized, failure := normalizeRelativePath(scope)
+	if failure != nil {
+		return workspace{}, failure
+	}
+	candidate := filepath.Join(w.root, filepath.FromSlash(normalized))
+	if !within(w.root, candidate) {
+		return workspace{}, newFailure(FailurePathTraversal)
+	}
+	return workspace{root: filepath.Clean(candidate)}, nil
+}
+
 func (w workspace) resolve(input string) (resolvedPath, *Failure) {
 	relative, failure := normalizeRelativePath(input)
 	if failure != nil {
@@ -132,6 +149,15 @@ func (w workspace) resolve(input string) (resolvedPath, *Failure) {
 }
 
 func normalizeRelativePath(input string) (string, *Failure) {
+	return NormalizeWorkspacePath(input)
+}
+
+// NormalizeWorkspacePath is the canonical workspace-relative path check used
+// by every tool and by Work Unit workspace-scope validation (issue #106):
+// relative only (no absolute paths, no volume names), no ".." traversal, no
+// embedded NUL. The returned value is the slash-form cleaned path. This is
+// the SINGLE coordinate system for workspace scopes.
+func NormalizeWorkspacePath(input string) (string, *Failure) {
 	if input == "" || strings.IndexByte(input, 0) >= 0 {
 		return "", newFailure(FailureInvalidArguments)
 	}

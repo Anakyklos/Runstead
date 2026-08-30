@@ -28,7 +28,9 @@ type Persistence interface {
 // ProviderPrepared is the durable intent of one governed provider execution,
 // persisted before the provider call.
 type ProviderPrepared struct {
-	TaskID          string
+	TaskID string
+	// WorkUnitID tags the owning Work Unit ('' = task-level), issue #106.
+	WorkUnitID      string
 	ClientRequestID string
 	ProviderID      string
 	ModelPool       string
@@ -50,7 +52,9 @@ type ProviderPrepared struct {
 // ProviderFinished is the classified result of one governed provider
 // execution, persisted after the provider call and the permit finish.
 type ProviderFinished struct {
-	TaskID          string
+	TaskID string
+	// WorkUnitID tags the owning Work Unit ('' = task-level), issue #106.
+	WorkUnitID      string
 	ClientRequestID string
 	Outcome         OutcomeClass
 	// ProtocolFamily and ConfigIdentity mirror the prepared identity;

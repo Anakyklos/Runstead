@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -348,6 +349,9 @@ type RecoverySnapshot struct {
 	// VerificationAttempts are the persisted verification attempts (issue
 	// #11), newest first.
 	VerificationAttempts []VerificationAttemptRow
+	// WorkUnits are the persisted Runstead-owned Work Units of the task
+	// (issue #106), in deterministic creation order.
+	WorkUnits []RecoveryWorkUnit
 }
 
 // RecoveryTask is the durable task root used by the recovery pipeline.
@@ -470,7 +474,62 @@ func (s *Store) LoadRecoverySnapshot(ctx context.Context, taskID string) (*Recov
 	} else {
 		snapshot.VerificationAttempts = attempts
 	}
+	if units, err := s.loadRecoveryWorkUnits(ctx, taskID); err != nil {
+		return nil, err
+	} else {
+		snapshot.WorkUnits = units
+	}
 	return snapshot, nil
+}
+
+// loadRecoveryWorkUnits loads the task's persisted Work Units in
+// deterministic creation order with their dependency sets (issue #106).
+func (s *Store) loadRecoveryWorkUnits(ctx context.Context, taskID string) ([]RecoveryWorkUnit, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT work_unit_id, task_id, parent_work_unit_id, objective, status, tools_json,
+		        workspace_scope, acceptance_digest, context_budget, provider_budget,
+		        step_budget, failure_reason, blocking_reason, version
+		 FROM work_units WHERE task_id = ? ORDER BY created_at, work_unit_id`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("load recovery work units: %w", err)
+	}
+	var units []RecoveryWorkUnit
+	for rows.Next() {
+		var unit RecoveryWorkUnit
+		var toolsJSON, failureReason, blockingReason string
+		if err := rows.Scan(&unit.WorkUnitID, &unit.TaskID, &unit.ParentWorkUnitID, &unit.Objective,
+			&unit.Status, &toolsJSON, &unit.WorkspaceScope, &unit.AcceptanceDigest,
+			&unit.ContextBudget, &unit.ProviderBudget, &unit.StepBudget,
+			&failureReason, &blockingReason, &unit.Version); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan recovery work unit: %w", err)
+		}
+		if unit.Version != supportedWorkUnitVersion {
+			rows.Close()
+			return nil, fmt.Errorf("%w: work unit %q version %d", ErrUnsupportedWorkUnitVersion, unit.WorkUnitID, unit.Version)
+		}
+		unit.FailureReason = failureReason
+		unit.BlockingReason = blockingReason
+		if err := json.Unmarshal([]byte(toolsJSON), &unit.Tools); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("decode recovery work unit tools: %w", err)
+		}
+		units = append(units, unit)
+	}
+	// The dependency queries must run AFTER the rowset is closed: a nested
+	// query on the same SQLite connection would deadlock the driver.
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for index := range units {
+		deps, depErr := s.workUnitDependencies(ctx, taskID, units[index].WorkUnitID)
+		if depErr != nil {
+			return nil, depErr
+		}
+		units[index].Dependencies = deps
+	}
+	return units, nil
 }
 
 func (s *Store) loadRecoveryTask(ctx context.Context, taskID string) (RecoveryTask, error) {

@@ -311,6 +311,35 @@ func Resume(ctx context.Context, store *state.Store, options Options) (*Plan, er
 		}
 	}
 
+	// A Work Unit interrupted mid-run (status 'running') is reset to 'ready'
+	// AFTER the existing pipeline reconciled its attempt records: completed
+	// units and effects are never touched, and prior attempts are never
+	// re-executed blindly (issue #106). A unit left 'uncertain' stays
+	// blocking.
+	if _, resetErr := store.ResetInterruptedWorkUnits(ctx, options.TaskID, "interrupted; attempts reconciled"); resetErr != nil {
+		return nil, fmt.Errorf("reset interrupted work units: %w", resetErr)
+	}
+
+	// A unit left 'uncertain' by a conservative terminal loop outcome becomes
+	// executable ('ready') again once the pipeline above reconciled every one
+	// of its effect records; an unreconcilable or still-unresolved effect
+	// keeps it blocking. No effect is replayed: the resumption seed carries
+	// the repeat guard (issue #106 review).
+	if _, reconcileErr := store.ReconcileUncertainWorkUnits(ctx, options.TaskID, "effects reconciled by recovery"); reconcileErr != nil {
+		return nil, fmt.Errorf("reconcile uncertain work units: %w", reconcileErr)
+	}
+
+	// The Work Unit lifecycle mutation above (running -> ready) changes the
+	// authoritative state AFTER the post-reconciliation reload. Reload once
+	// more so the reconstructed context, evidence set and repeat guard can
+	// NEVER project a unit as 'running' that SQLite already persisted as
+	// 'ready' (issue #106 review): context is compiled from the same state
+	// the resumed loop will read.
+	snapshot, err = store.LoadRecoverySnapshot(ctx, options.TaskID)
+	if err != nil {
+		return nil, fmt.Errorf("reload recovery snapshot after work unit reset: %w", err)
+	}
+
 	// Reconstruct the bounded model context through the evidence-preserving
 	// context compiler (issue #51): a deterministic typed projection of the
 	// authoritative snapshot. Mandatory content that does not fit the budget

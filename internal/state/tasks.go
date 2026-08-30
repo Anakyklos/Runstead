@@ -3,8 +3,15 @@ package state
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 )
+
+// ErrOpenWorkUnitsBlockFinalize is returned by FinalizeTask when a task would
+// be persisted as 'completed' while persisted Work Units are still open. The
+// parent completion gate lives at the state layer (issue #106): omitting
+// --workunits on resume can never bypass it.
+var ErrOpenWorkUnitsBlockFinalize = errors.New("task has open work units; parent completion is gated")
 
 // terminalStatus maps a typed agent outcome to the persisted task status
 // projection. `completed` maps to completed; `canceled` maps to canceled;
@@ -92,6 +99,20 @@ func (s *Store) FinalizeTask(ctx context.Context, record TaskFinalize) error {
 	}
 	defer tx.Rollback()
 	if status == "completed" {
+		// Work Unit completion gate (issue #106 review): a task with persisted
+		// Work Units that are not all completed can NEVER be persisted as
+		// 'completed'. The check lives at the state layer so no alternate
+		// code path (resume without --workunits, a future scheduling change)
+		// can finalize the parent around open units.
+		var openUnits int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM work_units WHERE task_id = ? AND status != 'completed'`,
+			record.TaskID).Scan(&openUnits); err != nil {
+			return fmt.Errorf("check open work units before finalize: %w", err)
+		}
+		if openUnits > 0 {
+			return fmt.Errorf("finalize task %q as completed: %w (%d open work unit(s))", record.TaskID, ErrOpenWorkUnitsBlockFinalize, openUnits)
+		}
 		var pending int
 		if err := tx.QueryRowContext(ctx,
 			`SELECT COUNT(*)

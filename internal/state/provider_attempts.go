@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"fmt"
+	"regexp"
 
 	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/provider"
@@ -19,6 +20,50 @@ func providerAttemptStatus(outcome governor.OutcomeClass, uncertain bool) string
 		return "completed"
 	}
 	return "failed"
+}
+
+// retrySuffixRE matches the governor retry child suffix the agent executor
+// appends to a base client request id (...-r1, ...-r2). Retry children are
+// PHYSICAL attempts of ONE logical model turn: they must never count as
+// logical turns/attempts of a Work Unit (issue #106 review).
+var retrySuffixRE = regexp.MustCompile(`-r[0-9]+$`)
+
+// WorkUnitLogicalTurnCount returns how many LOGICAL model turns one Work
+// Unit has already consumed (issue #106): base client request ids only,
+// excluding governor retry children (...-rN). Resumed unit runs seed their
+// loop counters from this so budgets and the request id namespace continue
+// per logical turn while every physical retry stays fully governor-accounted.
+func (s *Store) WorkUnitLogicalTurnCount(ctx context.Context, taskID, workUnitID string) (int, error) {
+	if workUnitID == "" {
+		return 0, fmt.Errorf("WorkUnitLogicalTurnCount requires a work unit id")
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT client_request_id FROM provider_attempts WHERE task_id = ? AND work_unit_id = ?`,
+		taskID, workUnitID)
+	if err != nil {
+		return 0, fmt.Errorf("load provider attempts for work unit %s: %w", workUnitID, err)
+	}
+	defer rows.Close()
+	seen := make(map[string]struct{})
+	count := 0
+	for rows.Next() {
+		var clientRequestID string
+		if err := rows.Scan(&clientRequestID); err != nil {
+			return 0, fmt.Errorf("scan provider attempt for work unit %s: %w", workUnitID, err)
+		}
+		if retrySuffixRE.MatchString(clientRequestID) {
+			continue
+		}
+		if _, exists := seen[clientRequestID]; exists {
+			continue
+		}
+		seen[clientRequestID] = struct{}{}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("read provider attempts for work unit %s: %w", workUnitID, err)
+	}
+	return count, nil
 }
 
 // persistedDeliveryState keeps invalid/zero observations unobserved on disk.
@@ -66,9 +111,9 @@ func (s *Store) RecordProviderPrepared(ctx context.Context, record governor.Prov
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO provider_attempts
-			 (execution_id, task_id, client_request_id, provider, model_pool, model, attempt_sequence, receipt_aware, protocol_family, config_identity, delivery_state, status, created_at, prepared_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'prepared', ?, ?)`,
-		executionID, record.TaskID, record.ClientRequestID, record.ProviderID, record.ModelPool, record.Model,
+			 (execution_id, task_id, work_unit_id, client_request_id, provider, model_pool, model, attempt_sequence, receipt_aware, protocol_family, config_identity, delivery_state, status, created_at, prepared_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'prepared', ?, ?)`,
+		executionID, record.TaskID, Redact(record.WorkUnitID), record.ClientRequestID, record.ProviderID, record.ModelPool, record.Model,
 		record.AttemptSequence, boolInt(record.ReceiptAware), string(record.ProtocolFamily), Redact(record.ConfigIdentity),
 		now, formatTime(record.StartedAt)); err != nil {
 		return fmt.Errorf("insert provider attempt: %w", err)
