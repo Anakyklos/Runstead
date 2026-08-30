@@ -153,29 +153,44 @@ const supportedWorkUnitVersion = 1
 const WorkUnitConcurrencyKey = "workunit_concurrency"
 
 // WorkUnitConcurrencyFromConfigJSON reads the persisted effective scheduler
-// concurrency from the task configuration snapshot. ok=false when the key is
-// absent (a Stage A task: serial contract, DefaultConcurrency) or when the
-// persisted value is not an integer (the caller must fail closed, never
-// adopt a guessed value).
-func WorkUnitConcurrencyFromConfigJSON(configJSON string) (value int, ok bool) {
+// concurrency from the task configuration snapshot, explicitly
+// DISTINGUISHING absence from corruption (issue #109 review):
+//
+//   - present=false, err=nil: the key is absent -> the task is Stage A
+//     legacy: serial contract, DefaultConcurrency (1). This is the ONLY
+//     absence allowed to map to the default.
+//   - present=true, err=nil: the key is present with an integer value
+//     (range validation stays in the callers/workunit bounds; state cannot
+//     import workunit).
+//   - present=true, err!=nil: the key is present with a non-integer value
+//     (string, float, bool, null): incompatible persisted state, NEVER
+//     silently reinterpreted as the default.
+//   - present=false, err!=nil: the whole snapshot cannot be read (empty or
+//     malformed JSON): the authoritative configuration is un-inspectable and
+//     the caller fails closed.
+//
+// Every error path returns present=true or a non-nil err so resume can
+// reject BEFORE the recovery pipeline journals anything.
+func WorkUnitConcurrencyFromConfigJSON(configJSON string) (value int, present bool, err error) {
 	if strings.TrimSpace(configJSON) == "" {
-		return 0, false
+		return 0, false, errors.New("task configuration snapshot is empty; the scheduler contract cannot be inspected")
 	}
 	var snapshot map[string]any
 	if err := json.Unmarshal([]byte(configJSON), &snapshot); err != nil {
-		return 0, false
+		return 0, false, fmt.Errorf("task configuration snapshot is not valid JSON: %w", err)
 	}
-	raw, present := snapshot[WorkUnitConcurrencyKey]
-	if !present {
-		return 0, false
+	raw, keyPresent := snapshot[WorkUnitConcurrencyKey]
+	if !keyPresent {
+		return 0, false, nil // Stage A legacy task: serial contract.
 	}
 	number, ok := raw.(float64)
-	if !ok || number != float64(int(number)) {
-		// Absent, non-numeric or non-integral persisted values are NEVER
-		// adopted: the caller fails closed on an incompatible contract.
-		return 0, false
+	if !ok {
+		return 0, true, fmt.Errorf("persisted %s has an invalid type %T, want an integer", WorkUnitConcurrencyKey, raw)
 	}
-	return int(number), true
+	if number != float64(int(number)) {
+		return 0, true, fmt.Errorf("persisted %s is not an integer: %v", WorkUnitConcurrencyKey, number)
+	}
+	return int(number), true, nil
 }
 
 // ErrUnsupportedWorkUnitVersion is returned by the authoritative load

@@ -109,7 +109,7 @@ internal/state/recovery.go:632  defer rows.Close()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:269  defer tx.Rollback()
+internal/state/workunits.go:284  defer tx.Rollback()
 
 
 
@@ -117,7 +117,7 @@ internal/state/workunits.go:269  defer tx.Rollback()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:390  defer rows.Close()
+internal/state/workunits.go:405  defer rows.Close()
 
 
 
@@ -125,7 +125,7 @@ internal/state/workunits.go:390  defer rows.Close()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:428  defer tx.Rollback()
+internal/state/workunits.go:443  defer tx.Rollback()
 
 
 
@@ -133,7 +133,7 @@ internal/state/workunits.go:428  defer tx.Rollback()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:451  if n, _ := result.RowsAffected(); n != 1 {
+internal/state/workunits.go:466  if n, _ := result.RowsAffected(); n != 1 {
 
 
 
@@ -141,7 +141,7 @@ internal/state/workunits.go:451  if n, _ := result.RowsAffected(); n != 1 {
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:463  if n, _ := result.RowsAffected(); n != 1 {
+internal/state/workunits.go:478  if n, _ := result.RowsAffected(); n != 1 {
 
 
 
@@ -149,7 +149,7 @@ internal/state/workunits.go:463  if n, _ := result.RowsAffected(); n != 1 {
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:552  defer tx.Rollback()
+internal/state/workunits.go:567  defer tx.Rollback()
 
 
 
@@ -157,7 +157,7 @@ internal/state/workunits.go:552  defer tx.Rollback()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:562  rows.Close()
+internal/state/workunits.go:577  rows.Close()
 
 
 
@@ -165,7 +165,7 @@ internal/state/workunits.go:562  rows.Close()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:567  rows.Close()
+internal/state/workunits.go:582  rows.Close()
 
 
 
@@ -173,7 +173,7 @@ internal/state/workunits.go:567  rows.Close()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:659  defer rows.Close()
+internal/state/workunits.go:674  defer rows.Close()
 
 
 
@@ -181,7 +181,7 @@ internal/state/workunits.go:659  defer rows.Close()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:735  defer rows.Close()
+internal/state/workunits.go:750  defer rows.Close()
 
 
 
@@ -189,7 +189,7 @@ internal/state/workunits.go:735  defer rows.Close()
 
 # Work Unit store paths (#106): transaction/row cleanup follows the
 # same best-effort convention as the other state/* entries; the
-internal/state/workunits.go:759  defer rows.Close()
+internal/state/workunits.go:774  defer rows.Close()
 
 internal/state/provider_attempts.go:46  defer rows.Close()
 

@@ -513,7 +513,7 @@ and rejects drift exactly like a normal task. `resume` REJECTS an explicitly
 supplied `--workunit-concurrency` that differs from the persisted value
 (fail-closed before the recovery pipeline); omitting the flag adopts the
 persisted contract, so a task can never silently change its scheduler
-configuration across restart.
+configuration across restart. A present-but-corrupted persisted value (invalid type, non-integral or outside the operator contract) is refused as corrupted state in the resume pre-flight, BEFORE the recovery pipeline journals anything; only a genuinely absent key maps to the Stage A serial contract.
 
 `runstead inspect` renders a "Work Units:" section (unit id, status, scope)
 derived from the durable rows, and the effective concurrency appears in the

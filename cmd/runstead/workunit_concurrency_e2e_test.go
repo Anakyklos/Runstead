@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -755,5 +756,100 @@ func TestWorkUnitConcurrentReadOnlyLoopsE2E(t *testing.T) {
 	}
 	if misDebited != 0 {
 		t.Fatalf("under/over-debited attempts = %d", misDebited)
+	}
+}
+
+// TestWorkUnitConcurrencyResumeRejectsCorruptPersistedConfig proves the
+// fail-closed durable-config contract (issue #109 review): a resumed chain
+// REFUSES a persisted scheduler configuration that is present-but-corrupted
+// (invalid type) or outside the operator contract (1..4), in the resume
+// PRE-FLIGHT: before the recovery pipeline journals anything, before any
+// Work Unit transitions, and before any provider dispatch. The legacy Stage
+// A default (1) applies ONLY to a genuinely absent key.
+func TestWorkUnitConcurrencyResumeRejectsCorruptPersistedConfig(t *testing.T) {
+	cases := map[string]any{
+		"invalid-type": "2", // string: type corruption
+		"non-integral": 2.5, // float: non-integral corruption
+		"out-of-range": 99,  // integer outside the contract
+	}
+	for name, corrupted := range cases {
+		t.Run(name, func(t *testing.T) {
+			fixture := makeInterruptedFixture(t)
+			stateDir, taskID := fixture.stateDir, fixture.taskID
+			db := openReviewDB(t, stateDir)
+
+			// Mutate the task's persisted config_json (authoritative durable
+			// state) to the corrupted scheduler contract.
+			var configJSON string
+			if err := db.QueryRow(`SELECT config_json FROM tasks WHERE task_id = ?`, taskID).Scan(&configJSON); err != nil {
+				t.Fatal(err)
+			}
+			var values map[string]any
+			if err := json.Unmarshal([]byte(configJSON), &values); err != nil {
+				t.Fatal(err)
+			}
+			values[state.WorkUnitConcurrencyKey] = corrupted
+			raw, err := json.Marshal(values)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`UPDATE tasks SET config_json = ? WHERE task_id = ?`, string(raw), taskID); err != nil {
+				t.Fatal(err)
+			}
+
+			// Pre-flight state snapshot: events, unit statuses, attempts and
+			// resume count must ALL stay untouched by the rejected resume.
+			var eventsBefore, attemptsBefore, resumeCountBefore int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE task_id = ?`, taskID).Scan(&eventsBefore); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRow(`SELECT COUNT(*) FROM provider_attempts WHERE task_id = ?`, taskID).Scan(&attemptsBefore); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRow(`SELECT resume_count FROM tasks WHERE task_id = ?`, taskID).Scan(&resumeCountBefore); err != nil {
+				t.Fatal(err)
+			}
+
+			definitions := `[
+	  {"work_unit_id":"wu-a","objective":"inspect a.txt","tools":["read_file"],"acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"a.txt"}]}},
+	  {"work_unit_id":"wu-b","objective":"inspect b.txt","tools":["read_file"],"acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"a.txt"}]}}
+	]`
+			workUnitsFile := workUnitsFileFor(t, definitions)
+			code, _, stderr := runResume(context.Background(),
+				taskID, "--state-dir", stateDir, "--scripted", interruptedResumeScript(t),
+				"--workunits", workUnitsFile, "--acceptance", wuAcceptedPlanFile(t),
+				"--min-start-interval", "1ms", "--log-level", "error")
+			if code != exitCorrupt {
+				t.Fatalf("resume exit = %d, want %d (corrupt persisted scheduler config)\nstderr:\n%s", code, exitCorrupt, stderr)
+			}
+			// No recovery journaling, no Work Unit transitions, no provider
+			// dispatch, no resume-count inflation.
+			var eventsAfter, attemptsAfter, resumeCountAfter int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE task_id = ?`, taskID).Scan(&eventsAfter); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRow(`SELECT COUNT(*) FROM provider_attempts WHERE task_id = ?`, taskID).Scan(&attemptsAfter); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRow(`SELECT resume_count FROM tasks WHERE task_id = ?`, taskID).Scan(&resumeCountAfter); err != nil {
+				t.Fatal(err)
+			}
+			if eventsAfter != eventsBefore {
+				t.Fatalf("events after rejected resume = %d, want %d (no recovery journaling)", eventsAfter, eventsBefore)
+			}
+			if attemptsAfter != attemptsBefore {
+				t.Fatalf("provider attempts after rejected resume = %d, want %d (no provider dispatch)", attemptsAfter, attemptsBefore)
+			}
+			if resumeCountAfter != resumeCountBefore {
+				t.Fatalf("resume_count after rejected resume = %d, want %d", resumeCountAfter, resumeCountBefore)
+			}
+			var running int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM work_units WHERE task_id = ? AND status = 'running'`, taskID).Scan(&running); err != nil {
+				t.Fatal(err)
+			}
+			if running != 2 {
+				t.Fatalf("running units after rejected resume = %d, want 2 (no Work Unit transition)", running)
+			}
+		})
 	}
 }

@@ -149,7 +149,7 @@ Add one field: `Concurrency int` (0 = default 1, preserving all existing driver 
 
 ## Risks / Decisions
 
-- **ConfigJSON vs new table**: the issue prefers existing durable structures when equally correct; concurrency is a per-task execution contract already covered by the config snapshot's resume-drift semantics. No migration. The value is also re-validated by the driver (corrupt persisted values fail closed).
+- **ConfigJSON vs new table**: the issue prefers existing durable structures when equally correct; concurrency is a per-task execution contract already covered by the config snapshot's resume-drift semantics. No migration. The state reader returns (value, present, error) with ONLY true absence mapping to the legacy default: present-but-invalid types, non-integral values and out-of-range integers are refused in the resume pre-flight (exitCorrupt) before the recovery pipeline; the driver re-validates before execution as defense in depth.
 - **Scheduler goroutines**: one goroutine per dispatched unit, bounded by `concurrency`; settle channel buffered; every return path drains. No worker pool abstraction.
 - **Non-deterministic provider interleaving**: accepted and handled — the governor serializes physical attempts; E2E uses unit-keyed scripted responses; assertions never depend on which unit reached the governor first.
 - **Canceled-but-completed sibling**: a sibling that legitimately finished before cancellation still transitions (durable truth; "completed units are never replayed" outranks cancel-speed cosmetic concerns). Interrupted units stay `running` for recovery, exactly like Stage A.

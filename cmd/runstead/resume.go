@@ -504,16 +504,33 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 
 	// Scheduler configuration continuity (issue #109): a resumed chain runs
 	// under the DURABLE concurrency contract the task started with (the key
-	// is absent for a Stage A task = serial 1). An explicitly supplied
-	// --workunit-concurrency that differs from the persisted value fails
-	// closed here, BEFORE the recovery pipeline journals anything or any
-	// unit executes: resume never silently adopts a materially different
-	// scheduler contract. An omitted flag adopts the persisted value (the
-	// task's own contract, not a change).
+	// is absent for a Stage A task = serial 1). EVERY incompatible persisted
+	// shape fails closed here, BEFORE the recovery pipeline journals
+	// anything, any Work Unit transitions, or any provider dispatch:
+	//
+	//   - a present-but-invalid value (string, float, bool, null) and an
+	//     unreadable snapshot are corrupted state (exitCorrupt);
+	//   - a present integer outside the operator contract (1..4) is an
+	//     incompatible scheduler contract (exitCorrupt);
+	//   - an explicitly supplied flag that differs from the VALID persisted
+	//     value is an operator mistake (exitUsage): resume never silently
+	//     adopts a materially different scheduler contract.
+	//
+	// An omitted flag adopts the valid persisted value (the task's own
+	// contract, not a change).
 	if workUnitsFile != "" {
-		persisted, hasPersisted := state.WorkUnitConcurrencyFromConfigJSON(preload.Task.ConfigJSON)
+		persisted, hasPersisted, configErr := state.WorkUnitConcurrencyFromConfigJSON(preload.Task.ConfigJSON)
+		if configErr != nil {
+			fmt.Fprintf(errOut, "resume: invalid persisted scheduler configuration: %v\n", configErr)
+			return exitCorrupt
+		}
 		if !hasPersisted {
 			persisted = workunit.DefaultConcurrency
+		}
+		if persisted < workunit.MinConcurrency || persisted > workunit.MaxConcurrency {
+			fmt.Fprintf(errOut, "resume: persisted scheduler configuration %d of task %q is outside the contract (%d..%d); refusing to continue on an incompatible scheduler contract\n",
+				persisted, taskID, workunit.MinConcurrency, workunit.MaxConcurrency)
+			return exitCorrupt
 		}
 		if workUnitConcurrencySet && workUnitConcurrency != persisted {
 			fmt.Fprintf(errOut, "resume: --workunit-concurrency %d conflicts with the persisted scheduler configuration %d of task %q; refusing to silently change the task contract\n",

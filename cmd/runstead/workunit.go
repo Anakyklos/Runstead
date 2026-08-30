@@ -101,7 +101,11 @@ func registryToolIDs(registry *tools.Registry) []string {
 // inspectable, resume-safe configuration.
 func bootstrapTaskForWorkUnits(ctx context.Context, store *state.Store, taskID, objective, workspace, model string, plan *verifier.Plan, identity provider.Identity, writePolicy, recipePolicy, recipeCatalogDigest, acceptanceDigest string, limits agent.Limits, registry *tools.Registry, workUnitConcurrency int) error {
 	snapshot := agent.ConfigSnapshot(registry, model, identity, writePolicy, recipePolicy, recipeCatalogDigest, acceptanceDigest, limits)
-	snapshot = withWorkUnitConcurrency(snapshot, workUnitConcurrency)
+	merged, err := withWorkUnitConcurrency(snapshot, workUnitConcurrency)
+	if err != nil {
+		return err
+	}
+	snapshot = merged
 	return agent.BootstrapTask(ctx, store, state.TaskRecord{
 		TaskID:     taskID,
 		Objective:  objective,
@@ -115,20 +119,20 @@ func bootstrapTaskForWorkUnits(ctx context.Context, store *state.Store, taskID, 
 // task configuration snapshot under the durable key (issue #109). It is the
 // ONLY place the bound is persisted; resume reads it back from the same
 // key and rejects an explicitly different operator value fail-closed.
-func withWorkUnitConcurrency(snapshot []byte, concurrency int) []byte {
+func withWorkUnitConcurrency(snapshot []byte, concurrency int) ([]byte, error) {
 	var values map[string]any
 	if err := json.Unmarshal(snapshot, &values); err != nil {
 		// The snapshot is produced by agent.ConfigSnapshot: it is always
-		// valid JSON. A corrupt render fails closed instead of dropping the
-		// scheduler contract silently.
-		return snapshot
+		// valid JSON. A corrupt render must FAIL, never silently drop the
+		// scheduler contract (issue #109 review).
+		return nil, fmt.Errorf("encode work unit scheduler configuration: %w", err)
 	}
 	values[state.WorkUnitConcurrencyKey] = concurrency
 	encoded, err := json.Marshal(values)
 	if err != nil {
-		return snapshot
+		return nil, fmt.Errorf("encode work unit scheduler configuration: %w", err)
 	}
-	return encoded
+	return encoded, nil
 }
 
 // unitChainTraceSink wraps the CLI trace sink so concurrent unit loops of
