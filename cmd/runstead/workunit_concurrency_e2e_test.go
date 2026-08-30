@@ -874,3 +874,26 @@ func TestWithWorkUnitConcurrencyUnit(t *testing.T) {
 		t.Fatal("withWorkUnitConcurrency(nil) must propagate the error")
 	}
 }
+
+// TestWorkUnitConcurrencyResumeAcceptsExplicitEqualFlag proves the flag
+// matrix on resume: explicitly passing the SAME valid value as the persisted
+// contract is accepted (only a DIFFERENT or corrupt value fails closed).
+func TestWorkUnitConcurrencyResumeAcceptsExplicitEqualFlag(t *testing.T) {
+	fixture := makeInterruptedFixture(t)
+	stateDir, taskID := fixture.stateDir, fixture.taskID
+	definitions := `[
+	  {"work_unit_id":"wu-a","objective":"inspect a.txt","tools":["read_file"],"acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"a.txt"}]}},
+	  {"work_unit_id":"wu-b","objective":"inspect b.txt","tools":["read_file"],"acceptance_plan":{"version":1,"checks":[{"id":"c1","type":"file_exists","path":"a.txt"}]}}
+	]`
+	workUnitsFile := workUnitsFileFor(t, definitions)
+	code, out, stderr := runResume(context.Background(),
+		taskID, "--state-dir", stateDir, "--scripted", interruptedResumeScript(t),
+		"--workunits", workUnitsFile, "--workunit-concurrency", "2",
+		"--acceptance", wuAcceptedPlanFile(t), "--min-start-interval", "1ms", "--log-level", "error")
+	if code != exitSuccess {
+		t.Fatalf("resume with the equal explicit flag exit = %d, want 0\nstderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(out, "outcome: completed") {
+		t.Fatalf("resume stdout missing completion:\n%s", out)
+	}
+}

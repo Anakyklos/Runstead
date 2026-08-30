@@ -156,6 +156,32 @@ Add one field: `Concurrency int` (0 = default 1, preserving all existing driver 
 
 ## Verification plan
 
+Acceptance-item traceability (issue #109):
+
+| # | Acceptance item | Proof |
+|---|---|---|
+| 1 | concurrency=1 preserves Stage A serial | `internal/workunit/scheduler_test.go` TestSchedulerConcurrencyOnePreservesSerial; `cmd/runstead` TestWorkUnitConcurrencyOnePreservesSerialE2E; pre-existing Stage A suite unchanged |
+| 2 | two read-only units simultaneously active at 2 | TestSchedulerTwoReadOnlyUnitsConcurrentlyActive (barrier); TestWorkUnitConcurrentReadOnlyLoopsE2E (real loops, keyed provider) |
+| 3 | configured maximum never exceeded | TestSchedulerMaxNeverExceeded (wave barrier + counter) |
+| 4 | dependencies preserved under concurrency | TestSchedulerDependenciesPreservedUnderConcurrency (trap) |
+| 5 | exclusive never overlaps exclusive | TestSchedulerExclusiveNeverOverlapsExclusive |
+| 6 | exclusive never overlaps read-only | exclusiveTrapDriver + TestSchedulerExclusiveNeverOverlapsReadOnly |
+| 7 | omitted envelope is exclusive | TestSchedulerOmittedEnvelopeIsExclusive + lane matrix |
+| 8 | write_file/apply_patch/run_recipe exclusive | TestSchedulerEffectfulAndUnknownToolsAreExclusive + lane matrix |
+| 9 | unknown tool fails conservatively | lane matrix (`future_scanner` exclusive) + envelope escalation (Stage A) |
+| 10 | no starvation of a ready exclusive | TestSchedulerExclusiveReadyNotStarvedByReaders (trap) |
+| 11 | same governor, exactly-once accounting | TestWorkUnitConcurrentReadOnlyLoopsE2E (6 attempts, attempt_debited=1, maxFlight=1) |
+| 12 | unique evidence IDs + correct work_unit_id provenance | TestWorkUnitConcurrentReadOnlyLoopsE2E (COUNT vs COUNT DISTINCT, per-row-class provenance) |
+| 13 | sibling failed/blocked/uncertain stops new batches after settle | TestSchedulerFailureStopsNewBatchesAfterCurrentSettles (failed/blocked/uncertain subtests) |
+| 14 | parent completion gated while units open | driver GateParent tests + gated e2e exits (33) + FinalizeTask guard (Stage A) |
+| 15 | cancellation: no new work, no leaks | TestSchedulerCancellationPropagatesAndLeaksNothing; TestSchedulerCanceledOutcomeSurvivesBoundary; race detector |
+| 16 | crash/restart multi-active: no replay, no blind replay | TestWorkUnitCrashRestartWithTwoRunningUnits (real resume; unique request ids + evidence) |
+| 17 | resume scheduler-config drift fails closed | TestWorkUnitConcurrencyResumeDriftFailsClosed; TestWorkUnitConcurrencyResumeRejectsCorruptPersistedConfig; TestWorkUnitConcurrencyResumeAcceptsExplicitEqualFlag |
+| 18 | inspect shows effective config without secrets | TestWorkUnitConcurrencyInspectShowsEffective (render + secret-absence assertions) |
+| 19 | go test -race ./... green | full-repo race, repeated 5x on concurrency paths |
+
+Invariant sweep (prompt): scheduler imports only context/fmt/state (no policy/approval/verifier/governor migration); no retry/fallback/rotation/fan-out strings in new code; concurrency flows only from the CLI flag/persisted config; secrets absent from fixtures/tests/docs (inspect leak assertions).
+
 1. `test -z "$(gofmt -l .)"`; `go test ./...`; `go vet ./...`; `go build ./cmd/runstead`; `go test -race ./...`; `bash experiments/protocol/test.sh`; quality gates (growth/errcheck/live-convention); provider-abstraction module test+vet+build; `git diff --check`.
 2. Driver scheduler tests + lane tests (deterministic, race-clean).
 3. E2E: serial flag=1, concurrent read-only, invalid values, inspect, resume drift, crash/restart with two running units.
