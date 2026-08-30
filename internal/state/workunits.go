@@ -86,6 +86,9 @@ type WorkUnitCreate struct {
 	ContextBudget    int
 	ProviderBudget   int
 	StepBudget       int
+	// Version is the persisted contract version; the recovery loader refuses
+	// anything but supportedWorkUnitVersion before reconstruction (issue #106).
+	Version int
 }
 
 // WorkUnit is one persisted Runstead-owned subtask.
@@ -128,9 +131,24 @@ type RecoveryWorkUnit struct {
 	ContextBudget    int
 	ProviderBudget   int
 	StepBudget       int
+	// Version is the persisted contract version; the recovery loader refuses
+	// anything but supportedWorkUnitVersion before reconstruction (issue #106).
+	Version int
 }
 
 const maxWorkUnitObjectiveBytes = 4096
+
+// supportedWorkUnitVersion is the ONLY persisted Work Unit contract version
+// this runtime understands (issue #106): code must never interpret state
+// whose semantics it does not understand.
+const supportedWorkUnitVersion = 1
+
+// ErrUnsupportedWorkUnitVersion is returned by the authoritative load
+// boundaries (GetWorkUnit, ListWorkUnits, ReadyWorkUnits and the recovery
+// snapshot loader) when a persisted Work Unit carries a version the runtime
+// does not implement. It fails closed BEFORE any provider dispatch or
+// effect; a future-version row is never executed as v1.
+var ErrUnsupportedWorkUnitVersion = errors.New("unsupported work unit version")
 
 // Validate checks the static shape of a create record: identity, bounded
 // objective, closed status vocabulary and bounded dependency/tool lists.
@@ -309,6 +327,9 @@ func (s *Store) GetWorkUnit(ctx context.Context, taskID, workUnitID string) (*Wo
 		 FROM work_units WHERE work_unit_id = ? AND task_id = ?`, workUnitID, taskID)
 	unit, err := scanWorkUnit(row)
 	if err != nil {
+		if errors.Is(err, ErrUnsupportedWorkUnitVersion) {
+			return nil, err
+		}
 		return nil, ErrWorkUnitNotFound
 	}
 	dependencies, err := s.workUnitDependencies(ctx, taskID, workUnitID)
@@ -724,6 +745,9 @@ func scanWorkUnit(row rowScanner) (*WorkUnit, error) {
 		&unit.ContextBudget, &unit.ProviderBudget, &unit.StepBudget, &evidenceJSON,
 		&failureReason, &blockingReason, &unit.Version, &unit.CreatedAt, &unit.UpdatedAt); err != nil {
 		return nil, err
+	}
+	if unit.Version != supportedWorkUnitVersion {
+		return nil, fmt.Errorf("%w: work unit %q version %d", ErrUnsupportedWorkUnitVersion, unit.WorkUnitID, unit.Version)
 	}
 	unit.AcceptancePlanSpec = planSpec
 	unit.FailureReason = failureReason

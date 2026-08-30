@@ -488,7 +488,7 @@ func (s *Store) loadRecoveryWorkUnits(ctx context.Context, taskID string) ([]Rec
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT work_unit_id, task_id, parent_work_unit_id, objective, status, tools_json,
 		        workspace_scope, acceptance_digest, context_budget, provider_budget,
-		        step_budget, failure_reason, blocking_reason
+		        step_budget, failure_reason, blocking_reason, version
 		 FROM work_units WHERE task_id = ? ORDER BY created_at, work_unit_id`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load recovery work units: %w", err)
@@ -500,9 +500,13 @@ func (s *Store) loadRecoveryWorkUnits(ctx context.Context, taskID string) ([]Rec
 		if err := rows.Scan(&unit.WorkUnitID, &unit.TaskID, &unit.ParentWorkUnitID, &unit.Objective,
 			&unit.Status, &toolsJSON, &unit.WorkspaceScope, &unit.AcceptanceDigest,
 			&unit.ContextBudget, &unit.ProviderBudget, &unit.StepBudget,
-			&failureReason, &blockingReason); err != nil {
+			&failureReason, &blockingReason, &unit.Version); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan recovery work unit: %w", err)
+		}
+		if unit.Version != supportedWorkUnitVersion {
+			rows.Close()
+			return nil, fmt.Errorf("%w: work unit %q version %d", ErrUnsupportedWorkUnitVersion, unit.WorkUnitID, unit.Version)
 		}
 		unit.FailureReason = failureReason
 		unit.BlockingReason = blockingReason
