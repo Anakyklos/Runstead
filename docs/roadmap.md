@@ -218,10 +218,15 @@ Exit criteria:
 - automatic model routing;
 - graphical interfaces;
 - distributed workers;
-- Work Unit Stage B (concurrent/delegated execution of subtasks): Stage A
-  (durable serial Work Units with per-unit acceptance plans, capability
-  containment and recovery without replay) is implemented in #106 — see
-  `docs/architecture.md`;
+- Work Unit Stage B (concurrent/delegated execution of subtasks): the first
+  bounded slice (Stage B1, issue #109) is implemented — opt-in
+  `--workunit-concurrency N` (default 1, ceiling 4) for provably read-only
+  units only, under a fail-closed shared/exclusive scheduler; effectful,
+  omitted-envelope and unknown-capability units stay exclusive and parallel
+  writes remain out of scope. Stage A (#106: durable serial Work Units with
+  per-unit acceptance plans, capability containment and recovery without
+  replay) preceded it — see `docs/architecture.md`. Broader concurrency or
+  any default change remains a separate decision under #53's M9 exit gate;
 - semantic or vector memory;
 - unattended long-running autonomy;
 - context compaction for long conversations (the deterministic

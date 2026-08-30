@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-29
 
-**Status**: Draft
+**Status**: Implemented
 
 **Input**: Issue #109 — M9 Stage B1: opt-in, bounded concurrent execution for Work Units only when their declared capability envelope is provably read-only, preserving the Stage A trust path (#106 / PR #107) and introducing a fail-closed shared/exclusive scheduling policy. Child of #53; first bounded Stage B slice. No general multi-agent orchestration, no parallel writes.
 

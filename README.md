@@ -133,8 +133,9 @@ The provider-neutral v0.1 should be able to:
 - edit files safely;
 - run tests and inspect exit codes;
 - verify changes through files, hashes and Git diffs;
-- decompose a task into durable, serial Work Units with per-unit acceptance
-  plans (issue #106);
+- decompose a task into durable Work Units with per-unit acceptance plans,
+  executed under an opt-in bounded shared/exclusive scheduler for provably
+  read-only units (issues #106/#109);
 - persist every meaningful event;
 - survive interruption and resume from a checkpoint;
 - detect malformed actions, repeated actions and false completion claims;
@@ -222,5 +223,12 @@ subdivide a task into operator-defined subtasks with per-unit acceptance
 plans, capability containment and interruption recovery without replay
 (issue #106): `runstead run --workunits FILE`, `runstead resume
 --workunits FILE` and the `inspect` Work Units section are documented in
-[`docs/architecture.md`](docs/architecture.md) (Stage B concurrency stays
-out of scope).
+[`docs/architecture.md`](docs/architecture.md). The first bounded Stage B
+slice (issue #109) adds opt-in scheduler concurrency for provably read-only
+Work Units only: `--workunit-concurrency N` (default 1, minimum 1, initial
+ceiling 4) lets independent units whose explicit envelope is limited to the
+observational tools (`read_file`, `list_files`, `search_text`, `git_status`,
+`git_diff`) overlap, while effectful, omitted-envelope and unknown-capability
+units stay exclusive and never overlap anything. The effective bound is
+persisted with the task, rendered by `runstead inspect`, and a `resume` that
+would change it explicitly fails closed.
