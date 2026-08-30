@@ -853,3 +853,24 @@ func TestWorkUnitConcurrencyResumeRejectsCorruptPersistedConfig(t *testing.T) {
 		})
 	}
 }
+
+// TestWithWorkUnitConcurrencyUnit proves the scheduler-config write path
+// (issue #109 review): withWorkUnitConcurrency merges the durable key into
+// the task configuration snapshot and PROPAGATES composition errors instead
+// of silently dropping the scheduler contract.
+func TestWithWorkUnitConcurrencyUnit(t *testing.T) {
+	merged, err := withWorkUnitConcurrency([]byte(`{"max_steps":24}`), 2)
+	if err != nil {
+		t.Fatalf("withWorkUnitConcurrency(valid) error = %v", err)
+	}
+	value, present, readErr := state.WorkUnitConcurrencyFromConfigJSON(string(merged))
+	if readErr != nil || !present || value != 2 {
+		t.Fatalf("merged snapshot = %d/present:%t/err:%v, want 2/true/nil", value, present, readErr)
+	}
+	if _, err := withWorkUnitConcurrency([]byte("not json"), 2); err == nil {
+		t.Fatal("withWorkUnitConcurrency(malformed) must propagate the error, never silently return the snapshot")
+	}
+	if _, err := withWorkUnitConcurrency(nil, 2); err == nil {
+		t.Fatal("withWorkUnitConcurrency(nil) must propagate the error")
+	}
+}
