@@ -143,6 +143,41 @@ const maxWorkUnitObjectiveBytes = 4096
 // whose semantics it does not understand.
 const supportedWorkUnitVersion = 1
 
+// WorkUnitConcurrencyKey is the tasks.config_json key holding the effective
+// scheduler concurrency of a task that ran Work Units (issue #109). It is a
+// versioned durable contract: resume reads it to adopt the SAME concurrency
+// the task started under and rejects an explicitly different operator value
+// fail-closed. No new table/migration is needed: the task configuration
+// snapshot is the existing authoritative durable structure resume already
+// validates for provider/model/policy continuity.
+const WorkUnitConcurrencyKey = "workunit_concurrency"
+
+// WorkUnitConcurrencyFromConfigJSON reads the persisted effective scheduler
+// concurrency from the task configuration snapshot. ok=false when the key is
+// absent (a Stage A task: serial contract, DefaultConcurrency) or when the
+// persisted value is not an integer (the caller must fail closed, never
+// adopt a guessed value).
+func WorkUnitConcurrencyFromConfigJSON(configJSON string) (value int, ok bool) {
+	if strings.TrimSpace(configJSON) == "" {
+		return 0, false
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal([]byte(configJSON), &snapshot); err != nil {
+		return 0, false
+	}
+	raw, present := snapshot[WorkUnitConcurrencyKey]
+	if !present {
+		return 0, false
+	}
+	number, ok := raw.(float64)
+	if !ok || number != float64(int(number)) {
+		// Absent, non-numeric or non-integral persisted values are NEVER
+		// adopted: the caller fails closed on an incompatible contract.
+		return 0, false
+	}
+	return int(number), true
+}
+
 // ErrUnsupportedWorkUnitVersion is returned by the authoritative load
 // boundaries (GetWorkUnit, ListWorkUnits, ReadyWorkUnits and the recovery
 // snapshot loader) when a persisted Work Unit carries a version the runtime

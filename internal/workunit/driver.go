@@ -1,11 +1,13 @@
-// Package workunit implements the M9 Stage A serial Work Unit driver (issue
-// #106): operator-defined durable subtasks of one task, executed at most one
-// at a time through the EXISTING agent loop path. The durable object is the
-// work; the model/provider session is a disposable executor. This package
-// adds no second agent engine, no worker pool and no concurrency: it selects
-// the next ready unit from persisted state and delegates each bounded run to
-// a caller-provided RunFunc (the composition root wires agent.Loop there; the
-// driver never calls provider.Client or tools directly).
+// Package workunit implements the M9 Stage A/B1 Work Unit driver (issues
+// #106/#109): operator-defined durable subtasks of one task, executed through
+// the EXISTING agent loop path under a bounded shared/exclusive scheduler.
+// The durable object is the work; the model/provider session is a disposable
+// executor. This package adds no second agent engine, no worker pool
+// framework and no external concurrency dependency: it selects the next ready
+// units from persisted state and delegates each bounded run to a
+// caller-provided RunFunc (the composition root wires agent.Loop there; the
+// driver never calls provider.Client or tools directly). Stage A behavior is
+// the concurrency=1 case of the scheduler.
 package workunit
 
 import (
@@ -70,8 +72,19 @@ var ErrParentCompletionGated = errors.New("parent completion gated by open work 
 // operator intent can never silently apply to an already-persisted unit.
 var ErrWorkUnitDefinitionDrift = errors.New("work unit definition drift")
 
-// Driver executes the serial Stage A chain for one task. It is a pure
-// coordinator over the durable store; all execution is delegated to RunFunc.
+// ErrWorkUnitConcurrency reports an out-of-range scheduler bound (issue
+// #109): values below MinConcurrency or above MaxConcurrency fail before any
+// Work Unit executes. The bound is operator configuration, never inferred
+// from provider/model identity or observed success.
+var ErrWorkUnitConcurrency = errors.New("invalid work unit concurrency")
+
+// Driver executes the Work Unit chain for one task under the bounded
+// shared/exclusive scheduler. It is a pure coordinator over the durable
+// store; all execution is delegated to RunFunc. Concurrency is the Stage B1
+// operator bound (issue #109): shared (provably read-only) units run in
+// parallel up to Concurrency; exclusive units (omitted/effectful/unknown
+// envelopes) never overlap any other unit. Zero means DefaultConcurrency
+// (1): the Stage A serial contract.
 type Driver struct {
 	Store  *state.Store
 	TaskID string
@@ -79,6 +92,10 @@ type Driver struct {
 	AllowedTools []string
 	// TaskWorkspace is the parent task's workspace root (ownership scope).
 	TaskWorkspace string
+	// Concurrency is the operator-selected scheduler bound for this task's
+	// Work Units. Zero = 1 (Stage A behavior); values outside
+	// [MinConcurrency, MaxConcurrency] fail before any unit runs.
+	Concurrency int
 }
 
 // ValidateEnvelope checks the containment rule
@@ -343,115 +360,34 @@ func (d *Driver) GateParent(ctx context.Context) error {
 	return fmt.Errorf("%w: %s", ErrParentCompletionGated, strings.Join(parts, ", "))
 }
 
-// RunAll executes the serial chain: repeatedly select the FIRST ready unit in
-// deterministic order, validate its envelope again, transition it to running
-// (persisted before dispatch), delegate the bounded run to RunFunc, then
-// transition on the loop outcome AND the unit's own verification decision.
-// Completed units are never selected again; the chain stops (fail closed) on
-// the first non-completed terminal unit, leaving the parent gate open.
+// RunAll executes the Work Unit chain under the bounded shared/exclusive
+// scheduler (issue #109). With Concurrency == 1 (the default / Stage A
+// contract) behavior is exactly the serial Stage A chain: repeatedly select
+// the NEXT ready unit in deterministic order, validate its envelope again,
+// transition it to running (persisted before dispatch), delegate the bounded
+// run to RunFunc, then transition on the loop outcome AND the unit's own
+// verification decision. Concurrency > 1 additionally overlaps INDEPENDENT,
+// provably read-only (shared-lane) units up to the configured bound, while
+// exclusive units never overlap any other unit. Completed units are never
+// selected again; the chain stops (fail closed) on the first non-completed
+// terminal unit (after the current bounded batch settles), leaving the
+// parent gate open.
 func (d *Driver) RunAll(ctx context.Context, run RunFunc) error {
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		// Operator-resolved approvals unblock units that paused on
-		// approval_required: the transition is tied to authoritative
-		// resolution state (zero pending approvals for the unit's own
-		// actions), never to an arbitrary blocked reason.
-		if err := d.resolveBlockedWorkUnits(ctx); err != nil {
-			return err
-		}
-		ready, err := d.Store.ReadyWorkUnits(ctx, d.TaskID)
-		if err != nil {
-			return err
-		}
-		if len(ready) == 0 {
-			return nil
-		}
-		unit := ready[0] // deterministic: creation order
-
-		// Re-validate the envelope against the live parent contract before
-		// any effect (escalation can never sneak in after create).
-		if err := d.ValidateEnvelope(unit.Tools, unit.WorkspaceScope); err != nil {
-			return err
-		}
-		if unit.Status == "created" {
-			if err := d.Store.TransitionWorkUnit(ctx, d.TaskID, unit.WorkUnitID, "created", "ready", ""); err != nil {
-				return err
-			}
-		}
-		if err := d.Store.TransitionWorkUnit(ctx, d.TaskID, unit.WorkUnitID, "ready", "running", ""); err != nil {
-			return err
-		}
-
-		result, runErr := run(ctx, unit)
-		if runErr != nil {
-			// The unit stays 'running': recovery reset handles interruption;
-			// the error propagates without a fabricated terminal state.
-			return runErr
-		}
-		switch result.Outcome {
-		case "completed":
-			decision, found, decisionErr := d.Store.LatestWorkUnitVerification(ctx, d.TaskID, unit.WorkUnitID)
-			if decisionErr != nil {
-				return decisionErr
-			}
-			if !found || decision != "passed" {
-				// Evidence-backed verification is mandatory: narrative alone
-				// never completes a unit (issue #106).
-				reason := "verification did not pass for work unit"
-				if found {
-					reason = "verification decision " + decision
-				}
-				if err := d.Store.TransitionWorkUnit(ctx, d.TaskID, unit.WorkUnitID, "running", "blocked", reason); err != nil {
-					return err
-				}
-				return fmt.Errorf("%w: %s", ErrWorkUnitBlockedChain, unit.WorkUnitID)
-			}
-			if err := d.Store.TransitionWorkUnit(ctx, d.TaskID, unit.WorkUnitID, "running", "completed", ""); err != nil {
-				return err
-			}
-		case "failed":
-			reason := result.Reason
-			if reason == "" {
-				reason = "work unit failed"
-			}
-			if err := d.Store.TransitionWorkUnit(ctx, d.TaskID, unit.WorkUnitID, "running", "failed", reason); err != nil {
-				return err
-			}
-			return fmt.Errorf("%w: %s", ErrWorkUnitBlockedChain, unit.WorkUnitID)
-		case "blocked":
-			reason := result.Reason
-			if reason == "" {
-				reason = "work unit blocked"
-			}
-			if err := d.Store.TransitionWorkUnit(ctx, d.TaskID, unit.WorkUnitID, "running", "blocked", reason); err != nil {
-				return err
-			}
-			return fmt.Errorf("%w: %s", ErrWorkUnitBlockedChain, unit.WorkUnitID)
-		case "uncertain":
-			reason := result.Reason
-			if reason == "" {
-				reason = "work unit outcome uncertain"
-			}
-			if err := d.Store.TransitionWorkUnit(ctx, d.TaskID, unit.WorkUnitID, "running", "uncertain", reason); err != nil {
-				return err
-			}
-			return fmt.Errorf("%w: %s", ErrWorkUnitBlockedChain, unit.WorkUnitID)
-		case "canceled":
-			// The unit stays 'running' for recovery reset (conservative, no
-			// fabricated terminal state) BUT the cancellation signal must
-			// survive the composition boundary: wrapping context.Canceled
-			// lets run/resume return the stable 130 exit instead of
-			// reclassifying a real cancellation as the generic open-units
-			// gate (issue #106 review).
-			return fmt.Errorf("%w: work unit %s canceled", context.Canceled, unit.WorkUnitID)
-		default:
-			// aborted with an unknown outcome: leave the unit 'running' for
-			// recovery reset.
-			return fmt.Errorf("work unit %s interrupted before a terminal outcome", unit.WorkUnitID)
-		}
+	concurrency := d.Concurrency
+	if concurrency == 0 {
+		concurrency = DefaultConcurrency
 	}
+	if concurrency < MinConcurrency || concurrency > MaxConcurrency {
+		return fmt.Errorf("%w: %d (allowed %d..%d)", ErrWorkUnitConcurrency, concurrency, MinConcurrency, MaxConcurrency)
+	}
+	scheduler := &boundedScheduler{
+		driver:      d,
+		runFunc:     run,
+		ctx:         ctx,
+		concurrency: concurrency,
+		settleCh:    make(chan settleEvent, MaxConcurrency),
+	}
+	return scheduler.schedule()
 }
 
 // resolveBlockedWorkUnits moves approval-blocked units back to ready after
