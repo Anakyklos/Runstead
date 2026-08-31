@@ -1,0 +1,70 @@
+goos: linux
+goarch: amd64
+pkg: github.com/RenyEnnos/Runstead/cmd/runstead
+cpu: 12th Gen Intel(R) Core(TM) i5-1235U
+BenchmarkM9ScenarioFanOut
+BenchmarkM9ScenarioFanOut/provider=5ms/concurrency=1
+    workunit_m9_bench_test.go:300: M9CELL fanout concurrency=1 reps=1 total_us min=135349 med=135349 max=135349 provider_us med=75088 local_us med=60261 attempts=14 maxFlight=1 maxActive=1
+    workunit_m9_bench_test.go:300: M9CELL fanout concurrency=1 reps=20 total_us min=122379 med=150692 max=167712 provider_us med=75865 local_us med=75156 attempts=14 maxFlight=1 maxActive=1
+BenchmarkM9ScenarioFanOut/provider=5ms/concurrency=1-12         	      20	 179755193 ns/op	     75156 local-median-us	     75865 provider-median-us	    150692 total-median-us
+BenchmarkM9ScenarioFanOut/provider=5ms/concurrency=2
+    workunit_m9_bench_test.go:300: M9CELL fanout concurrency=2 reps=1 total_us min=111588 med=111588 max=111588 provider_us med=77174 local_us med=34414 attempts=14 maxFlight=1 maxActive=2
+    workunit_m9_bench_test.go:300: M9CELL fanout concurrency=2 reps=20 total_us min=112623 med=126096 max=139728 provider_us med=76892 local_us med=48934 attempts=14 maxFlight=1 maxActive=2
+BenchmarkM9ScenarioFanOut/provider=5ms/concurrency=2-12         	      20	 151845321 ns/op	     48934 local-median-us	     76892 provider-median-us	    126096 total-median-us
+BenchmarkM9ScenarioFanOut/provider=5ms/concurrency=4
+    workunit_m9_bench_test.go:300: M9CELL fanout concurrency=4 reps=1 total_us min=136842 med=136842 max=136842 provider_us med=77321 local_us med=59521 attempts=14 maxFlight=1 maxActive=4
+    workunit_m9_bench_test.go:300: M9CELL fanout concurrency=4 reps=20 total_us min=126923 med=140254 max=153574 provider_us med=77219 local_us med=63062 attempts=14 maxFlight=1 maxActive=4
+BenchmarkM9ScenarioFanOut/provider=5ms/concurrency=4-12         	      20	 172226621 ns/op	     63062 local-median-us	     77219 provider-median-us	    140254 total-median-us
+BenchmarkM9ScenarioFanOut/provider=50ms/concurrency=1
+    workunit_m9_bench_test.go:300: M9CELL fanout concurrency=1 reps=1 total_us min=806250 med=806250 max=806250 provider_us med=707770 local_us med=98479 attempts=14 maxFlight=1 maxActive=1
+    workunit_m9_bench_test.go:300: M9CELL fanout concurrency=1 reps=20 total_us min=772442 med=790625 max=813517 provider_us med=706924 local_us med=84255 attempts=14 maxFlight=1 maxActive=1
+BenchmarkM9ScenarioFanOut/provider=50ms/concurrency=1-12        	      20	 823798701 ns/op	     84255 local-median-us	    706924 provider-median-us	    790625 total-median-us
+BenchmarkM9ScenarioFanOut/provider=50ms/concurrency=2
+    workunit_m9_bench_test.go:300: M9CELL fanout concurrency=2 reps=1 total_us min=767544 med=767544 max=767544 provider_us med=709263 local_us med=58280 attempts=14 maxFlight=1 maxActive=2
+    workunit_m9_bench_test.go:300: M9CELL fanout concurrency=2 reps=20 total_us min=739380 med=750068 max=777909 provider_us med=708002 local_us med=42242 attempts=14 maxFlight=1 maxActive=2
+BenchmarkM9ScenarioFanOut/provider=50ms/concurrency=2-12        	      20	 785000011 ns/op	     42242 local-median-us	    708002 provider-median-us	    750068 total-median-us
+BenchmarkM9ScenarioFanOut/provider=50ms/concurrency=4
+    workunit_m9_bench_test.go:300: M9CELL fanout concurrency=4 reps=1 total_us min=755243 med=755243 max=755243 provider_us med=707180 local_us med=48063 attempts=14 maxFlight=1 maxActive=4
+    workunit_m9_bench_test.go:300: M9CELL fanout concurrency=4 reps=20 total_us min=741573 med=747428 max=758013 provider_us med=708148 local_us med=38924 attempts=14 maxFlight=1 maxActive=4
+BenchmarkM9ScenarioFanOut/provider=50ms/concurrency=4-12        	      20	 779882813 ns/op	     38924 local-median-us	    708148 provider-median-us	    747428 total-median-us
+BenchmarkM9ScenarioDependencyChain
+BenchmarkM9ScenarioDependencyChain/concurrency=1
+    workunit_m9_bench_test.go:300: M9CELL chain concurrency=1 reps=1 total_us min=276936 med=276936 max=276936 provider_us med=215678 local_us med=61257 attempts=14 maxFlight=1 maxActive=1
+    workunit_m9_bench_test.go:300: M9CELL chain concurrency=1 reps=20 total_us min=270241 med=277625 max=290273 provider_us med=216126 local_us med=61611 attempts=14 maxFlight=1 maxActive=1
+BenchmarkM9ScenarioDependencyChain/concurrency=1-12             	      20	 307890295 ns/op	     61611 local-median-us	    216126 provider-median-us	    277625 total-median-us
+BenchmarkM9ScenarioDependencyChain/concurrency=2
+    workunit_m9_bench_test.go:300: M9CELL chain concurrency=2 reps=1 total_us min=293093 med=293093 max=293093 provider_us med=216610 local_us med=76483 attempts=14 maxFlight=1 maxActive=1
+    workunit_m9_bench_test.go:300: M9CELL chain concurrency=2 reps=20 total_us min=266082 med=275412 max=295559 provider_us med=216182 local_us med=59330 attempts=14 maxFlight=1 maxActive=1
+BenchmarkM9ScenarioDependencyChain/concurrency=2-12             	      20	 307844502 ns/op	     59330 local-median-us	    216182 provider-median-us	    275412 total-median-us
+BenchmarkM9ScenarioDependencyChain/concurrency=4
+    workunit_m9_bench_test.go:300: M9CELL chain concurrency=4 reps=1 total_us min=270324 med=270324 max=270324 provider_us med=216505 local_us med=53819 attempts=14 maxFlight=1 maxActive=1
+    workunit_m9_bench_test.go:300: M9CELL chain concurrency=4 reps=20 total_us min=269792 med=278642 max=294593 provider_us med=216114 local_us med=62742 attempts=14 maxFlight=1 maxActive=1
+BenchmarkM9ScenarioDependencyChain/concurrency=4-12             	      20	 307676533 ns/op	     62742 local-median-us	    216114 provider-median-us	    278642 total-median-us
+BenchmarkM9ScenarioMixedExclusive
+BenchmarkM9ScenarioMixedExclusive/concurrency=1
+    workunit_m9_bench_test.go:300: M9CELL mixed concurrency=1 reps=1 total_us min=298066 med=298066 max=298066 provider_us med=216626 local_us med=81440 attempts=14 maxFlight=1 maxActive=1
+    workunit_m9_bench_test.go:300: M9CELL mixed concurrency=1 reps=20 total_us min=263323 med=276919 max=305218 provider_us med=216169 local_us med=61222 attempts=14 maxFlight=1 maxActive=1
+BenchmarkM9ScenarioMixedExclusive/concurrency=1-12              	      20	 307153723 ns/op	     61222 local-median-us	    216169 provider-median-us	    276919 total-median-us
+BenchmarkM9ScenarioMixedExclusive/concurrency=2
+    workunit_m9_bench_test.go:300: M9CELL mixed concurrency=2 reps=1 total_us min=259450 med=259450 max=259450 provider_us med=217351 local_us med=42098 attempts=14 maxFlight=1 maxActive=2
+    workunit_m9_bench_test.go:300: M9CELL mixed concurrency=2 reps=20 total_us min=258841 med=269800 max=288852 provider_us med=217585 local_us med=51686 attempts=14 maxFlight=1 maxActive=2
+BenchmarkM9ScenarioMixedExclusive/concurrency=2-12              	      20	 297149570 ns/op	     51686 local-median-us	    217585 provider-median-us	    269800 total-median-us
+BenchmarkM9ScenarioMixedExclusive/concurrency=4
+    workunit_m9_bench_test.go:300: M9CELL mixed concurrency=4 reps=1 total_us min=278727 med=278727 max=278727 provider_us med=218348 local_us med=60378 attempts=14 maxFlight=1 maxActive=3
+    workunit_m9_bench_test.go:300: M9CELL mixed concurrency=4 reps=20 total_us min=249405 med=260292 max=275244 provider_us med=217418 local_us med=43049 attempts=14 maxFlight=1 maxActive=3
+BenchmarkM9ScenarioMixedExclusive/concurrency=4-12              	      20	 296330768 ns/op	     43049 local-median-us	    217418 provider-median-us	    260292 total-median-us
+BenchmarkM9ScenarioGovernorConstrained
+BenchmarkM9ScenarioGovernorConstrained/concurrency=1
+    workunit_m9_bench_test.go:300: M9CELL governed concurrency=1 reps=1 total_us min=769355 med=769355 max=769355 provider_us med=706054 local_us med=63301 attempts=14 maxFlight=1 maxActive=1
+    workunit_m9_bench_test.go:300: M9CELL governed concurrency=1 reps=20 total_us min=760351 med=767604 max=790602 provider_us med=706129 local_us med=61724 attempts=14 maxFlight=1 maxActive=1
+BenchmarkM9ScenarioGovernorConstrained/concurrency=1-12         	      20	 803896708 ns/op	     61724 local-median-us	    706129 provider-median-us	    767604 total-median-us
+BenchmarkM9ScenarioGovernorConstrained/concurrency=2
+    workunit_m9_bench_test.go:300: M9CELL governed concurrency=2 reps=1 total_us min=747912 med=747912 max=747912 provider_us med=707241 local_us med=40670 attempts=14 maxFlight=1 maxActive=2
+    workunit_m9_bench_test.go:300: M9CELL governed concurrency=2 reps=20 total_us min=745476 med=755818 max=768424 provider_us med=708351 local_us med=47478 attempts=14 maxFlight=1 maxActive=2
+BenchmarkM9ScenarioGovernorConstrained/concurrency=2-12         	      20	 798783571 ns/op	     47478 local-median-us	    708351 provider-median-us	    755818 total-median-us
+BenchmarkM9ScenarioGovernorConstrained/concurrency=4
+    workunit_m9_bench_test.go:300: M9CELL governed concurrency=4 reps=1 total_us min=750525 med=750525 max=750525 provider_us med=708713 local_us med=41812 attempts=14 maxFlight=1 maxActive=4
+    workunit_m9_bench_test.go:300: M9CELL governed concurrency=4 reps=20 total_us min=745551 med=756553 max=773325 provider_us med=708028 local_us med=47648 attempts=14 maxFlight=1 maxActive=4
+BenchmarkM9ScenarioGovernorConstrained/concurrency=4-12         	      20	 795622756 ns/op	     47648 local-median-us	    708028 provider-median-us	    756553 total-median-us
+PASS
+ok  	github.com/RenyEnnos/Runstead/cmd/runstead	151.950s

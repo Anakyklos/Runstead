@@ -311,7 +311,10 @@ func TestSchedulerDependenciesPreservedUnderConcurrency(t *testing.T) {
 
 // exclusiveTrapDriver runs an exclusive unit against shared traps: any shared
 // unit entering while the exclusive unit's run is still open is a violation
-// (acceptance items 5/6/7/8).
+// (acceptance items 5/6/7/8). The trap is store-authoritative: the shared run
+// checks the exclusive unit's DURABLE row, so it is deterministic independent
+// of channel/timing races (a shared unit may only start after the exclusive
+// row is durably 'completed').
 func exclusiveTrapDriver(t *testing.T, taskID string, exclusiveDef Definition, sharedCount int) {
 	t.Helper()
 	driver, store := newSchedulerDriver(t, taskID, 2)
@@ -329,14 +332,17 @@ func exclusiveTrapDriver(t *testing.T, taskID string, exclusiveDef Definition, s
 			waitFor(t, releaseExclusive, "exclusive unit release")
 			return completeRun(t, store, unit)
 		}
-		// Shared-trap: entering while the exclusive unit has not settled is
+		// Shared-trap: the exclusive unit's durable row must already be
+		// completed; dispatching a shared unit while it is still running is
 		// an overlap violation.
-		select {
-		case <-releaseExclusive:
-			return completeRun(t, store, unit)
-		default:
+		exclusiveUnit, err := store.GetWorkUnit(ctx, unit.TaskID, exclusiveDef.WorkUnitID)
+		if err != nil {
+			return RunResult{}, err
+		}
+		if exclusiveUnit.Status != "completed" {
 			return violation("shared unit overlapped an exclusive unit", violated)
 		}
+		return completeRun(t, store, unit)
 	}
 	errCh := runChain(t, driver, ctx, run)
 	waitFor(t, exclusiveEntered, "exclusive unit to enter")
@@ -402,12 +408,16 @@ func TestSchedulerExclusiveNeverOverlapsExclusive(t *testing.T) {
 			waitFor(t, releaseFirst, "first exclusive unit release")
 			return completeRun(t, store, unit)
 		}
-		select {
-		case <-releaseFirst:
-			return completeRun(t, store, unit)
-		default:
+		// Store-authoritative exclusive/exclusive trap: wu-b may only start
+		// after wu-a's durable row is completed.
+		firstUnit, err := store.GetWorkUnit(ctx, unit.TaskID, "wu-a")
+		if err != nil {
+			return RunResult{}, err
+		}
+		if firstUnit.Status != "completed" {
 			return violation("exclusive unit overlapped another exclusive unit", violated)
 		}
+		return completeRun(t, store, unit)
 	}
 	errCh := runChain(t, driver, ctx, run)
 	waitFor(t, firstEntered, "first exclusive unit to enter")

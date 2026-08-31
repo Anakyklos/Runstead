@@ -20,11 +20,14 @@ import (
 
 // settleEvent reports one dispatched unit's durable outcome to the scheduler
 // main loop. Outcome values mirror RunResult.Outcome plus "interrupted" for
-// an unknown outcome (unit left running for recovery reset).
+// an unknown outcome (unit left running for recovery reset). exclusive
+// reports the dispatched unit's lane so the main loop can clear the
+// running-exclusive isolation state when that unit settles.
 type settleEvent struct {
-	unitID  string
-	outcome string
-	err     error
+	unitID    string
+	outcome   string
+	err       error
+	exclusive bool
 }
 
 // boundedScheduler runs one task's Work Unit chain under the shared/exclusive
@@ -43,6 +46,15 @@ type boundedScheduler struct {
 	// active is the number of dispatched-but-not-settled units. It never
 	// exceeds concurrency.
 	active int
+	// activeExclusive reports whether a dispatched-but-not-settled unit is
+	// exclusive. Isolation contract: an exclusive unit starts only at
+	// active == 0 and, while it is active, NO other unit may be dispatched
+	// (issue #109: "while one is active nothing else starts"). The ready-list
+	// anti-starvation rule alone is not enough: after an exclusive unit is
+	// dispatched it leaves the ready list, so the shared fill needs this
+	// running-lane state to refuse filling slots while the exclusive is still
+	// settling (#53 corpus finding).
+	activeExclusive bool
 	// stop is the first hard stop condition (error, cancellation or
 	// non-completed terminal outcome). Once set, no new unit is dispatched
 	// and the scheduler only drains the active batch to durable states.
@@ -113,6 +125,16 @@ func (s *boundedScheduler) schedule() error {
 			continue
 		}
 
+		// A RUNNING exclusive blocks ALL new dispatch, even past its own
+		// ready slot: once an exclusive unit is dispatched (active was 0), no
+		// shared unit may start until that exclusive settles. The ready-list
+		// check above cannot see the exclusive anymore (it is 'running'), so
+		// the running-lane state is the isolation guarantee (#53 finding).
+		if s.activeExclusive {
+			s.settle()
+			continue
+		}
+
 		// Shared fill: dispatch ready read-only units in deterministic order
 		// up to the configured bound.
 		dispatched := false
@@ -152,6 +174,9 @@ func (s *boundedScheduler) dispatch(unit state.WorkUnit) error {
 		return err
 	}
 	s.active++
+	if Classify(unit.Tools) == LaneExclusive {
+		s.activeExclusive = true
+	}
 	go s.worker(unit)
 	return nil
 }
@@ -162,7 +187,7 @@ func (s *boundedScheduler) dispatch(unit state.WorkUnit) error {
 // exactly one settle event and exits, so the scheduler can always drain.
 func (s *boundedScheduler) worker(unit state.WorkUnit) {
 	result, runErr := s.runFunc(s.ctx, unit)
-	event := settleEvent{unitID: unit.WorkUnitID}
+	event := settleEvent{unitID: unit.WorkUnitID, exclusive: Classify(unit.Tools) == LaneExclusive}
 	if runErr != nil {
 		// The unit stays 'running': recovery reset handles interruption; the
 		// error propagates without a fabricated terminal state.
@@ -257,6 +282,10 @@ func (s *boundedScheduler) settle() {
 // which would manufacture uncertain provider/effect states).
 func (s *boundedScheduler) handleSettle(event settleEvent) {
 	s.active--
+	if event.exclusive {
+		// The running exclusive has settled: shared dispatch may resume.
+		s.activeExclusive = false
+	}
 	if s.stop != nil {
 		return
 	}
