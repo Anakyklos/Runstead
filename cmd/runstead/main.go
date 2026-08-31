@@ -272,6 +272,8 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	var providerIdentity provider.Identity
 	if resolvedProvider != nil {
 		providerIdentity = provider.IdentityFromResolved(*resolvedProvider, compat.AdapterVersion)
+	} else if cfg.OmniRoute != nil {
+		providerIdentity = omniroute.IdentityFromConfig(*cfg.OmniRoute)
 	}
 
 	// Load all operator-controlled non-authoritative catalogs before any client
@@ -915,7 +917,7 @@ func resolveGovernorConfig(scripted bool, cfg config.Config, resolved *provider.
 		if cfg.OmniRoute == nil {
 			return governor.Config{}, fmt.Errorf("no provider configuration for the account governor")
 		}
-		providerID = "omniroute"
+		providerID = omniroute.IdentityProviderID
 		model = cfg.OmniRoute.Model
 		safety = cfg.OmniRoute.RouteSafety
 	}
@@ -951,6 +953,10 @@ func resolveGovernorConfig(scripted bool, cfg config.Config, resolved *provider.
 		// secret material.
 		accountConfig.ProtocolFamily = resolved.ProtocolFamily
 		accountConfig.ConfigIdentity = resolved.ConfigIdentity
+	} else if !scripted && cfg.OmniRoute != nil {
+		identity := omniroute.IdentityFromConfig(*cfg.OmniRoute)
+		accountConfig.ProtocolFamily = identity.ProtocolFamily
+		accountConfig.ConfigIdentity = identity.ConfigIdentity
 	}
 	// The pinned receipt lane: the governor requires authoritative attempt
 	// receipts, uses the same receipt-aware route safety as the adapter and

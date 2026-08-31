@@ -85,6 +85,16 @@ package identities, provider identity, tool schema identity, recipe catalog
 identity and compatibility status. It never prints credentials, auth headers,
 cookies, raw provider configuration or model response blobs.
 
+The protected OmniRoute lane is also frozen as a provider identity. Its
+`omniroute-config.v1` identity uses the existing `provider.Identity` shape and
+the sanitized `provider.Config` representation, with a digest over the
+non-secret route inputs and the derived account-lane hash. The API key and raw
+connection pin are never part of the contract or hash. A resumed OmniRoute task
+must receive the original OmniRoute flags or `OMNIROUTE_*` environment again;
+missing or drifted inputs fail before recovery. If recovery finds an interrupted
+receipt-aware provider attempt, the existing conservative accounting gate can
+block continuation and no second chat request is issued.
+
 ## Trusted-kernel boundary
 
 Composition is not an execution engine. The execution path remains:

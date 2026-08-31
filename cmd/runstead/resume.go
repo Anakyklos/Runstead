@@ -17,6 +17,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/policy"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/provider/compat"
+	"github.com/RenyEnnos/Runstead/internal/provider/omniroute"
 	"github.com/RenyEnnos/Runstead/internal/recipe"
 	"github.com/RenyEnnos/Runstead/internal/recovery"
 	"github.com/RenyEnnos/Runstead/internal/state"
@@ -67,6 +68,23 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	retryPolicy := ""
 	profileFile := ""
 	profileSet := false
+	omniBaseURL := ""
+	omniBaseURLSet := false
+	omniManagementBaseURL := ""
+	omniManagementBaseURLSet := false
+	omniAPIKey := ""
+	omniAPIKeySet := false
+	omniConnectionID := ""
+	omniConnectionIDSet := false
+	omniModel := ""
+	omniModelSet := false
+	omniChatEndpoint := ""
+	omniChatEndpointSet := false
+	omniTimeout := ""
+	omniTimeoutSet := false
+	omniSafeRoute := false
+	omniFlagsSet := false
+	omniSafeRouteSet := false
 	// Parse manually so flags may appear before or after the task id (the flag
 	// package stops at the first positional argument).
 	for index := 0; index < len(args); index++ {
@@ -178,6 +196,103 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			}
 		case strings.HasPrefix(arg, "--provider-id="):
 			providerID = strings.TrimPrefix(arg, "--provider-id=")
+		case arg == "--omniroute-base-url":
+			if next, ok := value("--omniroute-base-url"); ok {
+				omniBaseURL = next
+				omniBaseURLSet = true
+				omniFlagsSet = true
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--omniroute-base-url="):
+			omniBaseURL = strings.TrimPrefix(arg, "--omniroute-base-url=")
+			omniBaseURLSet = true
+			omniFlagsSet = true
+		case arg == "--omniroute-management-base-url":
+			if next, ok := value("--omniroute-management-base-url"); ok {
+				omniManagementBaseURL = next
+				omniManagementBaseURLSet = true
+				omniFlagsSet = true
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--omniroute-management-base-url="):
+			omniManagementBaseURL = strings.TrimPrefix(arg, "--omniroute-management-base-url=")
+			omniManagementBaseURLSet = true
+			omniFlagsSet = true
+		case arg == "--omniroute-api-key":
+			if next, ok := value("--omniroute-api-key"); ok {
+				omniAPIKey = next
+				omniAPIKeySet = true
+				omniFlagsSet = true
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--omniroute-api-key="):
+			omniAPIKey = strings.TrimPrefix(arg, "--omniroute-api-key=")
+			omniAPIKeySet = true
+			omniFlagsSet = true
+		case arg == "--omniroute-connection-id":
+			if next, ok := value("--omniroute-connection-id"); ok {
+				omniConnectionID = next
+				omniConnectionIDSet = true
+				omniFlagsSet = true
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--omniroute-connection-id="):
+			omniConnectionID = strings.TrimPrefix(arg, "--omniroute-connection-id=")
+			omniConnectionIDSet = true
+			omniFlagsSet = true
+		case arg == "--omniroute-model":
+			if next, ok := value("--omniroute-model"); ok {
+				omniModel = next
+				omniModelSet = true
+				omniFlagsSet = true
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--omniroute-model="):
+			omniModel = strings.TrimPrefix(arg, "--omniroute-model=")
+			omniModelSet = true
+			omniFlagsSet = true
+		case arg == "--omniroute-chat-endpoint":
+			if next, ok := value("--omniroute-chat-endpoint"); ok {
+				omniChatEndpoint = next
+				omniChatEndpointSet = true
+				omniFlagsSet = true
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--omniroute-chat-endpoint="):
+			omniChatEndpoint = strings.TrimPrefix(arg, "--omniroute-chat-endpoint=")
+			omniChatEndpointSet = true
+			omniFlagsSet = true
+		case arg == "--omniroute-timeout":
+			if next, ok := value("--omniroute-timeout"); ok {
+				omniTimeout = next
+				omniTimeoutSet = true
+				omniFlagsSet = true
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--omniroute-timeout="):
+			omniTimeout = strings.TrimPrefix(arg, "--omniroute-timeout=")
+			omniTimeoutSet = true
+			omniFlagsSet = true
+		case arg == "--omniroute-safe-route":
+			omniSafeRoute = true
+			omniFlagsSet = true
+			omniSafeRouteSet = true
+		case strings.HasPrefix(arg, "--omniroute-safe-route="):
+			parsed, parseErr := strconv.ParseBool(strings.TrimPrefix(arg, "--omniroute-safe-route="))
+			if parseErr != nil {
+				fmt.Fprintln(errOut, "resume: --omniroute-safe-route requires a boolean")
+				return exitUsage
+			}
+			omniSafeRoute = parsed
+			omniFlagsSet = true
+			omniSafeRouteSet = true
 		case arg == "--retry-policy":
 			if next, ok := value("--retry-policy"); ok {
 				retryPolicy = next
@@ -326,8 +441,58 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	var resumeClient provider.Client
 	var resumeProviderIdentity provider.Identity
 	var resumeResolvedProvider *provider.Resolved
+	var resumeOmniRoute *omniroute.Config
 	resumeProviderID := ""
-	if persistedIdentity.ProviderID != "" {
+	persistedProviderIdentity := provider.Identity{
+		ProviderID:     persistedIdentity.ProviderID,
+		ProtocolFamily: provider.ProtocolFamily(persistedIdentity.ProtocolFamily),
+		Model:          persistedIdentity.Model,
+		ConfigIdentity: persistedIdentity.ConfigIdentity,
+		ProfileVersion: persistedIdentity.ProfileVersion,
+		AdapterVersion: persistedIdentity.AdapterVersion,
+	}
+	if omniroute.IsIdentity(persistedProviderIdentity) {
+		if _, scriptedSet := resolveScriptedFlag(scripted); scriptedSet {
+			fmt.Fprintf(errOut, "resume: task %q was executed through OmniRoute; --scripted cannot replace OmniRoute on resume\n", taskID)
+			return exitUsage
+		}
+		if _, providersSet := resolveProvidersFlag(providersFile); providersSet {
+			fmt.Fprintf(errOut, "resume: task %q was executed through OmniRoute; provider declarations cannot replace OmniRoute on resume\n", taskID)
+			return exitUsage
+		}
+		if _, selectedSet := resolveProviderIDFlag(providerID); selectedSet {
+			fmt.Fprintf(errOut, "resume: task %q was executed through OmniRoute; --provider-id cannot replace OmniRoute on resume\n", taskID)
+			return exitUsage
+		}
+		omniConfig, resolveErr := resolveResumeOmniRoute(omniBaseURL, omniBaseURLSet, omniManagementBaseURL, omniManagementBaseURLSet,
+			omniAPIKey, omniAPIKeySet, omniConnectionID, omniConnectionIDSet, omniModel, omniModelSet, omniChatEndpoint, omniChatEndpointSet,
+			omniTimeout, omniTimeoutSet, omniSafeRoute, omniSafeRouteSet)
+		if resolveErr != nil {
+			fmt.Fprintf(errOut, "resume: %v\n", resolveErr)
+			return exitUnavailable
+		}
+		resolvedIdentity := omniroute.IdentityFromConfig(*omniConfig)
+		if resolvedIdentity.ProviderID != persistedProviderIdentity.ProviderID ||
+			resolvedIdentity.ProtocolFamily != persistedProviderIdentity.ProtocolFamily ||
+			resolvedIdentity.Model != persistedProviderIdentity.Model ||
+			resolvedIdentity.ConfigIdentity != persistedProviderIdentity.ConfigIdentity ||
+			resolvedIdentity.ProfileVersion != persistedProviderIdentity.ProfileVersion ||
+			resolvedIdentity.AdapterVersion != persistedProviderIdentity.AdapterVersion {
+			fmt.Fprintf(errOut, "resume: OmniRoute configuration divergence: the re-supplied configuration differs from the task's frozen provider identity; resume never switches OmniRoute route, model or connection silently\n")
+			return exitUnavailable
+		}
+		if restored != nil && restored.ProviderID != "" && restored.ProviderID != resolvedIdentity.ProviderID {
+			fmt.Fprintf(errOut, "resume: restored account protection conflicts with OmniRoute\n")
+			return exitUnavailable
+		}
+		if restored != nil && restored.Model != "" && restored.Model != resolvedIdentity.Model {
+			fmt.Fprintf(errOut, "resume: restored account protection conflicts with OmniRoute model %q\n", resolvedIdentity.Model)
+			return exitUnavailable
+		}
+		resumeProviderID = resolvedIdentity.ProviderID
+		resumeProviderIdentity = resolvedIdentity
+		resumeOmniRoute = omniConfig
+	} else if persistedIdentity.ProviderID != "" {
 		providersPath, providersSet := resolveProvidersFlag(providersFile)
 		selectedID, selectedSet := resolveProviderIDFlag(providerID)
 		if _, scriptedSet := resolveScriptedFlag(scripted); scriptedSet {
@@ -381,6 +546,23 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		if _, selectedSet := resolveProviderIDFlag(providerID); selectedSet {
 			fmt.Fprintln(errOut, "resume: the task was not executed through a configured provider; --provider-id cannot be attached at resume")
 			return exitUsage
+		}
+		if omniFlagsSet {
+			fmt.Fprintln(errOut, "resume: the task was not executed through OmniRoute; OmniRoute configuration cannot be attached at resume")
+			return exitUsage
+		}
+	}
+	if resumeOmniRoute != nil {
+		accountConfig.ProtocolFamily = resumeProviderIdentity.ProtocolFamily
+		accountConfig.ConfigIdentity = resumeProviderIdentity.ConfigIdentity
+		accountConfig.RouteSafety = resumeOmniRoute.RouteSafety
+		accountConfig.RequireSingleAttempt = false
+		accountConfig.RequireAttemptReceipts = resumeOmniRoute.EnableAttemptReceipts
+		accountConfig.AttemptProviderID = resumeOmniRoute.Provider
+		accountConfig.AccountLaneHash = resumeOmniRoute.AccountLaneHash
+		if err := accountConfig.Validate(); err != nil {
+			fmt.Fprintf(errOut, "resume: invalid OmniRoute account policy: %v\n", err)
+			return exitUnavailable
 		}
 	}
 
@@ -506,6 +688,23 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			return exitUnavailable
 		}
 		resumeClient = compatClient
+	}
+	if resumeOmniRoute != nil {
+		omniClient, buildErr := omniroute.New(*resumeOmniRoute, omniroute.Options{})
+		if buildErr != nil {
+			fmt.Fprintf(errOut, "resume: OmniRoute lane unavailable: %v\n", buildErr)
+			return exitUnavailable
+		}
+		health := omniClient.ProbeGatewayContract(ctx)
+		if !health.Healthy() {
+			fmt.Fprintf(errOut, "resume: OmniRoute gateway contract is not healthy (%s): %s\n", health.State, health.ReasonCode)
+			return exitUnavailable
+		}
+		if err := omniClient.Preflight(ctx); err != nil {
+			fmt.Fprintf(errOut, "resume: OmniRoute preflight failed: %v\n", err)
+			return exitUnavailable
+		}
+		resumeClient = omniClient
 	}
 	// The provider input is supplied again at resume time: the original remote
 	// conversation is disposable metadata, never an authority over task state.
@@ -825,6 +1024,45 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		return exitUnavailable
 	}
 	return result.Outcome.ExitCode()
+}
+
+func resolveResumeOmniRoute(baseURL string, baseURLSet bool, managementBaseURL string, managementBaseURLSet bool, apiKey string, apiKeySet bool, connectionID string, connectionIDSet bool, model string, modelSet bool, chatEndpoint string, chatEndpointSet bool, timeoutValue string, timeoutSet bool, safeRoute bool, safeRouteSet bool) (*omniroute.Config, error) {
+	overrides := config.OmniRouteOverrides{
+		BaseURL:              baseURL,
+		BaseURLSet:           baseURLSet,
+		ManagementBaseURL:    managementBaseURL,
+		ManagementBaseURLSet: managementBaseURLSet,
+		APIKey:               apiKey,
+		APIKeySet:            apiKeySet,
+		ConnectionID:         connectionID,
+		ConnectionIDSet:      connectionIDSet,
+		Model:                model,
+		ModelSet:             modelSet,
+		ChatEndpoint:         chatEndpoint,
+		ChatEndpointSet:      chatEndpointSet,
+	}
+	if timeoutSet {
+		timeout, err := time.ParseDuration(timeoutValue)
+		if err != nil {
+			return nil, fmt.Errorf("invalid OmniRoute timeout")
+		}
+		overrides.Timeout = timeout
+		overrides.TimeoutSet = true
+	}
+	if safeRouteSet {
+		if safeRoute {
+			overrides.RouteSafety = provider.SafeRouteSafety()
+		}
+		overrides.RouteSafetySet = true
+	}
+	resolved, err := config.Resolve(config.Overrides{OmniRoute: overrides}, os.LookupEnv)
+	if err != nil {
+		return nil, fmt.Errorf("OmniRoute configuration unavailable: %v", err)
+	}
+	if resolved.OmniRoute == nil {
+		return nil, fmt.Errorf("task requires the original OmniRoute configuration; re-supply OmniRoute flags or the corresponding OMNIROUTE_* environment")
+	}
+	return resolved.OmniRoute, nil
 }
 
 // resolveResumeGovernorConfig reconstructs the account governor policy for a
@@ -1275,6 +1513,14 @@ func printResumeHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --workunit-concurrency N  scheduler bound (default 1, range 1..4): must equal the task's persisted scheduler configuration; a different explicit value fails closed")
 	fmt.Fprintln(out, "  --retry-policy SPEC         bounded governor-owned retry for compatible providers (RUNSTEAD_RETRY_POLICY); re-supplied at resume, must match the run intent")
 	fmt.Fprintln(out, "  --min-start-interval DURATION  account governor pacing override (RUNSTEAD_MIN_START_INTERVAL)")
+	fmt.Fprintln(out, "  --omniroute-base-url URL             original OmniRoute base URL (OMNIROUTE_BASE_URL)")
+	fmt.Fprintln(out, "  --omniroute-management-base-url URL  original OmniRoute management URL (OMNIROUTE_MANAGEMENT_BASE_URL)")
+	fmt.Fprintln(out, "  --omniroute-api-key KEY              OmniRoute API key (OMNIROUTE_API_KEY); never persisted")
+	fmt.Fprintln(out, "  --omniroute-connection-id ID         original protected-lane connection pin (OMNIROUTE_CONNECTION_ID)")
+	fmt.Fprintln(out, "  --omniroute-model MODEL              original chatgpt-web/<model> (OMNIROUTE_MODEL)")
+	fmt.Fprintln(out, "  --omniroute-chat-endpoint PATH       original chat endpoint (OMNIROUTE_CHAT_ENDPOINT)")
+	fmt.Fprintln(out, "  --omniroute-timeout DURATION         original OmniRoute timeout (OMNIROUTE_TIMEOUT)")
+	fmt.Fprintln(out, "  --omniroute-safe-route               legacy static declaration; cannot authorize the protected receipt lane")
 	fmt.Fprintln(out, "  allowance profile is reconstructed from the persisted governor state (RUNSTEAD_ALLOWANCE_PROFILE applies to `run` only)")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Exit codes: 0 resumed and finished, 1 task not found, 2 usage, 3 state database unavailable,")

@@ -148,7 +148,8 @@ type Config struct {
 	// (#14). It is persisted with the task configuration snapshot and exposed
 	// in durable evidence; the loop never branches on it and still depends
 	// exclusively on provider.Client through the governor-owned executor. The
-	// zero value renders no provider identity (scripted/OmniRoute lanes).
+	// zero value renders no provider identity (scripted lane). OmniRoute is a
+	// configured adapter and supplies its own sanitized identity.
 	ProviderIdentity provider.Identity
 	// State is the optional semantic persistence boundary. A nil value
 	// disables persistence (the M1 in-memory behavior).

@@ -1031,7 +1031,7 @@ func singleLine(value string) string {
 // renderProviderIdentity writes the sanitized provider-neutral execution
 // identity persisted with the task configuration snapshot (#14). It renders
 // nothing when the task did not run through a configured provider endpoint
-// (scripted/OmniRoute lanes). The values come from the operator-validated
+// (scripted lane). The values come from the operator-validated
 // provider.Config identity: never credentials, option values or raw
 // configuration material.
 func renderProviderIdentity(builder *strings.Builder, configJSON string) {
