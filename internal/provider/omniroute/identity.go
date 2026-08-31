@@ -33,12 +33,16 @@ func IdentityFromConfig(config Config) provider.Identity {
 	baseURL := strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
 	if normalized, err := normalizeBaseURL(baseURL); err == nil {
 		baseURL = normalized
+	} else {
+		baseURL = "#unparseable-endpoint"
 	}
 	managementURL := strings.TrimSpace(config.ManagementBaseURL)
 	if managementURL == "" {
 		managementURL = managementURLFromBase(baseURL)
 	} else if normalized, err := normalizeBaseURL(managementURL); err == nil {
 		managementURL = normalized
+	} else {
+		managementURL = "#unparseable-endpoint"
 	}
 	model := strings.TrimSpace(config.Model)
 	chatEndpoint := strings.TrimSpace(config.ChatEndpoint)
