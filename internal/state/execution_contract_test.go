@@ -33,6 +33,7 @@ func TestExecutionContractRejectsIncompleteOrCorruptPairs(t *testing.T) {
 		{TaskID: "one-sided", Objective: "o", Workspace: "/ws", ExecutionContractJSON: []byte(`{}`)},
 		{TaskID: "bad-hash", Objective: "o", Workspace: "/ws", ExecutionContractJSON: []byte(`{}`), ExecutionContractHash: "sha256:bad"},
 		{TaskID: "bad-json", Objective: "o", Workspace: "/ws", ExecutionContractJSON: []byte(`not-json`), ExecutionContractHash: contractTestHash([]byte(`not-json`))},
+		{TaskID: "nested-duplicate", Objective: "o", Workspace: "/ws", ExecutionContractJSON: []byte(`{"contract_version":1,"profile":{"id":"a","id":"b"}}`), ExecutionContractHash: contractTestHash([]byte(`{"contract_version":1,"profile":{"id":"a","id":"b"}}`))},
 	}
 	for _, record := range cases {
 		store := openTestStore(t)

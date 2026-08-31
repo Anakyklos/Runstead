@@ -104,9 +104,30 @@ func TestResolveRejectsDuplicateAndConflictingPackages(t *testing.T) {
 	if _, err := Resolve(ResolveInput{Profile: duplicate, PackageRegistry: NewBuiltinRegistry(), ToolRegistry: registry}); err == nil || !errors.Is(err, ErrDuplicatePackage) {
 		t.Fatalf("duplicate Resolve error = %v, want ErrDuplicatePackage", err)
 	}
+	versioned, err := NewPackageRegistry(
+		CapabilityPackage{ID: "versioned", Version: "1.0.0", Provenance: "test", Kind: PackageKindBuiltin, RuntimeCompatibility: DefaultRuntimeIdentity, Actions: []string{tools.ToolReadFile}, MaxOutputBytes: 1},
+		CapabilityPackage{ID: "versioned", Version: "2.0.0", Provenance: "test", Kind: PackageKindBuiltin, RuntimeCompatibility: DefaultRuntimeIdentity, Actions: []string{tools.ToolReadFile}, MaxOutputBytes: 1},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ambiguous := Profile{Version: 1, ProfileID: "audit", ProfileVersion: "1.0.0", Packages: []PackageRef{{ID: "versioned", Version: "1.0.0"}, {ID: "versioned", Version: "2.0.0"}}}
+	if _, err := Resolve(ResolveInput{Profile: ambiguous, PackageRegistry: versioned, ToolRegistry: registry}); err == nil || !errors.Is(err, ErrCompositionConflict) {
+		t.Fatalf("ambiguous versions Resolve error = %v, want ErrCompositionConflict", err)
+	}
+	incompatible, err := NewPackageRegistry(CapabilityPackage{
+		ID: "incompatible", Version: "1.0.0", Provenance: "test", Kind: PackageKindBuiltin,
+		RuntimeCompatibility: "runstead-runtime.v2", Actions: []string{tools.ToolReadFile}, MaxOutputBytes: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Resolve(ResolveInput{Profile: Profile{Version: 1, ProfileID: "audit", ProfileVersion: "1.0.0", Packages: []PackageRef{{ID: "incompatible", Version: "1.0.0"}}}, PackageRegistry: incompatible, ToolRegistry: registry}); err == nil || !errors.Is(err, ErrCompositionConflict) {
+		t.Fatalf("runtime-incompatible Resolve error = %v, want ErrCompositionConflict", err)
+	}
 	custom, err := NewPackageRegistry(
-		CapabilityPackage{ID: "a", Version: "1.0.0", Provenance: "test", Kind: PackageKindBuiltin, Actions: []string{tools.ToolReadFile}, Conflicts: []PackageRef{{ID: "b", Version: "1.0.0"}}},
-		CapabilityPackage{ID: "b", Version: "1.0.0", Provenance: "test", Kind: PackageKindBuiltin, Actions: []string{tools.ToolListFiles}},
+		CapabilityPackage{ID: "a", Version: "1.0.0", Provenance: "test", Kind: PackageKindBuiltin, RuntimeCompatibility: DefaultRuntimeIdentity, Actions: []string{tools.ToolReadFile}, MaxOutputBytes: 1, Conflicts: []PackageRef{{ID: "b", Version: "1.0.0"}}},
+		CapabilityPackage{ID: "b", Version: "1.0.0", Provenance: "test", Kind: PackageKindBuiltin, RuntimeCompatibility: DefaultRuntimeIdentity, Actions: []string{tools.ToolListFiles}, MaxOutputBytes: 1},
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -19,6 +19,13 @@ import (
 // error: resume must not reconstruct a different contract.
 var ErrExecutionContractCorrupt = errors.New("corrupt frozen execution contract")
 
+// ExecutionContractRecord carries the exact canonical bytes and hash from the
+// composition root into task bootstrap. It is deliberately data-only.
+type ExecutionContractRecord struct {
+	JSON []byte
+	Hash string
+}
+
 func validateExecutionContractPair(data, hash string) error {
 	data = strings.TrimSpace(data)
 	hash = strings.TrimSpace(hash)
@@ -53,41 +60,68 @@ func validExecutionContractHash(value string) bool {
 // state layer deliberately validates only structural integrity; composition
 // semantics remain in internal/composition and the resume composition root.
 func validateStrictJSONObject(data []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	token, err := decoder.Token()
-	if err != nil {
-		return fmt.Errorf("decode contract: %v", err)
-	}
-	if token != json.Delim('{') {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return fmt.Errorf("contract must be a JSON object")
 	}
-	seen := map[string]struct{}{}
-	for decoder.More() {
-		key, err := decoder.Token()
-		if err != nil {
-			return fmt.Errorf("decode contract key: %v", err)
-		}
-		name, ok := key.(string)
-		if !ok {
-			return fmt.Errorf("contract object key is not a string")
-		}
-		if _, exists := seen[name]; exists {
-			return fmt.Errorf("duplicate contract object key %q", name)
-		}
-		seen[name] = struct{}{}
-		var value json.RawMessage
-		if err := decoder.Decode(&value); err != nil {
-			return fmt.Errorf("decode contract value: %v", err)
-		}
-		if !json.Valid(value) {
-			return fmt.Errorf("contract contains invalid JSON value")
-		}
-	}
-	if closing, err := decoder.Token(); err != nil || closing != json.Delim('}') {
-		return fmt.Errorf("contract object is not closed")
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := scanStrictJSONValue(decoder, 0); err != nil {
+		return fmt.Errorf("decode contract: %v", err)
 	}
 	if _, err := decoder.Token(); err != io.EOF {
 		return fmt.Errorf("contract has trailing content")
+	}
+	return nil
+}
+
+const maxExecutionContractJSONDepth = 64
+
+func scanStrictJSONValue(decoder *json.Decoder, depth int) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	if depth >= maxExecutionContractJSONDepth {
+		return fmt.Errorf("contract JSON nesting is too deep")
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			key, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			name, ok := key.(string)
+			if !ok {
+				return fmt.Errorf("contract object key is not a string")
+			}
+			if _, exists := seen[name]; exists {
+				return fmt.Errorf("duplicate contract object key %q", name)
+			}
+			seen[name] = struct{}{}
+			if err := scanStrictJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim('}') {
+			return fmt.Errorf("contract object is not closed")
+		}
+	case '[':
+		for decoder.More() {
+			if err := scanStrictJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim(']') {
+			return fmt.Errorf("contract array is not closed")
+		}
 	}
 	return nil
 }
