@@ -65,7 +65,7 @@ func TestResumeHelpDescribesRecovery(t *testing.T) {
 	if code != exitSuccess {
 		t.Fatalf("resume help exit code = %d, want %d", code, exitSuccess)
 	}
-	for _, want := range []string{"Usage: runstead resume <task-id>", "durable local state", "human_review_required", "--scripted"} {
+	for _, want := range []string{"Usage: runstead resume <task-id>", "durable local state", "human_review_required", "--scripted", "--profile"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("resume help should describe recovery, missing %q:\n%s", want, out.String())
 		}

@@ -49,7 +49,8 @@ ChatGPT Web and OmniRoute are **out of the v0.1 critical path** and explicitly d
 5. **No action is complete without evidence from the environment.**
 6. **A failed conversation or provider must not destroy an unfinished task.**
 7. **Provider identity and protocol family are distinct; capability is proven, not assumed from naming.**
-8. **Do not replace working infrastructure without measured evidence.**
+8. **Profiles compose metadata, not execution authority.** The trusted kernel still owns governor, policy, durable truth, evidence, recovery and verification.
+9. **Do not replace working infrastructure without measured evidence.**
 
 ## Technology direction
 
@@ -92,6 +93,23 @@ write approvals are recorded by the operator control plane:
 runstead resume cli-... --state-dir ~/.local/share/runstead --scripted responses.jsonl
 runstead decide cli-... action-000005 approved --state-dir ~/.local/share/runstead
 ```
+
+An operator may freeze a deterministic, non-secret composition of built-in
+capability packages for a task. The Profile is validated before task bootstrap;
+`inspect` shows its sanitized identity and contract hash, and resume requires
+the same Profile material:
+
+```text
+runstead run --task "inspect the repo" --workspace /path \
+  --profile profile.json --scripted responses.jsonl --state-dir /path/state
+runstead inspect cli-... --state-dir /path/state
+runstead resume cli-... --profile profile.json --scripted responses.jsonl --state-dir /path/state
+```
+
+Profiles reference only compiled-in metadata such as `repo.read`, `repo.write`
+and `process.recipes`. They cannot grant approval, replace the governor or
+verifier, install code, add tools, or create a second execution engine. See
+[`docs/composition.md`](docs/composition.md).
 
 The persistence architecture, SQLite driver decision, pragmas, database
 location, migrations, `runstead inspect`, `runstead resume`, governor
@@ -140,6 +158,8 @@ The provider-neutral v0.1 should be able to:
 - survive interruption and resume from a checkpoint;
 - detect malformed actions, repeated actions and false completion claims;
 - finish with evidence, not merely a model-generated summary.
+- compose a task from exact built-in CapabilityPackage versions while preserving
+  the frozen execution contract and trusted-kernel boundaries (M10, issue #54).
 
 ## Initial tools
 
@@ -232,3 +252,10 @@ observational tools (`read_file`, `list_files`, `search_text`, `git_status`,
 units stay exclusive and never overlap anything. The effective bound is
 persisted with the task, rendered by `runstead inspect`, and a `resume` that
 would change it explicitly fails closed.
+
+M10 issue #54 adds strict declarative Profiles selecting exact versions of
+compiled-in CapabilityPackage metadata. The deterministic resolver materializes
+the existing tool boundary, persists a sanitized frozen execution contract and
+requires its exact canonical bytes and SHA-256 on resume. Composition is not a
+second engine and cannot replace trusted-kernel policy, governor, durability,
+evidence, recovery or verification. See [`docs/composition.md`](docs/composition.md).

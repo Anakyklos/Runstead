@@ -206,6 +206,9 @@ func validateContractMaterial(c FrozenExecutionContract) error {
 		if strings.TrimSpace(pkg.RuntimeCompatibility) == "" || len(pkg.Actions) == 0 || pkg.MaxOutputBytes <= 0 {
 			return compositionError(ErrorInvalidContract, ErrInvalidContract, fmt.Sprintf("packages[%d]", index), "package runtime compatibility, actions and positive output bound are required")
 		}
+		if pkg.RuntimeCompatibility != c.RuntimeIdentity {
+			return compositionError(ErrorInvalidContract, ErrInvalidContract, fmt.Sprintf("packages[%d].runtime_compatibility", index), "package %q@%q is incompatible with runtime %q", pkg.ID, pkg.Version, c.RuntimeIdentity)
+		}
 		key := packageKey(pkg.ID, pkg.Version)
 		if _, exists := seenPackages[key]; exists {
 			return compositionError(ErrorInvalidContract, ErrInvalidContract, "packages", "duplicate package %q@%q", pkg.ID, pkg.Version)

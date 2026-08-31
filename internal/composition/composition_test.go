@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/RenyEnnos/Runstead/internal/provider"
-	"github.com/RenyEnnos/Runstead/internal/recipe"
 	"github.com/RenyEnnos/Runstead/internal/tools"
 )
 
@@ -171,6 +170,42 @@ func TestContractHashExcludesProviderSecretsAndChangesOnMaterialInput(t *testing
 	}
 }
 
+func TestContractRejectsTrustedKernelIdentityReplacement(t *testing.T) {
+	registry, err := tools.NewRegistry(tools.Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve(ResolveInput{
+		Profile:         Profile{Version: 1, ProfileID: "audit", ProfileVersion: "1.0.0", Packages: []PackageRef{{ID: "repo.read", Version: "1.0.0"}}},
+		PackageRegistry: NewBuiltinRegistry(), ToolRegistry: registry,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*FrozenExecutionContract)
+	}{
+		{name: "governor", mutate: func(contract *FrozenExecutionContract) { contract.GovernorIdentity = "operator-governor" }},
+		{name: "policy", mutate: func(contract *FrozenExecutionContract) { contract.PolicyIdentity = "operator-policy" }},
+		{name: "evidence", mutate: func(contract *FrozenExecutionContract) { contract.EvidenceIdentity = "operator-evidence" }},
+		{name: "recovery", mutate: func(contract *FrozenExecutionContract) { contract.RecoveryIdentity = "operator-recovery" }},
+		{name: "verifier", mutate: func(contract *FrozenExecutionContract) { contract.VerifierIdentity = "operator-verifier" }},
+		{name: "runtime", mutate: func(contract *FrozenExecutionContract) {
+			contract.Packages[0].RuntimeCompatibility = "operator-runtime"
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			contract := resolved.Contract
+			test.mutate(&contract)
+			if _, _, err := contract.ContractBytes(); err == nil || !errors.Is(err, ErrInvalidContract) {
+				t.Fatalf("tampered contract error = %v, want ErrInvalidContract", err)
+			}
+		})
+	}
+}
+
 func TestResolveRecipeIdentityRequiresExistingCatalog(t *testing.T) {
 	registry, err := tools.NewRegistry(tools.Options{Workspace: t.TempDir()})
 	if err != nil {
@@ -194,5 +229,3 @@ func equalStrings(got, want []string) bool {
 	}
 	return true
 }
-
-var _ = recipe.Catalog{}

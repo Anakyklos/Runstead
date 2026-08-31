@@ -103,6 +103,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	workUnitConcurrency := workunit.DefaultConcurrency
 	providersFile := ""
 	providerID := ""
+	profileFile := ""
 	retryPolicy := ""
 	flags.StringVar(&workspace, "workspace", "", "workspace path (default: RUNSTEAD_WORKSPACE or .)")
 	flags.StringVar(&logLevel, "log-level", "", "log level: debug, info, warn or error")
@@ -117,6 +118,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	flags.IntVar(&workUnitConcurrency, "workunit-concurrency", workunit.DefaultConcurrency, "Work Unit scheduler bound (M9 Stage B1, issue #109): 1 (serial, default)..4; read-only units may overlap up to this bound, effectful/unknown units stay exclusive")
 	flags.StringVar(&providersFile, "providers", "", "provider declarations file (RUNSTEAD_PROVIDERS): JSON document of provider_config-style endpoints (provider_id, protocol_family, base_url, model, auth_requirement, profile, ...) resolved through the #79 contract before dispatch")
 	flags.StringVar(&providerID, "provider-id", "", "exactly one configured provider_id to execute with (RUNSTEAD_PROVIDER_ID); incompatible with --scripted and OmniRoute configuration")
+	flags.StringVar(&profileFile, "profile", "", "operator-owned declarative Profile JSON: exact built-in CapabilityPackage versions and non-authoritative runtime composition frozen into the task")
 	flags.StringVar(&retryPolicy, "retry-policy", "", "bounded governor-owned retry for configured compatible providers (RUNSTEAD_RETRY_POLICY): off (default) or bounded; every retried physical attempt re-enters the governor with a new admission, accounting and evidence")
 	flags.IntVar(&maxSteps, "max-steps", 0, "maximum model turns (RUNSTEAD_MAX_STEPS, default 24)")
 	flags.IntVar(&maxCorrections, "max-corrections", 0, "protocol correction attempts (RUNSTEAD_MAX_CORRECTIONS, default 2)")
@@ -221,6 +223,18 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	scriptedPath, scriptedSet := resolveScripted(flags, scripted)
 	providersPath, providersSet := resolveProviders(flags, providersFile)
 	selectedProviderID, providerSelected := resolveProviderID(flags, providerID)
+	profile, profileSet, err := loadProfileFlag(flags, profileFile)
+	if err != nil {
+		fmt.Fprintf(errOut, "run: %v\n", err)
+		return exitUsage
+	}
+	if profileSet {
+		selectedProviderID, providerSelected, err = resolveProfileProvider(profile, selectedProviderID, providerSelected)
+		if err != nil {
+			fmt.Fprintf(errOut, "run: %v\n", err)
+			return exitUsage
+		}
+	}
 
 	if scriptedSet && (cfg.OmniRoute != nil || providersSet) {
 		fmt.Fprintln(errOut, "run: scripted offline mode cannot be combined with OmniRoute configuration or provider declarations")
@@ -253,6 +267,58 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 			return exitUsage
 		}
 		resolvedProvider = resolved
+	}
+
+	var providerIdentity provider.Identity
+	if resolvedProvider != nil {
+		providerIdentity = provider.IdentityFromResolved(*resolvedProvider, compat.AdapterVersion)
+	}
+
+	// Load all operator-controlled non-authoritative catalogs before any client
+	// construction, state write or provider preflight. A Profile is validated
+	// at this frontier so unknown packages/actions/recipes cannot leave partial
+	// task state or reach a provider attempt.
+	recipes, err := resolveRecipeCatalog(recipesFile, flagWasSet(flags, "recipes"))
+	if err != nil {
+		fmt.Fprintf(errOut, "run: %v\n", err)
+		return exitUsage
+	}
+	baseRegistry, err := tools.NewRegistry(tools.Options{Workspace: cfg.Workspace, Recipes: recipes})
+	if err != nil {
+		fmt.Fprintf(errOut, "run: workspace unavailable: %v\n", err)
+		return exitUnavailable
+	}
+	writePolicyConfig, err := resolveWritePolicy(writePolicy, flagWasSet(flags, "write-policy"))
+	if err != nil {
+		fmt.Fprintf(errOut, "run: %v\n", err)
+		return exitUsage
+	}
+	recipePolicyConfig, err := resolveRecipePolicy(recipePolicy, flagWasSet(flags, "recipe-policy"), recipes)
+	if err != nil {
+		fmt.Fprintf(errOut, "run: %v\n", err)
+		return exitUsage
+	}
+	policyConfig := writePolicyConfig
+	policyConfig.RecipeModes = recipePolicyConfig.RecipeModes
+	acceptance, acceptanceDigest, err := resolveAcceptancePlan(acceptanceFile, flagWasSet(flags, "acceptance"))
+	if err != nil {
+		fmt.Fprintf(errOut, "run: %v\n", err)
+		return exitUsage
+	}
+
+	effectiveRegistry := baseRegistry
+	var executionContractJSON []byte
+	var executionContractHash string
+	if profileSet {
+		resolvedComposition, composeErr := resolveComposition(profile, providerIdentity, baseRegistry, recipes,
+			writePolicyConfig.Spec(), recipePolicyConfig.RecipeSpec(recipeIDs(recipes)), acceptanceDigest)
+		if composeErr != nil {
+			fmt.Fprintf(errOut, "run: profile composition unavailable: %v\n", composeErr)
+			return exitUsage
+		}
+		effectiveRegistry = resolvedComposition.EffectiveRegistry
+		executionContractJSON = resolvedComposition.ContractJSON
+		executionContractHash = resolvedComposition.ContractHash
 	}
 
 	retriesEnabled, err := resolveRetryPolicy(retryPolicy, flagWasSet(flags, "retry-policy"))
@@ -342,7 +408,6 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 
 	var client provider.Client
 	var model string
-	var providerIdentity provider.Identity
 	if scriptedSet {
 		responses, loadErr := loadScriptedResponses(scriptedPath)
 		if loadErr != nil {
@@ -353,7 +418,6 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		model = "scripted"
 	} else if resolvedProvider != nil {
 		model = resolvedProvider.Model
-		providerIdentity = provider.IdentityFromResolved(*resolvedProvider, compat.AdapterVersion)
 		// Durable operational profile (#91): configured capability bounds
 		// with provenance, persisted before execution. Metadata only.
 		if _, profileErr := syncOperationalConfiguredBounds(ctx, store, resolvedProvider, providerIdentity); profileErr != nil {
@@ -420,37 +484,6 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "run: executor unavailable: %v\n", err)
 		return exitUnavailable
 	}
-	// The recipe catalog is operator-controlled control-plane input: it is
-	// read once at startup and is never derived from workspace content. The
-	// effective recipe policy defaults to approval_required for every recipe
-	// and is persisted with the task configuration.
-	recipes, err := resolveRecipeCatalog(recipesFile, flagWasSet(flags, "recipes"))
-	if err != nil {
-		fmt.Fprintf(errOut, "run: %v\n", err)
-		return exitUsage
-	}
-	registry, err := tools.NewRegistry(tools.Options{Workspace: cfg.Workspace, Recipes: recipes})
-	if err != nil {
-		fmt.Fprintf(errOut, "run: workspace unavailable: %v\n", err)
-		return exitUnavailable
-	}
-	writePolicyConfig, err := resolveWritePolicy(writePolicy, flagWasSet(flags, "write-policy"))
-	if err != nil {
-		fmt.Fprintf(errOut, "run: %v\n", err)
-		return exitUsage
-	}
-	recipePolicyConfig, err := resolveRecipePolicy(recipePolicy, flagWasSet(flags, "recipe-policy"), recipes)
-	if err != nil {
-		fmt.Fprintf(errOut, "run: %v\n", err)
-		return exitUsage
-	}
-	policyConfig := writePolicyConfig
-	policyConfig.RecipeModes = recipePolicyConfig.RecipeModes
-	acceptance, acceptanceDigest, err := resolveAcceptancePlan(acceptanceFile, flagWasSet(flags, "acceptance"))
-	if err != nil {
-		fmt.Fprintf(errOut, "run: %v\n", err)
-		return exitUsage
-	}
 	// In work unit mode the parent loop skips the in-loop task bootstrap
 	// (the durable task root was persisted before the serial chain) by
 	// carrying a non-nil empty recovery seed.
@@ -459,20 +492,22 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		parentRecovery = &agent.RecoverySeed{}
 	}
 	loop, err := agent.NewLoop(agent.Config{
-		Runner:               executor,
-		Registry:             registry,
-		Limits:               limits,
-		Model:                model,
-		ProviderIdentity:     providerIdentity,
-		Trace:                cliTraceSink(errOut),
-		State:                store,
-		Policy:               policy.NewStatic(policyConfig, storeApprovals(store)),
-		WritePolicy:          writePolicyConfig.Spec(),
-		RecipePolicy:         recipePolicyConfig.RecipeSpec(recipeIDs(recipes)),
-		RecipeCatalogDigest:  recipes.Digest(),
-		Verifier:             verifier.New(registry, acceptance),
-		AcceptancePlanDigest: acceptanceDigest,
-		Recovery:             parentRecovery,
+		Runner:                executor,
+		Registry:              effectiveRegistry,
+		Limits:                limits,
+		Model:                 model,
+		ProviderIdentity:      providerIdentity,
+		Trace:                 cliTraceSink(errOut),
+		State:                 store,
+		Policy:                policy.NewStatic(policyConfig, storeApprovals(store)),
+		WritePolicy:           writePolicyConfig.Spec(),
+		RecipePolicy:          recipePolicyConfig.RecipeSpec(recipeIDs(recipes)),
+		RecipeCatalogDigest:   recipes.Digest(),
+		Verifier:              verifier.New(effectiveRegistry, acceptance),
+		AcceptancePlanDigest:  acceptanceDigest,
+		ExecutionContractJSON: executionContractJSON,
+		ExecutionContractHash: executionContractHash,
+		Recovery:              parentRecovery,
 	})
 	if err != nil {
 		fmt.Fprintf(errOut, "run: loop unavailable: %v\n", err)
@@ -496,7 +531,8 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		}
 		if err := bootstrapTaskForWorkUnits(ctx, store, taskID, taskPrompt, cfg.Workspace, model, acceptance,
 			providerIdentity, writePolicyConfig.Spec(), recipePolicyConfig.RecipeSpec(recipeIDs(recipes)),
-			recipes.Digest(), acceptanceDigest, limits, registry, workUnitConcurrency); err != nil {
+			recipes.Digest(), acceptanceDigest, limits, effectiveRegistry, workUnitConcurrency,
+			state.ExecutionContractRecord{JSON: executionContractJSON, Hash: executionContractHash}); err != nil {
 			fmt.Fprintf(errOut, "run: %v\n", err)
 			return exitUnavailable
 		}
@@ -505,7 +541,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		emptySeed := &agent.RecoverySeed{}
 		pieces := unitLoopPieces{
 			runner:              executor,
-			registry:            registry,
+			registry:            effectiveRegistry,
 			model:               model,
 			providerIdentity:    providerIdentity,
 			trace:               unitChainTraceSink(errOut),
@@ -517,7 +553,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 			limits:              limits,
 			recovery:            emptySeed,
 		}
-		chainErr := runWorkUnitChain(ctx, store, taskID, cfg.Workspace, registry, definitions, workUnitConcurrency,
+		chainErr := runWorkUnitChain(ctx, store, taskID, cfg.Workspace, effectiveRegistry, definitions, workUnitConcurrency,
 			func(ctx context.Context, unit state.WorkUnit) (workunit.RunResult, error) {
 				return runUnitLoop(ctx, pieces, taskID, unit)
 			})
@@ -1364,6 +1400,7 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --recipes FILE            operator-controlled recipe catalog (RUNSTEAD_RECIPES); run_recipe fails closed without it")
 	fmt.Fprintln(out, "  --recipe-policy SPEC      recipe modes, e.g. test=allow,vet=deny (RUNSTEAD_RECIPE_POLICY, default approval_required)")
 	fmt.Fprintln(out, "  --acceptance FILE         operator acceptance plan: versioned JSON of typed checks (RUNSTEAD_ACCEPTANCE_PLAN); completion requires every check to pass and is refused (fail closed) without a plan")
+	fmt.Fprintln(out, "  --profile FILE            operator-owned declarative Profile JSON selecting exact built-in CapabilityPackage versions; the non-secret execution contract is frozen into the task")
 	fmt.Fprintln(out, "  --workunits FILE          operator Work Unit definitions (M9, issues #106/#109): versioned JSON of bounded subtask definitions executed before the parent run")
 	fmt.Fprintln(out, "  --workunit-concurrency N  Work Unit scheduler bound (default 1, range 1..4): read-only units may overlap up to N; effectful/unknown units stay exclusive; 1 preserves serial Stage A behavior")
 	fmt.Fprintln(out, "  --log-level LEVEL         debug, info, warn or error (RUNSTEAD_LOG_LEVEL, default info)")

@@ -209,6 +209,23 @@ Exit criteria:
 - known limitations are documented;
 - the runtime baseline is stable enough that later transport failures can be isolated from agent-runtime failures.
 
+## Current milestone status
+
+- **M8 — completed.** Provider compatibility hardening and the configured
+  endpoint contract are integrated without making provider identity authority.
+- **M9 — completed.** Work Units have durable serial execution and an opt-in
+  bounded shared/exclusive Stage B1 scheduler. `--workunit-concurrency 1`
+  remains the default, the hard ceiling remains 4, and only explicitly
+  read-only envelopes may use the shared lane. Parallel writers remain
+  disabled.
+- **M10 — active, issue #54.** The gate is typed built-in
+  `CapabilityPackage` metadata, strict declarative Profiles, deterministic
+  composition and a persisted frozen execution contract. The composition layer
+  is above the trusted kernel and cannot replace governor, policy, durability,
+  evidence, recovery or verifier authority.
+- **M11 — blocked by M10.** Improvement proposals and later extensibility work
+  remain out of scope until the M10 contract is reviewed and accepted.
+
 ## Deferred to plugin/composable-provider tracks
 
 - additional web providers such as Qwen or GLM;
@@ -218,15 +235,14 @@ Exit criteria:
 - automatic model routing;
 - graphical interfaces;
 - distributed workers;
-- Work Unit Stage B (concurrent/delegated execution of subtasks): the first
-  bounded slice (Stage B1, issue #109) is implemented — opt-in
-  `--workunit-concurrency N` (default 1, ceiling 4) for provably read-only
-  units only, under a fail-closed shared/exclusive scheduler; effectful,
-  omitted-envelope and unknown-capability units stay exclusive and parallel
-  writes remain out of scope. Stage A (#106: durable serial Work Units with
-  per-unit acceptance plans, capability containment and recovery without
-  replay) preceded it — see `docs/architecture.md`. Broader concurrency or
-  any default change remains a separate decision under #53's M9 exit gate;
+- Work Unit Stage B beyond the completed bounded slice: `--workunit-concurrency
+  N` remains opt-in (default 1, ceiling 4) for provably read-only units only,
+  under a fail-closed shared/exclusive scheduler. Effectful, omitted-envelope
+  and unknown-capability units stay exclusive and parallel writes remain out
+  of scope. Stage A (#106: durable serial Work Units with per-unit acceptance
+  plans, capability containment and recovery without replay) preceded it — see
+  `docs/architecture.md`. Broader concurrency or any default change requires
+  a separate maintainer decision after the M9 evidence review;
 - semantic or vector memory;
 - unattended long-running autonomy;
 - context compaction for long conversations (the deterministic

@@ -1,0 +1,107 @@
+# Capability Packages and Profiles
+
+M10 issue #54 adds a small operator-composition boundary without making the
+trusted execution kernel extensible. The implementation lives in
+`internal/composition` and uses only metadata compiled into the Runstead binary.
+
+## Profile file
+
+`runstead run --profile FILE` accepts one strict JSON object:
+
+```json
+{
+  "version": 1,
+  "profile_id": "coding-local",
+  "profile_version": "1.0.0",
+  "provider_id": "local-openai",
+  "packages": [
+    {"id": "repo.read", "version": "1.0.0"},
+    {"id": "repo.write", "version": "1.0.0"}
+  ],
+  "recipe_ids": ["go-test"]
+}
+```
+
+`version`, `profile_id`, `profile_version` and at least one exact package
+reference are required. Unknown fields, duplicate keys, duplicate references,
+unknown package IDs, unknown package versions, missing recipe catalogs and
+unknown recipe IDs fail before task bootstrap or provider dispatch. Package and
+recipe order is not semantic.
+
+`provider_id`, when present, must agree with the explicitly selected provider.
+The Profile does not contain provider credentials, policy, governor, verifier,
+approval, executable callback or command fields. A provider endpoint continues
+to be resolved by the existing `internal/provider` contract.
+
+## Built-in packages
+
+The initial static registry contains only three packages:
+
+| Package | Existing actions | Boundary |
+| --- | --- | --- |
+| `repo.read@1.0.0` | `read_file`, `list_files`, `search_text`, `git_status`, `git_diff` | observation evidence and core verifier |
+| `repo.write@1.0.0` | `write_file`, `apply_patch` | durable write effect, recovery and existing policy/approval |
+| `process.recipes@1.0.0` | `run_recipe` | bounded process effect, recovery and existing policy/approval |
+
+A `CapabilityPackage` is typed metadata. It has an identity, provenance, kind,
+version compatibility, action names, declared requirements and bounded effect,
+recovery, evidence and verification metadata. It has no function values,
+commands, credentials or dynamic loading mechanism. Selecting a write or recipe
+package exposes the existing action through a restricted registry view. It does
+not authorize the action. Policy and operator approval remain trusted-kernel
+responsibilities.
+
+## Deterministic resolution
+
+The resolver validates the Profile and exact package registry references, checks
+dependencies/conflicts/runtime compatibility, checks that package actions exist
+in the real tool registry, and validates selected recipes against the real
+catalog. It then materializes the existing `tools.Registry.Restricted` view.
+
+All order-insensitive slices are sorted before canonicalization. The frozen
+contract includes only non-secret identities: Profile identity, package
+identity and provenance, effective tool schemas and digest, recipe catalog
+identity, sanitized `provider.Identity`, runtime/protocol identity and fixed
+trusted-kernel identity markers. The contract hash is SHA-256 over canonical
+JSON that excludes the hash itself.
+
+## Persistence and resume
+
+The contract JSON and its hash are stored together in dedicated task columns by
+migration 0015. State validates that both are present together, the JSON is a
+strict object with no duplicate keys, and the hash matches the exact bytes.
+Legacy tasks keep both columns empty and continue through the legacy path.
+
+A task with a frozen contract must be resumed with the original Profile. Resume
+re-resolves the current non-authoritative seams and requires an exact canonical
+byte and hash match before the recovery pipeline starts. Changing the Profile,
+package version, provider identity, tool schema, recipe catalog, or runtime
+contract is rejected. There is no package upgrade, fallback, migration or
+silent capability removal. An explicit Profile cannot be attached to a legacy
+task during resume.
+
+`runstead inspect TASK` prints the sanitized Profile identity, contract hash,
+package identities, provider identity, tool schema identity, recipe catalog
+identity and compatibility status. It never prints credentials, auth headers,
+cookies, raw provider configuration or model response blobs.
+
+## Trusted-kernel boundary
+
+Composition is not an execution engine. The execution path remains:
+
+```text
+Profile metadata
+  -> existing protocol parser
+  -> existing registry/schema validation
+  -> existing policy and approval
+  -> existing durable effect boundary
+  -> existing executor/governor
+  -> existing evidence
+  -> existing verifier
+```
+
+The governor still admits and accounts for every provider attempt. The local
+SQLite task/effect/evidence state remains authoritative. Work Units may only use
+tools inside the frozen parent registry and continue to use the existing
+scheduler. No plugin, `.so`, subprocess capability, WASM, provider fallback,
+retry loop or parallel-writer path is introduced by M10.

@@ -65,6 +65,8 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	providersFile := ""
 	providerID := ""
 	retryPolicy := ""
+	profileFile := ""
+	profileSet := false
 	// Parse manually so flags may appear before or after the task id (the flag
 	// package stops at the first positional argument).
 	for index := 0; index < len(args); index++ {
@@ -184,6 +186,16 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			}
 		case strings.HasPrefix(arg, "--retry-policy="):
 			retryPolicy = strings.TrimPrefix(arg, "--retry-policy=")
+		case arg == "--profile":
+			if next, ok := value("--profile"); ok {
+				profileFile = next
+				profileSet = true
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--profile="):
+			profileFile = strings.TrimPrefix(arg, "--profile=")
+			profileSet = true
 		case arg == "--min-start-interval":
 			if next, ok := value("--min-start-interval"); ok {
 				minStartInterval = next
@@ -210,6 +222,10 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	if taskID == "" {
 		fmt.Fprintln(errOut, "resume: exactly one task id is required")
 		printResumeHelp(errOut)
+		return exitUsage
+	}
+	if profileSet && strings.TrimSpace(profileFile) == "" {
+		fmt.Fprintln(errOut, "resume: --profile requires a non-empty file path")
 		return exitUsage
 	}
 	if workUnitConcurrencySet && (workUnitConcurrency < workunit.MinConcurrency || workUnitConcurrency > workunit.MaxConcurrency) {
@@ -268,6 +284,20 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintf(errOut, "resume: task %q is not resumable: %s\n", taskID, preload.Task.Status)
 		return exitNotResumable
 	}
+	profile, suppliedProfile, err := loadProfilePath(profileFile, profileSet)
+	if err != nil {
+		fmt.Fprintf(errOut, "resume: %v\n", err)
+		return exitUsage
+	}
+	frozenProfile := strings.TrimSpace(preload.Task.ExecutionContractJSON) != ""
+	if frozenProfile && !suppliedProfile {
+		fmt.Fprintf(errOut, "resume: task %q has a frozen execution contract; resume requires the original --profile FILE\n", taskID)
+		return exitUnavailable
+	}
+	if !frozenProfile && suppliedProfile {
+		fmt.Fprintf(errOut, "resume: task %q has no frozen execution contract; --profile cannot be attached during resume\n", taskID)
+		return exitUsage
+	}
 
 	accountConfig, err := resolveResumeGovernorConfig(restored, minStartInterval, intervalSet)
 	if err != nil {
@@ -295,6 +325,8 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	persistedIdentity := state.ProviderIdentityFromConfigSnapshot(preload.Task.ConfigJSON)
 	var resumeClient provider.Client
 	var resumeProviderIdentity provider.Identity
+	var resumeResolvedProvider *provider.Resolved
+	resumeProviderID := ""
 	if persistedIdentity.ProviderID != "" {
 		providersPath, providersSet := resolveProvidersFlag(providersFile)
 		selectedID, selectedSet := resolveProviderIDFlag(providerID)
@@ -328,6 +360,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			fmt.Fprintf(errOut, "resume: provider divergence: the re-supplied configuration for provider %q differs from the configuration the task started with; resume never continues under drifted configuration\n", resolved.ProviderID)
 			return exitUnavailable
 		}
+		resumeProviderID = resolved.ProviderID
 		if restored != nil && restored.ProviderID != "" && restored.ProviderID != resolved.ProviderID {
 			fmt.Fprintf(errOut, "resume: restored account protection conflicts with provider %q\n", resolved.ProviderID)
 			return exitUnavailable
@@ -337,29 +370,9 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			return exitUnavailable
 		}
 		resumeProviderIdentity = provider.IdentityFromResolved(*resolved, compat.AdapterVersion)
+		resumeResolvedProvider = resolved
 		accountConfig.ProtocolFamily = resolved.ProtocolFamily
 		accountConfig.ConfigIdentity = resolved.ConfigIdentity
-		// Durable operational profile (#91): the resumed endpoint re-records
-		// its configured capability bounds (same identity: replay that would
-		// undo observed/authoritative values is a benign no-op).
-		if _, profileErr := syncOperationalConfiguredBounds(ctx, store, resolved, resumeProviderIdentity); profileErr != nil {
-			fmt.Fprintf(errOut, "resume: %v\n", profileErr)
-			return exitUnavailable
-		}
-		// Effective envelope bounds (#93): the profile's effective size
-		// bounds become the resumed execution frontier; unreadable profile
-		// state fails closed before any recovery or execution.
-		effectiveResolved, effErr := applyEffectiveProfileBounds(ctx, store, resumeProviderIdentity, resolved)
-		if effErr != nil {
-			fmt.Fprintf(errOut, "resume: %v\n", effErr)
-			return exitUnavailable
-		}
-		compatClient, buildErr := compat.New(*effectiveResolved, compat.EnvSecretResolver(os.LookupEnv))
-		if buildErr != nil {
-			fmt.Fprintf(errOut, "resume: provider %q unavailable: %v\n", selectedID, buildErr)
-			return exitUnavailable
-		}
-		resumeClient = compatClient
 	} else {
 		if _, providersSet := resolveProvidersFlag(providersFile); providersSet {
 			fmt.Fprintln(errOut, "resume: the task was not executed through a configured provider; provider declarations cannot be attached at resume")
@@ -449,6 +462,50 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: %v\n", err)
 		return exitUsage
+	}
+	if suppliedProfile {
+		// Validate the current operator composition before recovery journals any
+		// transition. This preflight uses only the existing registry metadata;
+		// the evidence sequence is applied again to the effective registry after
+		// recovery returns.
+		preflightRegistry, registryErr := tools.NewRegistry(tools.Options{
+			Workspace: workspacePath,
+			Recipes:   resumeRecipes,
+		})
+		if registryErr != nil {
+			fmt.Fprintf(errOut, "resume: workspace unavailable: %v\n", registryErr)
+			return exitUnavailable
+		}
+		if _, composeErr := resolveFrozenComposition(profile, resumeProviderIdentity, preflightRegistry, resumeRecipes,
+			resumePolicy.Spec(), resumeRecipePolicy.RecipeSpec(recipeIDs(resumeRecipes)), resumeAcceptanceDigest,
+			preload.Task.ExecutionContractJSON, preload.Task.ExecutionContractHash); composeErr != nil {
+			fmt.Fprintf(errOut, "resume: %v\n", composeErr)
+			if errors.Is(composeErr, errPersistedExecutionContract) {
+				return exitCorrupt
+			}
+			return exitUsage
+		}
+	}
+	if resumeResolvedProvider != nil {
+		// Provider operational metadata and adapter construction happen only
+		// after the frozen Profile has passed exact composition validation. No
+		// invalid Profile can therefore mutate the operational projection or
+		// reach an adapter before resume is rejected.
+		if _, profileErr := syncOperationalConfiguredBounds(ctx, store, resumeResolvedProvider, resumeProviderIdentity); profileErr != nil {
+			fmt.Fprintf(errOut, "resume: %v\n", profileErr)
+			return exitUnavailable
+		}
+		effectiveResolved, effErr := applyEffectiveProfileBounds(ctx, store, resumeProviderIdentity, resumeResolvedProvider)
+		if effErr != nil {
+			fmt.Fprintf(errOut, "resume: %v\n", effErr)
+			return exitUnavailable
+		}
+		compatClient, buildErr := compat.New(*effectiveResolved, compat.EnvSecretResolver(os.LookupEnv))
+		if buildErr != nil {
+			fmt.Fprintf(errOut, "resume: provider %q unavailable: %v\n", resumeProviderID, buildErr)
+			return exitUnavailable
+		}
+		resumeClient = compatClient
 	}
 	// The provider input is supplied again at resume time: the original remote
 	// conversation is disposable metadata, never an authority over task state.
@@ -639,6 +696,19 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: workspace unavailable: %v\n", err)
 		return exitUnavailable
+	}
+	if suppliedProfile {
+		resolvedComposition, composeErr := resolveFrozenComposition(profile, resumeProviderIdentity, registry, resumeRecipes,
+			resumePolicy.Spec(), resumeRecipePolicy.RecipeSpec(recipeIDs(resumeRecipes)), resumeAcceptanceDigest,
+			preload.Task.ExecutionContractJSON, preload.Task.ExecutionContractHash)
+		if composeErr != nil {
+			fmt.Fprintf(errOut, "resume: frozen composition unavailable: %v\n", composeErr)
+			if errors.Is(composeErr, errPersistedExecutionContract) {
+				return exitCorrupt
+			}
+			return exitCorrupt
+		}
+		registry = resolvedComposition.EffectiveRegistry
 	}
 	limits, err := limitsFromConfig(plan.Task.ConfigJSON)
 	if err != nil {
@@ -1200,6 +1270,7 @@ func printResumeHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --recipes FILE            operator-controlled recipe catalog (RUNSTEAD_RECIPES); re-supplied at resume")
 	fmt.Fprintln(out, "  --recipe-policy SPEC      recipe modes, e.g. test=allow (RUNSTEAD_RECIPE_POLICY; must match the persisted policy)")
 	fmt.Fprintln(out, "  --acceptance FILE         operator acceptance plan (RUNSTEAD_ACCEPTANCE_PLAN; must match the persisted plan; loaded from state when omitted; may ATTACH a plan to a task that started without one, since completion fails closed without acceptance criteria)")
+	fmt.Fprintln(out, "  --profile FILE            original operator Profile JSON; required to resume a task with a frozen execution contract and any drift fails closed")
 	fmt.Fprintln(out, "  --workunits FILE          operator Work Unit definitions (M9, issues #106/#109): re-supply to continue a chain with open units")
 	fmt.Fprintln(out, "  --workunit-concurrency N  scheduler bound (default 1, range 1..4): must equal the task's persisted scheduler configuration; a different explicit value fails closed")
 	fmt.Fprintln(out, "  --retry-policy SPEC         bounded governor-owned retry for compatible providers (RUNSTEAD_RETRY_POLICY); re-supplied at resume, must match the run intent")
