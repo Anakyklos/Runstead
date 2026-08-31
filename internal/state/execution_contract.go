@@ -27,8 +27,6 @@ type ExecutionContractRecord struct {
 }
 
 func validateExecutionContractPair(data, hash string) error {
-	data = strings.TrimSpace(data)
-	hash = strings.TrimSpace(hash)
 	if data == "" && hash == "" {
 		return nil
 	}

@@ -61,6 +61,10 @@ func Resolve(input ResolveInput) (Resolved, error) {
 		protocolIdentity = DefaultProtocolIdentity
 	}
 
+	providerMaterial, err := providerIdentityMaterial(input.Provider)
+	if err != nil {
+		return Resolved{}, err
+	}
 	selected := make(map[string]CapabilityPackage, len(input.Profile.Packages))
 	selectedVersions := make(map[string]string, len(input.Profile.Packages))
 	for index, ref := range input.Profile.Packages {
@@ -189,7 +193,7 @@ func Resolve(input ResolveInput) (Resolved, error) {
 	contract := FrozenExecutionContract{
 		ContractVersion: ContractSchemaVersion, RuntimeIdentity: runtimeIdentity, ProtocolIdentity: protocolIdentity,
 		Profile:  ProfileIdentity{ID: input.Profile.ProfileID, Version: input.Profile.ProfileVersion},
-		Packages: packages, Provider: providerIdentityMaterial(input.Provider), Tools: toolsMaterial, ToolSchemaDigest: toolSchemaDigest,
+		Packages: packages, Provider: providerMaterial, Tools: toolsMaterial, ToolSchemaDigest: toolSchemaDigest,
 		RecipeCatalog:       RecipeCatalogIdentity{Digest: recipeDigest, RecipeIDs: recipeIDs},
 		WritePolicyIdentity: strings.TrimSpace(input.WritePolicyIdentity), RecipePolicyIdentity: strings.TrimSpace(input.RecipePolicyIdentity),
 		AcceptancePlanDigest: strings.TrimSpace(input.AcceptancePlanDigest), GovernorIdentity: GovernorIdentity, PolicyIdentity: PolicyIdentity,

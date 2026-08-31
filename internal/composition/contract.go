@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/RenyEnnos/Runstead/internal/provider"
 )
@@ -175,11 +176,70 @@ func validHash(value string) bool {
 	return err == nil
 }
 
-func providerIdentityMaterial(identity provider.Identity) ProviderIdentity {
-	return ProviderIdentity{
+func providerIdentityMaterial(identity provider.Identity) (ProviderIdentity, error) {
+	material := ProviderIdentity{
 		ProviderID: identity.ProviderID, ProtocolFamily: string(identity.ProtocolFamily), Model: identity.Model,
 		ConfigIdentity: identity.ConfigIdentity, ProfileVersion: identity.ProfileVersion, AdapterVersion: identity.AdapterVersion,
 	}
+	if err := validateProviderIdentity(material); err != nil {
+		return ProviderIdentity{}, compositionError(ErrorInvalidContract, ErrInvalidContract, "provider", "%v", err)
+	}
+	return material, nil
+}
+
+func validateProviderIdentity(identity ProviderIdentity) error {
+	values := []struct {
+		name  string
+		value string
+	}{
+		{name: "provider_id", value: identity.ProviderID},
+		{name: "protocol_family", value: identity.ProtocolFamily},
+		{name: "model", value: identity.Model},
+		{name: "config_identity", value: identity.ConfigIdentity},
+		{name: "provider_profile_version", value: identity.ProfileVersion},
+		{name: "adapter_version", value: identity.AdapterVersion},
+	}
+	anyValue := false
+	for _, field := range values {
+		if field.value == "" {
+			continue
+		}
+		anyValue = true
+		if strings.TrimSpace(field.value) != field.value {
+			return fmt.Errorf("%s must not have surrounding whitespace", field.name)
+		}
+		if strings.IndexFunc(field.value, unicode.IsControl) >= 0 {
+			return fmt.Errorf("%s contains a control character", field.name)
+		}
+		if looksCredentialShaped(field.value) {
+			return fmt.Errorf("%s contains credential-shaped content", field.name)
+		}
+	}
+	if !anyValue {
+		return nil
+	}
+	if identity.ProviderID == "" || identity.Model == "" || identity.ConfigIdentity == "" || identity.ProfileVersion == "" || identity.AdapterVersion == "" {
+		return fmt.Errorf("configured provider identity requires id, model, config identity, profile version and adapter version")
+	}
+	if !provider.ProtocolFamily(identity.ProtocolFamily).Valid() {
+		return fmt.Errorf("unknown protocol family %q", identity.ProtocolFamily)
+	}
+	if !strings.HasPrefix(identity.ConfigIdentity, "provider.Config{") {
+		return fmt.Errorf("config identity is not a provider.Config sanitized identity")
+	}
+	return nil
+}
+
+func looksCredentialShaped(value string) bool {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{
+		"authorization:", "bearer ", "set-cookie:", "api_key", "apikey", "password", "secret", "token", "cookie", "sk-", "-----begin",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateContractMaterial(c FrozenExecutionContract) error {
@@ -191,6 +251,9 @@ func validateContractMaterial(c FrozenExecutionContract) error {
 	}
 	if strings.TrimSpace(c.Profile.ID) == "" || strings.TrimSpace(c.Profile.Version) == "" {
 		return compositionError(ErrorInvalidContract, ErrInvalidContract, "profile", "profile id and version are required")
+	}
+	if err := validateProviderIdentity(c.Provider); err != nil {
+		return compositionError(ErrorInvalidContract, ErrInvalidContract, "provider", "%v", err)
 	}
 	if len(c.Packages) == 0 {
 		return compositionError(ErrorInvalidContract, ErrInvalidContract, "packages", "at least one package is required")

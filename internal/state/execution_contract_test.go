@@ -44,6 +44,22 @@ func TestExecutionContractRejectsIncompleteOrCorruptPairs(t *testing.T) {
 	}
 }
 
+func TestExecutionContractHashBindsExactPersistedBytes(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	material := []byte(`{"contract_version":1,"profile":{"id":"audit","version":"1.0.0"}}`)
+	hash := contractTestHash(material)
+	if err := store.CreateTask(ctx, TaskRecord{TaskID: "exact-bytes", Objective: "o", Workspace: "/ws", ExecutionContractJSON: material, ExecutionContractHash: hash}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE tasks SET execution_contract_json = ? WHERE task_id = ?`, string(material)+" ", "exact-bytes"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.LoadExecutionContract(ctx, "exact-bytes"); err == nil || !errors.Is(err, ErrExecutionContractCorrupt) {
+		t.Fatalf("LoadExecutionContract() error = %v, want ErrExecutionContractCorrupt after byte tamper", err)
+	}
+}
+
 func TestLegacyTaskWithoutExecutionContractRemainsCompatible(t *testing.T) {
 	store := openTestStore(t)
 	mustTask(t, store, "legacy")

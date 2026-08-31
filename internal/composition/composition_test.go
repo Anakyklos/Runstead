@@ -145,7 +145,10 @@ func TestContractHashExcludesProviderSecretsAndChangesOnMaterialInput(t *testing
 	profile := Profile{Version: 1, ProfileID: "audit", ProfileVersion: "1.0.0", Packages: []PackageRef{{ID: "repo.read", Version: "1.0.0"}}}
 	input := ResolveInput{
 		Profile: profile, PackageRegistry: NewBuiltinRegistry(), ToolRegistry: registry,
-		Provider: provider.Identity{ProviderID: "local", Model: "model", ConfigIdentity: "provider.Config{Endpoint:\"http://localhost\"}"},
+		Provider: provider.Identity{
+			ProviderID: "local", ProtocolFamily: provider.FamilyOpenAICompatible, Model: "model",
+			ConfigIdentity: "provider.Config{Endpoint:\"http://localhost\"}", ProfileVersion: "1.0.0", AdapterVersion: "compat v1",
+		},
 	}
 	first, err := Resolve(input)
 	if err != nil {
@@ -203,6 +206,27 @@ func TestContractRejectsTrustedKernelIdentityReplacement(t *testing.T) {
 				t.Fatalf("tampered contract error = %v, want ErrInvalidContract", err)
 			}
 		})
+	}
+}
+
+func TestResolveRejectsUnsanitizedProviderIdentity(t *testing.T) {
+	registry, err := tools.NewRegistry(tools.Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := ResolveInput{
+		Profile:         Profile{Version: 1, ProfileID: "audit", ProfileVersion: "1.0.0", Packages: []PackageRef{{ID: "repo.read", Version: "1.0.0"}}},
+		PackageRegistry: NewBuiltinRegistry(), ToolRegistry: registry,
+	}
+	for _, identity := range []provider.Identity{
+		{ProviderID: "local", ProtocolFamily: provider.FamilyOpenAICompatible, Model: "model", ConfigIdentity: "api_key=should-not-persist", ProfileVersion: "1.0.0", AdapterVersion: "compat v1"},
+		{ProviderID: "local", ProtocolFamily: provider.FamilyOpenAICompatible, Model: "secret-token", ConfigIdentity: "provider.Config{Endpoint:\"http://localhost\"}", ProfileVersion: "1.0.0", AdapterVersion: "compat v1"},
+		{ProviderID: "local", ProtocolFamily: provider.FamilyOpenAICompatible, Model: "model", ConfigIdentity: "raw-config", ProfileVersion: "1.0.0", AdapterVersion: "compat v1"},
+	} {
+		base.Provider = identity
+		if _, err := Resolve(base); err == nil || !errors.Is(err, ErrInvalidContract) {
+			t.Fatalf("Resolve(%#v) error = %v, want ErrInvalidContract", identity, err)
+		}
 	}
 }
 
