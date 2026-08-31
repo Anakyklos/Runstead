@@ -24,19 +24,21 @@ var ErrTaskNotFound = errors.New("task not found")
 var ErrFinalProjectionUnavailable = errors.New("verified final projection unavailable")
 
 type inspectTask struct {
-	TaskID      string
-	Objective   string
-	Status      string
-	Outcome     string
-	StopReason  string
-	Workspace   string
-	Model       string
-	ConfigJSON  string
-	Summary     string
-	ResumeCount int
-	CreatedAt   string
-	StartedAt   string
-	FinishedAt  string
+	TaskID                string
+	Objective             string
+	Status                string
+	Outcome               string
+	StopReason            string
+	Workspace             string
+	Model                 string
+	ConfigJSON            string
+	Summary               string
+	ResumeCount           int
+	CreatedAt             string
+	StartedAt             string
+	FinishedAt            string
+	ExecutionContractJSON string
+	ExecutionContractHash string
 }
 
 type inspectAction struct {
@@ -178,6 +180,7 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 	} else {
 		builder.WriteString("  (none recorded)\n")
 	}
+	renderExecutionContract(&builder, task.ExecutionContractJSON, task.ExecutionContractHash)
 
 	builder.WriteString("\nEvents:\n")
 	if len(events) == 0 {
@@ -538,15 +541,19 @@ func (s *Store) loadInspectProjection(ctx context.Context, taskID string) (inspe
 func (s *Store) loadInspectTask(ctx context.Context, taskID string) (inspectTask, error) {
 	var task inspectTask
 	err := s.db.QueryRowContext(ctx,
-		`SELECT task_id, objective, status, outcome, stop_reason, workspace, model, config_json, summary, resume_count, created_at, started_at, finished_at
+		`SELECT task_id, objective, status, outcome, stop_reason, workspace, model, config_json, summary, resume_count, created_at, started_at, finished_at, execution_contract_json, execution_contract_hash
 		 FROM tasks WHERE task_id = ?`, taskID).Scan(
 		&task.TaskID, &task.Objective, &task.Status, &task.Outcome, &task.StopReason,
-		&task.Workspace, &task.Model, &task.ConfigJSON, &task.Summary, &task.ResumeCount, &task.CreatedAt, &task.StartedAt, &task.FinishedAt)
+		&task.Workspace, &task.Model, &task.ConfigJSON, &task.Summary, &task.ResumeCount, &task.CreatedAt, &task.StartedAt, &task.FinishedAt,
+		&task.ExecutionContractJSON, &task.ExecutionContractHash)
 	if err == sql.ErrNoRows {
 		return inspectTask{}, ErrTaskNotFound
 	}
 	if err != nil {
 		return inspectTask{}, fmt.Errorf("load task: %w", err)
+	}
+	if err := validateExecutionContractPair(task.ExecutionContractJSON, task.ExecutionContractHash); err != nil {
+		return inspectTask{}, err
 	}
 	return task, nil
 }
