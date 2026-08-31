@@ -15,8 +15,9 @@ package workunit
 //                     parallelism where the DAG forbids it (chain depth
 //                     stays N at every concurrency).
 //   C mixed:          read-only fan-out + one exclusive unit; exclusivity is
-//                     never violated and the effectful barrier caps the
-//                     achievable depth (1 + ceil(shared/C)).
+//                     never violated and the exclusive-lane barrier (here a
+//                     declared write_file envelope; the fake RunFunc executes
+//                     no write) caps the achievable depth (1 + ceil(shared/C)).
 //   D governor:       concurrent read-only units whose provider attempts all
 //                     flow through ONE real governor instance; the scheduler
 //                     overlaps local work while the governor serializes
@@ -431,13 +432,15 @@ func TestM9EvidenceScenarioBDependencyChain(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Scenario C — mixed shared/exclusive.
 //
-// An exclusive unit (effectful envelope) is READY from the start, so the
-// scheduler's exclusive-first rule dispatches it before any shared unit; the
-// exclusive unit PROVABLY never overlaps anything, and the shared fan-out can
-// only start afterwards. Sequential depth therefore degrades from the pure
-// fan-out ideal: 1 + ceil(N/C) waves (N=3 shared units), i.e. 4 / 3 / 2 at
-// C=1 / 2 / 4. This is the deterministic demonstration that an effectful
-// barrier erases part of the possible gain.
+// An exclusive unit with a declared write_file envelope (lane classification
+// is what is under test; the fake RunFunc executes no write) is READY from
+// the start, so the scheduler's exclusive-first rule dispatches it before any
+// shared unit; the exclusive unit PROVABLY never overlaps anything, and the
+// shared fan-out can only start afterwards. Sequential depth therefore
+// degrades from the pure fan-out ideal: 1 + ceil(N/C) waves (N=3 shared
+// units), i.e. 4 / 3 / 2 at C=1 / 2 / 4. This is the deterministic
+// demonstration that the exclusive-lane barrier erases part of the possible
+// gain.
 // ---------------------------------------------------------------------------
 
 func TestM9EvidenceScenarioCMixedSharedExclusive(t *testing.T) {
@@ -449,7 +452,7 @@ func TestM9EvidenceScenarioCMixedSharedExclusive(t *testing.T) {
 			driver, store := newSchedulerDriver(t, taskID, concurrency)
 			ctx := context.Background()
 			definitions := append([]Definition{
-				{WorkUnitID: "wu-x", Objective: "exclusive effectful unit", Tools: []string{"write_file"}},
+				{WorkUnitID: "wu-x", Objective: "exclusive write_file-envelope unit", Tools: []string{"write_file"}},
 			}, readOnlyDefs("wu", shared)...)
 			if _, _, err := driver.EnsureDefinitions(ctx, definitions); err != nil {
 				t.Fatal(err)
@@ -518,7 +521,7 @@ func TestM9EvidenceScenarioCMixedSharedExclusive(t *testing.T) {
 			if snap.maxActive != wantMaxActive {
 				t.Fatalf("mixed maxActive = %d, want %d (exclusive wave 1, shared wave %d; exclusive must never overlap)", snap.maxActive, wantMaxActive, wantMaxActive)
 			}
-			// Sequential depth with an effectful barrier: 1 exclusive wave +
+			// Sequential depth with the exclusive-lane barrier: 1 exclusive wave +
 			// ceil(shared/concurrency) shared waves.
 			wantWaves := 1 + (shared+concurrency-1)/concurrency
 			if got := sharedWave.maxGeneration() + 1; got != wantWaves {

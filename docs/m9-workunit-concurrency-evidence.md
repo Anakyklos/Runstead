@@ -55,9 +55,23 @@ Raising the bound must not invent parallelism where the DAG forbids it.
 
 ### Scenario C — mixed shared/exclusive
 
-Three shared read-only units plus one exclusive `write_file` unit (ready from
-the start, so the exclusive-first dispatch rule runs it before the shared
-wave). Shows how much of the possible gain an effectful barrier erases.
+Three shared read-only units plus one exclusive unit. The exclusive unit's
+definition differs between the two layers (fidelity note):
+
+- **Driver-level deterministic corpus**: the exclusive unit declares an
+  explicit `write_file` envelope (the lane classification - a write-capable
+  envelope is exclusive - is what is proven; the fake `RunFunc` executes no
+  write).
+- **Wall-clock harness**: the exclusive unit has an OMITTED (nil) envelope
+  (omitted = task default surface = exclusive lane) and every scripted turn,
+  including the exclusive unit's, executes `read_file`. The wall-clock
+  numbers therefore measure the scheduler's **exclusive-lane barrier for an
+  omitted-envelope unit executing read-only turns**, NOT a write/effectful
+  workload. That is the claim used everywhere below for the benchmark layer.
+
+In both layers the exclusive unit is ready from the start, so the
+exclusive-first dispatch rule runs it before the shared wave; the scenario
+shows how much of the possible gain the exclusive-lane barrier erases.
 
 ### Scenario D — governor-constrained
 
@@ -99,10 +113,13 @@ serialization of physical attempts.
 |---|---|---|---|---|---|
 | A fan-out | 4 read-only | explicit `read_file` | none | 2 actions + final | 5 ms, 50 ms |
 | B chain | 4 read-only | explicit `read_file` | strict chain | 2 actions + final | 15 ms |
-| C mixed | 3 read-only + 1 exclusive | `read_file` + `write_file` | none | 2 actions + final | 15 ms |
+| C mixed | 3 read-only + 1 exclusive | harness: OMITTED envelope (read-only scripted turns); driver corpus: `write_file` envelope | none | 2 actions + final | 15 ms |
 | D governed | 4 read-only | explicit `read_file` | none | 2 actions + final | 50 ms |
 
 Concurrency compared at `1`, `2` and `4` in every scenario (the ceiling).
+The wall-clock harness's scenario C measures the exclusive-LANE barrier for
+an omitted-envelope unit executing read-only turns (see section 1); it does
+not measure any write/effectful execution.
 
 ## 4. Results
 
@@ -174,9 +191,11 @@ invented parallelism, as required: maxActive stays 1 at every bound).
 | 4 | 249405 / **260292** / 275244 | 217418 | 43049 | 3 | 1 |
 
 Relative median gain vs concurrency=1: **−2.6 % at 2**, **−6.0 % at 4**
-(smaller than the pure fan-out: the exclusive barrier costs one serial wave
-and the provider lane stays the dominant serialized cost; `maxActive=3` at
-concurrency=4 proves the exclusive never overlaps the shared wave).
+(smaller than the pure fan-out: the exclusive-lane barrier costs one serial
+wave - the exclusive unit runs alone even though its scripted turns are
+read-only - and the provider lane stays the dominant serialized cost;
+`maxActive=3` at concurrency=4 proves the exclusive never overlaps the shared
+wave).
 
 **Scenario D — governor-constrained (50 ms):**
 
@@ -212,7 +231,7 @@ All deterministic proofs run in CI with no timing dependency
 `cmd/runstead/workunit_m9_evidence_e2e_test.go`):
 
 - overlap exists when allowed (wave gates force full-wave occupancy);
-- overlap is absent when prohibited (chain, exclusive barrier, governor lane);
+- overlap is absent when prohibited (chain, exclusive-lane barrier, governor lane);
 - the configured bound is never exceeded (`maxActive` guards + wave gates);
 - dependencies are durably respected before dispatch (trap runs);
 - exclusive units never overlap anything and are not starved (store-based
@@ -233,8 +252,8 @@ All deterministic proofs run in CI with no timing dependency
 The corpus found a material correctness defect in the Stage B1 scheduler:
 
 **Symptom.** In the mixed shared/exclusive benchmark cell at concurrency=4 the
-harness observed `maxActive=4` with 3 shared + 1 exclusive unit: a shared unit
-was running at the same time as the exclusive unit.
+harness observed `maxActive=4` with 3 shared + 1 exclusive (omitted-envelope)
+unit: a shared unit was running at the same time as the exclusive unit.
 
 **Root cause.** The scheduler's exclusive isolation rule only blocked NEW
 dispatch while an exclusive unit was *ready*. Once an exclusive unit was
@@ -248,11 +267,19 @@ starts".
 
 **Deterministic reproduction.** `TestM9EvidenceExclusiveIsolationRegression`
 blocks the exclusive unit and trap-checks every shared dispatch against the
-exclusive's DURABLE row: before the fix it failed deterministically with
-`shared unit dispatched while exclusive unit is running` (within
-milliseconds, at concurrency 2 and 4). The existing channel-based exclusive
-traps in `scheduler_test.go` missed the defect because they relied on the
-test goroutine releasing the exclusive before the scheduler's next iteration.
+exclusive's DURABLE row. The regression is causally synchronized: no
+`time.After` and no absence window participates in the verdict. In the fixed
+scheduler the pass is entailed by store ordering — a shared unit can only be
+dispatched after the exclusive's settle event, which is sent only after the
+exclusive's row transitioned to `completed` — so every shared entry reads
+`completed`. A reintroduced bug that dispatches while the exclusive's row says
+`running` makes the shared entry read `running` and fires. Verified in both
+directions during development: the committed test failed in every run
+(subtests at concurrency 2 and 4, ~50 ms each) against the pre-fix scheduler
+with `shared unit dispatched while exclusive unit is running`, and passes 10/10
+against the fix. The existing channel-based exclusive traps in
+`scheduler_test.go` missed the defect because they relied on the test goroutine
+releasing the exclusive before the scheduler's next iteration.
 
 **Minimal fix** (`internal/workunit/scheduler.go`): the scheduler now tracks
 `activeExclusive` — whether a dispatched-but-not-settled unit is exclusive —
@@ -323,7 +350,7 @@ Rationale, in evidence order:
    so scheduler concurrency can only hide the local-work remainder: −3…5 % on
    provider-bound fan-outs, −7…17 % on an optimistic local-heavy fan-out
    (concurrency=2 already captures most of it; 4 adds little), −3…6 % with an
-   exclusive barrier, ≈0 % (correctly) on a dependency chain.
+   exclusive-lane barrier, ≈0 % (correctly) on a dependency chain.
 3. **The default stays 1.** None of the measured gains justify changing the
    default for all tasks; the opt-in `--workunit-concurrency 2/4` remains
    available for operators with genuinely parallel, read-only, local-heavy

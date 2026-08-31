@@ -26,8 +26,12 @@ covering:
   dependencies; raising the bound must NOT invent parallelism where the DAG
   forbids it.
 - **Scenario C — mixed shared/exclusive**: read-only units plus one exclusive
-  unit; exclusivity must stay respected and the effectful barrier must show
-  how much of the possible gain disappears.
+  unit; exclusivity must stay respected and the exclusive-lane barrier must
+  show how much of the possible gain disappears. Fidelity note: the wall-clock
+  harness's exclusive unit has an OMITTED envelope and executes read-only
+  scripted turns (it measures the exclusive-lane serialization itself, not a
+  write/effectful workload); the driver-level corpus declares a `write_file`
+  envelope for the same barrier.
 - **Scenario D — governor-constrained**: concurrent units whose provider
   attempts all flow through the same governor; the harness separates
   scheduler concurrency, local work, provider-attempt time and

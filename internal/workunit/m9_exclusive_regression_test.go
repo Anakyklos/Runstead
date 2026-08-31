@@ -2,21 +2,35 @@ package workunit
 
 // Deterministic exclusive-isolation regression for the M9 corpus: a shared
 // (read-only) unit must NEVER be dispatched while an exclusive unit is
-// RUNNING. The check is store-authoritative: the exclusive unit blocks on a
-// release channel; any shared unit dispatched during that window verifies the
-// exclusive row is still durably 'running' and reports a violation. The test
-// waits for the violation with a detection bound (deadlock-detector role,
-// never an assertion), then releases the exclusive. Before the scheduler
-// honored this isolation the violation fired within milliseconds (the shared
-// fill issued while the exclusive was active); after the fix no shared unit
-// is ever dispatched during the window and the test completes after the
-// detection bound.
+// RUNNING. The test is causally synchronized -- no absence window, no
+// time.After, no timing bound participates in the verdict:
+//
+// Store-ordering argument:
+//
+//   - A shared unit is dispatched only via the scheduler's shared fill, which
+//     (fixed scheduler) requires the exclusive's settle event, which is sent
+//     only after the exclusive's run has ended and its row transitioned to
+//     'completed'. Therefore, in the fixed code, EVERY shared entry reads the
+//     exclusive row as 'completed': the trap below always passes, causally.
+//   - In a reintroduced buggy scheduler, a shared dispatch can land while the
+//     exclusive's row is still 'running'. The shared unit's trap reads the
+//     DURABLE row at its own entry: if the exclusive is still mid-run the row
+//     says 'running' and the trap fires (the exclusive cannot reach
+//     'completed' until its run ends, and the shared's entry precedes its own
+//     completion). The only dispatch that escapes the trap is one that lands
+//     after the exclusive durably completed, which is not an observable
+//     overlap. There is no timing window anywhere in this argument.
+//
+// The exclusive unit additionally performs a deterministic store-work window
+// (real SQLite roundtrips) so a reintroduced buggy dispatch commonly lands
+// while its row is still 'running', and a secondary trap at its run end
+// reports any other unit still 'running'. The chain error and the violations
+// channel are drained at the end; both are checked after the chain settles.
 
 import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/state"
 )
@@ -36,16 +50,41 @@ func TestM9EvidenceExclusiveIsolationRegression(t *testing.T) {
 			}
 			exclusiveEntered := make(chan struct{}, 1)
 			releaseExclusive := make(chan struct{})
-			violations := make(chan string, 1)
+			// Capacity covers every unit: each mis-dispatched shared unit and
+			// the exclusive's own secondary trap may each report once
+			// without ever blocking a worker (the chain must always settle).
+			violations := make(chan string, concurrency+2)
 			run := func(ctx context.Context, unit state.WorkUnit) (RunResult, error) {
 				if unit.WorkUnitID == "wu-x" {
 					exclusiveEntered <- struct{}{}
 					waitFor(t, releaseExclusive, "exclusive unit release")
+					// Deterministic store-work window: while it runs, any
+					// shared dispatch that overlaps the exclusive lands with
+					// the exclusive's durable row still 'running'.
+					for i := 0; i < 40; i++ {
+						if _, err := store.ListWorkUnits(ctx, unit.TaskID); err != nil {
+							return RunResult{}, err
+						}
+					}
+					// Secondary trap: no other unit may be in flight when the
+					// exclusive run ends.
+					others, err := store.ListWorkUnits(ctx, unit.TaskID)
+					if err != nil {
+						return RunResult{}, err
+					}
+					for _, other := range others {
+						if other.WorkUnitID != "wu-x" && other.Status == "running" {
+							return m9Violation("exclusive run ended while "+other.WorkUnitID+" was running", violations)
+						}
+					}
 					return completeRun(t, store, unit)
 				}
-				// Store-authoritative isolation check: the exclusive row must
-				// already be durably completed. A shared unit dispatched while
-				// the exclusive is still running is an overlap violation.
+				// Primary trap, store-authoritative: the exclusive row must
+				// already be durably completed. In the fixed scheduler this is
+				// causally guaranteed (shared dispatch requires the
+				// exclusive's settle after its completed transition); a
+				// reintroduced bug that dispatches while the exclusive is
+				// still running makes this read 'running' and fires.
 				exclusiveUnit, err := store.GetWorkUnit(ctx, unit.TaskID, "wu-x")
 				if err != nil {
 					return RunResult{}, err
@@ -57,17 +96,9 @@ func TestM9EvidenceExclusiveIsolationRegression(t *testing.T) {
 			}
 			errCh := runChain(t, driver, ctx, run)
 			waitFor(t, exclusiveEntered, "exclusive unit to enter")
-			// Detection window: a buggy scheduler dispatches a shared unit
-			// within milliseconds while the exclusive is blocked; a correct
-			// scheduler dispatches nothing until the exclusive settles. The
-			// 1s bound is a detector for the buggy case, never a timing
-			// assertion (the release of the exclusive is the synchronization).
-			select {
-			case reason := <-violations:
-				t.Fatalf("exclusive isolation violation: %s", reason)
-			case <-time.After(time.Second):
-				close(releaseExclusive)
-			}
+			close(releaseExclusive)
+			// Let the chain settle to durable states before asserting, so the
+			// verdict never interrupts an active worker goroutine.
 			if err := waitChain(t, errCh); err != nil {
 				t.Fatalf("RunAll(): %v", err)
 			}

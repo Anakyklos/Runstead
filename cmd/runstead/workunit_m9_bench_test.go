@@ -345,8 +345,15 @@ func BenchmarkM9ScenarioDependencyChain(b *testing.B) {
 	}
 }
 
-// Scenario C — mixed shared/exclusive: the effectful barrier erases part of
-// the possible gain.
+// Scenario C — mixed shared/exclusive: the exclusive-LANE barrier erases
+// part of the possible gain. NOTE ON FIDELITY: in this wall-clock harness the
+// exclusive unit (wu-x) has an OMITTED (nil) tool envelope - it is exclusive
+// because an omitted envelope means the task default surface - and every
+// scripted unit turn, including wu-x's, executes read_file. The harness
+// therefore measures the cost of the scheduler's exclusive-lane serialization
+// itself, NOT a write/effectful workload (the driver-level deterministic
+// corpus declares a write_file envelope; no write path is executed anywhere
+// in this benchmark).
 func BenchmarkM9ScenarioMixedExclusive(b *testing.B) {
 	for _, c := range []int{1, 2, 4} {
 		b.Run(fmt.Sprintf("concurrency=%d", c), func(b *testing.B) {
