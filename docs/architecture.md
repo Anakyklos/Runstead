@@ -115,6 +115,28 @@ use the existing scheduler and agent loop. There is no Go plugin, dynamic code
 loading, second execution engine or model authority in this layer. See
 [`composition.md`](composition.md) for the operator contract and drift rules.
 
+## Improvement proposal layer (M11, issue #55)
+
+`internal/improvement` + the `improvement_*` tables are a NON-AUTHORITATIVE
+control-plane boundary: evidence-backed `ImprovementProposal`s reviewed by
+the operator, versioned when applied and measured later through objective
+validation records. They are deliberately separate from authoritative
+task/effect/evidence state; no execution path reads them and no protocol
+tool exists for them (the model can never approve, apply, validate or roll
+back its own proposal).
+
+The initial implementation has one concrete kind: `composition`, whose
+proposed change is a strict declarative Profile (the M10 typed format).
+Applying an approved proposal produces a versioned revision of a
+`profiles/<name>` target the operator may point a NEW task at through the
+existing explicit `--profile` path; a task already started stays frozen
+under its original `FrozenExecutionContract`. Evidence refs are validated
+against the real `tool_results` rows at propose and validate time, targets
+are structurally unable to name trusted-kernel identities, and workspace
+content can never promote itself to policy or active configuration. See
+[`improvements.md`](improvements.md) for the lifecycle, authority boundary
+and threat model.
+
 ## Architectural style
 
 Runstead starts as a **modular monolith** distributed as one CLI executable.

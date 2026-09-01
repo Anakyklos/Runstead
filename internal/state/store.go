@@ -206,6 +206,11 @@ func (s *Store) seedMeta() error {
 
 // Close checkpoints and closes the database. It is safe to call more than
 // once.
+// DB exposes the underlying SQLite database for read-only operational
+// queries (for example the improvement proposal E2E assertions). Executions
+// through it must never bypass Store transaction/integrity conventions.
+func (s *Store) DB() *sql.DB { return s.db }
+
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil

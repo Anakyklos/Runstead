@@ -58,6 +58,8 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return resumeCommand(ctx, args[1:], out, errOut)
 	case "decide":
 		return decideCommand(ctx, args[1:], out, errOut)
+	case "improvement":
+		return improvementCommand(ctx, args[1:], out, errOut)
 	default:
 		fmt.Fprintf(errOut, "runstead: unknown command %q\n\n", args[0])
 		printRootHelp(errOut)
