@@ -13,10 +13,18 @@ import (
 )
 
 // attachFrozenContract writes a canonical M10 frozen execution contract with
-// the given profile identity onto an existing task, so the revision-bound
-// validation can prove which material the task ran under.
-func attachFrozenContract(t *testing.T, store *Store, taskID, profileID, profileVersion string) {
+// the given profile identity and package selections onto an existing task,
+// so the revision-bound validation can prove which EXACT material the task
+// ran under.
+func attachFrozenContract(t *testing.T, store *Store, taskID, profileID, profileVersion string, packageIDs ...string) {
 	t.Helper()
+	if len(packageIDs) == 0 {
+		packageIDs = []string{"repo.read", "repo.write"}
+	}
+	packages := make([]composition.PackageRef, 0, len(packageIDs))
+	for _, id := range packageIDs {
+		packages = append(packages, composition.PackageRef{ID: id, Version: "1.0.0"})
+	}
 	registry, err := tools.NewRegistry(tools.Options{Workspace: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -25,7 +33,7 @@ func attachFrozenContract(t *testing.T, store *Store, taskID, profileID, profile
 		Profile: composition.Profile{
 			Version: composition.ProfileSchemaVersion, ProfileID: profileID,
 			ProfileVersion: profileVersion,
-			Packages:       []composition.PackageRef{{ID: "repo.read", Version: "1.0.0"}},
+			Packages:       packages,
 		},
 		PackageRegistry: composition.NewBuiltinRegistry(),
 		ToolRegistry:    registry,
@@ -52,6 +60,25 @@ func seedImprovementTaskProfile(t *testing.T, store *Store, taskID, profileID, p
 	ctx := context.Background()
 	mustTask(t, store, taskID)
 	attachFrozenContract(t, store, taskID, profileID, profileVersion)
+	actionID := mustAction(t, store, taskID, "read_file", `{"path":"a.txt"}`, "fp", "sig")
+	mustToolAttempt(t, store, taskID, actionID)
+	workUnitID := "wu-" + taskID
+	if _, err := store.CreateWorkUnit(ctx, WorkUnitCreate{
+		WorkUnitID: workUnitID, TaskID: taskID, Objective: "read a.txt",
+		Tools: []string{"read_file"},
+	}); err != nil {
+		t.Fatalf("CreateWorkUnit() error = %v", err)
+	}
+	return taskID, "obs-000001", workUnitID
+}
+
+// seedImprovementTaskPackages seeds a task whose frozen contract carries the
+// given package selections (default: repo.read + repo.write).
+func seedImprovementTaskPackages(t *testing.T, store *Store, taskID, profileID, profileVersion string, packageIDs ...string) (string, string, string) {
+	t.Helper()
+	ctx := context.Background()
+	mustTask(t, store, taskID)
+	attachFrozenContract(t, store, taskID, profileID, profileVersion, packageIDs...)
 	actionID := mustAction(t, store, taskID, "read_file", `{"path":"a.txt"}`, "fp", "sig")
 	mustToolAttempt(t, store, taskID, actionID)
 	workUnitID := "wu-" + taskID
@@ -358,7 +385,15 @@ func TestImprovementValidationRequiresEvidenceAndRevisionMatch(t *testing.T) {
 		[]improvement.EvidenceRef{{TaskID: noContractTask, EvidenceID: "obs-000001"}}, "", at); err == nil || !errors.Is(err, improvement.ErrEvidenceRevisionMismatch) {
 		t.Fatalf("no-contract evidence error = %v, want ErrEvidenceRevisionMismatch", err)
 	}
-	// Evidence from a task that DID run under the evaluated revision passes.
+	// Same profile id/version but DIFFERENT packages must fail closed: the
+	// version string is never the trust boundary, the material projection is.
+	sameVersionTask, sameVersionEvidence, _ := seedImprovementTaskPackages(t, store, "task-same-version", "coding", "2.0.0", "repo.read")
+	if _, err := store.ValidateImprovement(ctx, proposal.ProposalID, improvement.OutcomePositive,
+		[]improvement.EvidenceRef{{TaskID: sameVersionTask, EvidenceID: sameVersionEvidence}}, "", at); err == nil || !errors.Is(err, improvement.ErrEvidenceRevisionMismatch) {
+		t.Fatalf("same-version different-packages evidence error = %v, want ErrEvidenceRevisionMismatch", err)
+	}
+	// Evidence from a task that DID run under the evaluated revision material
+	// passes.
 	if _, err := store.ValidateImprovement(ctx, proposal.ProposalID, improvement.OutcomePositive,
 		[]improvement.EvidenceRef{{TaskID: taskID, EvidenceID: evidenceID}}, "", at); err != nil {
 		t.Fatalf("matched-revision validation failed: %v", err)
@@ -391,7 +426,8 @@ func TestImprovementVersionDigestIntegrity(t *testing.T) {
 	if _, err := store.LoadImprovementVersion(ctx, version.VersionID); err == nil || !errors.Is(err, ErrImprovementCorrupt) {
 		t.Fatalf("tampered load error = %v, want ErrImprovementCorrupt", err)
 	}
-	// Rolling back through the tampered base also fails closed.
+	// A DERIVED revision from a corrupt base fails closed BEFORE any new
+	// version is created and BEFORE the proposal lifecycle advances.
 	second := pendingProposal()
 	second.TargetBaseVersion = version.VersionID
 	second.ProposedChangeJSON = []byte(`{"version":1,"profile_id":"coding","profile_version":"2.1.0","packages":[{"id":"repo.read","version":"1.0.0"}]}`)
@@ -402,16 +438,38 @@ func TestImprovementVersionDigestIntegrity(t *testing.T) {
 	if err := store.ReviewImprovement(ctx, secondStored.ProposalID, improvement.DecisionApprove, "", "operator", at); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ApplyImprovement(ctx, secondStored.ProposalID, "/tmp/x.json", at); err != nil {
+	if _, err := store.ApplyImprovement(ctx, secondStored.ProposalID, "/tmp/x.json", at); err == nil || !errors.Is(err, ErrImprovementCorrupt) {
+		t.Fatalf("apply over corrupt base error = %v, want ErrImprovementCorrupt", err)
+	}
+	var versionCount int
+	if err := store.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM improvement_versions`).Scan(&versionCount); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.RollbackImprovement(ctx, secondStored.ProposalID, "", at); err == nil || !errors.Is(err, ErrImprovementCorrupt) {
-		t.Fatalf("rollback over tampered base error = %v, want ErrImprovementCorrupt", err)
+	if versionCount != 1 {
+		t.Fatalf("corrupt base must not create a derived version, got %d rows", versionCount)
+	}
+	secondReloaded, err := store.LoadImprovement(ctx, secondStored.ProposalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondReloaded.Status != improvement.StatusApproved {
+		t.Fatalf("corrupt base must not advance the proposal lifecycle, status = %q", secondReloaded.Status)
 	}
 	// Validation over a tampered version also fails closed.
 	if _, err := store.ValidateImprovement(ctx, proposal.ProposalID, improvement.OutcomePositive,
 		[]improvement.EvidenceRef{{TaskID: taskID, EvidenceID: evidenceID}}, "", at); err == nil || !errors.Is(err, ErrImprovementCorrupt) {
 		t.Fatalf("validate over tampered version error = %v, want ErrImprovementCorrupt", err)
+	}
+	// Repairing the tamper restores the happy path: the derived revision can
+	// then be applied and rolled back over the restored base.
+	if _, err := store.DB().ExecContext(ctx,
+		`UPDATE improvement_versions SET artifact_json = ? WHERE version_id = ?`,
+		string(version.ArtifactJSON), version.VersionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplyImprovement(ctx, secondStored.ProposalID, "/tmp/x.json", at); err != nil {
+		t.Fatalf("apply after base repair = %v", err)
 	}
 }
 

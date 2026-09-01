@@ -11,10 +11,13 @@
 package improvement
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/RenyEnnos/Runstead/internal/composition"
@@ -97,22 +100,120 @@ type ValidationRecord struct {
 	CreatedAt    string        `json:"created_at"`
 }
 
-// Version is one applied revision of a proposal target. ProfileID and
-// ProfileVersion are the M10 profile identity derived from the artifact at
-// apply time; within one target the identity maps to exactly one version, so
-// later validation can prove a task's frozen execution contract ran under
-// this exact revision.
+// MaterialRef is one exact package selection in the canonical material
+// projection. Package metadata is registry-static, so id+version fully
+// determine the package material.
+type MaterialRef struct {
+	ID      string `json:"id"`
+	Version string `json:"version"`
+}
+
+// ProfileMaterial is the canonical, non-secret projection of the
+// PROFILE-DETERMINED material of a revision: profile identity, exact package
+// selections, declared recipe ids and declared provider id. It is computed
+// from the artifact at apply time and re-derivable from a task's frozen
+// execution contract, so validation can prove the task ran under EXACTLY
+// this revision's material without relying on the profile version string as
+// a trust boundary. Optional fields (recipe_ids, provider_id) are included
+// only when the artifact declares them; operator seams the Profile does not
+// determine (the concrete recipe catalog, the provider endpoint resolution)
+// are NOT part of the profile material.
+type ProfileMaterial struct {
+	ProfileID      string        `json:"profile_id"`
+	ProfileVersion string        `json:"profile_version"`
+	Packages       []MaterialRef `json:"packages"`
+	RecipeIDs      []string      `json:"recipe_ids,omitempty"`
+	ProviderID     string        `json:"provider_id,omitempty"`
+}
+
+// Canonical renders the deterministic byte form (sorted slices, stable key
+// order) used as the digest input.
+func (m ProfileMaterial) Canonical() []byte {
+	packages := append([]MaterialRef(nil), m.Packages...)
+	sort.Slice(packages, func(i, j int) bool {
+		if packages[i].ID == packages[j].ID {
+			return packages[i].Version < packages[j].Version
+		}
+		return packages[i].ID < packages[j].ID
+	})
+	canonical := ProfileMaterial{
+		ProfileID:      m.ProfileID,
+		ProfileVersion: m.ProfileVersion,
+		Packages:       packages,
+		RecipeIDs:      sortedStrings(m.RecipeIDs),
+		ProviderID:     m.ProviderID,
+	}
+	data, err := json.Marshal(canonical)
+	if err != nil {
+		return []byte("{}")
+	}
+	return data
+}
+
+// Digest returns the SHA-256 of the canonical material projection.
+func (m ProfileMaterial) Digest() (string, error) {
+	data := m.Canonical()
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// ProfileMaterialFromProfile builds the material projection from a parsed
+// Profile document (the artifact side of the link).
+func ProfileMaterialFromProfile(profile composition.Profile) ProfileMaterial {
+	refs := make([]MaterialRef, 0, len(profile.Packages))
+	for _, ref := range profile.Packages {
+		refs = append(refs, MaterialRef{ID: strings.TrimSpace(ref.ID), Version: strings.TrimSpace(ref.Version)})
+	}
+	return ProfileMaterial{
+		ProfileID:      strings.TrimSpace(profile.ProfileID),
+		ProfileVersion: strings.TrimSpace(profile.ProfileVersion),
+		Packages:       refs,
+		RecipeIDs:      sortedStrings(profile.RecipeIDs),
+		ProviderID:     strings.TrimSpace(profile.ProviderID),
+	}
+}
+
+// ProfileMaterialFromContract rebuilds the task-side projection using the
+// stored revision material as the field schema: recipe ids and provider id
+// participate only when the revision's artifact declared them; the exact
+// package selections and profile identity always participate.
+func ProfileMaterialFromContract(profileID, profileVersion string, packageIDs, packageVersions []string, recipeIDs []string, providerID string, schema ProfileMaterial) ProfileMaterial {
+	refs := make([]MaterialRef, 0, len(packageIDs))
+	for index := range packageIDs {
+		refs = append(refs, MaterialRef{ID: strings.TrimSpace(packageIDs[index]), Version: strings.TrimSpace(packageVersions[index])})
+	}
+	material := ProfileMaterial{
+		ProfileID:      strings.TrimSpace(profileID),
+		ProfileVersion: strings.TrimSpace(profileVersion),
+		Packages:       refs,
+	}
+	if len(schema.RecipeIDs) > 0 {
+		material.RecipeIDs = sortedStrings(recipeIDs)
+	}
+	if schema.ProviderID != "" {
+		material.ProviderID = strings.TrimSpace(providerID)
+	}
+	return material
+}
+
+// Version is one applied revision of a proposal target. ProfileMaterialJSON
+// and ProfileMaterialDigest are the canonical PROFILE-DETERMINED material
+// projection of the artifact: validation requires a task's frozen contract to
+// re-derive EXACTLY this material, so packages/provider/recipe material
+// differences fail closed even when the profile version string is identical.
 type Version struct {
-	VersionID      string `json:"version_id"`
-	ProposalID     string `json:"proposal_id"`
-	TargetID       string `json:"target_id"`
-	Revision       int    `json:"revision"`
-	BaseVersionID  string `json:"base_version_id,omitempty"`
-	ProfileID      string `json:"profile_id,omitempty"`
-	ProfileVersion string `json:"profile_version,omitempty"`
-	ArtifactDigest string `json:"artifact_digest"`
-	ArtifactJSON   []byte `json:"-"`
-	CreatedAt      string `json:"created_at"`
+	VersionID             string `json:"version_id"`
+	ProposalID            string `json:"proposal_id"`
+	TargetID              string `json:"target_id"`
+	Revision              int    `json:"revision"`
+	BaseVersionID         string `json:"base_version_id,omitempty"`
+	ProfileID             string `json:"profile_id,omitempty"`
+	ProfileVersion        string `json:"profile_version,omitempty"`
+	ProfileMaterialJSON   string `json:"profile_material_json,omitempty"`
+	ProfileMaterialDigest string `json:"profile_material_digest,omitempty"`
+	ArtifactDigest        string `json:"artifact_digest"`
+	ArtifactJSON          []byte `json:"-"`
+	CreatedAt             string `json:"created_at"`
 }
 
 // Proposal is the typed, non-authoritative record. ProposedChangeJSON is the
@@ -326,4 +427,10 @@ func MarshalJSONList(values []string) []byte {
 		return []byte("[]")
 	}
 	return data
+}
+
+func sortedStrings(values []string) []string {
+	copy := append([]string(nil), values...)
+	sort.Strings(copy)
+	return copy
 }

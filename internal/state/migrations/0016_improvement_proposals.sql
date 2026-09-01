@@ -56,20 +56,25 @@ CREATE TABLE improvement_proposal_evidence (
 -- deterministically without interpreting any narrative. profile_id and
 -- profile_version are the M10 profile identity DERIVED from the artifact at
 -- apply time; the UNIQUE constraint guarantees that within one target a
--- profile identity maps to exactly one version, which is what makes later
--- validation able to prove a task ran under THIS revision (the task's
--- frozen execution contract carries the same identity).
+-- profile identity maps to exactly one version. profile_material_json /
+-- profile_material_digest are the canonical PROFILE-DETERMINED material
+-- projection (identity + exact package selections + declared recipe ids +
+-- declared provider id): validation requires a task's frozen execution
+-- contract to re-derive EXACTLY this material, so the trust boundary is the
+-- material itself, never the version string.
 CREATE TABLE improvement_versions (
-    version_id      TEXT PRIMARY KEY,
-    proposal_id     TEXT NOT NULL UNIQUE REFERENCES improvement_proposals(proposal_id),
-    target_id       TEXT NOT NULL,
-    revision        INTEGER NOT NULL CHECK (revision >= 1),
-    base_version_id TEXT NOT NULL DEFAULT '',
-    profile_id      TEXT NOT NULL DEFAULT '',
-    profile_version TEXT NOT NULL DEFAULT '',
-    artifact_digest TEXT NOT NULL,
-    artifact_json   TEXT NOT NULL,
-    created_at      TEXT NOT NULL,
+    version_id              TEXT PRIMARY KEY,
+    proposal_id             TEXT NOT NULL UNIQUE REFERENCES improvement_proposals(proposal_id),
+    target_id               TEXT NOT NULL,
+    revision                INTEGER NOT NULL CHECK (revision >= 1),
+    base_version_id         TEXT NOT NULL DEFAULT '',
+    profile_id              TEXT NOT NULL DEFAULT '',
+    profile_version         TEXT NOT NULL DEFAULT '',
+    profile_material_json   TEXT NOT NULL DEFAULT '',
+    profile_material_digest TEXT NOT NULL DEFAULT '',
+    artifact_digest         TEXT NOT NULL,
+    artifact_json           TEXT NOT NULL,
+    created_at              TEXT NOT NULL,
     UNIQUE (target_id, revision),
     UNIQUE (target_id, profile_id, profile_version)
 );

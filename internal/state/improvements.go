@@ -17,6 +17,7 @@ package state
 // The artifact FILE is a projection; the verified durable bytes are truth.
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -277,14 +278,23 @@ func (s *Store) ApplyImprovement(ctx context.Context, proposalID, artifactPath, 
 	if _, err := proposal.Transition("apply"); err != nil {
 		return improvement.Version{}, err
 	}
+	// The declared base revision is loaded through the VERIFIED path (digest
+	// recomputed, target checked). A corrupt base fails closed BEFORE any
+	// derived revision is created and BEFORE the proposal lifecycle advances
+	// or any artifact is materialized.
 	if proposal.TargetBaseVersion != "" {
-		if err := requireVersionRow(ctx, tx, proposal.TargetBaseVersion, proposal.TargetID); err != nil {
+		if _, err := loadVerifiedVersionTx(ctx, tx, proposal.TargetBaseVersion, proposal.TargetID, ""); err != nil {
 			return improvement.Version{}, err
 		}
 	}
 	profile, err := composition.ParseProfile(proposal.ProposedChangeJSON)
 	if err != nil {
 		return improvement.Version{}, fmt.Errorf("%w: applied change is not a strict Profile document: %v", improvement.ErrInvalidProposal, err)
+	}
+	material := improvement.ProfileMaterialFromProfile(profile)
+	materialDigest, err := material.Digest()
+	if err != nil {
+		return improvement.Version{}, fmt.Errorf("%w: material digest: %v", ErrImprovementCorrupt, err)
 	}
 	var revision int
 	if err := tx.QueryRowContext(ctx,
@@ -304,13 +314,15 @@ func (s *Store) ApplyImprovement(ctx context.Context, proposalID, artifactPath, 
 		VersionID: versionID, ProposalID: proposalID, TargetID: proposal.TargetID,
 		Revision: revision, BaseVersionID: proposal.TargetBaseVersion,
 		ProfileID: profile.ProfileID, ProfileVersion: profile.ProfileVersion,
+		ProfileMaterialJSON: string(material.Canonical()), ProfileMaterialDigest: materialDigest,
 		ArtifactDigest: digest, ArtifactJSON: append([]byte(nil), artifact...), CreatedAt: at,
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO improvement_versions (version_id, proposal_id, target_id, revision, base_version_id, profile_id, profile_version, artifact_digest, artifact_json, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO improvement_versions (version_id, proposal_id, target_id, revision, base_version_id, profile_id, profile_version, profile_material_json, profile_material_digest, artifact_digest, artifact_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		version.VersionID, version.ProposalID, version.TargetID, version.Revision, version.BaseVersionID,
-		version.ProfileID, version.ProfileVersion, version.ArtifactDigest, string(version.ArtifactJSON), version.CreatedAt); err != nil {
+		version.ProfileID, version.ProfileVersion, version.ProfileMaterialJSON, version.ProfileMaterialDigest,
+		version.ArtifactDigest, string(version.ArtifactJSON), version.CreatedAt); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique constraint") {
 			return improvement.Version{}, fmt.Errorf("%w: target %q already has a revision with profile identity %q@%q; a revision must change the declared profile version", improvement.ErrInvalidProposal, version.TargetID, version.ProfileID, version.ProfileVersion)
 		}
@@ -458,10 +470,12 @@ func (s *Store) loadVerifiedVersion(ctx context.Context, versionID string) (impr
 	var version improvement.Version
 	var artifactJSON, proposalID, targetID string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT version_id, proposal_id, target_id, revision, base_version_id, profile_id, profile_version, artifact_digest, artifact_json, created_at
+		SELECT version_id, proposal_id, target_id, revision, base_version_id, profile_id, profile_version,
+		       profile_material_json, profile_material_digest, artifact_digest, artifact_json, created_at
 		FROM improvement_versions WHERE version_id = ?`, versionID).
 		Scan(&version.VersionID, &proposalID, &targetID, &version.Revision,
 			&version.BaseVersionID, &version.ProfileID, &version.ProfileVersion,
+			&version.ProfileMaterialJSON, &version.ProfileMaterialDigest,
 			&version.ArtifactDigest, &artifactJSON, &version.CreatedAt)
 	if err == sql.ErrNoRows {
 		return improvement.Version{}, improvement.ErrUnknownProposal
@@ -573,10 +587,12 @@ func loadVerifiedVersionTx(ctx context.Context, tx *sql.Tx, versionID, wantTarge
 	var version improvement.Version
 	var artifactJSON, proposalID, targetID string
 	err := tx.QueryRowContext(ctx, `
-		SELECT version_id, proposal_id, target_id, revision, base_version_id, profile_id, profile_version, artifact_digest, artifact_json, created_at
+		SELECT version_id, proposal_id, target_id, revision, base_version_id, profile_id, profile_version,
+		       profile_material_json, profile_material_digest, artifact_digest, artifact_json, created_at
 		FROM improvement_versions WHERE version_id = ?`, versionID).
 		Scan(&version.VersionID, &proposalID, &targetID, &version.Revision,
 			&version.BaseVersionID, &version.ProfileID, &version.ProfileVersion,
+			&version.ProfileMaterialJSON, &version.ProfileMaterialDigest,
 			&version.ArtifactDigest, &artifactJSON, &version.CreatedAt)
 	if err == sql.ErrNoRows {
 		return improvement.Version{}, improvement.ErrUnknownProposal
@@ -658,10 +674,14 @@ func requireVersionRow(ctx context.Context, tx *sql.Tx, versionID, targetID stri
 }
 
 // requireTaskContractProfile proves the cited task's durable frozen execution
-// contract carries EXACTLY the applied revision's M10 profile identity. The
-// contract bytes are loaded through LoadExecutionContract, which revalidates
-// the persisted (bytes, hash) pair, so a tampered or missing contract can
-// never certify validation evidence.
+// contract carries EXACTLY the applied revision's PROFILE-DETERMINED
+// material: profile identity, exact package selections, declared recipe ids
+// and declared provider id must all re-derive the revision's canonical
+// material digest. The version string is only one input of the projection;
+// two revisions sharing id/version but differing in packages, provider or
+// recipe material produce different digests and fail closed. The contract
+// bytes are revalidated (bytes, hash) before use, so a tampered or missing
+// contract can never certify validation evidence.
 func requireTaskContractProfile(ctx context.Context, tx *sql.Tx, taskID string, version improvement.Version) error {
 	var contractJSON, contractHash string
 	err := tx.QueryRowContext(ctx,
@@ -684,13 +704,41 @@ func requireTaskContractProfile(ctx context.Context, tx *sql.Tx, taskID string, 
 			ID      string `json:"id"`
 			Version string `json:"version"`
 		} `json:"profile"`
+		Packages []struct {
+			ID      string `json:"id"`
+			Version string `json:"version"`
+		} `json:"packages"`
+		Provider struct {
+			ProviderID string `json:"provider_id"`
+		} `json:"provider"`
+		RecipeCatalog struct {
+			RecipeIDs []string `json:"recipe_ids"`
+		} `json:"recipe_catalog"`
 	}
 	if err := json.Unmarshal([]byte(contractJSON), &identity); err != nil {
 		return fmt.Errorf("%w: task %q frozen execution contract is not decodable: %v", ErrImprovementCorrupt, taskID, err)
 	}
-	if identity.Profile.ID != version.ProfileID || identity.Profile.Version != version.ProfileVersion {
-		return fmt.Errorf("%w: task %q ran under frozen profile %q@%q, not the evaluated revision profile %q@%q",
-			improvement.ErrEvidenceRevisionMismatch, taskID, identity.Profile.ID, identity.Profile.Version, version.ProfileID, version.ProfileVersion)
+	var schema improvement.ProfileMaterial
+	if err := json.Unmarshal([]byte(version.ProfileMaterialJSON), &schema); err != nil {
+		return fmt.Errorf("%w: revision %q material projection is not decodable: %v", ErrImprovementCorrupt, version.VersionID, err)
+	}
+	packageIDs := make([]string, 0, len(identity.Packages))
+	packageVersions := make([]string, 0, len(identity.Packages))
+	for _, pkg := range identity.Packages {
+		packageIDs = append(packageIDs, pkg.ID)
+		packageVersions = append(packageVersions, pkg.Version)
+	}
+	taskMaterial := improvement.ProfileMaterialFromContract(
+		identity.Profile.ID, identity.Profile.Version,
+		packageIDs, packageVersions,
+		identity.RecipeCatalog.RecipeIDs, identity.Provider.ProviderID, schema)
+	taskDigest, err := taskMaterial.Digest()
+	if err != nil {
+		return fmt.Errorf("%w: material digest: %v", ErrImprovementCorrupt, err)
+	}
+	if taskDigest != version.ProfileMaterialDigest || !bytes.Equal(taskMaterial.Canonical(), []byte(version.ProfileMaterialJSON)) {
+		return fmt.Errorf("%w: task %q ran under profile material %s, not the evaluated revision material %s (profile identity, packages, declared recipe ids or provider material differ)",
+			improvement.ErrEvidenceRevisionMismatch, taskID, taskDigest, version.ProfileMaterialDigest)
 	}
 	return nil
 }

@@ -72,12 +72,18 @@ exist. Work-unit refs must belong to a declared source task.
 
 Applying an approved proposal stores a version identity with target, running
 revision number, base revision, the M10 profile identity derived from the
-artifact (unique per target), SHA-256 digest and the canonical artifact
-bytes. EVERY version load recomputes and verifies the digest, so a tampered
-or corrupted SQLite row fails closed instead of `show --artifact` or rollback
-delivering different bytes. The materialized artifact FILE is a projection:
-the verified durable bytes always remain recoverable (`runstead improvement
-show ID --artifact`).
+artifact (unique per target), the canonical PROFILE-DETERMINED material
+projection (identity + exact package selections + declared recipe ids +
+declared provider id) with its own digest, the artifact SHA-256 digest and
+the canonical artifact bytes. The declared base revision is loaded through
+the verified path (digest recomputed, target checked) BEFORE any derived
+revision is created: a corrupt base fails closed with no new version, no
+lifecycle advance and no artifact materialization. EVERY version load
+recomputes and verifies the artifact digest, so a tampered or corrupted
+SQLite row fails closed instead of `show --artifact` or rollback delivering
+different bytes. The materialized artifact FILE is a projection: the verified
+durable bytes always remain recoverable (`runstead improvement show ID
+--artifact`).
 Rollback restores the previous revision's bytes deterministically from the
 stored base revision (`rolled_back_to` records the ancestry) and rewrites the
 projection; it never interprets model narrative. A first revision has no
@@ -88,11 +94,15 @@ base and rollback fails closed.
 `improvement validate --outcome positive|negative|uncertain --evidence
 TASK:EVIDENCE,...` records an objective validation tied to the proposal and
 its version. Every evidence ref must exist AND the cited task's durable
-frozen execution contract must carry the SAME M10 profile identity as the
-applied revision: the validation proves the evidence was produced under this
-exact revision's material, never a different configuration. A model
-narrative, a phantom ref or a cross-revision ref fails closed, and no
-proposal can claim its own acceptance checks passed.
+frozen execution contract must re-derive EXACTLY the revision's canonical
+PROFILE-DETERMINED material projection: profile identity, exact package
+selections, declared recipe ids and declared provider id all feed the
+material digest, so the trust boundary is the material itself, never the
+profile version string. A task with the same id/version but different
+packages, provider or recipe material fails closed
+(`ErrEvidenceRevisionMismatch`). A model narrative, a phantom ref, a
+cross-revision ref or a contract-less task fails closed, and no proposal can
+claim its own acceptance checks passed.
 
 ## Prompt-injection threat model
 

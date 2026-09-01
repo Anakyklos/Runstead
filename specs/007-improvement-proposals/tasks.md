@@ -69,3 +69,27 @@
    units must belong to a declared source task. The foreign Work Unit test
    now uses a REAL unit of another task (the double-`wu-` prefix bug is
    fixed).
+
+## Maintainer review fix 2 (PR #117 review at 59de161, issue #55)
+
+**Blockers addressed:**
+
+1. **Exact-material revision binding.** Validation no longer trusts
+   `(profile_id, profile_version)`. Each revision stores a canonical
+   PROFILE-DETERMINED material projection (profile identity, exact package
+   selections, declared recipe ids, declared provider id) with its own
+   SHA-256 digest; validation requires the cited task's frozen execution
+   contract to re-derive EXACTLY that material. Same id/version with
+   different packages (the reviewer's case), provider or recipe material
+   fails closed with `ErrEvidenceRevisionMismatch`; passing requires a task
+   that truly ran under the evaluated material. Covered in
+   `TestImprovementValidationRequiresEvidenceAndRevisionMatch` (same-version
+   different-packages negative) and `TestImprovementFullLifecycleE2E`
+   (hand-written same-version narrower-profile negative).
+2. **Verified base on apply.** `ApplyImprovement` loads `TargetBaseVersion`
+   through `loadVerifiedVersionTx` (digest recomputed, target checked)
+   instead of `requireVersionRow`. A corrupt base fails closed BEFORE any
+   derived `improvement_versions` row is created, the proposal lifecycle
+   stays at `approved`, and no artifact file is materialized. Covered by
+   `TestImprovementVersionDigestIntegrity` (tamper -> apply fails, count ==
+   1, status still approved; repair -> apply succeeds).

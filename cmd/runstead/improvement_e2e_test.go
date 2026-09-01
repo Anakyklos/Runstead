@@ -335,6 +335,25 @@ func TestImprovementFullLifecycleE2E(t *testing.T) {
 	if code != exitSuccess {
 		t.Fatalf("validate revision 2 exit = %d\n%s\n%s", code, vOut, vErr)
 	}
+	// Same profile id/version, DIFFERENT packages must fail closed: a task
+	// that ran under a hand-written coding@2.1.0 WITH ONLY repo.read must
+	// never certify the revision whose material is coding@2.1.0 read+write.
+	sameVersionFile := writeCompositionProfile(t, `{"version":1,"profile_id":"coding","profile_version":"2.1.0","packages":[{"id":"repo.read","version":"1.0.0"}]}`)
+	var svOut, svErr bytes.Buffer
+	code = run(context.Background(), []string{
+		"run", "--task", "Same version, narrower material.", "--workspace", workspace, "--scripted", scriptV2,
+		"--profile", sameVersionFile, "--acceptance", acceptanceFor(t, "a.txt"), "--state-dir", stateDir,
+		"--min-start-interval", "1ms", "--log-level", "error",
+	}, &svOut, &svErr)
+	if code != exitSuccess {
+		t.Fatalf("same-version run exit = %d\n%s\n%s", code, svErr.String(), svOut.String())
+	}
+	svTask := taskIDFromOutput(t, svErr.String())
+	code, vOut, vErr = improvementRun(t, stateDir, "validate", proposal2,
+		"--outcome", "positive", "--evidence", svTask+":obs-000001", "--notes", "must be rejected")
+	if code != exitUsage || !strings.Contains(vErr, "material") {
+		t.Fatalf("same-version different-packages validation = %d, want material rejection\n%s\n%s", code, vOut, vErr)
+	}
 
 	// Rollback restores revision 1 bytes deterministically.
 	artifact1Bytes, err1 := os.ReadFile(artifact1)
