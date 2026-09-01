@@ -225,13 +225,87 @@ Exit criteria:
   evidence, recovery or verifier authority. A Profile's `recipe_ids` is an
   exact allowlist of the effective recipe surface, and the frozen contract's
   recipe policy identity is derived from that same effective surface.
-- **M11 — active, issue #55.** The gate is the evidence-backed
+- **M11 — completed, issue #55 (PR #117).** The gate is the evidence-backed
   `ImprovementProposal` lifecycle: proposals are non-authoritative
   control-plane information (propose -> operator review -> versioned apply ->
   objective validation -> deterministic rollback) and never grant the model,
-  workspace or capability any authority over trusted runtime behavior.
-- **M12+ — blocked by M11.** Later extensibility work remains out of scope
-  until the proposal lifecycle is reviewed and accepted.
+  workspace or capability any authority over trusted runtime behavior. See
+  the closing review below for the delivered trust boundary, the closing
+  evidence and the intentional limitations.
+- **M12+ — unscheduled / not promoted.** M11 is no longer a blocker: no M12
+  capability gate is currently promoted or scheduled. Completing all planned
+  milestones is not a justification for inventing the next one; a new
+  capability gate requires a concrete Runstead problem, supporting evidence
+  and an explicit maintainer decision. Milestones remain capability gates,
+  not a feature wishlist.
+
+## M11 closing review (issue #55, PR #117)
+
+M11 is closed. The evidence-backed proposal lifecycle of issue #55 landed on
+`main` through PR #117 after maintainer review. This review records the
+delivered capability, the preserved trust boundary, the intentional
+limitations and the post-M11 decision; it does not promote any new
+capability.
+
+**Capability delivered.** A persisted, typed `ImprovementProposal` lifecycle
+with operator review (`approve` / `reject`), versioned apply of a strict
+declarative Profile revision, later objective validation against durable
+evidence and deterministic rollback to a digest-verified base revision.
+Proposals are metadata-only: nothing in the proposal path executes, and an
+applied revision is usable only when the operator points a NEW task at it
+through the existing explicit `--profile` path.
+
+**Trust boundary preserved.** Proposals live in their own tables, separate
+from authoritative task/effect/evidence state, and no execution path reads
+them. There is no protocol tool for any improvement command, so model or
+workspace content can never approve, apply, validate or roll back a change:
+prompt injection can at most become pending, redacted proposal data and can
+never promote itself to policy or active configuration. Proposal targets are
+structurally unable to name trusted-kernel identities. Applying a revision
+never alters a started task: its frozen execution contract stays pinned and
+resume with a different revision fails closed, while recovery preserves the
+proposal lifecycle across restart without duplicating effects. Validation
+requires durable proof that the cited evidence was produced under the exact
+applied material, and every version load recomputes the artifact digest and
+reconciles the material projection with the verified artifact. The trusted
+kernel is not a plugin or self-modification mechanism: no Go plugin, dynamic
+code loading, WASM, marketplace, daemon or routing was introduced.
+
+**Intentional limitations (unchanged).** One proposal kind (`composition`)
+is implemented; the lifecycle machinery is kind-agnostic but no other kind
+exists yet. Validation records are operator-attested outcome classifications
+with observed evidence refs, not a statistical experiment framework.
+Applying produces a revision the operator must point a new task at; there is
+no automatic rollout or migration. Provenance references are validated
+against durable rows at propose and validate time.
+
+**Post-M11 decision.** No M12 capability gate is promoted or scheduled. M11
+no longer blocks later work, but its completion alone is not a reason to
+start any. A future capability gate requires a concrete Runstead problem,
+supporting evidence and an explicit maintainer decision.
+
+## Open research candidates — not promoted by M11
+
+Closing M11 does not automatically unlock any open issue. The following
+candidates keep their own gates and are not scheduled:
+
+- **#94 — optional Compatibility Advisor.** Not promoted or implemented. It
+  remains conditioned on real sanitized evidence of provider/model
+  compatibility problems (the provider roadmap still records that no
+  protocol family is live-proven in the gate environment), on demonstrating
+  material benefit over deterministic diagnostics, and on keeping the
+  advisor entirely outside the authority path (it may propose, never mutate
+  profiles, governor limits, policy, retries or durable truth). None of
+  those prerequisites is satisfied by the M11 closeout.
+- **#108 — WASM/WASI capability-boundary research.** Not promoted or
+  implemented. It remains conditioned on a real external-capability
+  requirement that justifies comparing built-in Go, an external versioned
+  process and WASM/WASI. The existence of the technology is not a
+  requirement, and no WASM runtime or plugin architecture is introduced.
+- **ChatGPT Web / browser work.** Remains explicitly deferred to future
+  plugin/composable-provider tracks and outside the v0.1 critical path (see
+  the deferred section below and the historical record); it is not
+  reintroduced into the core runtime by this closeout.
 
 ## Deferred to plugin/composable-provider tracks
 
