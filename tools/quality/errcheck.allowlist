@@ -59,17 +59,9 @@
 # secondary to the authoritative error being returned.
 # Recovery loader rows close on validation error paths is best-effort
 # cleanup; the unsupported-version error is already being returned.
-internal/state/recovery.go:511  rows.Close()
+internal/state/recovery.go:513  rows.Close()
 
-internal/state/recovery.go:515  rows.Close()
-
-
-
-
-
-# Work Unit store/driver cleanup path (#106): the error is
-# secondary to the authoritative error being returned.
-internal/state/recovery.go:528  rows.Close()
+internal/state/recovery.go:517  rows.Close()
 
 
 
@@ -77,31 +69,39 @@ internal/state/recovery.go:528  rows.Close()
 
 # Work Unit store/driver cleanup path (#106): the error is
 # secondary to the authoritative error being returned.
-internal/state/recovery.go:521  rows.Close()
+internal/state/recovery.go:523  rows.Close()
 
 
 
 
 
-internal/state/recovery.go:564  defer rows.Close()
+# Work Unit store/driver cleanup path (#106): the error is
+# secondary to the authoritative error being returned.
+internal/state/recovery.go:530  rows.Close()
 
 
 
 
 
-internal/state/recovery.go:583  defer rows.Close()
+internal/state/recovery.go:570  defer rows.Close()
 
 
 
 
 
-internal/state/recovery.go:604  defer rows.Close()
+internal/state/recovery.go:589  defer rows.Close()
 
 
 
 
 
-internal/state/recovery.go:632  defer rows.Close()
+internal/state/recovery.go:610  defer rows.Close()
+
+
+
+
+
+internal/state/recovery.go:638  defer rows.Close()
 
 
 
@@ -210,42 +210,42 @@ internal/recovery/recovery.go:772  _ = jsonUnmarshal(raw, value)
 
 
 
-cmd/runstead/main.go:324  defer store.Close()
+cmd/runstead/main.go:392  defer store.Close()
 
 
 
 
-cmd/runstead/main.go:1082  defer store.Close()
+cmd/runstead/main.go:1124  defer store.Close()
 
 
 
 
 
-cmd/runstead/main.go:1181  defer store.Close()
+cmd/runstead/main.go:1223  defer store.Close()
 
 
 
 
 # reviewed site (issue #106)
-internal/agent/loop.go:461  diffText, diffFlag, _ := registry.GitDiffText()
+internal/agent/loop.go:473  diffText, diffFlag, _ := registry.GitDiffText()
 
 
 
 
 
-internal/state/tasks.go:38  defer tx.Rollback()
+internal/state/tasks.go:41  defer tx.Rollback()
 
 
 
 
 
-internal/state/tasks.go:66  defer tx.Rollback()
+internal/state/tasks.go:69  defer tx.Rollback()
 
 
 
 
 
-internal/state/tasks.go:100  defer tx.Rollback()
+internal/state/tasks.go:103  defer tx.Rollback()
 
 
 
@@ -260,49 +260,49 @@ internal/tools/registry.go:134  rgPath, _ = lookPath("rg")
 
 
 
-cmd/runstead/resume.go:235  defer store.Close()
+cmd/runstead/resume.go:366  defer store.Close()
 
 
 
 
 
-internal/state/inspect.go:561  defer rows.Close()
+internal/state/inspect.go:568  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:580  defer rows.Close()
+internal/state/inspect.go:587  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:603  defer rows.Close()
+internal/state/inspect.go:610  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:631  defer rows.Close()
+internal/state/inspect.go:638  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:691  defer rows.Close()
+internal/state/inspect.go:698  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:763  defer rows.Close()
+internal/state/inspect.go:770  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:781  defer rows.Close()
+internal/state/inspect.go:788  defer rows.Close()
 
 
 
@@ -816,3 +816,14 @@ internal/state/profiles.go:215  profileRows.Close()
 
 
 internal/state/profiles.go:218  profileRows.Close()
+
+
+
+
+
+# M10 sanitized provider identity (issue #54): the canonical config
+# fingerprint marshals a non-secret provider.Config struct whose fields are
+# all plain strings/booleans/ints, so encoding cannot fail for the sanitized
+# material; the sha256 digest over the bytes still terminates deterministically.
+# The identity is never persisted raw and never carries API keys or tokens.
+internal/provider/omniroute/identity.go:91  encoded, _ := json.Marshal(nonSecret)
