@@ -653,3 +653,127 @@ Explicitly excluded from the initial architecture:
 - UI frameworks;
 - vector databases;
 - a universal provider router.
+
+## Architectural borrowing doctrine (issue #49)
+
+Runstead studies strong external runtimes, coding agents, harnesses and
+research systems and actively mines their strongest ideas. External projects
+are REFERENCES and EVIDENCE sources, never implicit roadmap authority. The
+doctrine is: **mine the gold, preserve Runstead** — identify the strongest
+ideas, re-express only the compatible parts in Runstead-native abstractions,
+and import the useful mechanism without the surrounding architecture. Issue
+#35 established the first local precedent: adopt an external concept without
+copying the external implementation.
+
+The inverse rule is equally binding: **a maintainer preference is not a
+Runstead invariant merely because it was written down first.** A restriction
+becomes durable project doctrine only when it follows from the established
+trust model, an explicit project/maintainer decision, or evidence recorded in
+an ADR/issue. An unstated prudential preference must be written as a
+hypothesis, trade-off, experiment or ADR to validate, never as a prohibition.
+
+Every externally inspired architectural proposal answers these questions
+before implementation:
+
+1. **What Runstead problem does this solve?** A feature is never accepted
+   only because another respected project has it.
+2. **Which Runstead invariants does it strengthen?** Reliability, boundedness,
+   recoverability, auditability, evidence, policy control, provider
+   replaceability or maintainability must improve materially.
+3. **Which foreign assumptions are incompatible?** Record what is rejected,
+   not only what is copied, and tie every rejection to a real Runstead
+   invariant or evidence rather than maintainer taste.
+4. **Can the concept be expressed through existing boundaries?** Prefer
+   `state`, `agent`, `protocol`, `tools`, `governor`, `verifier`, explicit
+   capabilities and durable entities over importing a foreign framework or
+   runtime.
+5. **What new trust or failure boundary would it create?** Model-controlled
+   execution, dynamic code loading, hidden retries, opaque state, automatic
+   policy mutation and unreconciled side effects require exceptional
+   justification.
+6. **What evidence would justify keeping it?** Define acceptance checks and
+   measurable benefit before broadening the architecture.
+7. **What is the smallest compatible slice?** Adopt the useful mechanism
+   without importing surrounding complexity.
+8. **Are we rejecting the idea because it conflicts with Runstead, or because
+   the maintainer personally dislikes the technique?** In the latter case,
+   convert the rejection into an experiment/ADR question instead of project
+   law.
+
+### The Runstead trust model is not importable
+
+No imported idea may permit:
+
+- model control of policy or approvals;
+- model execution of arbitrary code outside the authorized boundaries;
+- retries or fallbacks escaping governor accounting;
+- durable truth replaced by session or model state;
+- evidence or the verifier replaced by claims;
+- recovery replaying historical effects blindly;
+- secrets promoted to ordinary state;
+- the trusted kernel becoming a configurable plugin.
+
+### Prefer the smallest compatible slice
+
+Adopt the mechanism without the framework. No architectural rewrite for
+aesthetic purity, no new dependency without a demonstrable benefit, no
+preventive daemon/plugin/runtime, and no abstraction for a requirement that
+does not exist yet. If an adopted idea cannot demonstrate its expected
+benefit, simplify or remove it.
+
+### External provenance for materially inspired proposals
+
+An issue materially inspired by an external project:
+
+```text
+Source project/paper:
+Observed concept:
+Runstead problem addressed:
+What we adopt:
+What we explicitly reject:
+Why each rejection is a Runstead constraint rather than preference:
+Runstead invariants preserved/strengthened:
+Evidence/exit gate:
+```
+
+This structure is already in active use, for example issue #55 (the M11
+improvement lifecycle) records its Prime Agent provenance with explicit
+adopt/reject fields. Trivial references need no bureaucracy; the requirement
+applies to architectural proposals materially derived from an external
+source. Code or protocol copied from another source still requires the normal
+license/provenance review. Architectural inspiration alone is never a reason
+to add a dependency.
+
+### Historical correction — the Camoufox lesson
+
+Runstead once converted prudential maintainer preferences about
+stealth/fingerprint/automation concealment and browser automation into
+architectural prohibitions, propagating them through earlier browser-work
+issues as if they were established invariants. That was architecturally
+incorrect and was corrected. Runstead's real invariants concern authority,
+accounting, recoverability, evidence and provider replaceability, not whether
+a transport exposes or conceals automation characteristics. Such properties
+are transport properties to be evaluated on measurements rather than banned
+by assumption; they must never become a hidden second policy layer, bypass
+governor accounting, or rotate accounts around explicit quotas, and required
+login/MFA/CAPTCHA/provider challenges remain user-interactive. The lesson
+applies to Runstead's own ideas too: keep the useful invariant, discard the
+accidental dogma. This section records the correction; browser work itself
+remains deferred and is not reopened here.
+
+### Governance rules
+
+- Do not weaken an active milestone's exit criteria to land an attractive
+  external idea; move useful non-critical concepts to a later capability gate.
+- No architecture migration for aesthetic purity or trend alignment; prefer a
+  measured experiment or ADR before replacing working infrastructure.
+- A foreign system's benchmark is not proof that the same mechanism helps
+  Runstead under its trust model; a maintainer's preference is not proof that
+  the opposite mechanism is incompatible with Runstead.
+- Document rejected foreign assumptions with their Runstead rationale so they
+  are not re-proposed without new evidence; if a rejection has no
+  invariant/evidence rationale, rewrite it as a hypothesis, trade-off or
+  experiment rather than a permanent prohibition.
+- If an existing architectural rule is discovered to lack proper project
+  basis, correct the source issues instead of preserving the inconsistency
+  for historical continuity.

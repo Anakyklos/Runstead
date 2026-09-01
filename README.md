@@ -51,6 +51,10 @@ ChatGPT Web and OmniRoute are **out of the v0.1 critical path** and explicitly d
 7. **Provider identity and protocol family are distinct; capability is proven, not assumed from naming.**
 8. **Profiles compose metadata, not execution authority.** The trusted kernel still owns governor, policy, durable truth, evidence, recovery and verification.
 9. **Do not replace working infrastructure without measured evidence.**
+10. **External projects are evidence and reference sources, not roadmap
+    authority.** Runstead mines the gold and preserves its own trust model
+    (architectural borrowing doctrine, issue #49; see
+    [`docs/architecture.md`](docs/architecture.md)).
 
 ## Technology direction
 

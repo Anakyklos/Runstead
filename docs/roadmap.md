@@ -372,4 +372,9 @@ Each GitHub milestone should have:
 - no speculative features;
 - a closing review documenting evidence and unresolved limitations.
 
+Externally inspired proposals follow the architectural borrowing doctrine
+(issue #49): mine the gold, preserve Runstead — external projects are
+evidence and reference sources, not roadmap authority (see
+`docs/architecture.md`).
+
 An issue should move to a later milestone rather than weakening the current milestone's exit criteria.
