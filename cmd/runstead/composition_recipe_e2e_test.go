@@ -187,3 +187,94 @@ func TestProfileRecipeSurfaceApprovalResumeDriftE2E(t *testing.T) {
 		t.Fatalf("approved go-test must have executed on resume:\n%s", after)
 	}
 }
+
+// TestProfileRecipePolicyIdentitySameInputsResumeE2E proves the issue #54
+// review fix for the durable recipe-policy identity: a policy mode assigned to
+// an UNSELECTED recipe (deploy=deny) must never appear in the frozen contract
+// identity, so a task resumed with the SAME inputs (profile, catalog and
+// recipe-policy flag) preserves the exact contract hash instead of failing as
+// drift. The selected recipe still goes through the normal policy/approval
+// boundary, and changing the SELECTED recipe's mode fails closed on resume.
+func TestProfileRecipePolicyIdentitySameInputsResumeE2E(t *testing.T) {
+	workspace := t.TempDir()
+	recipesFile := writeRecipesFile(t, `[
+  {"id":"go-test","executable":"/bin/echo","argv":["go-test-ok"],"capabilities":["execute_repository_code"]},
+  {"id":"deploy","executable":"/bin/echo","argv":["deploy-ran"],"capabilities":["execute_repository_code"]}
+]`)
+	profile := writeCompositionProfile(t, `{"version":1,"profile_id":"recipes","profile_version":"1.0.0","packages":[{"id":"process.recipes","version":"1.0.0"}],"recipe_ids":["go-test"]}`)
+	recipePolicy := "go-test=approval_required,deploy=deny"
+	acceptance := acceptanceRecipeFor(t, "go-test")
+
+	// Run 1: the selected recipe pauses at the normal approval gate. The
+	// deploy=deny mode belongs to an UNSELECTED recipe and must not be part of
+	// the frozen contract identity.
+	stateDir := t.TempDir()
+	runScript := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"run_recipe","arguments":{"recipe":"go-test"}}</runstead_action>`,
+	)
+	var runOut, runErr strings.Builder
+	code := run(context.Background(), []string{
+		"run", "--task", "Run the selected recipe.", "--workspace", workspace,
+		"--scripted", runScript, "--recipes", recipesFile, "--profile", profile,
+		"--recipe-policy", recipePolicy, "--acceptance", acceptance,
+		"--state-dir", stateDir, "--min-start-interval", "1ms", "--log-level", "error",
+	}, &runOut, &runErr)
+	if code == exitSuccess || !strings.Contains(runOut.String(), "outcome: approval_required") {
+		t.Fatalf("run must pause for approval: exit=%d\nstdout:\n%s\nstderr:\n%s", code, runOut.String(), runErr.String())
+	}
+	taskID := taskIDFromOutput(t, runErr.String())
+	pendingAction := pendingActionFromOutput(t, runOut.String())
+	frozenHash := contractHashFromInspect(t, inspectRendered(t, stateDir, taskID))
+
+	// Resume with the SAME inputs (including the same recipe-policy flag with
+	// the unselected deploy=deny mode) must succeed and preserve the exact
+	// contract hash: the unselected recipe's policy must not cause drift.
+	if decideCode, decideOut := runDecide(t, stateDir, taskID, pendingAction, "approved", "operator approved"); decideCode != exitSuccess {
+		t.Fatalf("decide exit = %d\n%s", decideCode, decideOut)
+	}
+	resumeScript := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"run_recipe","arguments":{"recipe":"go-test"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"run_recipe"}]}</runstead_final>`,
+	)
+	var resumeOut, resumeErr strings.Builder
+	resumeCode := run(context.Background(), []string{
+		"resume", taskID, "--state-dir", stateDir, "--profile", profile,
+		"--scripted", resumeScript, "--recipes", recipesFile, "--recipe-policy", recipePolicy,
+		"--acceptance", acceptance, "--log-level", "error",
+	}, &resumeOut, &resumeErr)
+	if resumeCode != exitSuccess {
+		t.Fatalf("same-inputs resume exit = %d\nstderr:\n%s\nstdout:\n%s", resumeCode, resumeErr.String(), resumeOut.String())
+	}
+	if !strings.Contains(resumeOut.String(), "outcome: completed") {
+		t.Fatalf("same-inputs resume must complete:\n%s", resumeOut.String())
+	}
+	if got := contractHashFromInspect(t, inspectRendered(t, stateDir, taskID)); got != frozenHash {
+		t.Fatalf("same-inputs resume changed the frozen contract hash from %q to %q", frozenHash, got)
+	}
+
+	// Run 2 + resume with a CHANGED mode for the SELECTED recipe: the policy
+	// change must fail closed as a divergence, never drift into the task.
+	stateDir2 := t.TempDir()
+	runOut, runErr = strings.Builder{}, strings.Builder{}
+	code = run(context.Background(), []string{
+		"run", "--task", "Run the selected recipe.", "--workspace", workspace,
+		"--scripted", runScript, "--recipes", recipesFile, "--profile", profile,
+		"--recipe-policy", recipePolicy, "--acceptance", acceptance,
+		"--state-dir", stateDir2, "--min-start-interval", "1ms", "--log-level", "error",
+	}, &runOut, &runErr)
+	if code == exitSuccess || !strings.Contains(runOut.String(), "outcome: approval_required") {
+		t.Fatalf("second run must pause for approval: exit=%d\nstdout:\n%s\nstderr:\n%s", code, runOut.String(), runErr.String())
+	}
+	taskID2 := taskIDFromOutput(t, runErr.String())
+	changedPolicyScript := writeScript(t, `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"must not run"}</runstead_final>`)
+	var driftOut, driftErr strings.Builder
+	driftCode := run(context.Background(), []string{
+		"resume", taskID2, "--state-dir", stateDir2, "--profile", profile,
+		"--scripted", changedPolicyScript, "--recipes", recipesFile,
+		"--recipe-policy", "go-test=deny,deploy=deny", "--acceptance", acceptance,
+		"--log-level", "error",
+	}, &driftOut, &driftErr)
+	if driftCode != exitUsage || !strings.Contains(driftErr.String(), "diverges from the task's persisted recipe policy") {
+		t.Fatalf("changed selected-recipe policy = %d, want usage with explicit divergence\nstderr:\n%s", driftCode, driftErr.String())
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RenyEnnos/Runstead/internal/policy"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/recipe"
 	"github.com/RenyEnnos/Runstead/internal/tools"
@@ -439,4 +440,67 @@ func equalStrings(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+// TestResolveRecipePolicyIdentityFromEffectiveSurface proves the issue #54
+// review fix: the frozen contract's RecipePolicyIdentity is derived from the
+// EFFECTIVE recipe ids, never from the full configured catalog. A policy mode
+// assigned to an unselected recipe (deploy=deny) does not appear in the
+// contract identity, and a mode change of a SELECTED recipe changes the
+// contract material.
+func TestResolveRecipePolicyIdentityFromEffectiveSurface(t *testing.T) {
+	registry, err := tools.NewRegistry(tools.Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := twoRecipeCatalog(t)
+	base := ResolveInput{
+		Profile: Profile{Version: 1, ProfileID: "build", ProfileVersion: "1.0.0",
+			Packages:  []PackageRef{{ID: "process.recipes", Version: "1.0.0"}},
+			RecipeIDs: []string{"go-test"}},
+		PackageRegistry: NewBuiltinRegistry(), ToolRegistry: registry, Recipes: catalog,
+		RecipePolicy: policy.Config{RecipeModes: map[string]policy.Mode{
+			"go-test": policy.ModeAllow, "deploy": policy.ModeDeny,
+		}},
+	}
+
+	// The unselected recipe's mode must be absent from the frozen identity.
+	resolved, err := Resolve(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Contract.RecipePolicyIdentity != "go-test=allow" {
+		t.Fatalf("contract recipe policy identity = %q, want effective surface only (go-test=allow)", resolved.Contract.RecipePolicyIdentity)
+	}
+	if strings.Contains(resolved.Contract.RecipePolicyIdentity, "deploy") {
+		t.Fatalf("contract recipe policy identity must not mention the unselected recipe: %q", resolved.Contract.RecipePolicyIdentity)
+	}
+
+	// Changing the mode of the SELECTED recipe is material contract drift.
+	denied := base
+	denied.RecipePolicy = policy.Config{RecipeModes: map[string]policy.Mode{
+		"go-test": policy.ModeDeny, "deploy": policy.ModeDeny,
+	}}
+	deniedResolved, err := Resolve(denied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deniedResolved.Contract.RecipePolicyIdentity != "go-test=deny" {
+		t.Fatalf("denied contract recipe policy identity = %q, want go-test=deny", deniedResolved.Contract.RecipePolicyIdentity)
+	}
+	if resolved.ContractHash == deniedResolved.ContractHash {
+		t.Fatal("changing the selected recipe's policy mode must change the contract hash")
+	}
+
+	// Empty recipe_ids (whole-catalog surface) renders the identity over the
+	// full surface, including every configured mode.
+	whole := base
+	whole.Profile.RecipeIDs = nil
+	wholeResolved, err := Resolve(whole)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wholeResolved.Contract.RecipePolicyIdentity != "deploy=deny,go-test=allow" {
+		t.Fatalf("whole-catalog identity = %q, want deploy=deny,go-test=allow", wholeResolved.Contract.RecipePolicyIdentity)
+	}
 }

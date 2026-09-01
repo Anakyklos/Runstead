@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/RenyEnnos/Runstead/internal/policy"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/recipe"
 	"github.com/RenyEnnos/Runstead/internal/tools"
@@ -16,15 +17,21 @@ import (
 // ResolveInput supplies existing non-authoritative seams to composition. The
 // resolver does not execute any of them.
 type ResolveInput struct {
-	Profile              Profile
-	PackageRegistry      PackageRegistry
-	Provider             provider.Identity
-	ToolRegistry         *tools.Registry
-	Recipes              *recipe.Catalog
-	RuntimeIdentity      string
-	ProtocolIdentity     string
-	WritePolicyIdentity  string
-	RecipePolicyIdentity string
+	Profile             Profile
+	PackageRegistry     PackageRegistry
+	Provider            provider.Identity
+	ToolRegistry        *tools.Registry
+	Recipes             *recipe.Catalog
+	RuntimeIdentity     string
+	ProtocolIdentity    string
+	WritePolicyIdentity string
+	// RecipePolicy is the operator recipe policy CONFIG (the same config the
+	// existing policy seam evaluates). The resolver renders the contract's
+	// RecipePolicyIdentity from the EFFECTIVE recipe surface so the frozen
+	// identity never references a recipe the Profile did not select. The
+	// config is untouched by composition: policy/approval remains the trusted
+	// kernel authority.
+	RecipePolicy         policy.Config
 	AcceptancePlanDigest string
 }
 
@@ -215,7 +222,12 @@ func Resolve(input ResolveInput) (Resolved, error) {
 		Profile:  ProfileIdentity{ID: input.Profile.ProfileID, Version: input.Profile.ProfileVersion},
 		Packages: packages, Provider: providerMaterial, Tools: toolsMaterial, ToolSchemaDigest: toolSchemaDigest,
 		RecipeCatalog:       RecipeCatalogIdentity{Digest: recipeDigest, RecipeIDs: recipeIDs},
-		WritePolicyIdentity: strings.TrimSpace(input.WritePolicyIdentity), RecipePolicyIdentity: strings.TrimSpace(input.RecipePolicyIdentity),
+		WritePolicyIdentity: strings.TrimSpace(input.WritePolicyIdentity),
+		// The recipe policy identity is rendered over the EFFECTIVE recipe ids
+		// (issue #54 review): the frozen contract must describe exactly the
+		// operator policy surface of this composition, never modes for recipes
+		// that the Profile did not select.
+		RecipePolicyIdentity: strings.TrimSpace(input.RecipePolicy.RecipeSpec(recipeIDs)),
 		AcceptancePlanDigest: strings.TrimSpace(input.AcceptancePlanDigest), GovernorIdentity: GovernorIdentity, PolicyIdentity: PolicyIdentity,
 		EvidenceIdentity: EvidenceIdentity, RecoveryIdentity: RecoveryIdentity, VerifierIdentity: VerifierIdentity,
 	}

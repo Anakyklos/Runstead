@@ -318,7 +318,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	var executionContractHash string
 	if profileSet {
 		resolvedComposition, composeErr := resolveComposition(profile, providerIdentity, baseRegistry, recipes,
-			writePolicyConfig.Spec(), recipePolicyConfig.RecipeSpec(recipeIDs(recipes)), acceptanceDigest)
+			writePolicyConfig.Spec(), recipePolicyConfig, acceptanceDigest)
 		if composeErr != nil {
 			fmt.Fprintf(errOut, "run: profile composition unavailable: %v\n", composeErr)
 			return exitUsage

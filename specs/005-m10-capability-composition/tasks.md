@@ -43,3 +43,27 @@ recipes fail as `unknown_recipe` before any process start.
 - `TestRunRecipeRestrictedUnitViewKeepsEffectiveSurface` (Work Unit containment)
 - `TestProfileRecipeSurfaceExactAllowlistE2E` (real agent loop: deploy rejected, go-test executes, inspect/contract surface)
 - `TestProfileRecipeSurfaceApprovalResumeDriftE2E` (policy pause, resume preserves surface/hash, selection drift fails closed)
+
+## Maintainer review fix 2 (PR #114 review 5077417667, issue #54)
+
+**Blocker:** `FrozenExecutionContract.RecipePolicyIdentity` was rendered over the
+FULL configured catalog (before the effective swap), while the durable task
+`recipe_policy` was rendered over the effective surface. A policy mode assigned
+to an UNSELECTED recipe (e.g. `go-test=approval_required,deploy=deny` with
+`recipe_ids=["go-test"]`) therefore made resume drift even with identical
+inputs.
+
+**Fix (single source of truth):** the resolver now receives the recipe policy
+CONFIG (`composition.ResolveInput.RecipePolicy`) and renders the contract's
+`recipe_policy_identity` itself, over the effective recipe ids only. `run` and
+`resume` pass the same config; the resume policy-divergence check compares over
+the effective ids (the Profile selection for M10 tasks, the full catalog for
+legacy tasks). The full-catalog digest stays the separate legacy #26 identity.
+
+**Regression tests:**
+- `TestResolveRecipePolicyIdentityFromEffectiveSurface` (identity excludes the
+  unselected recipe's mode; selected-mode change = material hash drift;
+  whole-catalog identity for empty `recipe_ids`)
+- `TestProfileRecipePolicyIdentitySameInputsResumeE2E` (run pauses at approval,
+  resume with the SAME inputs incl. `deploy=deny` preserves the exact contract
+  hash; changing the SELECTED recipe's mode fails closed as divergence)

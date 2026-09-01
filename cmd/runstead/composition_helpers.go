@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/RenyEnnos/Runstead/internal/composition"
+	"github.com/RenyEnnos/Runstead/internal/policy"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/recipe"
 	"github.com/RenyEnnos/Runstead/internal/tools"
@@ -45,7 +46,7 @@ func resolveProfileProvider(profile composition.Profile, selectedID string, sele
 	return selectedID, selected, nil
 }
 
-func resolveComposition(profile composition.Profile, providerIdentity provider.Identity, registry *tools.Registry, recipes *recipe.Catalog, writePolicy, recipePolicy, acceptanceDigest string) (composition.Resolved, error) {
+func resolveComposition(profile composition.Profile, providerIdentity provider.Identity, registry *tools.Registry, recipes *recipe.Catalog, writePolicy string, recipePolicy policy.Config, acceptanceDigest string) (composition.Resolved, error) {
 	return composition.Resolve(composition.ResolveInput{
 		Profile:              profile,
 		PackageRegistry:      composition.NewBuiltinRegistry(),
@@ -55,7 +56,7 @@ func resolveComposition(profile composition.Profile, providerIdentity provider.I
 		RuntimeIdentity:      composition.DefaultRuntimeIdentity,
 		ProtocolIdentity:     composition.DefaultProtocolIdentity,
 		WritePolicyIdentity:  writePolicy,
-		RecipePolicyIdentity: recipePolicy,
+		RecipePolicy:         recipePolicy,
 		AcceptancePlanDigest: acceptanceDigest,
 	})
 }
@@ -65,7 +66,7 @@ func resolveComposition(profile composition.Profile, providerIdentity provider.I
 // persisted contract is authoritative: a changed Profile, package registry,
 // tool schema, recipe catalog or provider identity is drift, never an implicit
 // upgrade or fallback.
-func resolveFrozenComposition(profile composition.Profile, providerIdentity provider.Identity, registry *tools.Registry, recipes *recipe.Catalog, writePolicy, recipePolicy, acceptanceDigest string, frozenJSON, frozenHash string) (composition.Resolved, error) {
+func resolveFrozenComposition(profile composition.Profile, providerIdentity provider.Identity, registry *tools.Registry, recipes *recipe.Catalog, writePolicy string, recipePolicy policy.Config, acceptanceDigest string, frozenJSON, frozenHash string) (composition.Resolved, error) {
 	if _, _, err := composition.ValidateContract([]byte(frozenJSON), frozenHash); err != nil {
 		return composition.Resolved{}, fmt.Errorf("%w: %v", errPersistedExecutionContract, err)
 	}

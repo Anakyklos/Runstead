@@ -87,14 +87,18 @@ task:
 The resolver materializes one effective `recipe.Catalog` containing exactly the
 selected recipes. That single catalog is the ONLY recipe surface the runtime
 sees: the task registry, the recipe policy the task persists, the frozen
-contract's recipe catalog identity (ids + digest over the selection), resume,
+contract's recipe catalog identity (ids + digest over the selection) and its
+`recipe_policy_identity` (rendered over the effective ids only, so a mode
+assigned to an unselected recipe never enters the frozen identity), resume,
 and every Work Unit derived from the task all reference the same effective
 catalog. A recipe outside the selection can never reappear through the
 original catalog: `executeRunRecipe` resolves against the effective catalog
 only, and Work Unit restricted views inherit it. Selecting `process.recipes`
 never authorizes a recipe: every `run_recipe` proposal still goes through the
 existing policy/approval boundary and the recipe policy renders only the
-effective surface.
+effective surface. The FULL catalog digest (`recipe_catalog_digest` in the
+durable task snapshot) remains the legacy #26 drift identity and is kept
+separate from the M10 effective recipe identity.
 
 ## Persistence and resume
 

@@ -632,7 +632,15 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	// legacy resume drift check above; below, resumeRecipes is replaced by the
 	// Profile-selected effective catalog after the frozen contract validates.
 	resumeCatalogDigest := resumeRecipes.Digest()
-	resumeRecipePolicy, err := resolveResumeRecipePolicy(preload.Task.ConfigJSON, recipePolicy, recipePolicy != "", resumeRecipes)
+	// The recipe-policy divergence check compares modes over the EFFECTIVE
+	// recipe surface: for a profile task, ids outside the Profile selection
+	// have no policy surface and cannot cause divergence or drift (issue #54
+	// review). Legacy tasks compare over the full re-supplied catalog.
+	resumePolicyIDs := resumeRecipes.IDs()
+	if suppliedProfile && len(profile.RecipeIDs) > 0 {
+		resumePolicyIDs = profile.RecipeIDs
+	}
+	resumeRecipePolicy, err := resolveResumeRecipePolicy(preload.Task.ConfigJSON, recipePolicy, recipePolicy != "", resumeRecipes, resumePolicyIDs)
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: %v\n", err)
 		return exitUsage
@@ -663,7 +671,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			return exitUnavailable
 		}
 		if _, composeErr := resolveFrozenComposition(profile, resumeProviderIdentity, preflightRegistry, resumeRecipes,
-			resumePolicy.Spec(), resumeRecipePolicy.RecipeSpec(recipeIDs(resumeRecipes)), resumeAcceptanceDigest,
+			resumePolicy.Spec(), resumeRecipePolicy, resumeAcceptanceDigest,
 			preload.Task.ExecutionContractJSON, preload.Task.ExecutionContractHash); composeErr != nil {
 			fmt.Fprintf(errOut, "resume: %v\n", composeErr)
 			if errors.Is(composeErr, errPersistedExecutionContract) {
@@ -902,7 +910,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	}
 	if suppliedProfile {
 		resolvedComposition, composeErr := resolveFrozenComposition(profile, resumeProviderIdentity, registry, resumeRecipes,
-			resumePolicy.Spec(), resumeRecipePolicy.RecipeSpec(recipeIDs(resumeRecipes)), resumeAcceptanceDigest,
+			resumePolicy.Spec(), resumeRecipePolicy, resumeAcceptanceDigest,
 			preload.Task.ExecutionContractJSON, preload.Task.ExecutionContractHash)
 		if composeErr != nil {
 			fmt.Fprintf(errOut, "resume: frozen composition unavailable: %v\n", composeErr)
@@ -1355,7 +1363,11 @@ func recipePolicyFromConfig(configJSON string) (policy.Config, error) {
 // authoritative: resume uses it by default, and a --recipe-policy override
 // that diverges from the persisted policy is rejected fail-closed. The
 // override must also reference recipes that exist in the re-supplied catalog.
-func resolveResumeRecipePolicy(configJSON, flagValue string, flagSet bool, catalog *recipe.Catalog) (policy.Config, error) {
+// policyIDs is the EFFECTIVE recipe surface the comparison runs over (for an
+// M10 profile task, the Profile-selected recipe ids; otherwise the full
+// re-supplied catalog). Modes for recipes outside that surface have no
+// authority and never cause divergence or drift (issue #54 review).
+func resolveResumeRecipePolicy(configJSON, flagValue string, flagSet bool, catalog *recipe.Catalog, policyIDs []string) (policy.Config, error) {
 	persisted, err := recipePolicyFromConfig(configJSON)
 	if err != nil {
 		return policy.Config{}, err
@@ -1373,8 +1385,8 @@ func resolveResumeRecipePolicy(configJSON, flagValue string, flagSet bool, catal
 				return policy.Config{}, fmt.Errorf("--recipe-policy configures unknown recipe %q", id)
 			}
 		}
-		if !policy.RecipeEqual(requested, persisted, recipeIDs(catalog)) {
-			return policy.Config{}, fmt.Errorf("--recipe-policy diverges from the task's persisted recipe policy %q; resume always continues under the policy the task started with", persisted.RecipeSpec(recipeIDs(catalog)))
+		if !policy.RecipeEqual(requested, persisted, policyIDs) {
+			return policy.Config{}, fmt.Errorf("--recipe-policy diverges from the task's persisted recipe policy %q; resume always continues under the policy the task started with", persisted.RecipeSpec(policyIDs))
 		}
 	}
 	return persisted, nil
