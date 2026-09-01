@@ -473,6 +473,118 @@ func TestImprovementVersionDigestIntegrity(t *testing.T) {
 	}
 }
 
+func TestImprovementVersionMaterialReconciliation(t *testing.T) {
+	store := openTestStore(t)
+	taskID, evidenceID, _ := seedImprovementTask(t, store)
+	ctx := context.Background()
+	at := "2026-09-01T13:00:00Z"
+	proposal, err := store.ProposeImprovement(ctx, pendingProposal(), []improvement.EvidenceRef{{TaskID: taskID, EvidenceID: evidenceID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReviewImprovement(ctx, proposal.ProposalID, improvement.DecisionApprove, "", "operator", at); err != nil {
+		t.Fatal(err)
+	}
+	version, err := store.ApplyImprovement(ctx, proposal.ProposalID, "/tmp/x.json", at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := []improvement.EvidenceRef{{TaskID: taskID, EvidenceID: evidenceID}}
+	// Positive control: the intact row loads and the persisted material
+	// projection equals the projection re-derived from the artifact.
+	loaded, err := store.LoadImprovementVersion(ctx, version.VersionID)
+	if err != nil {
+		t.Fatalf("intact version load = %v", err)
+	}
+	if loaded.ProfileMaterialJSON != version.ProfileMaterialJSON || loaded.ProfileMaterialDigest != version.ProfileMaterialDigest {
+		t.Fatalf("material projection not preserved: %+v", loaded)
+	}
+	tamper := func(t *testing.T, materialJSON, materialDigest string) {
+		t.Helper()
+		if _, err := store.DB().ExecContext(ctx,
+			`UPDATE improvement_versions SET profile_material_json = ?, profile_material_digest = ? WHERE version_id = ?`,
+			materialJSON, materialDigest, version.VersionID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// (a) Material JSON altered while the artifact bytes remain intact: the
+	// verified load must fail closed.
+	tamper(t, `{"profile_id":"coding","profile_version":"9.9.9","packages":[]}`, version.ProfileMaterialDigest)
+	if _, err := store.LoadImprovementVersion(ctx, version.VersionID); err == nil || !errors.Is(err, ErrImprovementCorrupt) {
+		t.Fatalf("altered material JSON load error = %v, want ErrImprovementCorrupt", err)
+	}
+	// (b) Material digest altered while the artifact bytes remain intact.
+	tamper(t, version.ProfileMaterialJSON, strings.Repeat("0", 64))
+	if _, err := store.LoadImprovementVersion(ctx, version.VersionID); err == nil || !errors.Is(err, ErrImprovementCorrupt) {
+		t.Fatalf("altered material digest load error = %v, want ErrImprovementCorrupt", err)
+	}
+	// (c) Material JSON and digest altered MUTUALLY CONSISTENTLY (the digest
+	// matches the tampered JSON) but different from the artifact-derived
+	// projection. This proves the artifact is the source of truth: a second,
+	// self-consistent durable truth can never take over the projection.
+	tamperedMaterial := improvement.ProfileMaterial{
+		ProfileID:      version.ProfileID,
+		ProfileVersion: version.ProfileVersion,
+		Packages:       []improvement.MaterialRef{{ID: "repo.read", Version: "1.0.0"}},
+	}
+	tamperedJSON := string(tamperedMaterial.Canonical())
+	tamperedDigest, err := tamperedMaterial.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tamperedJSON == version.ProfileMaterialJSON {
+		t.Fatalf("test setup: tampered material must differ from the artifact-derived projection")
+	}
+	tamper(t, tamperedJSON, tamperedDigest)
+	if _, err := store.LoadImprovementVersion(ctx, version.VersionID); err == nil || !errors.Is(err, ErrImprovementCorrupt) {
+		t.Fatalf("self-consistent tampered material load error = %v, want ErrImprovementCorrupt", err)
+	}
+	// Validation goes through the same verified load: the internally
+	// consistent but artifact-divergent row can never certify evidence.
+	if _, err := store.ValidateImprovement(ctx, proposal.ProposalID, improvement.OutcomePositive, refs, "", at); err == nil || !errors.Is(err, ErrImprovementCorrupt) {
+		t.Fatalf("validate over self-consistent tampered material error = %v, want ErrImprovementCorrupt", err)
+	}
+	// A DERIVED revision over the tampered base fails closed BEFORE any new
+	// version is created and BEFORE the proposal lifecycle advances.
+	second := pendingProposal()
+	second.TargetBaseVersion = version.VersionID
+	second.ProposedChangeJSON = []byte(`{"version":1,"profile_id":"coding","profile_version":"2.1.0","packages":[{"id":"repo.read","version":"1.0.0"}]}`)
+	secondStored, err := store.ProposeImprovement(ctx, second, refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReviewImprovement(ctx, secondStored.ProposalID, improvement.DecisionApprove, "", "operator", at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplyImprovement(ctx, secondStored.ProposalID, "/tmp/x.json", at); err == nil || !errors.Is(err, ErrImprovementCorrupt) {
+		t.Fatalf("apply over tampered-material base error = %v, want ErrImprovementCorrupt", err)
+	}
+	var versionCount int
+	if err := store.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM improvement_versions`).Scan(&versionCount); err != nil {
+		t.Fatal(err)
+	}
+	if versionCount != 1 {
+		t.Fatalf("tampered-material base must not create a derived version, got %d rows", versionCount)
+	}
+	secondReloaded, err := store.LoadImprovement(ctx, secondStored.ProposalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondReloaded.Status != improvement.StatusApproved {
+		t.Fatalf("tampered-material base must not advance the lifecycle, status = %q", secondReloaded.Status)
+	}
+	// Repairing the material columns to the values derived from the artifact
+	// restores the happy path.
+	tamper(t, version.ProfileMaterialJSON, version.ProfileMaterialDigest)
+	if _, err := store.ApplyImprovement(ctx, secondStored.ProposalID, "/tmp/x.json", at); err != nil {
+		t.Fatalf("apply after material repair = %v", err)
+	}
+	if _, err := store.ValidateImprovement(ctx, proposal.ProposalID, improvement.OutcomePositive, refs, "", at); err != nil {
+		t.Fatalf("validate after material repair = %v", err)
+	}
+}
+
 func TestImprovementCrashRestartPreservesLifecycle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runstead.db")
 	ctx := context.Background()

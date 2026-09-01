@@ -13,6 +13,12 @@ package state
 //  3. DIGEST INTEGRITY: every version load recomputes the SHA-256 of the
 //     stored artifact bytes and fails closed on mismatch (tampered SQLite
 //     can never make `show --artifact` or rollback deliver different bytes).
+//     Every verified load then REPARSES the artifact with the strict M10
+//     parser, RE-DERIVES the canonical profile material projection and its
+//     digest, and requires equality with the persisted profile_id,
+//     profile_version, profile_material_json and profile_material_digest
+//     columns: the artifact is the single source of truth, and a row whose
+//     material fields diverge from it (even self-consistently) is corrupt.
 //
 // The artifact FILE is a projection; the verified durable bytes are truth.
 
@@ -489,6 +495,9 @@ func (s *Store) loadVerifiedVersion(ctx context.Context, versionID string) (impr
 	if sum := sha256.Sum256(version.ArtifactJSON); hex.EncodeToString(sum[:]) != version.ArtifactDigest {
 		return improvement.Version{}, fmt.Errorf("%w: version %q artifact bytes do not match its persisted digest", ErrImprovementCorrupt, versionID)
 	}
+	if err := verifyVersionMaterial(&version); err != nil {
+		return improvement.Version{}, err
+	}
 	return version, nil
 }
 
@@ -606,6 +615,9 @@ func loadVerifiedVersionTx(ctx context.Context, tx *sql.Tx, versionID, wantTarge
 	if sum := sha256.Sum256(version.ArtifactJSON); hex.EncodeToString(sum[:]) != version.ArtifactDigest {
 		return improvement.Version{}, fmt.Errorf("%w: version %q artifact bytes do not match its persisted digest", ErrImprovementCorrupt, versionID)
 	}
+	if err := verifyVersionMaterial(&version); err != nil {
+		return improvement.Version{}, err
+	}
 	if wantTargetID != "" && version.TargetID != wantTargetID {
 		return improvement.Version{}, fmt.Errorf("%w: version %q belongs to target %q, not %q", improvement.ErrInvalidProposal, versionID, version.TargetID, wantTargetID)
 	}
@@ -613,6 +625,42 @@ func loadVerifiedVersionTx(ctx context.Context, tx *sql.Tx, versionID, wantTarge
 		return improvement.Version{}, fmt.Errorf("%w: version %q belongs to proposal %q, not %q", ErrImprovementCorrupt, versionID, version.ProposalID, wantProposalID)
 	}
 	return version, nil
+}
+
+// verifyVersionMaterial reconciles the persisted PROFILE-DETERMINED material
+// projection with the VERIFIED artifact. The artifact bytes (already checked
+// against artifact_digest) are reparsed with the strict M10 parser and the
+// canonical ProfileMaterial projection and its SHA-256 digest are re-derived
+// from them; every persisted field (profile_id, profile_version,
+// profile_material_json, profile_material_digest) must equal the re-derived
+// values. The versioned artifact is therefore the SINGLE source of truth: a
+// row whose material columns were altered even self-consistently (material
+// JSON plus a recomputed digest) can never change what validation, rollback
+// or show decide.
+func verifyVersionMaterial(version *improvement.Version) error {
+	profile, err := composition.ParseProfile(version.ArtifactJSON)
+	if err != nil {
+		return fmt.Errorf("%w: version %q artifact is not a strict Profile document: %v", ErrImprovementCorrupt, version.VersionID, err)
+	}
+	material := improvement.ProfileMaterialFromProfile(profile)
+	canonical := string(material.Canonical())
+	digest, err := material.Digest()
+	if err != nil {
+		return fmt.Errorf("%w: version %q material digest: %v", ErrImprovementCorrupt, version.VersionID, err)
+	}
+	if material.ProfileID != version.ProfileID {
+		return fmt.Errorf("%w: version %q profile_id %q does not match the verified artifact profile_id %q", ErrImprovementCorrupt, version.VersionID, version.ProfileID, material.ProfileID)
+	}
+	if material.ProfileVersion != version.ProfileVersion {
+		return fmt.Errorf("%w: version %q profile_version %q does not match the verified artifact profile_version %q", ErrImprovementCorrupt, version.VersionID, version.ProfileVersion, material.ProfileVersion)
+	}
+	if canonical != version.ProfileMaterialJSON {
+		return fmt.Errorf("%w: version %q profile_material_json does not match the material projection re-derived from the verified artifact", ErrImprovementCorrupt, version.VersionID)
+	}
+	if digest != version.ProfileMaterialDigest {
+		return fmt.Errorf("%w: version %q profile_material_digest %q does not match the digest %q re-derived from the verified artifact", ErrImprovementCorrupt, version.VersionID, version.ProfileMaterialDigest, digest)
+	}
+	return nil
 }
 
 func requireEvidenceRow(ctx context.Context, tx *sql.Tx, taskID, evidenceID string) error {

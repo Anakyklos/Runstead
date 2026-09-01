@@ -114,10 +114,13 @@ type MaterialRef struct {
 // from the artifact at apply time and re-derivable from a task's frozen
 // execution contract, so validation can prove the task ran under EXACTLY
 // this revision's material without relying on the profile version string as
-// a trust boundary. Optional fields (recipe_ids, provider_id) are included
-// only when the artifact declares them; operator seams the Profile does not
-// determine (the concrete recipe catalog, the provider endpoint resolution)
-// are NOT part of the profile material.
+// a trust boundary. Every verified version load re-derives this projection
+// from the versioned artifact and reconciles it with the persisted columns,
+// so the artifact remains the single source of truth. Optional fields
+// (recipe_ids, provider_id) are included only when the artifact declares
+// them; operator seams the Profile does not determine (the concrete recipe
+// catalog, the provider endpoint resolution) are NOT part of the profile
+// material.
 type ProfileMaterial struct {
 	ProfileID      string        `json:"profile_id"`
 	ProfileVersion string        `json:"profile_version"`

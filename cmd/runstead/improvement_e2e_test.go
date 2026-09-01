@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RenyEnnos/Runstead/internal/improvement"
 	"github.com/RenyEnnos/Runstead/internal/state"
 )
 
@@ -621,7 +622,11 @@ func TestImprovementRejectedAndTrailingFlagsE2E(t *testing.T) {
 // TestImprovementShowArtifactCorruptionFailsClosed proves the persisted
 // SHA-256 revision digest is an integrity gate: tampering the stored artifact
 // bytes makes `show --artifact` (and any version load) fail closed instead of
-// delivering different bytes.
+// delivering different bytes. It also proves the PROFILE-DETERMINED material
+// projection is reconciled with the verified artifact: a row whose material
+// columns are tampered self-consistently (JSON + recomputed digest) while the
+// artifact stays intact fails closed too, because the artifact is the single
+// source of truth.
 func TestImprovementShowArtifactCorruptionFailsClosed(t *testing.T) {
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, "a.txt"), []byte("alpha\n"), 0o644); err != nil {
@@ -658,15 +663,24 @@ func TestImprovementShowArtifactCorruptionFailsClosed(t *testing.T) {
 	if code, applyOut, applyErr := improvementRun(t, stateDir, "apply", proposalID, "--output", artifact); code != exitSuccess {
 		t.Fatalf("apply exit = %d\n%s\n%s", code, applyOut, applyErr)
 	}
-	// Tamper the durable artifact bytes.
+	// Capture the ORIGINAL version row before any tampering, so the artifact
+	// can be restored byte-exact for the material-tamper phase below.
 	store, err := state.Open(state.Options{Path: filepath.Join(stateDir, state.DefaultDBFile)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	var versionID, originalArtifact, originalArtifactDigest string
+	if err := store.DB().QueryRowContext(context.Background(),
+		`SELECT version_id, artifact_json, artifact_digest
+		 FROM improvement_versions WHERE proposal_id = ?`, proposalID).
+		Scan(&versionID, &originalArtifact, &originalArtifactDigest); err != nil {
+		t.Fatal(err)
+	}
+	// Tamper the durable artifact bytes.
 	if _, err := store.DB().ExecContext(context.Background(),
-		`UPDATE improvement_versions SET artifact_json = ? WHERE proposal_id = ?`,
-		`{"tampered":true}`, proposalID); err != nil {
+		`UPDATE improvement_versions SET artifact_json = ? WHERE version_id = ?`,
+		`{"tampered":true}`, versionID); err != nil {
 		t.Fatal(err)
 	}
 	var showOut, showErr bytes.Buffer
@@ -680,5 +694,49 @@ func TestImprovementShowArtifactCorruptionFailsClosed(t *testing.T) {
 	code, listOut, _ := improvementRun(t, stateDir, "show", proposalID)
 	if code != exitSuccess || !strings.Contains(listOut, "applied") {
 		t.Fatalf("tampered summary show = %d\n%s", code, listOut)
+	}
+	// Restore the artifact bytes AND digest byte-exact, then tamper the
+	// material projection columns MUTUALLY CONSISTENTLY (JSON + recomputed
+	// digest) while the artifact stays intact: the verified load reconciles
+	// the projection with the artifact, so show --artifact fails closed as
+	// corrupt state.
+	if _, err := store.DB().ExecContext(context.Background(),
+		`UPDATE improvement_versions SET artifact_json = ?, artifact_digest = ? WHERE version_id = ?`,
+		originalArtifact, originalArtifactDigest, versionID); err != nil {
+		t.Fatal(err)
+	}
+	// Positive control: the restored artifact loads and shows again.
+	if _, err := store.LoadImprovementVersion(context.Background(), versionID); err != nil {
+		t.Fatalf("restored artifact must load: %v", err)
+	}
+	tamperedMaterial := improvement.ProfileMaterial{
+		ProfileID:      "coding",
+		ProfileVersion: "9.9.9",
+		Packages: []improvement.MaterialRef{
+			{ID: "repo.read", Version: "1.0.0"},
+			{ID: "repo.write", Version: "1.0.0"},
+		},
+	}
+	tamperedJSON := string(tamperedMaterial.Canonical())
+	tamperedDigest, err := tamperedMaterial.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(context.Background(),
+		`UPDATE improvement_versions SET profile_material_json = ?, profile_material_digest = ? WHERE version_id = ?`,
+		tamperedJSON, tamperedDigest, versionID); err != nil {
+		t.Fatal(err)
+	}
+	var materialShowOut, materialShowErr bytes.Buffer
+	materialShowCode := run(context.Background(), []string{
+		"improvement", "show", proposalID, "--artifact", "--state-dir", stateDir,
+	}, &materialShowOut, &materialShowErr)
+	if materialShowCode != exitCorrupt || !strings.Contains(materialShowErr.String(), "material") {
+		t.Fatalf("material-tampered show --artifact = %d, want corrupt material failure\n%s", materialShowCode, materialShowErr.String())
+	}
+	// The summary rendering still works with the tampered material row.
+	code, listOut, _ = improvementRun(t, stateDir, "show", proposalID)
+	if code != exitSuccess || !strings.Contains(listOut, "applied") {
+		t.Fatalf("material-tampered summary show = %d\n%s", code, listOut)
 	}
 }

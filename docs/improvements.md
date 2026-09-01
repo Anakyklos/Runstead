@@ -81,9 +81,16 @@ revision is created: a corrupt base fails closed with no new version, no
 lifecycle advance and no artifact materialization. EVERY version load
 recomputes and verifies the artifact digest, so a tampered or corrupted
 SQLite row fails closed instead of `show --artifact` or rollback delivering
-different bytes. The materialized artifact FILE is a projection: the verified
-durable bytes always remain recoverable (`runstead improvement show ID
---artifact`).
+different bytes. Each verified load then REPARSES the artifact with the same
+strict M10 parser and RE-DERIVES the canonical material projection and its
+digest, requiring equality with the persisted `profile_id`,
+`profile_version`, `profile_material_json` and `profile_material_digest`
+columns: the versioned artifact is the SINGLE source of truth, and a row
+whose material fields diverge from it (even self-consistently, JSON plus a
+recomputed digest) is corrupt state that fails closed on every load,
+validation, derived apply and rollback. The materialized artifact FILE is a
+projection: the verified durable bytes always remain recoverable (`runstead
+improvement show ID --artifact`).
 Rollback restores the previous revision's bytes deterministically from the
 stored base revision (`rolled_back_to` records the ancestry) and rewrites the
 projection; it never interprets model narrative. A first revision has no
@@ -100,7 +107,10 @@ selections, declared recipe ids and declared provider id all feed the
 material digest, so the trust boundary is the material itself, never the
 profile version string. A task with the same id/version but different
 packages, provider or recipe material fails closed
-(`ErrEvidenceRevisionMismatch`). A model narrative, a phantom ref, a
+(`ErrEvidenceRevisionMismatch`). The projection is reconciled with the
+verified artifact on every version load, so validation can never decide
+against material that differs from the actually versioned artifact bytes. A
+model narrative, a phantom ref, a
 cross-revision ref or a contract-less task fails closed, and no proposal can
 claim its own acceptance checks passed.
 
