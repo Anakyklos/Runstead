@@ -41,6 +41,12 @@ type fakeClock struct {
 	mu     sync.Mutex
 	now    time.Time
 	timers []*fakeTimer
+	// registrations signals EVERY NewTimer registration (buffered,
+	// non-blocking sender): a test waiting on awaitTimerRegistered learns
+	// that a timer was armed BEFORE any Advance, closing the
+	// waitForCalls -> Advance race (issue #115). The signal is an
+	// observable harness event, never a wall-clock substitute.
+	registrations chan struct{}
 }
 
 func (c *fakeClock) Now() time.Time {
@@ -54,7 +60,38 @@ func (c *fakeClock) NewTimer(delay time.Duration) governor.Timer {
 	defer c.mu.Unlock()
 	timer := &fakeTimer{ch: make(chan time.Time, 1), fireAt: c.now.Add(delay)}
 	c.timers = append(c.timers, timer)
+	select {
+	case c.registrations <- struct{}{}:
+	default:
+		// No waiter at this instant: the event is consumed by the next
+		// await. The executor never blocks on the signal.
+	}
 	return timer
+}
+
+// awaitTimerRegistered blocks until a timer has been registered with the
+// clock and returns it. This is the deterministic synchronization for the
+// retry tests: after it returns, the caller KNOWS the backoff timer was
+// armed at the clock time BEFORE any Advance, so advancing the clock fires
+// it. Ordering guarantee in this harness: the first (and, until the retry
+// admission, only) timer registered after the first physical call is the
+// executor's retry-backoff timer; governor admission pacing timers can only
+// appear at the RETRY admission, which happens after the backoff
+// registration. The wall-clock select below is a FAILURE GUARD ONLY: it
+// never participates in a passing test's synchronization.
+func (c *fakeClock) awaitTimerRegistered(t *testing.T) *fakeTimer {
+	t.Helper()
+	select {
+	case <-c.registrations:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fake clock: no timer was registered within the failure-guard window")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.timers) == 0 {
+		t.Fatal("fake clock: registration signaled but no timer recorded")
+	}
+	return c.timers[len(c.timers)-1]
 }
 
 func (c *fakeClock) Advance(delay time.Duration) {
@@ -152,7 +189,7 @@ func newRetryHarnessWithPersistence(t *testing.T, mutate func(*governor.Config),
 	if mutate != nil {
 		mutate(&config)
 	}
-	clock := &fakeClock{now: time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)}
+	clock := &fakeClock{now: time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC), registrations: make(chan struct{}, 16)}
 	gov, err := governor.New(config, governor.Options{Clock: clock, Jitter: fixedJitter{}, Persistence: persistence})
 	if err != nil {
 		t.Fatal(err)
@@ -231,6 +268,7 @@ func TestExecutorRetryUsesNewAdmissionAndAccounting(t *testing.T) {
 	done := make(chan governor.ExecutionResult, 1)
 	go func() { done <- executor.Execute(ctx, retryRequest()) }()
 	waitForCalls(t, client, 1)
+	clock.awaitTimerRegistered(t)
 	clock.Advance(2 * time.Second)
 
 	result := <-done
@@ -261,6 +299,7 @@ func TestExecutorRetryBudgetExhaustion(t *testing.T) {
 	done := make(chan governor.ExecutionResult, 1)
 	go func() { done <- executor.Execute(ctx, retryRequest()) }()
 	waitForCalls(t, client, 1)
+	clock.awaitTimerRegistered(t)
 	clock.Advance(20 * time.Second)
 
 	result := <-done
@@ -330,6 +369,10 @@ func TestExecutorCancelDuringBackoffNoDispatchNoDebit(t *testing.T) {
 	done := make(chan governor.ExecutionResult, 1)
 	go func() { done <- executor.Execute(ctx, retryRequest()) }()
 	waitForCalls(t, client, 1)
+	// The backoff timer is provably registered before the cancel is issued,
+	// so the test exercises the intended race: a registered timer whose
+	// context is cancelled before it fires.
+	clock.awaitTimerRegistered(t)
 
 	cancel()
 	clock.Advance(10 * time.Second)
@@ -361,6 +404,7 @@ func TestExecutorProfileCooldownInput(t *testing.T) {
 	done := make(chan governor.ExecutionResult, 1)
 	go func() { done <- executor.Execute(ctx, retryRequest()) }()
 	waitForCalls(t, client, 1)
+	clock.awaitTimerRegistered(t)
 	clock.Advance(2 * time.Second)
 	if calls := client.callCount(); calls != 1 {
 		t.Fatalf("physical calls after 2s = %d, want 1 (profile cooldown still pending)", calls)
@@ -429,6 +473,7 @@ func TestExecutorTimerFiresOnceNoDuplicateDispatch(t *testing.T) {
 	done := make(chan governor.ExecutionResult, 1)
 	go func() { done <- executor.Execute(ctx, retryRequest()) }()
 	waitForCalls(t, client, 1)
+	clock.awaitTimerRegistered(t)
 	clock.Advance(time.Second)
 	if result := <-done; result.Completion.Outcome != governor.OutcomeSuccess {
 		t.Fatalf("outcome = %q", result.Completion.Outcome)

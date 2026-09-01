@@ -50,6 +50,12 @@ func TestExecutorObserverCalledExactlyOncePerAdmittedAttempt(t *testing.T) {
 	done := make(chan governor.ExecutionResult, 1)
 	go func() { done <- executor.Execute(ctx, retryRequest()) }()
 	waitForCalls(t, client, 1)
+	// Deterministic ordering (issue #115): prove the backoff timer was armed
+	// at the clock time BEFORE the advance, then fire it.
+	timer := clock.awaitTimerRegistered(t)
+	if clock.Now().After(timer.fireAt) {
+		t.Fatalf("backoff timer armed at %v already past its fire-at %v: Advance raced registration", clock.Now(), timer.fireAt)
+	}
 	clock.Advance(2 * time.Second)
 	result := <-done
 
@@ -159,6 +165,10 @@ func TestExecutorObserverCancelDuringBackoffObservesOnce(t *testing.T) {
 	done := make(chan governor.ExecutionResult, 1)
 	go func() { done <- executor.Execute(ctx, retryRequest()) }()
 	waitForCalls(t, client, 1)
+	// Same deterministic ordering as the other backoff tests: the timer is
+	// armed before the cancel, so cancellation and not the fake clock is the
+	// event under test.
+	clock.awaitTimerRegistered(t)
 	cancel()
 	clock.Advance(10 * time.Second)
 	result := <-done
