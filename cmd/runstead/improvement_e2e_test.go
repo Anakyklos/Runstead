@@ -297,17 +297,43 @@ func TestImprovementFullLifecycleE2E(t *testing.T) {
 		t.Fatal("revision 2 must have a distinct version id")
 	}
 
-	// Validate with OBJECTIVE evidence from the usage task.
-	code, vOut, vErr := improvementRun(t, stateDir, "validate", proposal2,
+	// Revision-bound validation (issue #55 review): evidence from a task that
+	// ran under revision 1 certifies ONLY revision 1, never revision 2.
+	code, vOut, vErr := improvementRun(t, stateDir, "validate", proposal1,
 		"--outcome", "positive", "--evidence", useTask+":obs-000001", "--notes", "verified via usage task")
 	if code != exitSuccess {
-		t.Fatalf("validate exit = %d\n%s\n%s", code, vOut, vErr)
+		t.Fatalf("validate revision 1 exit = %d\n%s\n%s", code, vOut, vErr)
+	}
+	code, vOut, vErr = improvementRun(t, stateDir, "validate", proposal2,
+		"--outcome", "positive", "--evidence", useTask+":obs-000001", "--notes", "must be rejected")
+	if code != exitUsage || !strings.Contains(vErr, "not produced under the evaluated proposal revision") {
+		t.Fatalf("cross-revision validation = %d, want revision-mismatch rejection\n%s\n%s", code, vOut, vErr)
 	}
 	// Narrative-only validation fails closed.
 	code, vOut, vErr = improvementRun(t, stateDir, "validate", proposal2,
 		"--outcome", "positive", "--notes", "the model says it helped")
 	if code != exitUsage || !strings.Contains(vErr, "evidence") {
 		t.Fatalf("narrative validation = %d\n%s\n%s", code, vOut, vErr)
+	}
+	// Evidence from a task that ACTUALLY ran under revision 2 certifies it.
+	scriptV2 := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
+	)
+	var v2Out, v2Err bytes.Buffer
+	code = run(context.Background(), []string{
+		"run", "--task", "Use revision 2.", "--workspace", workspace, "--scripted", scriptV2,
+		"--profile", artifact2, "--acceptance", acceptanceFor(t, "a.txt"), "--state-dir", stateDir,
+		"--min-start-interval", "1ms", "--log-level", "error",
+	}, &v2Out, &v2Err)
+	if code != exitSuccess {
+		t.Fatalf("revision-2 run exit = %d\n%s\n%s", code, v2Err.String(), v2Out.String())
+	}
+	useTask2 := taskIDFromOutput(t, v2Err.String())
+	code, vOut, vErr = improvementRun(t, stateDir, "validate", proposal2,
+		"--outcome", "positive", "--evidence", useTask2+":obs-000001", "--notes", "verified under revision 2")
+	if code != exitSuccess {
+		t.Fatalf("validate revision 2 exit = %d\n%s\n%s", code, vOut, vErr)
 	}
 
 	// Rollback restores revision 1 bytes deterministically.
@@ -570,5 +596,70 @@ func TestImprovementRejectedAndTrailingFlagsE2E(t *testing.T) {
 	}, &unknownOut, &unknownErr)
 	if unknownCode != exitUsage || !strings.Contains(unknownErr.String(), "unknown flag") {
 		t.Fatalf("unknown flag must be rejected: %d\n%s", unknownCode, unknownErr.String())
+	}
+}
+
+// TestImprovementShowArtifactCorruptionFailsClosed proves the persisted
+// SHA-256 revision digest is an integrity gate: tampering the stored artifact
+// bytes makes `show --artifact` (and any version load) fail closed instead of
+// delivering different bytes.
+func TestImprovementShowArtifactCorruptionFailsClosed(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "a.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := t.TempDir()
+	script := writeScript(t,
+		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
+		`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`,
+	)
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{
+		"run", "--task", "t", "--workspace", workspace, "--scripted", script,
+		"--acceptance", acceptanceFor(t, "a.txt"), "--state-dir", stateDir,
+		"--min-start-interval", "1ms", "--log-level", "error",
+	}, &out, &errOut)
+	if code != exitSuccess {
+		t.Fatal(errOut.String())
+	}
+	taskID := taskIDFromOutput(t, errOut.String())
+	change := writeCompositionProfile(t, `{"version":1,"profile_id":"coding","profile_version":"2.0.0","packages":[{"id":"repo.read","version":"1.0.0"}]}`)
+	code, proposeOut, _ := improvementRun(t, stateDir, "propose",
+		"--kind", "composition", "--scope", "proj-a", "--title", "t",
+		"--target", "profiles/coding", "--change", change,
+		"--evidence", taskID+":obs-000001")
+	if code != exitSuccess {
+		t.Fatal(proposeOut)
+	}
+	proposalID := improvementProposalID(t, proposeOut)
+	if code, _, reviewErr := improvementRun(t, stateDir, "review", proposalID, "--decision", "approve"); code != exitSuccess {
+		t.Fatalf("review exit = %d\n%s", code, reviewErr)
+	}
+	artifact := filepath.Join(t.TempDir(), "coding.json")
+	if code, applyOut, applyErr := improvementRun(t, stateDir, "apply", proposalID, "--output", artifact); code != exitSuccess {
+		t.Fatalf("apply exit = %d\n%s\n%s", code, applyOut, applyErr)
+	}
+	// Tamper the durable artifact bytes.
+	store, err := state.Open(state.Options{Path: filepath.Join(stateDir, state.DefaultDBFile)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.DB().ExecContext(context.Background(),
+		`UPDATE improvement_versions SET artifact_json = ? WHERE proposal_id = ?`,
+		`{"tampered":true}`, proposalID); err != nil {
+		t.Fatal(err)
+	}
+	var showOut, showErr bytes.Buffer
+	showCode := run(context.Background(), []string{
+		"improvement", "show", proposalID, "--artifact", "--state-dir", stateDir,
+	}, &showOut, &showErr)
+	if showCode != exitCorrupt || !strings.Contains(showErr.String(), "digest") {
+		t.Fatalf("tampered show --artifact = %d, want corrupt digest failure\n%s", showCode, showErr.String())
+	}
+	// The summary rendering does not load versions and keeps working.
+	code, listOut, _ := improvementRun(t, stateDir, "show", proposalID)
+	if code != exitSuccess || !strings.Contains(listOut, "applied") {
+		t.Fatalf("tampered summary show = %d\n%s", code, listOut)
 	}
 }

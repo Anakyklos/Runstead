@@ -71,6 +71,12 @@ var (
 	ErrInvalidEvidence = errors.New("invalid improvement proposal evidence")
 	// ErrNoBaseRevision covers rollback attempts without a previous revision.
 	ErrNoBaseRevision = errors.New("improvement proposal has no base revision to roll back to")
+	// ErrEvidenceRevisionMismatch covers evidence produced by a task whose
+	// frozen execution contract did not run under the evaluated revision.
+	ErrEvidenceRevisionMismatch = errors.New("evidence was not produced under the evaluated proposal revision")
+	// ErrImprovementCorrupt covers tampered or inconsistent durable rows
+	// (for example a version whose artifact bytes do not match its digest).
+	ErrImprovementCorrupt = errors.New("corrupt improvement proposal state")
 )
 
 // EvidenceRef is one durable provenance reference.
@@ -91,13 +97,19 @@ type ValidationRecord struct {
 	CreatedAt    string        `json:"created_at"`
 }
 
-// Version is one applied revision of a proposal target.
+// Version is one applied revision of a proposal target. ProfileID and
+// ProfileVersion are the M10 profile identity derived from the artifact at
+// apply time; within one target the identity maps to exactly one version, so
+// later validation can prove a task's frozen execution contract ran under
+// this exact revision.
 type Version struct {
 	VersionID      string `json:"version_id"`
 	ProposalID     string `json:"proposal_id"`
 	TargetID       string `json:"target_id"`
 	Revision       int    `json:"revision"`
 	BaseVersionID  string `json:"base_version_id,omitempty"`
+	ProfileID      string `json:"profile_id,omitempty"`
+	ProfileVersion string `json:"profile_version,omitempty"`
 	ArtifactDigest string `json:"artifact_digest"`
 	ArtifactJSON   []byte `json:"-"`
 	CreatedAt      string `json:"created_at"`

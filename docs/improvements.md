@@ -71,9 +71,13 @@ exist. Work-unit refs must belong to a declared source task.
 ## Versioning and rollback
 
 Applying an approved proposal stores a version identity with target, running
-revision number, base revision, SHA-256 digest and the canonical artifact
-bytes. The materialized artifact FILE is a projection: the durable bytes
-always remain recoverable (`runstead improvement show ID --artifact`).
+revision number, base revision, the M10 profile identity derived from the
+artifact (unique per target), SHA-256 digest and the canonical artifact
+bytes. EVERY version load recomputes and verifies the digest, so a tampered
+or corrupted SQLite row fails closed instead of `show --artifact` or rollback
+delivering different bytes. The materialized artifact FILE is a projection:
+the verified durable bytes always remain recoverable (`runstead improvement
+show ID --artifact`).
 Rollback restores the previous revision's bytes deterministically from the
 stored base revision (`rolled_back_to` records the ancestry) and rewrites the
 projection; it never interprets model narrative. A first revision has no
@@ -83,9 +87,12 @@ base and rollback fails closed.
 
 `improvement validate --outcome positive|negative|uncertain --evidence
 TASK:EVIDENCE,...` records an objective validation tied to the proposal and
-its version. Every evidence ref must exist; a model narrative alone can never
-mark a proposal validated, and no proposal can claim its own acceptance
-checks passed.
+its version. Every evidence ref must exist AND the cited task's durable
+frozen execution contract must carry the SAME M10 profile identity as the
+applied revision: the validation proves the evidence was produced under this
+exact revision's material, never a different configuration. A model
+narrative, a phantom ref or a cross-revision ref fails closed, and no
+proposal can claim its own acceptance checks passed.
 
 ## Prompt-injection threat model
 

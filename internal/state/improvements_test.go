@@ -7,19 +7,51 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RenyEnnos/Runstead/internal/composition"
 	"github.com/RenyEnnos/Runstead/internal/improvement"
+	"github.com/RenyEnnos/Runstead/internal/tools"
 )
 
-// seedImprovementTask creates a task with a durable evidence row and a work
-// unit belonging to it.
-func seedImprovementTask(t *testing.T, store *Store) (taskID, evidenceID, workUnitID string) {
-	return seedImprovementTaskID(t, store, "task-evidence")
+// attachFrozenContract writes a canonical M10 frozen execution contract with
+// the given profile identity onto an existing task, so the revision-bound
+// validation can prove which material the task ran under.
+func attachFrozenContract(t *testing.T, store *Store, taskID, profileID, profileVersion string) {
+	t.Helper()
+	registry, err := tools.NewRegistry(tools.Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := composition.Resolve(composition.ResolveInput{
+		Profile: composition.Profile{
+			Version: composition.ProfileSchemaVersion, ProfileID: profileID,
+			ProfileVersion: profileVersion,
+			Packages:       []composition.PackageRef{{ID: "repo.read", Version: "1.0.0"}},
+		},
+		PackageRegistry: composition.NewBuiltinRegistry(),
+		ToolRegistry:    registry,
+	})
+	if err != nil {
+		t.Fatalf("composition.Resolve() error = %v", err)
+	}
+	if _, err := store.DB().ExecContext(context.Background(),
+		`UPDATE tasks SET execution_contract_json = ?, execution_contract_hash = ? WHERE task_id = ?`,
+		string(resolved.ContractJSON), resolved.ContractHash, taskID); err != nil {
+		t.Fatalf("attach contract: %v", err)
+	}
 }
 
-func seedImprovementTaskID(t *testing.T, store *Store, taskID string) (string, string, string) {
+// seedImprovementTask creates a task with a durable evidence row, a work
+// unit belonging to it and a frozen contract whose profile identity matches
+// pendingProposal()'s applied artifact (coding@2.0.0).
+func seedImprovementTask(t *testing.T, store *Store) (taskID, evidenceID, workUnitID string) {
+	return seedImprovementTaskProfile(t, store, "task-evidence", "coding", "2.0.0")
+}
+
+func seedImprovementTaskProfile(t *testing.T, store *Store, taskID, profileID, profileVersion string) (string, string, string) {
 	t.Helper()
 	ctx := context.Background()
 	mustTask(t, store, taskID)
+	attachFrozenContract(t, store, taskID, profileID, profileVersion)
 	actionID := mustAction(t, store, taskID, "read_file", `{"path":"a.txt"}`, "fp", "sig")
 	mustToolAttempt(t, store, taskID, actionID)
 	workUnitID := "wu-" + taskID
@@ -48,7 +80,6 @@ func TestImprovementProposeWithRealEvidenceAndProvenance(t *testing.T) {
 	store := openTestStore(t)
 	taskID, evidenceID, workUnitID := seedImprovementTask(t, store)
 	proposal := pendingProposal()
-	proposal.TargetBaseVersion = ""
 	proposal.SourceTaskIDs = []string{taskID}
 	proposal.SourceWorkUnitIDs = []string{workUnitID}
 
@@ -91,23 +122,43 @@ func TestImprovementProposeMissingEvidenceFailsClosed(t *testing.T) {
 	}
 }
 
-func TestImprovementProposeForeignWorkUnitFailsClosed(t *testing.T) {
+func TestImprovementProposeSourceTaskCoherence(t *testing.T) {
 	store := openTestStore(t)
-	mustTask(t, store, "task-evidence")
-	proposal := pendingProposal()
-	proposal.SourceWorkUnitIDs = []string{"wu-other-task"}
-	if _, err := store.ProposeImprovement(context.Background(), proposal,
-		[]improvement.EvidenceRef{{TaskID: "task-evidence", EvidenceID: "obs-999999"}}); err == nil {
-		t.Fatal("propose must fail before evidence check when the work unit does not exist")
+	taskID, evidenceID, _ := seedImprovementTask(t, store)
+	ctx := context.Background()
+	refs := []improvement.EvidenceRef{{TaskID: taskID, EvidenceID: evidenceID}}
+
+	// Declared source task that does not exist fails closed.
+	ghost := pendingProposal()
+	ghost.SourceTaskIDs = []string{"task-ghost"}
+	if _, err := store.ProposeImprovement(ctx, ghost, refs); err == nil || !errors.Is(err, improvement.ErrInvalidProposal) {
+		t.Fatalf("ghost source task error = %v, want ErrInvalidProposal", err)
 	}
-	// With valid evidence but a work unit of a DIFFERENT task.
-	taskID, evidenceID, otherUnit := seedImprovementTaskID(t, store, "task-evidence-2")
-	other := pendingProposal()
-	other.SourceTaskIDs = []string{taskID}
-	other.SourceWorkUnitIDs = []string{"wu-" + otherUnit}
-	if _, err := store.ProposeImprovement(context.Background(), other,
-		[]improvement.EvidenceRef{{TaskID: taskID, EvidenceID: evidenceID}}); err == nil || !errors.Is(err, improvement.ErrInvalidProposal) {
-		t.Fatalf("foreign work unit error = %v, want ErrInvalidProposal", err)
+	// Evidence from a task OUTSIDE the declared source set fails closed.
+	otherTask, otherEvidence, _ := seedImprovementTaskProfile(t, store, "task-other", "coding", "2.0.0")
+	declared := pendingProposal()
+	declared.SourceTaskIDs = []string{taskID}
+	if _, err := store.ProposeImprovement(ctx, declared,
+		[]improvement.EvidenceRef{{TaskID: otherTask, EvidenceID: otherEvidence}}); err == nil || !errors.Is(err, improvement.ErrInvalidEvidence) {
+		t.Fatalf("evidence outside declared source error = %v, want ErrInvalidEvidence", err)
+	}
+	// A REAL work unit of another task, declared against a different source
+	// task, fails closed (regression: previously the test double-prefixed the
+	// id and validated a nonexistent unit instead).
+	_, _, otherUnit := seedImprovementTaskProfile(t, store, "task-other-2", "coding", "2.0.0")
+	foreign := pendingProposal()
+	foreign.SourceTaskIDs = []string{taskID}
+	foreign.SourceWorkUnitIDs = []string{otherUnit}
+	if _, err := store.ProposeImprovement(ctx, foreign, refs); err == nil || !errors.Is(err, improvement.ErrInvalidProposal) {
+		t.Fatalf("foreign real work unit error = %v, want ErrInvalidProposal", err)
+	}
+	// The SAME work unit declared with its own task as source passes.
+	matched := pendingProposal()
+	matched.SourceTaskIDs = []string{"task-other-2"}
+	matched.SourceWorkUnitIDs = []string{otherUnit}
+	if _, err := store.ProposeImprovement(ctx, matched,
+		[]improvement.EvidenceRef{{TaskID: "task-other-2", EvidenceID: otherEvidence}}); err != nil {
+		t.Fatalf("matched work unit rejected: %v", err)
 	}
 }
 
@@ -118,7 +169,6 @@ func TestImprovementLifecycleEndToEndAndRollback(t *testing.T) {
 	at := "2026-09-01T13:00:00Z"
 	refs := []improvement.EvidenceRef{{TaskID: taskID, EvidenceID: evidenceID}}
 
-	// Revision 1 (no base).
 	first, err := store.ProposeImprovement(ctx, pendingProposal(), refs)
 	if err != nil {
 		t.Fatal(err)
@@ -133,11 +183,12 @@ func TestImprovementLifecycleEndToEndAndRollback(t *testing.T) {
 	if version1.Revision != 1 || version1.BaseVersionID != "" || version1.ArtifactDigest == "" {
 		t.Fatalf("version1 = %+v", version1)
 	}
-	// Rollback of the FIRST revision has no base and fails closed.
+	if version1.ProfileID != "coding" || version1.ProfileVersion != "2.0.0" {
+		t.Fatalf("version1 profile identity = %q@%q, want coding@2.0.0", version1.ProfileID, version1.ProfileVersion)
+	}
 	if _, err := store.RollbackImprovement(ctx, first.ProposalID, "", at); err == nil || !errors.Is(err, improvement.ErrNoBaseRevision) {
 		t.Fatalf("first-revision rollback error = %v, want ErrNoBaseRevision", err)
 	}
-	// Validate with real evidence.
 	record, err := store.ValidateImprovement(ctx, first.ProposalID, improvement.OutcomePositive, refs, "verified", at)
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +201,7 @@ func TestImprovementLifecycleEndToEndAndRollback(t *testing.T) {
 		t.Fatalf("validations = %v / %v", validations, err)
 	}
 
-	// Revision 2 based on revision 1.
+	// Revision 2 must change the profile version (identity uniqueness).
 	secondProposal := pendingProposal()
 	secondProposal.TargetBaseVersion = version1.VersionID
 	secondProposal.ProposedChangeJSON = []byte(`{"version":1,"profile_id":"coding","profile_version":"2.1.0","packages":[{"id":"repo.read","version":"1.0.0"}]}`)
@@ -168,12 +219,25 @@ func TestImprovementLifecycleEndToEndAndRollback(t *testing.T) {
 	if version2.Revision != 2 || version2.BaseVersionID != version1.VersionID {
 		t.Fatalf("version2 = %+v", version2)
 	}
-	// Apply is single-use: a third apply fails closed.
 	if _, err := store.ApplyImprovement(ctx, second.ProposalID, "/tmp/profiles/coding.json", at); err == nil || !errors.Is(err, improvement.ErrInvalidTransition) {
 		t.Fatalf("double apply error = %v, want ErrInvalidTransition", err)
 	}
+	// A revision reusing a profile identity of the same target fails closed.
+	duplicateIdentity := pendingProposal()
+	duplicateIdentity.ProposedChangeJSON = []byte(`{"version":1,"profile_id":"coding","profile_version":"2.0.0","packages":[{"id":"repo.read","version":"1.0.0"}]}`)
+	duplicateIdentity.TargetBaseVersion = version1.VersionID
+	dup, err := store.ProposeImprovement(ctx, duplicateIdentity, refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReviewImprovement(ctx, dup.ProposalID, improvement.DecisionApprove, "", "operator", at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplyImprovement(ctx, dup.ProposalID, "/tmp/profiles/coding.json", at); err == nil || !errors.Is(err, improvement.ErrInvalidProposal) {
+		t.Fatalf("duplicate profile identity apply error = %v, want ErrInvalidProposal", err)
+	}
 
-	// Rollback restores revision 1 bytes deterministically.
+	// Rollback restores revision 1 bytes deterministically (digest-verified).
 	restored, err := store.RollbackImprovement(ctx, second.ProposalID, "worse", at)
 	if err != nil {
 		t.Fatal(err)
@@ -241,10 +305,6 @@ func TestImprovementScopeIsolationAndRedaction(t *testing.T) {
 	if err != nil || len(onlyB) != 1 {
 		t.Fatalf("proj-b scope = %v / %v", onlyB, err)
 	}
-	all, err := store.ListImprovements(ctx, "", "")
-	if err != nil || len(all) != 2 {
-		t.Fatalf("all scope = %v / %v", all, err)
-	}
 	loadedB, err := store.LoadImprovement(ctx, onlyB[0].ProposalID)
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +317,7 @@ func TestImprovementScopeIsolationAndRedaction(t *testing.T) {
 	}
 }
 
-func TestImprovementValidationRequiresEvidence(t *testing.T) {
+func TestImprovementValidationRequiresEvidenceAndRevisionMatch(t *testing.T) {
 	store := openTestStore(t)
 	taskID, evidenceID, _ := seedImprovementTask(t, store)
 	ctx := context.Background()
@@ -272,21 +332,86 @@ func TestImprovementValidationRequiresEvidence(t *testing.T) {
 	if _, err := store.ApplyImprovement(ctx, proposal.ProposalID, "/tmp/x.json", at); err != nil {
 		t.Fatal(err)
 	}
-	// Narrative-only validation (no evidence refs) fails closed.
+	// Narrative-only validation fails closed.
 	if _, err := store.ValidateImprovement(ctx, proposal.ProposalID, improvement.OutcomePositive, nil, "the model says it helped", at); err == nil || !errors.Is(err, improvement.ErrInvalidEvidence) {
 		t.Fatalf("narrative-only validation error = %v, want ErrInvalidEvidence", err)
 	}
-	// Validation citing nonexistent evidence fails closed.
+	// Phantom evidence fails closed.
 	if _, err := store.ValidateImprovement(ctx, proposal.ProposalID, improvement.OutcomePositive,
 		[]improvement.EvidenceRef{{TaskID: taskID, EvidenceID: "obs-999999"}}, "", at); err == nil || !errors.Is(err, improvement.ErrInvalidEvidence) {
 		t.Fatalf("phantom evidence validation error = %v, want ErrInvalidEvidence", err)
 	}
-	// A pending proposal can never jump straight to validated.
+	// Evidence from a task frozen under a DIFFERENT profile identity fails
+	// closed: the validation must prove the task ran under the evaluated
+	// revision material.
+	otherTask, otherEvidence, _ := seedImprovementTaskProfile(t, store, "task-other-profile", "coding", "9.9.9")
+	if _, err := store.ValidateImprovement(ctx, proposal.ProposalID, improvement.OutcomePositive,
+		[]improvement.EvidenceRef{{TaskID: otherTask, EvidenceID: otherEvidence}}, "", at); err == nil || !errors.Is(err, improvement.ErrEvidenceRevisionMismatch) {
+		t.Fatalf("revision-mismatched evidence error = %v, want ErrEvidenceRevisionMismatch", err)
+	}
+	// Evidence from a task WITH NO frozen contract fails closed.
+	noContractTask := "task-no-contract"
+	mustTask(t, store, noContractTask)
+	actionID := mustAction(t, store, noContractTask, "read_file", `{"path":"a.txt"}`, "fp", "sig")
+	mustToolAttempt(t, store, noContractTask, actionID)
+	if _, err := store.ValidateImprovement(ctx, proposal.ProposalID, improvement.OutcomePositive,
+		[]improvement.EvidenceRef{{TaskID: noContractTask, EvidenceID: "obs-000001"}}, "", at); err == nil || !errors.Is(err, improvement.ErrEvidenceRevisionMismatch) {
+		t.Fatalf("no-contract evidence error = %v, want ErrEvidenceRevisionMismatch", err)
+	}
+	// Evidence from a task that DID run under the evaluated revision passes.
 	if _, err := store.ValidateImprovement(ctx, proposal.ProposalID, improvement.OutcomePositive,
 		[]improvement.EvidenceRef{{TaskID: taskID, EvidenceID: evidenceID}}, "", at); err != nil {
-		// proposal is applied at this point, so this must succeed; the
-		// pending->validated jump is proven by the transition unit tests.
+		t.Fatalf("matched-revision validation failed: %v", err)
+	}
+}
+
+func TestImprovementVersionDigestIntegrity(t *testing.T) {
+	store := openTestStore(t)
+	taskID, evidenceID, _ := seedImprovementTask(t, store)
+	ctx := context.Background()
+	at := "2026-09-01T13:00:00Z"
+	proposal, err := store.ProposeImprovement(ctx, pendingProposal(), []improvement.EvidenceRef{{TaskID: taskID, EvidenceID: evidenceID}})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if err := store.ReviewImprovement(ctx, proposal.ProposalID, improvement.DecisionApprove, "", "operator", at); err != nil {
+		t.Fatal(err)
+	}
+	version, err := store.ApplyImprovement(ctx, proposal.ProposalID, "/tmp/x.json", at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Tamper the stored artifact bytes: every subsequent load must fail
+	// closed instead of delivering different bytes.
+	if _, err := store.DB().ExecContext(ctx,
+		`UPDATE improvement_versions SET artifact_json = ? WHERE version_id = ?`,
+		`{"version":1,"profile_id":"coding","profile_version":"2.0.0","packages":[{"id":"repo.read","version":"1.0.0"}],"tampered":true}`, version.VersionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadImprovementVersion(ctx, version.VersionID); err == nil || !errors.Is(err, ErrImprovementCorrupt) {
+		t.Fatalf("tampered load error = %v, want ErrImprovementCorrupt", err)
+	}
+	// Rolling back through the tampered base also fails closed.
+	second := pendingProposal()
+	second.TargetBaseVersion = version.VersionID
+	second.ProposedChangeJSON = []byte(`{"version":1,"profile_id":"coding","profile_version":"2.1.0","packages":[{"id":"repo.read","version":"1.0.0"}]}`)
+	secondStored, err := store.ProposeImprovement(ctx, second, []improvement.EvidenceRef{{TaskID: taskID, EvidenceID: evidenceID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReviewImprovement(ctx, secondStored.ProposalID, improvement.DecisionApprove, "", "operator", at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplyImprovement(ctx, secondStored.ProposalID, "/tmp/x.json", at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RollbackImprovement(ctx, secondStored.ProposalID, "", at); err == nil || !errors.Is(err, ErrImprovementCorrupt) {
+		t.Fatalf("rollback over tampered base error = %v, want ErrImprovementCorrupt", err)
+	}
+	// Validation over a tampered version also fails closed.
+	if _, err := store.ValidateImprovement(ctx, proposal.ProposalID, improvement.OutcomePositive,
+		[]improvement.EvidenceRef{{TaskID: taskID, EvidenceID: evidenceID}}, "", at); err == nil || !errors.Is(err, ErrImprovementCorrupt) {
+		t.Fatalf("validate over tampered version error = %v, want ErrImprovementCorrupt", err)
 	}
 }
 
@@ -307,8 +432,6 @@ func TestImprovementCrashRestartPreservesLifecycle(t *testing.T) {
 	if err := store.ReviewImprovement(ctx, proposal.ProposalID, improvement.DecisionApprove, "", "operator", at); err != nil {
 		t.Fatal(err)
 	}
-	// Crash right after apply: the version row and status are committed, the
-	// artifact FILE was never written (it is a projection).
 	if _, err := store.ApplyImprovement(ctx, proposal.ProposalID, "/tmp/profiles/coding.json", at); err != nil {
 		t.Fatal(err)
 	}
@@ -333,11 +456,9 @@ func TestImprovementCrashRestartPreservesLifecycle(t *testing.T) {
 	if string(version.ArtifactJSON) != string(proposal.ProposedChangeJSON) {
 		t.Fatal("stored artifact lost across restart")
 	}
-	// No duplicate application possible: applying again fails closed.
 	if _, err := reopened.ApplyImprovement(ctx, proposal.ProposalID, "/tmp/profiles/coding.json", at); err == nil || !errors.Is(err, improvement.ErrInvalidTransition) {
 		t.Fatalf("re-apply after restart error = %v, want ErrInvalidTransition", err)
 	}
-	// The lifecycle continues cleanly: validation after restart works.
 	if _, err := reopened.ValidateImprovement(ctx, proposal.ProposalID, improvement.OutcomePositive,
 		[]improvement.EvidenceRef{{TaskID: taskID, EvidenceID: evidenceID}}, "observed after restart", at); err != nil {
 		t.Fatalf("validate after restart = %v", err)

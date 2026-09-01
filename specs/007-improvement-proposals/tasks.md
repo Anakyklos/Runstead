@@ -47,3 +47,25 @@
 | R4 | `go test -race ./cmd/runstead/ -run 'TestImprovement' -count=5` | ok (78.5s) |
 | R5 | `go test ./...` | ok (23 packages) |
 | R6 | quality gates (self-tests/vet, growth, errcheck, live-convention) | all PASS |
+
+## Maintainer review fix (PR #117 review 5079927113, issue #55)
+
+**Blockers addressed:**
+
+1. **Revision-bound validation.** `ValidateImprovement` now proves each cited
+   task's durable frozen execution contract carries the SAME M10 profile
+   identity as the applied revision (extracted from the artifact at apply,
+   `UNIQUE (target_id, profile_id, profile_version)` makes the mapping
+   unambiguous). Cross-revision, phantom and contract-less evidence fail
+   closed with `ErrEvidenceRevisionMismatch`; the E2E certifies revision 1
+   with revision-1 evidence and revision 2 only with a task that actually ran
+   under revision 2.
+2. **Digest as integrity gate.** Every version load (`LoadImprovementVersion`,
+   validation, rollback) recomputes SHA-256 of the stored artifact bytes and
+   fails closed on mismatch. Corruption tests cover load, rollback, validate
+   (state) and `show --artifact` (E2E, exit 6).
+3. **Provenance coherence.** Source tasks must exist, evidence refs must
+   belong to the declared (or evidence-derived) source task set, and work
+   units must belong to a declared source task. The foreign Work Unit test
+   now uses a REAL unit of another task (the double-`wu-` prefix bug is
+   fixed).

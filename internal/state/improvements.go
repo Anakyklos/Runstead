@@ -1,5 +1,21 @@
 package state
 
+// Improvement proposal persistence (issue #55). Three integrity properties
+// are enforced here, not just in the CLI:
+//
+//  1. PROVENANCE COHERENCE: declared source tasks must exist, every evidence
+//     ref must point into the declared (or derived) source task set, and
+//     every work-unit ref must belong to a declared source task.
+//  2. REVISION-BOUND EVIDENCE: validating a proposal requires durable proof
+//     that each cited task's FROZEN EXECUTION CONTRACT carries the same M10
+//     profile identity as the applied revision, so `validated/positive` can
+//     never be produced from evidence of a different configuration.
+//  3. DIGEST INTEGRITY: every version load recomputes the SHA-256 of the
+//     stored artifact bytes and fails closed on mismatch (tampered SQLite
+//     can never make `show --artifact` or rollback deliver different bytes).
+//
+// The artifact FILE is a projection; the verified durable bytes are truth.
+
 import (
 	"context"
 	"crypto/sha256"
@@ -11,6 +27,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/RenyEnnos/Runstead/internal/composition"
 	"github.com/RenyEnnos/Runstead/internal/improvement"
 )
 
@@ -19,10 +36,16 @@ import (
 var ErrImprovementCorrupt = errors.New("corrupt improvement proposal state")
 
 // ProposeImprovement atomically validates the proposal provenance against
-// durable state and persists the proposal as pending. Evidence refs must
-// exist in tool_results and work-unit refs must belong to a source task;
-// any missing or incompatible reference fails closed with no row written.
-// Text fields are redacted before persistence.
+// durable state and persists the proposal as pending. Rules:
+//
+//   - every evidence ref must exist in tool_results;
+//   - every declared source task must exist; when none are declared, the
+//     source task set is derived from the evidence refs;
+//   - every evidence ref task must belong to the source task set;
+//   - every work-unit ref must exist AND belong to a source task.
+//
+// Any inconsistency fails closed with no row written. Text fields are
+// redacted before persistence.
 func (s *Store) ProposeImprovement(ctx context.Context, proposal improvement.Proposal, refs []improvement.EvidenceRef) (improvement.Proposal, error) {
 	if err := improvement.ValidateProposal(proposal); err != nil {
 		return improvement.Proposal{}, err
@@ -40,18 +63,47 @@ func (s *Store) ProposeImprovement(ctx context.Context, proposal improvement.Pro
 	if err != nil {
 		return improvement.Proposal{}, err
 	}
+	// Derive the effective source task set: declared tasks when present,
+	// otherwise exactly the evidence tasks.
+	sourceTasks := proposal.SourceTaskIDs
+	if len(sourceTasks) == 0 {
+		seen := make(map[string]struct{})
+		for _, ref := range refs {
+			seen[ref.TaskID] = struct{}{}
+		}
+		sourceTasks = make([]string, 0, len(seen))
+		for taskID := range seen {
+			sourceTasks = append(sourceTasks, taskID)
+		}
+		sort.Strings(sourceTasks)
+	}
+	sourceSet := make(map[string]struct{}, len(sourceTasks))
+	for _, taskID := range sourceTasks {
+		taskID = strings.TrimSpace(taskID)
+		if taskID == "" {
+			return improvement.Proposal{}, fmt.Errorf("%w: source task ids must be non-empty", improvement.ErrInvalidProposal)
+		}
+		if err := requireTaskRow(ctx, tx, taskID); err != nil {
+			return improvement.Proposal{}, err
+		}
+		sourceSet[taskID] = struct{}{}
+	}
 	for _, ref := range refs {
 		if err := requireEvidenceRow(ctx, tx, ref.TaskID, ref.EvidenceID); err != nil {
 			return improvement.Proposal{}, fmt.Errorf("%w: %v", improvement.ErrInvalidEvidence, err)
 		}
+		if _, ok := sourceSet[ref.TaskID]; !ok {
+			return improvement.Proposal{}, fmt.Errorf("%w: evidence %q/%q belongs to task %q outside the declared source tasks", improvement.ErrInvalidEvidence, ref.TaskID, ref.EvidenceID, ref.TaskID)
+		}
 	}
 	for _, workUnitID := range proposal.SourceWorkUnitIDs {
-		if err := requireWorkUnitOfTask(ctx, tx, workUnitID, proposal.SourceTaskIDs); err != nil {
+		if err := requireWorkUnitOfTask(ctx, tx, workUnitID, sourceSet); err != nil {
 			return improvement.Proposal{}, err
 		}
 	}
 	proposal.ProposalID = proposalID
 	proposal.Status = improvement.StatusPending
+	proposal.SourceTaskIDs = sourceTasks
 	proposal.Title = Redact(strings.TrimSpace(proposal.Title))
 	proposal.Rationale = Redact(strings.TrimSpace(proposal.Rationale))
 	proposal.ExpectedBenefit = Redact(strings.TrimSpace(proposal.ExpectedBenefit))
@@ -207,9 +259,11 @@ func (s *Store) ReviewImprovement(ctx context.Context, proposalID string, decisi
 
 // ApplyImprovement atomically versions an approved proposal: it computes the
 // next revision for the target, validates the declared base revision when
-// present, stores the canonical artifact and returns the created version.
-// The artifact FILE is a projection: the caller writes it after this
-// transaction, and the stored bytes always remain recoverable.
+// present, derives and enforces the artifact's M10 profile identity (unique
+// per target, so a task's frozen contract can later be bound to exactly one
+// revision), stores the canonical artifact + digest and returns the created
+// version. The artifact FILE is a projection; the verified durable bytes are
+// truth.
 func (s *Store) ApplyImprovement(ctx context.Context, proposalID, artifactPath, at string) (improvement.Version, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -228,6 +282,10 @@ func (s *Store) ApplyImprovement(ctx context.Context, proposalID, artifactPath, 
 			return improvement.Version{}, err
 		}
 	}
+	profile, err := composition.ParseProfile(proposal.ProposedChangeJSON)
+	if err != nil {
+		return improvement.Version{}, fmt.Errorf("%w: applied change is not a strict Profile document: %v", improvement.ErrInvalidProposal, err)
+	}
 	var revision int
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COALESCE(MAX(revision), 0) FROM improvement_versions WHERE target_id = ?`, proposal.TargetID).
@@ -245,13 +303,17 @@ func (s *Store) ApplyImprovement(ctx context.Context, proposalID, artifactPath, 
 	version := improvement.Version{
 		VersionID: versionID, ProposalID: proposalID, TargetID: proposal.TargetID,
 		Revision: revision, BaseVersionID: proposal.TargetBaseVersion,
+		ProfileID: profile.ProfileID, ProfileVersion: profile.ProfileVersion,
 		ArtifactDigest: digest, ArtifactJSON: append([]byte(nil), artifact...), CreatedAt: at,
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO improvement_versions (version_id, proposal_id, target_id, revision, base_version_id, artifact_digest, artifact_json, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO improvement_versions (version_id, proposal_id, target_id, revision, base_version_id, profile_id, profile_version, artifact_digest, artifact_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		version.VersionID, version.ProposalID, version.TargetID, version.Revision, version.BaseVersionID,
-		version.ArtifactDigest, string(version.ArtifactJSON), version.CreatedAt); err != nil {
+		version.ProfileID, version.ProfileVersion, version.ArtifactDigest, string(version.ArtifactJSON), version.CreatedAt); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique constraint") {
+			return improvement.Version{}, fmt.Errorf("%w: target %q already has a revision with profile identity %q@%q; a revision must change the declared profile version", improvement.ErrInvalidProposal, version.TargetID, version.ProfileID, version.ProfileVersion)
+		}
 		return improvement.Version{}, fmt.Errorf("insert version: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -266,9 +328,13 @@ func (s *Store) ApplyImprovement(ctx context.Context, proposalID, artifactPath, 
 	return version, nil
 }
 
-// ValidateImprovement attaches one later objective validation record. Every
-// evidence reference must exist in tool_results; a narrative without
-// durable evidence can never create a validation or set validated.
+// ValidateImprovement attaches one later objective validation record to the
+// proposal's applied version. Every evidence reference must (a) exist in
+// tool_results, and (b) belong to a task whose FROZEN EXECUTION CONTRACT
+// carries the SAME M10 profile identity as the applied revision -- durable
+// proof the evidence was produced under this exact material, never another
+// configuration. A narrative, a phantom ref or a revision mismatch fails
+// closed.
 func (s *Store) ValidateImprovement(ctx context.Context, proposalID string, outcome improvement.Outcome, refs []improvement.EvidenceRef, notes, at string) (improvement.ValidationRecord, error) {
 	outcome = improvement.Outcome(strings.TrimSpace(string(outcome)))
 	switch outcome {
@@ -294,9 +360,16 @@ func (s *Store) ValidateImprovement(ctx context.Context, proposalID string, outc
 	if proposal.VersionID == "" {
 		return improvement.ValidationRecord{}, fmt.Errorf("%w: applied proposal missing version", ErrImprovementCorrupt)
 	}
+	version, err := loadVerifiedVersionTx(ctx, tx, proposal.VersionID, proposal.TargetID, proposalID)
+	if err != nil {
+		return improvement.ValidationRecord{}, err
+	}
 	for _, ref := range refs {
 		if err := requireEvidenceRow(ctx, tx, ref.TaskID, ref.EvidenceID); err != nil {
 			return improvement.ValidationRecord{}, fmt.Errorf("%w: %v", improvement.ErrInvalidEvidence, err)
+		}
+		if err := requireTaskContractProfile(ctx, tx, ref.TaskID, version); err != nil {
+			return improvement.ValidationRecord{}, err
 		}
 	}
 	validationID, err := nextIdentity(tx, "val")
@@ -308,7 +381,7 @@ func (s *Store) ValidateImprovement(ctx context.Context, proposalID string, outc
 		return improvement.ValidationRecord{}, fmt.Errorf("%w: encode validation evidence", ErrImprovementCorrupt)
 	}
 	record := improvement.ValidationRecord{
-		ValidationID: validationID, ProposalID: proposalID, VersionID: proposal.VersionID,
+		ValidationID: validationID, ProposalID: proposalID, VersionID: version.VersionID,
 		Outcome: outcome, Evidence: refs, Notes: Redact(strings.TrimSpace(notes)), ObservedAt: at, CreatedAt: at,
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -330,10 +403,11 @@ func (s *Store) ValidateImprovement(ctx context.Context, proposalID string, outc
 }
 
 // RollbackImprovement restores the previous revision deterministically from
-// the stored base artifact bytes and marks the proposal rolled_back. The
-// first revision of a target has no base and fails closed with
-// ErrNoBaseRevision. The returned artifact bytes are the previous revision;
-// the caller rewrites the materialized file projection.
+// the VERIFIED base artifact bytes and marks the proposal rolled_back. The
+// base version's target is checked and its digest recomputed before use. A
+// first revision has no base and fails closed. The returned artifact bytes
+// are the previous revision; the caller rewrites the materialized file
+// projection.
 func (s *Store) RollbackImprovement(ctx context.Context, proposalID, reason, at string) ([]byte, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -347,14 +421,9 @@ func (s *Store) RollbackImprovement(ctx context.Context, proposalID, reason, at 
 	if _, err := proposal.Transition("rollback"); err != nil {
 		return nil, err
 	}
-	var artifact string
-	if err := tx.QueryRowContext(ctx,
-		`SELECT artifact_json FROM improvement_versions WHERE version_id = ?`, proposal.TargetBaseVersion).
-		Scan(&artifact); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("%w: base revision %q missing", ErrImprovementCorrupt, proposal.TargetBaseVersion)
-		}
-		return nil, fmt.Errorf("load base revision: %w", err)
+	base, err := loadVerifiedVersionTx(ctx, tx, proposal.TargetBaseVersion, proposal.TargetID, "")
+	if err != nil {
+		return nil, err
 	}
 	trail := proposal.ReviewReason
 	if strings.TrimSpace(reason) != "" {
@@ -375,22 +444,36 @@ func (s *Store) RollbackImprovement(ctx context.Context, proposalID, reason, at 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit rollback: %w", err)
 	}
-	return []byte(artifact), nil
+	return append([]byte(nil), base.ArtifactJSON...), nil
 }
 
-// LoadImprovementVersion returns one stored version.
+// LoadImprovementVersion returns one stored version AFTER recomputing and
+// verifying its artifact digest: tampered bytes fail closed instead of being
+// handed to show/rollback.
 func (s *Store) LoadImprovementVersion(ctx context.Context, versionID string) (improvement.Version, error) {
+	return s.loadVerifiedVersion(ctx, versionID)
+}
+
+func (s *Store) loadVerifiedVersion(ctx context.Context, versionID string) (improvement.Version, error) {
 	var version improvement.Version
+	var artifactJSON, proposalID, targetID string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT version_id, proposal_id, target_id, revision, base_version_id, artifact_digest, artifact_json, created_at
+		SELECT version_id, proposal_id, target_id, revision, base_version_id, profile_id, profile_version, artifact_digest, artifact_json, created_at
 		FROM improvement_versions WHERE version_id = ?`, versionID).
-		Scan(&version.VersionID, &version.ProposalID, &version.TargetID, &version.Revision,
-			&version.BaseVersionID, &version.ArtifactDigest, &version.ArtifactJSON, &version.CreatedAt)
+		Scan(&version.VersionID, &proposalID, &targetID, &version.Revision,
+			&version.BaseVersionID, &version.ProfileID, &version.ProfileVersion,
+			&version.ArtifactDigest, &artifactJSON, &version.CreatedAt)
 	if err == sql.ErrNoRows {
 		return improvement.Version{}, improvement.ErrUnknownProposal
 	}
 	if err != nil {
 		return improvement.Version{}, fmt.Errorf("%w: %v", ErrImprovementCorrupt, err)
+	}
+	version.ProposalID = proposalID
+	version.TargetID = targetID
+	version.ArtifactJSON = []byte(artifactJSON)
+	if sum := sha256.Sum256(version.ArtifactJSON); hex.EncodeToString(sum[:]) != version.ArtifactDigest {
+		return improvement.Version{}, fmt.Errorf("%w: version %q artifact bytes do not match its persisted digest", ErrImprovementCorrupt, versionID)
 	}
 	return version, nil
 }
@@ -484,6 +567,38 @@ func loadImprovementRowTx(ctx context.Context, tx *sql.Tx, proposalID string) (i
 	return proposal, nil
 }
 
+// loadVerifiedVersionTx reads one version inside a transaction, verifies its
+// artifact digest and (when wanted) its target/proposal identity.
+func loadVerifiedVersionTx(ctx context.Context, tx *sql.Tx, versionID, wantTargetID, wantProposalID string) (improvement.Version, error) {
+	var version improvement.Version
+	var artifactJSON, proposalID, targetID string
+	err := tx.QueryRowContext(ctx, `
+		SELECT version_id, proposal_id, target_id, revision, base_version_id, profile_id, profile_version, artifact_digest, artifact_json, created_at
+		FROM improvement_versions WHERE version_id = ?`, versionID).
+		Scan(&version.VersionID, &proposalID, &targetID, &version.Revision,
+			&version.BaseVersionID, &version.ProfileID, &version.ProfileVersion,
+			&version.ArtifactDigest, &artifactJSON, &version.CreatedAt)
+	if err == sql.ErrNoRows {
+		return improvement.Version{}, improvement.ErrUnknownProposal
+	}
+	if err != nil {
+		return improvement.Version{}, fmt.Errorf("%w: %v", ErrImprovementCorrupt, err)
+	}
+	version.ProposalID = proposalID
+	version.TargetID = targetID
+	version.ArtifactJSON = []byte(artifactJSON)
+	if sum := sha256.Sum256(version.ArtifactJSON); hex.EncodeToString(sum[:]) != version.ArtifactDigest {
+		return improvement.Version{}, fmt.Errorf("%w: version %q artifact bytes do not match its persisted digest", ErrImprovementCorrupt, versionID)
+	}
+	if wantTargetID != "" && version.TargetID != wantTargetID {
+		return improvement.Version{}, fmt.Errorf("%w: version %q belongs to target %q, not %q", improvement.ErrInvalidProposal, versionID, version.TargetID, wantTargetID)
+	}
+	if wantProposalID != "" && version.ProposalID != wantProposalID {
+		return improvement.Version{}, fmt.Errorf("%w: version %q belongs to proposal %q, not %q", ErrImprovementCorrupt, versionID, version.ProposalID, wantProposalID)
+	}
+	return version, nil
+}
+
 func requireEvidenceRow(ctx context.Context, tx *sql.Tx, taskID, evidenceID string) error {
 	var one int
 	err := tx.QueryRowContext(ctx,
@@ -497,7 +612,20 @@ func requireEvidenceRow(ctx context.Context, tx *sql.Tx, taskID, evidenceID stri
 	return nil
 }
 
-func requireWorkUnitOfTask(ctx context.Context, tx *sql.Tx, workUnitID string, sourceTaskIDs []string) error {
+func requireTaskRow(ctx context.Context, tx *sql.Tx, taskID string) error {
+	var one int
+	err := tx.QueryRowContext(ctx,
+		`SELECT 1 FROM tasks WHERE task_id = ?`, taskID).Scan(&one)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("%w: source task %q does not exist", improvement.ErrInvalidProposal, taskID)
+	}
+	if err != nil {
+		return fmt.Errorf("check task: %w", err)
+	}
+	return nil
+}
+
+func requireWorkUnitOfTask(ctx context.Context, tx *sql.Tx, workUnitID string, sourceTasks map[string]struct{}) error {
 	var taskID string
 	err := tx.QueryRowContext(ctx,
 		`SELECT task_id FROM work_units WHERE work_unit_id = ?`, workUnitID).Scan(&taskID)
@@ -507,12 +635,10 @@ func requireWorkUnitOfTask(ctx context.Context, tx *sql.Tx, workUnitID string, s
 	if err != nil {
 		return fmt.Errorf("check work unit: %w", err)
 	}
-	for _, candidate := range sourceTaskIDs {
-		if taskID == candidate {
-			return nil
-		}
+	if _, ok := sourceTasks[taskID]; !ok {
+		return fmt.Errorf("%w: work unit %q belongs to task %q, not to a declared source task", improvement.ErrInvalidProposal, workUnitID, taskID)
 	}
-	return fmt.Errorf("%w: work unit %q belongs to task %q, not to a declared source task", improvement.ErrInvalidProposal, workUnitID, taskID)
+	return nil
 }
 
 func requireVersionRow(ctx context.Context, tx *sql.Tx, versionID, targetID string) error {
@@ -527,6 +653,44 @@ func requireVersionRow(ctx context.Context, tx *sql.Tx, versionID, targetID stri
 	}
 	if storedTarget != targetID {
 		return fmt.Errorf("%w: base version %q belongs to target %q, not %q", improvement.ErrInvalidProposal, versionID, storedTarget, targetID)
+	}
+	return nil
+}
+
+// requireTaskContractProfile proves the cited task's durable frozen execution
+// contract carries EXACTLY the applied revision's M10 profile identity. The
+// contract bytes are loaded through LoadExecutionContract, which revalidates
+// the persisted (bytes, hash) pair, so a tampered or missing contract can
+// never certify validation evidence.
+func requireTaskContractProfile(ctx context.Context, tx *sql.Tx, taskID string, version improvement.Version) error {
+	var contractJSON, contractHash string
+	err := tx.QueryRowContext(ctx,
+		`SELECT execution_contract_json, execution_contract_hash FROM tasks WHERE task_id = ?`, taskID).
+		Scan(&contractJSON, &contractHash)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("%w: %v", improvement.ErrInvalidEvidence, "task does not exist")
+	}
+	if err != nil {
+		return fmt.Errorf("load task contract: %w", err)
+	}
+	if strings.TrimSpace(contractJSON) == "" {
+		return fmt.Errorf("%w: task %q has no frozen execution contract; evidence cannot be bound to this revision", improvement.ErrEvidenceRevisionMismatch, taskID)
+	}
+	if err := validateExecutionContractPair(contractJSON, contractHash); err != nil {
+		return fmt.Errorf("%w: task %q frozen execution contract is corrupt: %v", ErrImprovementCorrupt, taskID, err)
+	}
+	var identity struct {
+		Profile struct {
+			ID      string `json:"id"`
+			Version string `json:"version"`
+		} `json:"profile"`
+	}
+	if err := json.Unmarshal([]byte(contractJSON), &identity); err != nil {
+		return fmt.Errorf("%w: task %q frozen execution contract is not decodable: %v", ErrImprovementCorrupt, taskID, err)
+	}
+	if identity.Profile.ID != version.ProfileID || identity.Profile.Version != version.ProfileVersion {
+		return fmt.Errorf("%w: task %q ran under frozen profile %q@%q, not the evaluated revision profile %q@%q",
+			improvement.ErrEvidenceRevisionMismatch, taskID, identity.Profile.ID, identity.Profile.Version, version.ProfileID, version.ProfileVersion)
 	}
 	return nil
 }
