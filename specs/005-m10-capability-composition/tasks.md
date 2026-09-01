@@ -12,4 +12,10 @@
 - [x] T006 Add `resume TASK --profile FILE` exact contract reconstruction and fail-closed drift/missing-component handling before recovery or dispatch.
 - [x] T007 Add Work Unit containment, negative trusted-kernel tests and deterministic scripted run/inspect/resume E2E coverage.
 - [x] T008 Update architecture, roadmap, README/help only where materially required and document all excluded dynamic plugin paths.
-- [ ] T009 Run focused repetitions, race detector, full repository/CI quality gates and open one PR against `main`.
+- [x] T009 Run focused repetitions, race detector, full repository/CI quality gates and open one PR against `main`.
+
+
+## Completion
+
+- PR: https://github.com/Anakyklos/Runstead/pull/114 (head `6286f81`, base `main`)
+- Full validation: gofmt, `go test ./...`, `go vet ./...`, build, `go test -race ./...` (zero races), `experiments/protocol/test.sh`, `git diff --check`, and all `tools/quality` gates (growth, errcheck, live-convention) green.
