@@ -218,13 +218,20 @@ Exit criteria:
   remains the default, the hard ceiling remains 4, and only explicitly
   read-only envelopes may use the shared lane. Parallel writers remain
   disabled.
-- **M10 — active, issue #54.** The gate is typed built-in
+- **M10 — completed, issue #54.** The gate is typed built-in
   `CapabilityPackage` metadata, strict declarative Profiles, deterministic
   composition and a persisted frozen execution contract. The composition layer
   is above the trusted kernel and cannot replace governor, policy, durability,
-  evidence, recovery or verifier authority.
-- **M11 — blocked by M10.** Improvement proposals and later extensibility work
-  remain out of scope until the M10 contract is reviewed and accepted.
+  evidence, recovery or verifier authority. A Profile's `recipe_ids` is an
+  exact allowlist of the effective recipe surface, and the frozen contract's
+  recipe policy identity is derived from that same effective surface.
+- **M11 — active, issue #55.** The gate is the evidence-backed
+  `ImprovementProposal` lifecycle: proposals are non-authoritative
+  control-plane information (propose -> operator review -> versioned apply ->
+  objective validation -> deterministic rollback) and never grant the model,
+  workspace or capability any authority over trusted runtime behavior.
+- **M12+ — blocked by M11.** Later extensibility work remains out of scope
+  until the proposal lifecycle is reviewed and accepted.
 
 ## Deferred to plugin/composable-provider tracks
 

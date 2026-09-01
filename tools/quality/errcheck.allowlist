@@ -210,18 +210,18 @@ internal/recovery/recovery.go:772  _ = jsonUnmarshal(raw, value)
 
 
 
-cmd/runstead/main.go:403  defer store.Close()
+cmd/runstead/main.go:405  defer store.Close()
 
 
 
 
-cmd/runstead/main.go:1135  defer store.Close()
+cmd/runstead/main.go:1137  defer store.Close()
 
 
 
 
 
-cmd/runstead/main.go:1234  defer store.Close()
+cmd/runstead/main.go:1236  defer store.Close()
 
 
 
@@ -834,3 +834,37 @@ internal/provider/omniroute/identity.go:91  encoded, _ := json.Marshal(nonSecret
 # returned with rows.Err(), so a close failure is best-effort cleanup after the
 # authoritative result is already computed.
 internal/state/tool_attempts.go:184  defer rows.Close()
+
+
+# Issue #55 improvement control plane CLI (cmd/runstead/improvement_cmd.go):
+# database close on every command path is best-effort cleanup; the command has
+# already produced its authoritative result or error and a close failure after
+# that cannot affect it (same convention as the other CLI commands).
+cmd/runstead/improvement_cmd.go:173  defer store.Close()
+cmd/runstead/improvement_cmd.go:204  defer store.Close()
+cmd/runstead/improvement_cmd.go:239  defer store.Close()
+cmd/runstead/improvement_cmd.go:333  defer store.Close()
+cmd/runstead/improvement_cmd.go:371  defer store.Close()
+cmd/runstead/improvement_cmd.go:415  defer store.Close()
+cmd/runstead/improvement_cmd.go:445  defer store.Close()
+
+# Improvement artifact projection write (issue #55): the atomic temp+rename
+# writer removes its temp file and closes it while the authoritative error is
+# already being returned; cleanup failures after that cannot change the
+# outcome (matches the tools/atomic-write allowlist convention).
+cmd/runstead/improvement_cmd.go:515  tmp.Close()
+cmd/runstead/improvement_cmd.go:516  os.Remove(tmpName)
+cmd/runstead/improvement_cmd.go:520  os.Remove(tmpName)
+
+# Issue #55 state layer (internal/state/improvements.go): transaction/row
+# cleanup follows the same best-effort convention as every other state/*
+# entry in this allowlist; the authoritative result is committed or returned
+# before the deferred cleanup runs.
+internal/state/improvements.go:38  defer tx.Rollback()
+internal/state/improvements.go:157  defer rows.Close()
+internal/state/improvements.go:186  defer tx.Rollback()
+internal/state/improvements.go:218  defer tx.Rollback()
+internal/state/improvements.go:286  defer tx.Rollback()
+internal/state/improvements.go:342  defer tx.Rollback()
+internal/state/improvements.go:406  defer rows.Close()
+internal/state/improvements.go:432  defer rows.Close()
