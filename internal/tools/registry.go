@@ -317,6 +317,23 @@ func (r *Registry) RecipeCatalog() *recipe.Catalog {
 	return r.recipes
 }
 
+// WithRecipes returns a shallow copy of the registry whose recipe catalog is
+// exactly the given catalog. The composition root uses it to materialize the
+// Profile-selected recipe surface (M10, issue #54): the tool set, workspace,
+// runners, limits and capability envelope are unchanged, so a recipe outside
+// the effective catalog is indistinguishable from an unknown recipe and fails
+// closed in executeRunRecipe. It must be applied AFTER Restricted: views keep
+// the same effective catalog and never regain recipes the parent surface
+// does not own.
+func (r *Registry) WithRecipes(catalog *recipe.Catalog) *Registry {
+	if r == nil {
+		return nil
+	}
+	copy := *r
+	copy.recipes = catalog
+	return &copy
+}
+
 // Recipe returns the recipe with the given id from the configured catalog.
 func (r *Registry) Recipe(id string) (recipe.Recipe, bool) {
 	if r == nil || r.recipes == nil {

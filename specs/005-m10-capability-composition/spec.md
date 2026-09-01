@@ -42,6 +42,8 @@ Unknown fields, duplicate object keys, unknown versions, unknown packages, missi
 
 `provider_id` is optional for scripted runs. If present, it must agree with `--provider-id`; an explicit flag/profile conflict fails rather than using parse order. Profile JSON cannot contain policy, governor, verifier, approval, credential or executable callback fields.
 
+`recipe_ids` is an EXACT allowlist of the recipes available to the composed task. A non-empty selection restricts the effective recipe surface to exactly those ids; a recipe configured in the operator's catalog but absent from the selection is rejected with `unknown_recipe` before any effect, exactly like a recipe that never existed. An EMPTY `recipe_ids` with `process.recipes` enabled deliberately selects the whole configured catalog (documented in `docs/composition.md` and regression-tested). The resolver materializes ONE effective catalog containing exactly the selected recipes; the task registry, the persisted recipe policy, the frozen contract's recipe catalog identity, resume and every Work Unit view all reference the same effective catalog, so a non-selected recipe can never reappear through the original catalog. Selecting `process.recipes` never authorizes a recipe: policy/approval stays the authority.
+
 ## Built-in package set
 
 The minimal registry contains:

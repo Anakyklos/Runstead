@@ -162,3 +162,39 @@ func marshalPlannedEffect(effect tools.PlannedEffect) []byte {
 	}
 	return encoded
 }
+
+// RecipeExecutionCount returns how many EXECUTED run_recipe attempts for the
+// given recipe id exist in the task (tool_results rows joined to their
+// tool_attempts). A proposal rejected as unknown_recipe or denied by policy
+// never starts a process and therefore has no execution row, so the count is
+// zero for any recipe that never ran. This is the deterministic store-level
+// proof that a recipe absent from the Profile-selected surface never executed
+// (issue #54 review).
+func (s *Store) RecipeExecutionCount(ctx context.Context, taskID, recipeID string) (int, error) {
+	if taskID == "" || recipeID == "" {
+		return 0, fmt.Errorf("RecipeExecutionCount requires a task id and a recipe id")
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT a.arguments_json FROM tool_results r JOIN tool_attempts a ON a.execution_id = r.execution_id
+		 WHERE r.task_id = ? AND a.tool = ? AND a.status IN ('observed', 'verified', 'completed', 'reconciled')`,
+		taskID, tools.ToolRunRecipe)
+	if err != nil {
+		return 0, fmt.Errorf("load executed run_recipe attempts: %w", err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var argumentsJSON string
+		if err := rows.Scan(&argumentsJSON); err != nil {
+			return 0, fmt.Errorf("scan executed run_recipe attempt: %w", err)
+		}
+		var arguments map[string]any
+		if err := json.Unmarshal([]byte(argumentsJSON), &arguments); err != nil {
+			return 0, fmt.Errorf("decode executed run_recipe arguments: %w", err)
+		}
+		if selected, _ := arguments["recipe"].(string); selected == recipeID {
+			count++
+		}
+	}
+	return count, rows.Err()
+}

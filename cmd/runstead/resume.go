@@ -628,6 +628,10 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintf(errOut, "resume: %v\n", err)
 		return exitUsage
 	}
+	// The FULL catalog digest stays the durable snapshot identity for the
+	// legacy resume drift check above; below, resumeRecipes is replaced by the
+	// Profile-selected effective catalog after the frozen contract validates.
+	resumeCatalogDigest := resumeRecipes.Digest()
 	resumeRecipePolicy, err := resolveResumeRecipePolicy(preload.Task.ConfigJSON, recipePolicy, recipePolicy != "", resumeRecipes)
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: %v\n", err)
@@ -908,6 +912,10 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			return exitCorrupt
 		}
 		registry = resolvedComposition.EffectiveRegistry
+		// The resumed task runs on the SAME Profile-selected recipe surface the
+		// frozen contract records: downstream policy/loop/Work Unit wiring
+		// renders from the effective catalog only.
+		resumeRecipes = resolvedComposition.EffectiveRecipes
 	}
 	limits, err := limitsFromConfig(plan.Task.ConfigJSON)
 	if err != nil {
@@ -938,7 +946,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			policy:              policy.NewStatic(policyConfig, storeApprovals(store)),
 			writePolicy:         resumePolicy.Spec(),
 			recipePolicy:        resumeRecipePolicy.RecipeSpec(recipeIDs(resumeRecipes)),
-			recipeCatalogDigest: resumeRecipes.Digest(),
+			recipeCatalogDigest: resumeCatalogDigest,
 			limits:              limits,
 			recovery:            plan.Seed,
 		}
@@ -1003,7 +1011,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		Policy:               policy.NewStatic(policyConfig, storeApprovals(store)),
 		WritePolicy:          resumePolicy.Spec(),
 		RecipePolicy:         resumeRecipePolicy.RecipeSpec(recipeIDs(resumeRecipes)),
-		RecipeCatalogDigest:  resumeRecipes.Digest(),
+		RecipeCatalogDigest:  resumeCatalogDigest,
 		Verifier:             verifier.New(registry, resumeAcceptance),
 		AcceptancePlanDigest: resumeAcceptanceDigest,
 		Recovery:             plan.Seed,

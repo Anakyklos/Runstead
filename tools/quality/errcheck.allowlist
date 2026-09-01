@@ -210,18 +210,18 @@ internal/recovery/recovery.go:772  _ = jsonUnmarshal(raw, value)
 
 
 
-cmd/runstead/main.go:392  defer store.Close()
+cmd/runstead/main.go:403  defer store.Close()
 
 
 
 
-cmd/runstead/main.go:1124  defer store.Close()
+cmd/runstead/main.go:1135  defer store.Close()
 
 
 
 
 
-cmd/runstead/main.go:1223  defer store.Close()
+cmd/runstead/main.go:1234  defer store.Close()
 
 
 
@@ -402,19 +402,19 @@ internal/provider/omniroute/telemetry.go:188  when, _ := time.Parse(time.RFC3339
 
 # Process/process-group termination on the cleanup path is best-effort; the
 # function is already returning a real error (or none) to its caller.
-internal/recipe/recipe.go:695  _ = process.Kill()
+internal/recipe/recipe.go:726  _ = process.Kill()
 
 
 
 
 
-internal/recipe/recipe.go:699  _ = syscall.Kill(-pgid, syscall.SIGTERM)
+internal/recipe/recipe.go:730  _ = syscall.Kill(-pgid, syscall.SIGTERM)
 
 
 
 
 
-internal/recipe/recipe.go:701  _ = syscall.Kill(-pgid, syscall.SIGKILL)
+internal/recipe/recipe.go:732  _ = syscall.Kill(-pgid, syscall.SIGKILL)
 
 
 
@@ -827,3 +827,10 @@ internal/state/profiles.go:218  profileRows.Close()
 # material; the sha256 digest over the bytes still terminates deterministically.
 # The identity is never persisted raw and never carries API keys or tokens.
 internal/provider/omniroute/identity.go:91  encoded, _ := json.Marshal(nonSecret)
+
+
+# M10 recipe surface regression query (issue #54 review): RecipeExecutionCount
+# closes its rows in a bounded read-only SELECT after the scan; the count is
+# returned with rows.Err(), so a close failure is best-effort cleanup after the
+# authoritative result is already computed.
+internal/state/tool_attempts.go:184  defer rows.Close()

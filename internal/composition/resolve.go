@@ -35,6 +35,12 @@ type Resolved struct {
 	ContractJSON      []byte
 	ContractHash      string
 	EffectiveRegistry *tools.Registry
+	// EffectiveRecipes is the Profile-selected recipe surface. It contains
+	// EXACTLY the recipes available to the task (the whole configured catalog
+	// when recipe_ids is empty and run_recipe is enabled, per the documented
+	// deliberate semantics). It is never nil when the effective registry
+	// exposes run_recipe, so runtime and frozen contract always agree.
+	EffectiveRecipes *recipe.Catalog
 }
 
 func Resolve(input ResolveInput) (Resolved, error) {
@@ -149,6 +155,14 @@ func Resolve(input ResolveInput) (Resolved, error) {
 			break
 		}
 	}
+	// The effective recipe surface (M10, issue #54): a non-empty recipe_ids is
+	// an EXACT allowlist of the recipes available to this composition, and an
+	// empty recipe_ids with run_recipe enabled deliberately selects the whole
+	// configured catalog (documented in docs/composition.md). The effective
+	// catalog is materialized once here and is the ONLY catalog the runtime
+	// registry and the frozen contract see, so a recipe configured in the
+	// original catalog but absent from the selection can never appear again.
+	var effectiveRecipes *recipe.Catalog
 	if usesRecipes || len(selectedRecipes) > 0 {
 		if input.Recipes == nil {
 			return Resolved{}, compositionError(ErrorMissingRecipeCatalog, ErrMissingRecipeCatalog, "recipes", "the existing recipe catalog is required")
@@ -158,15 +172,21 @@ func Resolve(input ResolveInput) (Resolved, error) {
 				return Resolved{}, compositionError(ErrorMissingRecipe, ErrMissingRecipe, "recipe_ids", "recipe %q is not present in the catalog", id)
 			}
 		}
+		effectiveIDs := selectedRecipes
+		if usesRecipes && len(selectedRecipes) == 0 {
+			effectiveIDs = input.Recipes.IDs()
+		}
+		selected, selectErr := input.Recipes.Select(effectiveIDs)
+		if selectErr != nil {
+			return Resolved{}, compositionError(ErrorMissingRecipe, ErrMissingRecipe, "recipe_ids", "%v", selectErr)
+		}
+		effectiveRecipes = selected
 	}
 	recipeIDs := []string(nil)
 	recipeDigest := ""
-	if usesRecipes {
-		recipeIDs = input.Recipes.IDs()
-		recipeDigest = input.Recipes.Digest()
-	} else if len(selectedRecipes) > 0 {
-		recipeIDs = selectedRecipes
-		recipeDigest = input.Recipes.Digest()
+	if effectiveRecipes != nil {
+		recipeIDs = effectiveRecipes.IDs()
+		recipeDigest = effectiveRecipes.Digest()
 	}
 
 	sort.Slice(packages, func(i, j int) bool {
@@ -204,7 +224,11 @@ func Resolve(input ResolveInput) (Resolved, error) {
 		return Resolved{}, err
 	}
 	contract.ExecutionContractHash = hash
-	return Resolved{Contract: contract, ContractJSON: data, ContractHash: hash, EffectiveRegistry: effectiveRegistry}, nil
+	// The runtime registry and the frozen contract MUST expose the same recipe
+	// surface: the restricted tool registry replaces its catalog with the
+	// effective selection so executeRunRecipe can never resolve a recipe the
+	// Profile did not select.
+	return Resolved{Contract: contract, ContractJSON: data, ContractHash: hash, EffectiveRegistry: effectiveRegistry.WithRecipes(effectiveRecipes), EffectiveRecipes: effectiveRecipes}, nil
 }
 
 func packageIdentity(pkg CapabilityPackage) PackageIdentity {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/RenyEnnos/Runstead/internal/provider"
+	"github.com/RenyEnnos/Runstead/internal/recipe"
 	"github.com/RenyEnnos/Runstead/internal/tools"
 )
 
@@ -239,6 +240,192 @@ func TestResolveRecipeIdentityRequiresExistingCatalog(t *testing.T) {
 	_, err = Resolve(ResolveInput{Profile: profile, PackageRegistry: NewBuiltinRegistry(), ToolRegistry: registry})
 	if err == nil || !errors.Is(err, ErrMissingRecipeCatalog) {
 		t.Fatalf("missing catalog error = %v, want ErrMissingRecipeCatalog", err)
+	}
+}
+
+func twoRecipeCatalog(t *testing.T) *recipe.Catalog {
+	t.Helper()
+	catalog, err := recipe.NewCatalog([]recipe.Recipe{
+		{ID: "go-test", Executable: "/bin/echo", Argv: []string{"go-test"}, Capabilities: []recipe.Capability{"execute_repository_code"}},
+		{ID: "deploy", Executable: "/bin/echo", Argv: []string{"deploy"}, Capabilities: []recipe.Capability{"execute_repository_code"}},
+	})
+	if err != nil {
+		t.Fatalf("recipe.NewCatalog() error = %v", err)
+	}
+	return catalog
+}
+
+// TestResolveRecipeIDsExactAllowlistSurface proves the M10 recipe_ids blocker
+// fix (issue #54 review): a non-empty recipe_ids is an EXACT allowlist. The
+// frozen contract, the effective catalog and the runtime registry all expose
+// ONLY the selected recipe, and a recipe present in the configured catalog but
+// absent from the selection never appears in any of them.
+func TestResolveRecipeIDsExactAllowlistSurface(t *testing.T) {
+	registry, err := tools.NewRegistry(tools.Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := twoRecipeCatalog(t)
+	profile := Profile{Version: 1, ProfileID: "build", ProfileVersion: "1.0.0",
+		Packages:  []PackageRef{{ID: "process.recipes", Version: "1.0.0"}},
+		RecipeIDs: []string{"go-test"},
+	}
+	resolved, err := Resolve(ResolveInput{Profile: profile, PackageRegistry: NewBuiltinRegistry(), ToolRegistry: registry, Recipes: catalog})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Frozen contract surface: exactly the selection, with its own digest.
+	if got := resolved.Contract.RecipeCatalog.RecipeIDs; !equalStrings(got, []string{"go-test"}) {
+		t.Fatalf("contract recipe ids = %#v, want [go-test]", got)
+	}
+	effectiveOnly, err := catalog.Select([]string{"go-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Contract.RecipeCatalog.Digest != effectiveOnly.Digest() {
+		t.Fatalf("contract digest %q != effective selection digest %q", resolved.Contract.RecipeCatalog.Digest, effectiveOnly.Digest())
+	}
+	if resolved.Contract.RecipeCatalog.Digest == catalog.Digest() {
+		t.Fatal("contract digest must differ from the full configured catalog digest")
+	}
+	// Effective catalog: only the selected recipe exists.
+	if resolved.EffectiveRecipes == nil || resolved.EffectiveRecipes.Len() != 1 {
+		t.Fatalf("effective recipes = %v, want exactly go-test", resolved.EffectiveRecipes)
+	}
+	if _, ok := resolved.EffectiveRecipes.Get("go-test"); !ok {
+		t.Fatal("go-test must remain available in the effective surface")
+	}
+	if _, ok := resolved.EffectiveRecipes.Get("deploy"); ok {
+		t.Fatal("deploy must not be available in the effective surface")
+	}
+	// Runtime registry: the same surface, so executeRunRecipe cannot resolve
+	// a non-selected recipe.
+	if got := resolved.EffectiveRegistry.RecipeCatalog().IDs(); !equalStrings(got, []string{"go-test"}) {
+		t.Fatalf("registry recipe ids = %#v, want [go-test]", got)
+	}
+	if _, ok := resolved.EffectiveRegistry.Recipe("go-test"); !ok {
+		t.Fatal("registry must resolve go-test")
+	}
+	if _, ok := resolved.EffectiveRegistry.Recipe("deploy"); ok {
+		t.Fatal("registry must not resolve deploy")
+	}
+	if !resolved.EffectiveRegistry.Allows(tools.ToolRunRecipe) {
+		t.Fatal("run_recipe must be enabled by the process.recipes package")
+	}
+}
+
+// TestResolveEmptyRecipeIDsSelectsWholeCatalogDeliberately pins the documented
+// semantics: an EMPTY recipe_ids with run_recipe enabled deliberately selects
+// the whole configured catalog, and the effective digest equals the full
+// catalog digest. This behavior is intentional and regression-tested, never
+// accidental.
+func TestResolveEmptyRecipeIDsSelectsWholeCatalogDeliberately(t *testing.T) {
+	registry, err := tools.NewRegistry(tools.Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := twoRecipeCatalog(t)
+	profile := Profile{Version: 1, ProfileID: "build", ProfileVersion: "1.0.0",
+		Packages: []PackageRef{{ID: "process.recipes", Version: "1.0.0"}},
+	}
+	resolved, err := Resolve(ResolveInput{Profile: profile, PackageRegistry: NewBuiltinRegistry(), ToolRegistry: registry, Recipes: catalog})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Contract.RecipeCatalog.RecipeIDs; !equalStrings(got, catalog.IDs()) {
+		t.Fatalf("empty recipe_ids contract ids = %#v, want whole catalog %#v", got, catalog.IDs())
+	}
+	if resolved.Contract.RecipeCatalog.Digest != catalog.Digest() {
+		t.Fatalf("empty recipe_ids digest %q != configured catalog digest %q", resolved.Contract.RecipeCatalog.Digest, catalog.Digest())
+	}
+	if resolved.EffectiveRecipes == nil || resolved.EffectiveRecipes.Len() != catalog.Len() {
+		t.Fatalf("empty recipe_ids effective surface = %v, want the whole catalog", resolved.EffectiveRecipes)
+	}
+	if _, ok := resolved.EffectiveRegistry.Recipe("deploy"); !ok {
+		t.Fatal("empty recipe_ids with run_recipe enabled must keep deploy available")
+	}
+}
+
+// TestResolveRecipeSelectionDriftChangesContract proves a material change in
+// the recipe selection changes the frozen contract hash, so resume rejects it
+// as drift instead of silently widening or narrowing the surface.
+func TestResolveRecipeSelectionDriftChangesContract(t *testing.T) {
+	registry, err := tools.NewRegistry(tools.Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := twoRecipeCatalog(t)
+	base := ResolveInput{Profile: Profile{Version: 1, ProfileID: "build", ProfileVersion: "1.0.0",
+		Packages: []PackageRef{{ID: "process.recipes", Version: "1.0.0"}}},
+		PackageRegistry: NewBuiltinRegistry(), ToolRegistry: registry, Recipes: catalog}
+	onlyTest := base
+	onlyTest.Profile.RecipeIDs = []string{"go-test"}
+	onlyTestResolved, err := Resolve(onlyTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	widened := base
+	widened.Profile.RecipeIDs = []string{"go-test", "deploy"}
+	widenedResolved, err := Resolve(widened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onlyTestResolved.ContractHash == widenedResolved.ContractHash {
+		t.Fatal("widening the recipe selection must change the contract hash")
+	}
+	narrowed := base
+	narrowed.Profile.RecipeIDs = []string{"deploy"}
+	narrowedResolved, err := Resolve(narrowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onlyTestResolved.ContractHash == narrowedResolved.ContractHash {
+		t.Fatal("changing the recipe selection must change the contract hash")
+	}
+	// Recipe order is not semantic: reordering the SAME selection keeps the
+	// exact contract bytes and hash.
+	reordered := onlyTest
+	reordered.Profile.RecipeIDs = []string{"go-test", "deploy"}
+	reorderedResolved, err := Resolve(reordered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equalStrings(reorderedResolved.Contract.RecipeCatalog.RecipeIDs, []string{"deploy", "go-test"}) {
+		t.Fatalf("reordered selection ids = %#v, want sorted [deploy go-test]", reorderedResolved.Contract.RecipeCatalog.RecipeIDs)
+	}
+	if reorderedResolved.ContractHash != widenedResolved.ContractHash {
+		t.Fatal("reordering the same recipe selection must not change the contract hash")
+	}
+}
+
+// TestResolveRecipeIDSWithoutRunRecipePackageStaysInert proves recipe_ids
+// without a run_recipe tool records the effective selection but exposes no
+// recipe tool: the surface cannot execute anything.
+func TestResolveRecipeIDSWithoutRunRecipePackageStaysInert(t *testing.T) {
+	registry, err := tools.NewRegistry(tools.Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := twoRecipeCatalog(t)
+	profile := Profile{Version: 1, ProfileID: "read", ProfileVersion: "1.0.0",
+		Packages:  []PackageRef{{ID: "repo.read", Version: "1.0.0"}},
+		RecipeIDs: []string{"go-test"},
+	}
+	resolved, err := Resolve(ResolveInput{Profile: profile, PackageRegistry: NewBuiltinRegistry(), ToolRegistry: registry, Recipes: catalog})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Contract.RecipeCatalog.RecipeIDs; !equalStrings(got, []string{"go-test"}) {
+		t.Fatalf("contract recipe ids = %#v, want [go-test]", got)
+	}
+	if resolved.Contract.RecipeCatalog.Digest == "" {
+		t.Fatal("contract must carry the effective selection digest")
+	}
+	if resolved.EffectiveRegistry.Allows(tools.ToolRunRecipe) {
+		t.Fatal("without the process.recipes package no run_recipe tool may exist")
+	}
+	if resolved.EffectiveRecipes == nil || resolved.EffectiveRecipes.Len() != 1 {
+		t.Fatalf("effective recipes = %v, want inert go-test selection", resolved.EffectiveRecipes)
 	}
 }
 

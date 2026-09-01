@@ -420,6 +420,37 @@ func (c *Catalog) IDs() []string {
 	return ids
 }
 
+// Select materializes a new Catalog containing exactly the given recipe ids
+// (an effective surface). Every id must exist in the receiving catalog and
+// each id may appear at most once; a missing or duplicate id is an error so a
+// typo can never silently narrow, widen or empty the surface. Empty input
+// returns a valid empty catalog (no recipes available). The returned catalog
+// is a standalone value: its digest and IDs reflect only the selection, and
+// it never shares mutable state with the source catalog.
+func (c *Catalog) Select(ids []string) (*Catalog, error) {
+	if c == nil {
+		return nil, fmt.Errorf("recipe catalog unavailable")
+	}
+	selected := make([]Recipe, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return nil, fmt.Errorf("recipe id must not be empty")
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return nil, fmt.Errorf("duplicate recipe id %q", id)
+		}
+		recipe, ok := c.Get(id)
+		if !ok {
+			return nil, fmt.Errorf("recipe %q is not present in the catalog", id)
+		}
+		seen[id] = struct{}{}
+		selected = append(selected, recipe)
+	}
+	return NewCatalog(selected)
+}
+
 // Len returns the number of recipes.
 func (c *Catalog) Len() int {
 	if c == nil {

@@ -285,6 +285,11 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "run: %v\n", err)
 		return exitUsage
 	}
+	// The FULL operator catalog digest stays the durable snapshot identity so
+	// the legacy resume drift check (issue #26) keeps comparing like-for-like.
+	// The M10 frozen contract carries the effective recipe surface separately;
+	// below, `recipes` is replaced by the Profile-selected effective catalog.
+	recipeCatalogDigest := recipes.Digest()
 	baseRegistry, err := tools.NewRegistry(tools.Options{Workspace: cfg.Workspace, Recipes: recipes})
 	if err != nil {
 		fmt.Fprintf(errOut, "run: workspace unavailable: %v\n", err)
@@ -319,6 +324,12 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 			return exitUsage
 		}
 		effectiveRegistry = resolvedComposition.EffectiveRegistry
+		// The task's recipe surface becomes the Profile-selected effective
+		// catalog (nil when the Profile selects no recipe surface): every
+		// downstream policy/loop/Work Unit decision and the persisted recipe
+		// policy render from the SAME surface the registry and the frozen
+		// contract expose.
+		recipes = resolvedComposition.EffectiveRecipes
 		executionContractJSON = resolvedComposition.ContractJSON
 		executionContractHash = resolvedComposition.ContractHash
 	}
@@ -504,7 +515,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		Policy:                policy.NewStatic(policyConfig, storeApprovals(store)),
 		WritePolicy:           writePolicyConfig.Spec(),
 		RecipePolicy:          recipePolicyConfig.RecipeSpec(recipeIDs(recipes)),
-		RecipeCatalogDigest:   recipes.Digest(),
+		RecipeCatalogDigest:   recipeCatalogDigest,
 		Verifier:              verifier.New(effectiveRegistry, acceptance),
 		AcceptancePlanDigest:  acceptanceDigest,
 		ExecutionContractJSON: executionContractJSON,
@@ -533,7 +544,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		}
 		if err := bootstrapTaskForWorkUnits(ctx, store, taskID, taskPrompt, cfg.Workspace, model, acceptance,
 			providerIdentity, writePolicyConfig.Spec(), recipePolicyConfig.RecipeSpec(recipeIDs(recipes)),
-			recipes.Digest(), acceptanceDigest, limits, effectiveRegistry, workUnitConcurrency,
+			recipeCatalogDigest, acceptanceDigest, limits, effectiveRegistry, workUnitConcurrency,
 			state.ExecutionContractRecord{JSON: executionContractJSON, Hash: executionContractHash}); err != nil {
 			fmt.Fprintf(errOut, "run: %v\n", err)
 			return exitUnavailable
@@ -551,7 +562,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 			policy:              policy.NewStatic(policyConfig, storeApprovals(store)),
 			writePolicy:         writePolicyConfig.Spec(),
 			recipePolicy:        recipePolicyConfig.RecipeSpec(recipeIDs(recipes)),
-			recipeCatalogDigest: recipes.Digest(),
+			recipeCatalogDigest: recipeCatalogDigest,
 			limits:              limits,
 			recovery:            emptySeed,
 		}

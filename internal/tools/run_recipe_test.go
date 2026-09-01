@@ -334,3 +334,86 @@ func TestRunRecipeValidationShape(t *testing.T) {
 		}
 	}
 }
+
+// TestRunRecipeEffectiveCatalogSurfaceRejectsUnselected proves the M10
+// recipe_ids blocker fix at the execution boundary (issue #54 review): a
+// registry whose catalog was replaced by the Profile-selected effective
+// surface rejects a recipe present in the ORIGINAL configured catalog but
+// absent from the selection, with unknown_recipe, before any process starts.
+func TestRunRecipeEffectiveCatalogSurfaceRejectsUnselected(t *testing.T) {
+	workspace := t.TempDir()
+	fake := &fakeRecipeRunner{result: recipe.Result{Started: true, ExitCode: 0}}
+	full := testCatalog(t,
+		recipe.Recipe{ID: "go-test", Executable: "go", Argv: []string{"test", "./..."}, Capabilities: []recipe.Capability{recipe.CapabilityExecuteRepoCode}},
+		recipe.Recipe{ID: "deploy", Executable: "sh", Argv: []string{"deploy.sh"}, Capabilities: []recipe.Capability{recipe.CapabilityExecuteRepoCode}},
+	)
+	effective, err := full.Select([]string{"go-test"})
+	if err != nil {
+		t.Fatalf("full.Select() error = %v", err)
+	}
+	base, err := tools.NewRegistry(tools.Options{Workspace: workspace, Recipes: full, RunRecipe: fake.run})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	registry := base.WithRecipes(effective)
+
+	// The unselected recipe exists in the configured catalog but must fail
+	// exactly like an unknown recipe in the effective surface.
+	observation := registry.Execute(context.Background(), recipeAction("deploy"))
+	if observation.Success {
+		t.Fatal("deploy must fail on the effective surface")
+	}
+	if observation.Failure == nil || observation.Failure.Code != tools.FailureUnknownRecipe {
+		t.Fatalf("deploy failure = %+v, want unknown_recipe", observation.Failure)
+	}
+	if fake.invoked {
+		t.Fatal("deploy must never start a process")
+	}
+	// The selected recipe stays available and executes normally.
+	observation = registry.Execute(context.Background(), recipeAction("go-test"))
+	if !observation.Success {
+		t.Fatalf("go-test failed on the effective surface: %+v", observation.Failure)
+	}
+	if !fake.invoked || fake.recipe.ID != "go-test" {
+		t.Fatalf("runner must have executed go-test, got %+v", fake.recipe)
+	}
+}
+
+// TestRunRecipeRestrictedUnitViewKeepsEffectiveSurface proves Work Unit
+// containment (issue #54 review requirement): a Restricted view derived from
+// the effective registry inherits ONLY the Profile-selected recipe surface.
+// A unit can never regain a recipe the parent task surface does not own.
+func TestRunRecipeRestrictedUnitViewKeepsEffectiveSurface(t *testing.T) {
+	workspace := t.TempDir()
+	fake := &fakeRecipeRunner{result: recipe.Result{Started: true, ExitCode: 0}}
+	full := testCatalog(t,
+		recipe.Recipe{ID: "go-test", Executable: "go", Argv: []string{"test", "./..."}, Capabilities: []recipe.Capability{recipe.CapabilityExecuteRepoCode}},
+		recipe.Recipe{ID: "deploy", Executable: "sh", Argv: []string{"deploy.sh"}, Capabilities: []recipe.Capability{recipe.CapabilityExecuteRepoCode}},
+	)
+	effective, err := full.Select([]string{"go-test"})
+	if err != nil {
+		t.Fatalf("full.Select() error = %v", err)
+	}
+	base, err := tools.NewRegistry(tools.Options{Workspace: workspace, Recipes: full, RunRecipe: fake.run})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	unitRegistry, err := base.WithRecipes(effective).Restricted([]string{tools.ToolRunRecipe}, "")
+	if err != nil {
+		t.Fatalf("Restricted() error = %v", err)
+	}
+	observation := unitRegistry.Execute(context.Background(), recipeAction("deploy"))
+	if observation.Success {
+		t.Fatal("a Work Unit view must not resolve a recipe outside the parent surface")
+	}
+	if observation.Failure == nil || observation.Failure.Code != tools.FailureUnknownRecipe {
+		t.Fatalf("unit deploy failure = %+v, want unknown_recipe", observation.Failure)
+	}
+	if fake.invoked {
+		t.Fatal("the unselected recipe must never start through a Work Unit view")
+	}
+	observation = unitRegistry.Execute(context.Background(), recipeAction("go-test"))
+	if !observation.Success {
+		t.Fatalf("go-test failed through the unit view: %+v", observation.Failure)
+	}
+}

@@ -19,3 +19,27 @@
 
 - PR: https://github.com/Anakyklos/Runstead/pull/114 (head `6286f81`, base `main`)
 - Full validation: gofmt, `go test ./...`, `go vet ./...`, build, `go test -race ./...` (zero races), `experiments/protocol/test.sh`, `git diff --check`, and all `tools/quality` gates (growth, errcheck, live-convention) green.
+
+## Maintainer review fix (PR #114 review, issue #54)
+
+**Blocker:** `Profile.recipe_ids` was validated but did not bound the effective
+recipe surface: `run_recipe` could still execute any recipe of the configured
+catalog.
+
+**Fix:** the resolver now materializes one effective `recipe.Catalog`
+(`Catalog.Select`) containing exactly the selected recipes (empty
+`recipe_ids` + `process.recipes` = whole catalog, deliberate and tested). The
+effective catalog is the ONLY surface for the task registry
+(`Registry.WithRecipes`), the persisted recipe policy, the frozen contract
+(ids + digest over the selection) and every Work Unit view. Non-selected
+recipes fail as `unknown_recipe` before any process start.
+
+**Regression tests:**
+- `TestResolveRecipeIDsExactAllowlistSurface` (contract/effective/runtime agree; deploy absent)
+- `TestResolveEmptyRecipeIDsSelectsWholeCatalogDeliberately`
+- `TestResolveRecipeSelectionDriftChangesContract` (selection change = drift; order-neutral)
+- `TestResolveRecipeIDSWithoutRunRecipePackageStaysInert`
+- `TestRunRecipeEffectiveCatalogSurfaceRejectsUnselected` (execution boundary, no process)
+- `TestRunRecipeRestrictedUnitViewKeepsEffectiveSurface` (Work Unit containment)
+- `TestProfileRecipeSurfaceExactAllowlistE2E` (real agent loop: deploy rejected, go-test executes, inspect/contract surface)
+- `TestProfileRecipeSurfaceApprovalResumeDriftE2E` (policy pause, resume preserves surface/hash, selection drift fails closed)

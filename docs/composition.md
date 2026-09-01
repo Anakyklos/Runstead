@@ -65,6 +65,37 @@ identity, sanitized `provider.Identity`, runtime/protocol identity and fixed
 trusted-kernel identity markers. The contract hash is SHA-256 over canonical
 JSON that excludes the hash itself.
 
+## `recipe_ids` semantics
+
+`recipe_ids` is an EXACT allowlist of the recipes available to the composed
+task:
+
+- A non-empty `recipe_ids` restricts the effective recipe surface to exactly
+  those ids. A recipe configured in the operator's catalog but absent from the
+  selection does not belong to the task surface: the model can propose it, but
+  it is rejected with `unknown_recipe` before any process starts, exactly like
+  a recipe that never existed.
+- Every listed id must exist in the configured catalog; an unknown id fails
+  before task bootstrap.
+- An EMPTY `recipe_ids` with the `process.recipes` package enabled
+  deliberately selects the WHOLE configured catalog. This is intentional and
+  regression-tested, so an operator who wants every configured recipe simply
+  omits the field.
+- `recipe_ids` without a `process.recipes` package records the selection in the
+  contract but exposes no `run_recipe` tool, so nothing can execute.
+
+The resolver materializes one effective `recipe.Catalog` containing exactly the
+selected recipes. That single catalog is the ONLY recipe surface the runtime
+sees: the task registry, the recipe policy the task persists, the frozen
+contract's recipe catalog identity (ids + digest over the selection), resume,
+and every Work Unit derived from the task all reference the same effective
+catalog. A recipe outside the selection can never reappear through the
+original catalog: `executeRunRecipe` resolves against the effective catalog
+only, and Work Unit restricted views inherit it. Selecting `process.recipes`
+never authorizes a recipe: every `run_recipe` proposal still goes through the
+existing policy/approval boundary and the recipe policy renders only the
+effective surface.
+
 ## Persistence and resume
 
 The contract JSON and its hash are stored together in dedicated task columns by
