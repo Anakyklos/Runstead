@@ -356,13 +356,15 @@ type RecoverySnapshot struct {
 
 // RecoveryTask is the durable task root used by the recovery pipeline.
 type RecoveryTask struct {
-	TaskID      string
-	Objective   string
-	Status      string
-	Workspace   string
-	Model       string
-	ConfigJSON  string
-	ResumeCount int
+	TaskID                string
+	Objective             string
+	Status                string
+	Workspace             string
+	Model                 string
+	ConfigJSON            string
+	ResumeCount           int
+	ExecutionContractJSON string
+	ExecutionContractHash string
 }
 
 // RecoveryAction is one logical action with its repeat/loop evidence.
@@ -542,14 +544,18 @@ func (s *Store) loadRecoveryWorkUnits(ctx context.Context, taskID string) ([]Rec
 func (s *Store) loadRecoveryTask(ctx context.Context, taskID string) (RecoveryTask, error) {
 	var task RecoveryTask
 	err := s.db.QueryRowContext(ctx,
-		`SELECT task_id, objective, status, workspace, model, config_json, resume_count
+		`SELECT task_id, objective, status, workspace, model, config_json, resume_count, execution_contract_json, execution_contract_hash
 		 FROM tasks WHERE task_id = ?`, taskID).Scan(
-		&task.TaskID, &task.Objective, &task.Status, &task.Workspace, &task.Model, &task.ConfigJSON, &task.ResumeCount)
+		&task.TaskID, &task.Objective, &task.Status, &task.Workspace, &task.Model, &task.ConfigJSON, &task.ResumeCount,
+		&task.ExecutionContractJSON, &task.ExecutionContractHash)
 	if err == sql.ErrNoRows {
 		return RecoveryTask{}, ErrTaskNotFound
 	}
 	if err != nil {
 		return RecoveryTask{}, fmt.Errorf("load recovery task: %w", err)
+	}
+	if err := validateExecutionContractPair(task.ExecutionContractJSON, task.ExecutionContractHash); err != nil {
+		return RecoveryTask{}, err
 	}
 	return task, nil
 }

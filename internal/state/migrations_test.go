@@ -406,10 +406,10 @@ func TestMigrationsUpgradeEmbeddedV8ToCurrentWithBaselineData(t *testing.T) {
 }
 
 // TestMigrationsOperationalProfilesTableAdditiveAndPreserving covers the
-// #91 migration: a fresh database carries the operational profiles table,
-// an existing database (schema version 12, #14) upgrades additively without
-// losing prior state, and legacy scripted/OmniRoute rows (empty identity
-// columns) stay untouched.
+// #91 migration plus later additive task migrations: a fresh database carries
+// the operational profiles table and frozen execution contract columns, an
+// existing database upgrades without losing prior state, and legacy
+// scripted/OmniRoute rows (empty identity columns) stay untouched.
 func TestMigrationsOperationalProfilesTableAdditiveAndPreserving(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
@@ -423,8 +423,8 @@ func TestMigrationsOperationalProfilesTableAdditiveAndPreserving(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 14 {
-		t.Fatalf("schema version = %d, want 14", version)
+	if version != 15 {
+		t.Fatalf("schema version = %d, want 15", version)
 	}
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM provider_operational_profiles`).Scan(&count); err != nil {
@@ -435,8 +435,8 @@ func TestMigrationsOperationalProfilesTableAdditiveAndPreserving(t *testing.T) {
 		t.Fatalf("re-run migration error = %v", err)
 	}
 	version, _ = schemaVersion(db)
-	if version != 14 {
-		t.Fatalf("schema version after re-run = %d, want 14", version)
+	if version != 15 {
+		t.Fatalf("schema version after re-run = %d, want 15", version)
 	}
 	// The historical provider identity columns still exist and accept the
 	// #14 projection shape (additive migration, no historical table altered).

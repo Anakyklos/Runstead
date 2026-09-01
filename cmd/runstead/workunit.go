@@ -99,20 +99,28 @@ func registryToolIDs(registry *tools.Registry) []string {
 // exact model, policies, recipe catalog digest, acceptance digest, limits)
 // PLUS the effective Work Unit scheduler bound (issue #109) as a durable,
 // inspectable, resume-safe configuration.
-func bootstrapTaskForWorkUnits(ctx context.Context, store *state.Store, taskID, objective, workspace, model string, plan *verifier.Plan, identity provider.Identity, writePolicy, recipePolicy, recipeCatalogDigest, acceptanceDigest string, limits agent.Limits, registry *tools.Registry, workUnitConcurrency int) error {
+func bootstrapTaskForWorkUnits(ctx context.Context, store *state.Store, taskID, objective, workspace, model string, plan *verifier.Plan, identity provider.Identity, writePolicy, recipePolicy, recipeCatalogDigest, acceptanceDigest string, limits agent.Limits, registry *tools.Registry, workUnitConcurrency int, frozen ...state.ExecutionContractRecord) error {
 	snapshot := agent.ConfigSnapshot(registry, model, identity, writePolicy, recipePolicy, recipeCatalogDigest, acceptanceDigest, limits)
 	merged, err := withWorkUnitConcurrency(snapshot, workUnitConcurrency)
 	if err != nil {
 		return err
 	}
 	snapshot = merged
-	return agent.BootstrapTask(ctx, store, state.TaskRecord{
+	record := state.TaskRecord{
 		TaskID:     taskID,
 		Objective:  objective,
 		Workspace:  workspace,
 		Model:      model,
 		ConfigJSON: snapshot,
-	}, plan, registry)
+	}
+	if len(frozen) > 1 {
+		return fmt.Errorf("work unit bootstrap received more than one execution contract")
+	}
+	if len(frozen) == 1 {
+		record.ExecutionContractJSON = append([]byte(nil), frozen[0].JSON...)
+		record.ExecutionContractHash = frozen[0].Hash
+	}
+	return agent.BootstrapTask(ctx, store, record, plan, registry)
 }
 
 // withWorkUnitConcurrency merges the effective scheduler bound into the

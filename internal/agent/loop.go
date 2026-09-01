@@ -130,8 +130,10 @@ type Loop struct {
 	verifier *verifier.Verifier
 	// acceptancePlanDigest is the digest of the operator acceptance plan,
 	// persisted with the task configuration so resume rejects plan drift.
-	acceptancePlanDigest string
-	recovery             *RecoverySeed
+	acceptancePlanDigest  string
+	executionContractJSON []byte
+	executionContractHash string
+	recovery              *RecoverySeed
 }
 
 // Config wires one loop instance at the composition root.
@@ -146,7 +148,8 @@ type Config struct {
 	// (#14). It is persisted with the task configuration snapshot and exposed
 	// in durable evidence; the loop never branches on it and still depends
 	// exclusively on provider.Client through the governor-owned executor. The
-	// zero value renders no provider identity (scripted/OmniRoute lanes).
+	// zero value renders no provider identity (scripted lane). OmniRoute is a
+	// configured adapter and supplies its own sanitized identity.
 	ProviderIdentity provider.Identity
 	// State is the optional semantic persistence boundary. A nil value
 	// disables persistence (the M1 in-memory behavior).
@@ -182,6 +185,11 @@ type Config struct {
 	// AcceptancePlanDigest is the digest of the operator acceptance plan,
 	// persisted with the task configuration so resume rejects plan drift.
 	AcceptancePlanDigest string
+	// ExecutionContractJSON and ExecutionContractHash are the optional M10
+	// composition material frozen before the first model attempt. Empty values
+	// preserve the legacy path for tasks without a Profile.
+	ExecutionContractJSON []byte
+	ExecutionContractHash string
 	// Recovery is the optional reconstructed state of an interrupted task
 	// (issue #9). A nil value starts a fresh run; a non-nil value resumes the
 	// same durable task from persisted state without replaying historical
@@ -238,22 +246,24 @@ func NewLoop(config Config) (*Loop, error) {
 		verification = verifier.New(config.Registry, nil)
 	}
 	return &Loop{
-		runner:               config.Runner,
-		registry:             config.Registry,
-		contract:             contract,
-		limits:               limits,
-		clock:                clock,
-		trace:                traceSink,
-		model:                strings.TrimSpace(config.Model),
-		providerIdentity:     config.ProviderIdentity,
-		state:                config.State,
-		policy:               config.Policy,
-		writePolicy:          strings.TrimSpace(config.WritePolicy),
-		recipePolicy:         strings.TrimSpace(config.RecipePolicy),
-		recipeCatalogDigest:  strings.TrimSpace(config.RecipeCatalogDigest),
-		verifier:             verification,
-		acceptancePlanDigest: strings.TrimSpace(config.AcceptancePlanDigest),
-		recovery:             config.Recovery,
+		runner:                config.Runner,
+		registry:              config.Registry,
+		contract:              contract,
+		limits:                limits,
+		clock:                 clock,
+		trace:                 traceSink,
+		model:                 strings.TrimSpace(config.Model),
+		providerIdentity:      config.ProviderIdentity,
+		state:                 config.State,
+		policy:                config.Policy,
+		writePolicy:           strings.TrimSpace(config.WritePolicy),
+		recipePolicy:          strings.TrimSpace(config.RecipePolicy),
+		recipeCatalogDigest:   strings.TrimSpace(config.RecipeCatalogDigest),
+		verifier:              verification,
+		acceptancePlanDigest:  strings.TrimSpace(config.AcceptancePlanDigest),
+		executionContractJSON: append([]byte(nil), config.ExecutionContractJSON...),
+		executionContractHash: strings.TrimSpace(config.ExecutionContractHash),
+		recovery:              config.Recovery,
 	}, nil
 }
 
@@ -292,11 +302,13 @@ func (l *Loop) Run(ctx context.Context, task Task) Result {
 	// pipeline reconciled its interrupted attempts.
 	if l.state != nil && l.recovery == nil {
 		if err := BootstrapTask(context.Background(), l.state, state.TaskRecord{
-			TaskID:     task.ID,
-			Objective:  task.Prompt,
-			Workspace:  l.registry.Workspace(),
-			Model:      l.model,
-			ConfigJSON: l.configSnapshot(),
+			TaskID:                task.ID,
+			Objective:             task.Prompt,
+			Workspace:             l.registry.Workspace(),
+			Model:                 l.model,
+			ConfigJSON:            l.configSnapshot(),
+			ExecutionContractJSON: l.executionContractJSON,
+			ExecutionContractHash: l.executionContractHash,
 		}, l.verifier.Plan(), l.registry); err != nil {
 			return persistenceFailure(err)
 		}

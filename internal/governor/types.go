@@ -111,7 +111,8 @@ type Config struct {
 	// ProtocolFamily is the sanitized compatibility family of the configured
 	// provider endpoint (#14). It is provider-neutral execution identity used
 	// only for persistence/evidence; the governor never branches on it. Empty
-	// means the legacy scripted/OmniRoute lanes, which stay unchanged.
+	// means the legacy scripted lane. OmniRoute supplies a sanitized adapter
+	// identity while retaining its existing receipt-aware route behavior.
 	ProtocolFamily provider.ProtocolFamily
 	// ConfigIdentity is the deterministic sanitized configuration identity
 	// (provider.Config.Sanitized, #79). It is never option values and never

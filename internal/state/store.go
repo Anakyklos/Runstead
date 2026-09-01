@@ -351,6 +351,12 @@ type TaskRecord struct {
 	// ConfigJSON is a sanitized JSON snapshot of the meaningful execution
 	// configuration, excluding secrets.
 	ConfigJSON []byte
+	// ExecutionContractJSON and ExecutionContractHash are the exact canonical,
+	// non-secret M10 composition material and its SHA-256. Both are empty for
+	// legacy tasks; otherwise state validates and persists them atomically with
+	// the task root.
+	ExecutionContractJSON []byte
+	ExecutionContractHash string
 }
 
 // TaskFinalize is the terminal loop outcome of one task.

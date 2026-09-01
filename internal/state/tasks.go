@@ -30,6 +30,9 @@ func terminalStatus(outcome string) string {
 // CreateTask persists a new task in status 'planned' with its task_created
 // event in one transaction.
 func (s *Store) CreateTask(ctx context.Context, task TaskRecord) error {
+	if err := validateExecutionContractPair(string(task.ExecutionContractJSON), task.ExecutionContractHash); err != nil {
+		return fmt.Errorf("validate execution contract: %w", err)
+	}
 	createdAt := s.now()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -37,10 +40,10 @@ func (s *Store) CreateTask(ctx context.Context, task TaskRecord) error {
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO tasks (task_id, objective, status, workspace, model, config_json, created_at, started_at)
-		 VALUES (?, ?, 'planned', ?, ?, ?, ?, ?)`,
+		`INSERT INTO tasks (task_id, objective, status, workspace, model, config_json, execution_contract_json, execution_contract_hash, created_at, started_at)
+		 VALUES (?, ?, 'planned', ?, ?, ?, ?, ?, ?, ?)`,
 		task.TaskID, Redact(task.Objective), Redact(task.Workspace), Redact(task.Model),
-		string(RedactJSON(task.ConfigJSON)), createdAt, createdAt); err != nil {
+		string(RedactJSON(task.ConfigJSON)), string(task.ExecutionContractJSON), task.ExecutionContractHash, createdAt, createdAt); err != nil {
 		return fmt.Errorf("insert task: %w", err)
 	}
 	if err := appendEvent(ctx, tx, task.TaskID, "task_created", map[string]any{

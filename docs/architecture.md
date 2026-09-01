@@ -75,12 +75,54 @@ credentials across the boundary (see
 
 Concrete HTTP adapters for each family are separate issues. The OpenAI-compatible adapter (#87) is implemented in `internal/provider/openaicompat`, the Anthropic-compatible adapter (#88) in `internal/provider/anthropiccompat` and the Google/Gemini-compatible adapter (#89) in `internal/provider/googlecompat`: standard-library HTTP only, the minimal family wire subset (exact configured model, rendered prompt as a single user message, streaming disabled), fail-closed response parsing, no redirect following, no retries, authentication resolved at dispatch time through a non-persisted secret resolver seam, and delivery evidence derived from observable transport facts (`httptrace`) rather than absence of error. The anthropiccompat adapter transports the Messages-style generation limit and versioned header semantics through the validated non-secret protocol options propagated by `provider.Resolved` (#88 extension to #79); the googlecompat adapter carries the exact model through the URL resource path (`models/{model}:generateContent`) and keeps an EMPTY protocol-option vocabulary, because the minimal generateContent wire needs nothing beyond `provider.Request`. The existing OmniRoute adapter remains a fail-closed scaffold behind its own pinned receipt lane until a compatible producer exists; it holds no special architectural status beyond being the first historical adapter.
 
+## Composition layer (M10, issue #54)
+
+`internal/composition` is an optional, metadata-only layer above the existing
+execution spine. It makes the runtime operator-composable without making the
+trusted kernel replaceable:
+
+```text
+operator Profile JSON
+        ↓ strict parser
+built-in CapabilityPackage registry
+        ↓ deterministic resolver
+effective existing tool registry + frozen execution contract
+        ↓
+normal protocol → policy → durable effect → evidence → verifier path
+```
+
+The declarative `Profile` selects exact versions of compiled-in
+`CapabilityPackage` metadata and may identify one configured provider and
+recipe requirements. The initial built-ins only reference existing seams:
+`repo.read`, `repo.write` and `process.recipes`. Packages contain no callbacks,
+commands, credentials or approval/verifier/governor replacement hooks. A write
+package describes the existing write boundary; it never grants approval.
+
+The resolver validates strict JSON, package versions, dependencies/conflicts,
+runtime compatibility, existing tool names and recipe identities. It sorts all
+order-insensitive material, canonicalizes the effective contract and computes a
+SHA-256 over non-secret material. `run --profile FILE` persists the exact
+contract with the task before the first model/provider attempt. `inspect`
+renders only stable sanitized identities. A resumed M10 task requires the
+original Profile and an exact byte/hash match before recovery starts; profile,
+package, provider, recipe or tool-schema drift is rejected rather than
+silently migrated.
+
+The composition layer cannot replace the governor, policy/approval boundary,
+durable task/effect truth, evidence provenance, recovery, or completion
+verifier. Work Units are contained by the frozen effective tool set and still
+use the existing scheduler and agent loop. There is no Go plugin, dynamic code
+loading, second execution engine or model authority in this layer. See
+[`composition.md`](composition.md) for the operator contract and drift rules.
+
 ## Architectural style
 
 Runstead starts as a **modular monolith** distributed as one CLI executable.
 
 ```text
 cmd/runstead
+    ↓
+optional composition/profile layer
     ↓
 agent loop
     ├── protocol

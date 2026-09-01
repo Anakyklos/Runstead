@@ -181,3 +181,96 @@ func TestRunLiveOmniRoutePinnedLaneReachesProviderExactlyOnce(t *testing.T) {
 		t.Fatalf("run diagnostic = %q, want final_not_grounded", errOut.String())
 	}
 }
+
+func TestProfileOmniRouteCrashResumeReusesFrozenProviderIdentity(t *testing.T) {
+	workspace := t.TempDir()
+	profile := writeCompositionProfile(t, `{"version":1,"profile_id":"omni-audit","profile_version":"1.0.0","packages":[{"id":"repo.read","version":"1.0.0"}]}`)
+	final := `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`
+	chatBody := fmt.Sprintf(`{"choices":[{"message":{"content":%q}}]}`, final)
+	fake := newFakeOmniRouteServer(t, http.StatusOK, chatBody)
+	defer fake.server.Close()
+
+	stateDir := t.TempDir()
+	omniArgs := []string{
+		"--omniroute-base-url", fake.server.URL + "/v1",
+		"--omniroute-api-key", "fixture-api-key",
+		"--omniroute-model", "chatgpt-web/model",
+		"--omniroute-connection-id", "conn-test-123",
+	}
+	runArgs := append([]string{
+		"run", "--task", "inspect the workspace", "--workspace", workspace,
+		"--profile", profile, "--state-dir", stateDir,
+		"--min-start-interval", "1ms", "--log-level", "error",
+	}, omniArgs...)
+	code, output := runCrashedRun(t, runArgs, "provider_tx1_after")
+	if code != 42 {
+		t.Fatalf("crashed OmniRoute run exit = %d, want 42\n%s", code, output)
+	}
+	taskID := taskIDFromOutput(t, output)
+	if got := fake.chatPosts.Load(); got != 0 {
+		t.Fatalf("chat POSTs before resume = %d, want 0 after TX1 crash", got)
+	}
+	rendered := inspectRendered(t, stateDir, taskID)
+	for _, want := range []string{
+		"profile: omni-audit@1.0.0",
+		"provider: omniroute family=openai_compatible model=chatgpt-web/model",
+		"status=prepared",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("inspect missing %q after OmniRoute crash:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "fixture-api-key") || strings.Contains(rendered, "conn-test-123") {
+		t.Fatalf("inspect leaked OmniRoute credential or connection pin:\n%s", rendered)
+	}
+
+	var missingOut, missingErr strings.Builder
+	missingCode := run(context.Background(), []string{
+		"resume", taskID, "--state-dir", stateDir, "--profile", profile, "--log-level", "error",
+	}, &missingOut, &missingErr)
+	if missingCode != exitUnavailable || !strings.Contains(missingErr.String(), "original OmniRoute configuration") {
+		t.Fatalf("resume without OmniRoute inputs = %d, want unavailable with explicit configuration error\nstderr:\n%s", missingCode, missingErr.String())
+	}
+	if got := fake.chatPosts.Load(); got != 0 {
+		t.Fatalf("chat POSTs after rejected resume = %d, want 0", got)
+	}
+	driftOmniArgs := append([]string(nil), omniArgs...)
+	for index := range driftOmniArgs {
+		if driftOmniArgs[index] == "--omniroute-model" && index+1 < len(driftOmniArgs) {
+			driftOmniArgs[index+1] = "chatgpt-web/other-model"
+		}
+	}
+	var driftOut, driftErr strings.Builder
+	driftCode := run(context.Background(), append([]string{
+		"resume", taskID, "--state-dir", stateDir, "--profile", profile, "--log-level", "error",
+	}, driftOmniArgs...), &driftOut, &driftErr)
+	if driftCode != exitUnavailable || !strings.Contains(driftErr.String(), "OmniRoute configuration divergence") {
+		t.Fatalf("resume with drifted OmniRoute model = %d, want unavailable with explicit divergence\nstderr:\n%s", driftCode, driftErr.String())
+	}
+	if got := fake.chatPosts.Load(); got != 0 {
+		t.Fatalf("chat POSTs after drifted resume = %d, want 0", got)
+	}
+
+	resumeArgs := append([]string{
+		"resume", taskID, "--state-dir", stateDir, "--profile", profile,
+		"--log-level", "error",
+	}, omniArgs...)
+	var resumeOut, resumeErr strings.Builder
+	resumeCode := run(context.Background(), resumeArgs, &resumeOut, &resumeErr)
+	if resumeCode != exitGovernorBlocked {
+		t.Fatalf("OmniRoute resume exit = %d, want %d (conservative recovery block)\nstderr:\n%s\nstdout:\n%s", resumeCode, exitGovernorBlocked, resumeErr.String(), resumeOut.String())
+	}
+	if !strings.Contains(resumeErr.String(), "conservative accounting is unsafe") {
+		t.Fatalf("OmniRoute resume must explain the conservative recovery block:\n%s", resumeErr.String())
+	}
+	if got := fake.chatPosts.Load(); got != 0 {
+		t.Fatalf("chat POSTs across crash/rejected resume = %d, want 0 because uncertain receipt-aware work is never retried", got)
+	}
+	after := inspectRendered(t, stateDir, taskID)
+	if !strings.Contains(after, "provider: omniroute family=openai_compatible model=chatgpt-web/model") {
+		t.Fatalf("resume lost frozen OmniRoute provider identity:\n%s", after)
+	}
+	if !strings.Contains(after, "status=reconciled") || !strings.Contains(after, "recovery_blocked") {
+		t.Fatalf("resume must reconcile the prepared attempt and preserve the recovery block:\n%s", after)
+	}
+}
