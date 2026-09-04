@@ -51,6 +51,8 @@ terminal_outcome=corrections_exhausted
 terminal_reason=protocol correction exhausted: invalid_action_schema
 smoke_exit=21
 attempt_count=3
+governor_admission=admitted
+debit_accounting=each_recorded_attempt_debited_once
 attempt=exec-000001 request=cli-1788485778603185383-0001 status=completed delivery_state=completed outcome=success upstream_reached=true debited=1
 attempt=exec-000002 request=cli-1788485778603185383-0002 status=completed delivery_state=completed outcome=success upstream_reached=true debited=1
 attempt=exec-000003 request=cli-1788485778603185383-0003 status=completed delivery_state=completed outcome=success upstream_reached=true debited=1
@@ -72,6 +74,8 @@ terminal_outcome=provider_failure
 terminal_reason=provider failure: timeout
 smoke_exit=28
 attempt_count=3
+governor_admission=admitted
+debit_accounting=each_recorded_attempt_debited_once
 attempt=exec-000001 request=cli-1788485863975384146-0001 status=completed delivery_state=completed outcome=success upstream_reached=true debited=1
 attempt=exec-000002 request=cli-1788485863975384146-0002 status=completed delivery_state=completed outcome=success upstream_reached=true debited=1
 attempt=exec-000003 request=cli-1788485863975384146-0003 status=failed delivery_state=sent_confirmed outcome=timeout upstream_reached=true debited=1
@@ -93,6 +97,8 @@ terminal_outcome=provider_failure
 terminal_reason=provider failure: upstream_server_failure
 smoke_exit=28
 attempt_count=3
+governor_admission=admitted
+debit_accounting=each_recorded_attempt_debited_once
 attempt=exec-000001 request=cli-1788486003254888595-0001 status=completed delivery_state=completed outcome=success upstream_reached=true debited=1
 attempt=exec-000002 request=cli-1788486003254888595-0002 status=completed delivery_state=completed outcome=success upstream_reached=true debited=1
 attempt=exec-000003 request=cli-1788486003254888595-0003 status=failed delivery_state=completed outcome=upstream_server_failure upstream_reached=true debited=1
@@ -114,6 +120,8 @@ terminal_outcome=corrections_exhausted
 terminal_reason=protocol correction exhausted: malformed_json
 smoke_exit=21
 attempt_count=3
+governor_admission=admitted
+debit_accounting=each_recorded_attempt_debited_once
 attempt=exec-000001 request=cli-1788486085626063924-0001 status=completed delivery_state=completed outcome=success upstream_reached=true debited=1
 attempt=exec-000002 request=cli-1788486085626063924-0002 status=completed delivery_state=completed outcome=success upstream_reached=true debited=1
 attempt=exec-000003 request=cli-1788486085626063924-0003 status=completed delivery_state=completed outcome=success upstream_reached=true debited=1
