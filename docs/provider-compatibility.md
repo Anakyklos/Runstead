@@ -41,12 +41,15 @@ document separates, explicitly and honestly:
 | Full inspect-edit-test-fix E2E (real runtime, real git, real recipes) | proven | proven | proven |
 | Crash/interruption + resume through the same provider | proven | proven | proven |
 | Wire details never become task truth | proven | proven | proven |
-| Live operational proof (real endpoint + real credentials) | **operationally unproven** | **operationally unproven** | **operationally unproven** |
+| Live operational proof (real endpoint + real credentials) | **proven for one exact Apinex endpoint/model (#129)** | **operationally unproven** | **operationally unproven** |
 
-**Live status:** no family has been exercised against a real configured
-endpoint in the environment where this gate was run, because no operator
-credentials/endpoint access were available. All three families are therefore
-reported **operationally unproven**. Mocks and `httptest` are deterministic
+**Live status:** Issue #129 provides positive operational evidence only for
+the exact configured Apinex endpoint `https://api.apinex.bond/v1`, using the
+`openai_compatible` path and model `free/deepseek-v4-flash-0731`. The
+authenticated preflight, protocol task, coding task and interruption/resume
+task reached independent verification with the existing adapter. This does
+not assert compatibility for other Apinex endpoints, models, the full Apinex
+API surface or other protocol families. Mocks and `httptest` are deterministic
 contract proof, not live operational proof. See
 [Live opt-in smoke](#live-opt-in-smoke-procedure).
 
