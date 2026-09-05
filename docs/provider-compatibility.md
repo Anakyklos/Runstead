@@ -309,9 +309,14 @@ rotation, fallback, rate-limit workarounds, or inventing success when a
 credential does not exist. A family that cannot be exercised is reported as
 **operationally unproven**; mocks are not live proof.
 
-In the environment where this gate was executed, no family could be
-exercised live (no endpoint credentials available). All three families are
-therefore recorded as operationally unproven.
+Issue #129 provides positive operational evidence for one exact configured
+endpoint only: `https://api.apinex.bond/v1` through the `openai_compatible`
+path with model `free/deepseek-v4-flash-0731`. The authenticated preflight,
+protocol task, coding task and interruption/resume task all reached
+independent verification with the existing adapter and unchanged safety
+invariants. This does not assert compatibility for other Apinex endpoints,
+other Apinex models, the full Apinex API surface, or any other protocol family.
+Other endpoint/model combinations remain operationally unproven.
 
 ## Unsupported / not asserted
 
