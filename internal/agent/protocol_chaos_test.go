@@ -263,6 +263,25 @@ func TestProtocolChaosRepeatedActionRejectedProjection(t *testing.T) {
 	}
 }
 
+func TestProtocolCorrectionsRemainGovernorAccounted(t *testing.T) {
+	workspace := t.TempDir()
+	writeFixture(t, workspace, "a.txt", "alpha\n")
+	malformed := `<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":}}`
+	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
+		rawResponses(providerResponse{text: malformed}, providerResponse{text: malformed}, providerResponse{text: malformed})...,
+	)
+	result := h.loop(t, agent.Limits{MaxCorrections: 2}).Run(context.Background(), testTask("task-correction-accounting"))
+	if result.Outcome != agent.OutcomeCorrectionsExhausted {
+		t.Fatalf("outcome = %q, want corrections_exhausted", result.Outcome)
+	}
+	if got := h.provider.Attempts(); got != 3 {
+		t.Fatalf("provider attempts = %d, want exactly three governed turns", got)
+	}
+	if got := h.governor.Snapshot().Budgets.Rolling3hUsed; got != 3 {
+		t.Fatalf("governor debits = %d, want one debit per provider turn", got)
+	}
+}
+
 // rawResponses converts raw response text into provider.Response values.
 type providerResponse struct {
 	text string
