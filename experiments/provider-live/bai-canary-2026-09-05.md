@@ -240,3 +240,95 @@ B.AI provider/model/configuration exercised through Stage 3 inspect/write/
 recipe/independent verification and Stage 4 same-config resume without replay.
 Because the required external `BAI_API_KEY` reference was absent, this
 execution produced no live task or positive compatibility claim.
+
+## Current live completion attempt: 2026-09-05T15:40:22Z–2026-09-05T15:46:58Z
+
+This section records the live completion attempt performed after the operator
+made the transient `BAI_API_KEY` reference available to the process. The value
+itself is not recorded. The Runstead commit tested was `265b923`.
+
+### Model discovery and frozen configuration
+
+- Exactly one authenticated `GET https://api.b.ai/v1/models` request was made
+  in this execution. It returned HTTP 200 with 48 model IDs, including
+  `qwen3.8-flash`.
+- No model sweep, fallback, rotation or second model was used.
+- Both coding tasks used the same provider ID
+  `bai-canary-openaiprotocol`, protocol family `openai_compatible`, endpoint
+  `https://api.b.ai/v1`, model `qwen3.8-flash`, adapter
+  `compatible-provider-v0.1`, auth reference name `BAI_API_KEY`, and
+  configuration version `bai-canary-2026-09-05-qwen3.8-flash-stage3-live`.
+- Both tasks used the fixture's committed acceptance plan, recipe catalog,
+  `test=allow`, `write_file=allow`, default governor ceilings and the declared
+  single-attempt/no-fallback route safety.
+
+### First current Stage 3 task
+
+```text
+task_id=cli-1788622974633408548
+terminal_outcome=provider_failure
+terminal_reason=provider failure: timeout
+attempt_count=6
+completed_provider_attempts=5
+final_attempt=exec-000016 delivery_state=sent_confirmed outcome=timeout upstream_reached=true debited=1
+completed_provider_attempts=exec-000001,exec-000004,exec-000007,exec-000010,exec-000013
+tool_effects=list_files,list_files,read_file,read_file,run_recipe
+evidence_ids=obs-000001,obs-000002,obs-000003,obs-000004
+recipe_policy=allowed test
+recipe_result=recipe_start_failed before process start; no process result or passing recipe evidence
+independent_verifier=not_reached
+git_observation=not_reached; tracked workspace diff remained zero
+```
+
+The first task reached real provider turns and inspection tools. Its recipe
+attempt was admitted by policy but could not start because the Runstead
+process inherited a PATH without the installed `go` executable. This was
+confirmed from the durable `recipe_start_failed` observation and the local
+environment, then corrected for the controlled retry by adding the existing
+Go installation directory to the process PATH. No Runstead runtime code or
+fixture recipe was changed.
+
+### One controlled Stage 3 retry
+
+```text
+task_id=cli-1788623148125503833
+terminal_outcome=provider_failure
+terminal_reason=provider failure: timeout
+attempt_count=3
+completed_provider_attempts=2
+final_attempt=exec-000007 delivery_state=sent_confirmed outcome=timeout upstream_reached=true debited=1
+completed_provider_attempts=exec-000001,exec-000004
+tool_effects=read_file,read_file
+evidence_ids=obs-000001,obs-000002
+recipe_result=not reached before provider timeout
+independent_verifier=not_reached
+git_observation=not_reached; tracked workspace diff remained zero
+```
+
+The retry used a fresh Git-initialized fixture copy and the identical provider,
+model, configuration, policies and governor ceilings. It reached two successful
+provider turns and two real inspections, then the third provider attempt timed
+out at the adapter's fixed 60-second bound with `sent_confirmed` delivery. No
+write, recipe, verifier or completion evidence was claimed.
+
+The first task's local recipe-start problem is therefore separated from the
+provider result. With that environment issue corrected, the controlled retry
+reproduced the timeout before any effectful action. Together with the earlier
+sanitized timeout observations, this is evidence of recurring provider/model
+latency for this task trajectory, but not sufficient evidence of a deterministic
+Runstead defect. No further retry, blind replay, timeout increase, governor
+ceiling increase, model change or fallback was performed.
+
+### Gate result
+
+| Stage | Current result | Evidence |
+| --- | --- | --- |
+| Authenticated model discovery | **Passed** | One HTTP 200 request; `qwen3.8-flash` present |
+| Stage 3 | **Blocked** | Two fresh tasks; provider attempts and inspect evidence were durable, but neither reached write/recipe/independent verification/completed |
+| Stage 4 | **Not executed** | Stage 3 did not reach a verified completed task, so no interruption/resume trajectory was started |
+| Final #122 acceptance | **Not met** | The required coding completion and same-config no-replay proof are absent |
+
+No raw model transcript, private response, Authorization header, credential
+value or unredacted upstream request identifier was added to this report.
+The transient credential was not written to the provider document, fixture,
+SQLite state, logs committed as evidence, or repository history.
