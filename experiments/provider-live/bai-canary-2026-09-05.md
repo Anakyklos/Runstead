@@ -274,6 +274,7 @@ final_attempt=exec-000016 delivery_state=sent_confirmed outcome=timeout upstream
 completed_provider_attempts=exec-000001,exec-000004,exec-000007,exec-000010,exec-000013
 tool_effects=list_files,list_files,read_file,read_file,run_recipe
 evidence_ids=obs-000001,obs-000002,obs-000003,obs-000004
+recipe_failure_observation=obs-000005 (durable start-failure observation; no evidence payload)
 recipe_policy=allowed test
 recipe_result=recipe_start_failed before process start; no process result or passing recipe evidence
 independent_verifier=not_reached
