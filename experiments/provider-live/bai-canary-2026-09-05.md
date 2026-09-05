@@ -217,3 +217,26 @@ single model discovery request, and then independently satisfy both remaining
 gates. No secret, raw model transcript, private prompt/response, request
 header or credential-shaped value was added to this report or persisted by
 this execution.
+
+## Public-interface preflight and acceptance boundary: 2026-09-05T15:36:42Z
+
+The current `971644a` build was exercised through the public CLI surface
+without making provider requests:
+
+- `runstead --help`, `runstead run --help`, `runstead inspect --help` and
+  `runstead resume --help` all rendered successfully;
+- `runstead inspect` without a task ID rejected the request with exit code 2
+  and sanitized usage text, rather than creating or inspecting implicit state;
+- the published help confirms that `run` requires an operator acceptance
+  plan, provider declarations, recipes and policy flags, while `inspect` and
+  `resume` operate on an explicit durable task ID;
+- the deterministic protocol integration boundary remained green through
+  `bash experiments/protocol/test.sh`.
+
+These checks validate the local public interfaces and their fail-closed
+argument boundary, but they do not substitute for the blocked authenticated
+B.AI acceptance path. The goal remains narrowly defined: prove only the exact
+B.AI provider/model/configuration exercised through Stage 3 inspect/write/
+recipe/independent verification and Stage 4 same-config resume without replay.
+Because the required external `BAI_API_KEY` reference was absent, this
+execution produced no live task or positive compatibility claim.
