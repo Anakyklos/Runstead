@@ -530,7 +530,7 @@ func GenerateCorrectionMessage(code FailureCode, retriesRemaining int) (string, 
 		OK:               false,
 		ErrorCode:        code,
 		RetriesRemaining: retriesRemaining,
-		Required:         "Return exactly one valid runstead_action or runstead_final envelope; never claim local execution without an envelope.",
+		Required:         correctionGuidance(code),
 	}
 	encoded, err := json.Marshal(message)
 	if err != nil {

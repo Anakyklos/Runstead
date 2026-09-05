@@ -13,6 +13,7 @@ import (
 
 	"github.com/RenyEnnos/Runstead/internal/agent"
 	"github.com/RenyEnnos/Runstead/internal/governor"
+	"github.com/RenyEnnos/Runstead/internal/protocol"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/tools"
 	"github.com/RenyEnnos/Runstead/internal/verifier"
@@ -489,6 +490,11 @@ func TestSystemContractIsDeterministicAndDescribesRegisteredTools(t *testing.T) 
 	}
 	if !strings.Contains(first, "UNTRUSTED") {
 		t.Fatal("system contract missing the untrusted-data rule")
+	}
+	for _, guidance := range []string{protocol.ActionEnvelopeGuidance(), protocol.FinalEnvelopeGuidance()} {
+		if !strings.Contains(first, guidance) {
+			t.Fatalf("system contract missing canonical protocol guidance: %s", guidance)
+		}
 	}
 }
 

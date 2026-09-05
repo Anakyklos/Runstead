@@ -351,6 +351,169 @@ func TestCorrectionMessageIsDeterministicAndRejectsNegativeRetries(t *testing.T)
 	}
 }
 
+func TestProtocolGuidanceDescribesExactEnvelopeShapes(t *testing.T) {
+	const actionShape = `<runstead_action>{"version":"runstead.protocol.v1","tool":"<registered-tool-name>","arguments":{...}}</runstead_action>`
+	const finalShape = `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"...","evidence":[{"evidence_id":"obs-...","tool":"<producer-tool>"}]}</runstead_final>`
+
+	action := ActionEnvelopeGuidance()
+	for _, fragment := range []string{
+		"Action envelope",
+		actionShape,
+		"exactly version, tool, and arguments",
+		"version must be exactly runstead.protocol.v1",
+		"tool must be one of the registered tools",
+		"arguments must be a JSON object",
+		"no Markdown code fence",
+		"no trailing comma",
+		"no extra top-level fields",
+		"exactly one envelope",
+	} {
+		if !strings.Contains(action, fragment) {
+			t.Errorf("action guidance missing %q: %s", fragment, action)
+		}
+	}
+
+	final := FinalEnvelopeGuidance()
+	for _, fragment := range []string{
+		"Final envelope",
+		finalShape,
+		"status must be exactly complete or incomplete",
+		"evidence uses exactly evidence_id and tool",
+		"Evidence IDs must have been observed",
+		"Completion remains a proposal",
+		"independently verified",
+	} {
+		if !strings.Contains(final, fragment) {
+			t.Errorf("final guidance missing %q: %s", fragment, final)
+		}
+	}
+}
+
+func TestCanonicalEnvelopeExamplesRemainAcceptedByParser(t *testing.T) {
+	action := Parse(`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"README.md"}}</runstead_action>`, fixtureCatalog{})
+	if action.Failure != nil || !action.Accepted || !action.Executable {
+		t.Fatalf("canonical action = %#v, want accepted executable action", action)
+	}
+
+	final := Parse(`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`, fixtureCatalog{})
+	if final.Failure != nil || !final.Accepted || final.Executable {
+		t.Fatalf("canonical final = %#v, want accepted non-executable final", final)
+	}
+}
+
+func TestCorrectionMessagesGiveBoundedSchemaGuidance(t *testing.T) {
+	const actionShape = `<runstead_action>{"version":"runstead.protocol.v1","tool":"<registered-tool-name>","arguments":{...}}</runstead_action>`
+	const finalShape = `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"...","evidence":[{"evidence_id":"obs-...","tool":"<producer-tool>"}]}</runstead_final>`
+
+	cases := []struct {
+		name string
+		code FailureCode
+		want []string
+	}{
+		{
+			name: "malformed JSON",
+			code: FailureMalformedJSON,
+			want: []string{"one strict JSON object", "no Markdown code fence", "no trailing comma"},
+		},
+		{
+			name: "invalid action schema",
+			code: FailureInvalidActionSchema,
+			want: []string{actionShape, "exactly the fields version, tool, and arguments", "JSON object"},
+		},
+		{
+			name: "invalid final schema",
+			code: FailureInvalidFinalSchema,
+			want: []string{finalShape, "evidence_id", "producer-tool"},
+		},
+		{
+			name: "missing envelope",
+			code: FailureMissingEnvelope,
+			want: []string{"exactly one envelope", "matching opening and closing tags"},
+		},
+		{
+			name: "multiple envelopes",
+			code: FailureMultipleEnvelopes,
+			want: []string{"exactly one envelope", "Do not return multiple envelopes"},
+		},
+		{
+			name: "unsupported version",
+			code: FailureUnsupportedProtocolVersion,
+			want: []string{"version must be exactly runstead.protocol.v1", "not another version"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			message, err := GenerateCorrectionMessage(tc.code, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(message) > 1600 {
+				t.Fatalf("correction is unbounded or too large: %d bytes", len(message))
+			}
+			var envelope struct {
+				Required string `json:"required"`
+			}
+			if err := json.Unmarshal([]byte(message), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			for _, fragment := range tc.want {
+				if !strings.Contains(envelope.Required, fragment) {
+					t.Errorf("correction missing %q: %s", fragment, envelope.Required)
+				}
+			}
+		})
+	}
+}
+
+func TestStrictParserRejectsContractViolations(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		code FailureCode
+	}{
+		{
+			name: "unknown action field",
+			text: `<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a"},"extra":true}</runstead_action>`,
+			code: FailureInvalidActionSchema,
+		},
+		{
+			name: "duplicate JSON key",
+			text: `<runstead_action>{"version":"runstead.protocol.v1","version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a"}}</runstead_action>`,
+			code: FailureMalformedJSON,
+		},
+		{
+			name: "multiple envelopes",
+			text: `<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a"}}</runstead_action><runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-1","tool":"read_file"}]}</runstead_final>`,
+			code: FailureMultipleEnvelopes,
+		},
+		{
+			name: "unsupported version",
+			text: `<runstead_action>{"version":"runstead.protocol.v0","tool":"read_file","arguments":{"path":"a"}}</runstead_action>`,
+			code: FailureUnsupportedProtocolVersion,
+		},
+		{
+			name: "unknown evidence field",
+			text: `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"obs-1","tool":"read_file","source":"invented"}]}</runstead_final>`,
+			code: FailureInvalidFinalSchema,
+		},
+		{
+			name: "empty evidence identifier",
+			text: `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"done","evidence":[{"evidence_id":"","tool":"read_file"}]}</runstead_final>`,
+			code: FailureInvalidFinalSchema,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := Parse(tc.text, fixtureCatalog{})
+			if result.Failure == nil || result.Failure.Code != tc.code || result.Accepted || result.Executable {
+				t.Fatalf("result = %#v, want rejected %q", result, tc.code)
+			}
+		})
+	}
+}
+
 func FuzzParseDoesNotPanicOrContradict(f *testing.F) {
 	seeds := []string{
 		`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"README.md"}}</runstead_action>`,
