@@ -333,3 +333,64 @@ No raw model transcript, private response, Authorization header, credential
 value or unredacted upstream request identifier was added to this report.
 The transient credential was not written to the provider document, fixture,
 SQLite state, logs committed as evidence, or repository history.
+
+## Final public acceptance-boundary validation: 2026-09-05T16:39:04Z
+
+The two terminal live tasks were re-read through the built `runstead inspect`
+interface, not through a test-only state reader. Both commands returned exit
+code 0 and rendered the same durable identity and outcome recorded above:
+
+- `cli-1788622974633408548`: `Status: failed`, `Outcome: provider_failure`,
+  six provider-attempt records, five `delivery_state=completed` records and
+  one `delivery_state=sent_confirmed` timeout;
+- `cli-1788623148125503833`: `Status: failed`, `Outcome: provider_failure`,
+  three provider-attempt records, two `delivery_state=completed` records and
+  one `delivery_state=sent_confirmed` timeout;
+- every rendered provider attempt used `bai-canary-openaiprotocol`,
+  `openai_compatible` and `qwen3.8-flash`, with one `debited=1` accounting
+  record per physical attempt;
+- the first task rendered `list_files`, `read_file` and the policy-allowed
+  `run_recipe` action. The recipe action rendered
+  `classification=recipe_start_failed` before process start. The retry
+  rendered two `read_file` actions and timed out before a recipe action;
+- the durable projections rendered `obs-000001` through `obs-000004` for the
+  completed list/read effects. They rendered no independent verification and
+  no Git verification attempt. The recipe-start failure had no evidence
+  payload or passing recipe result;
+- both disposable workspaces still had `git diff --exit-code --` exit 0 and
+  remained at their fixture baseline commits.
+
+The public failure boundaries were also exercised without a credential or a
+provider request. `runstead --help`, `runstead run --help`,
+`runstead inspect --help` and `runstead resume --help` each returned 0.
+`runstead inspect` without a task ID returned exit 2 with sanitized usage.
+Calling `runstead resume` on each already-terminal failed task returned exit 4
+with `is not resumable: failed`. A second public `inspect` showed the same
+attempt counts, and both workspaces remained clean. This is positive evidence
+for terminal-state fail-closed behavior and absence of replay at that
+boundary. It is not Stage 4 evidence: no interrupted running task was resumed.
+
+### Stage 3 requirement-to-check map
+
+This table deliberately records unmet requirements as unmet rather than
+converting partial progress into a Stage 3 pass.
+
+| Explicit requirement | Concrete check | Observed result |
+| --- | --- | --- |
+| Correct disposable workspace | Public `inspect` workspace paths plus Git baseline and post-run `git diff --exit-code --` | **PASS** for both fresh Git workspaces |
+| Real inspection | Public `inspect` action/tool projections and durable observation IDs | **PASS**: `list_files`/`read_file`; `obs-000001`–`obs-000004` rendered |
+| At least one scoped write | Public `inspect` action list searched for `write_file` | **NOT MET**: zero write actions; workspace diff stayed empty |
+| Before/after write evidence or equivalent hashes | Baseline journal and post-run Git projection | **NOT MET**: no write occurred, so no after-write hash exists |
+| Real declared recipe execution and result | Public `inspect` recipe action/process sections | **NOT MET**: first action was admitted but failed `recipe_start_failed` before process start; retry did not reach it |
+| All provider attempts admitted by the governor | Public provider-attempt projection, governor counters and client request sequences | **PASS for accounting**: 6 and 3 records respectively, with sequential IDs and one debit each |
+| Each physical attempt counted once | `debited=1` on every rendered provider-attempt record | **PASS**: 6/6 and 3/3 |
+| No fallback, rotation or hidden route | Exact provider/family/model/config identity on every attempt | **PASS**: only the frozen B.AI-compatible route and model appeared |
+| Independent verifier PASS | Public `Verification` projection | **NOT MET**: no verification attempt was reached |
+| Terminal outcome `completed` | Public task status/outcome projection | **NOT MET**: both ended `failed` with typed `provider_failure` timeout |
+| Evidence IDs real and inspectable | Public `inspect` evidence projections | **PARTIAL, stage-blocking**: completed inspection IDs are inspectable; no write/recipe-pass/verifier evidence exists |
+
+The map closes the acceptance feedback loop for every explicit Stage 3 gate,
+while the observed result remains **BLOCKED**. There was no runtime or public
+API implementation change in this follow-up. The only repository change is
+this sanitized operational evidence report; compatibility documentation stays
+unchanged because a positive Stage 3 plus Stage 4 claim is not justified.
