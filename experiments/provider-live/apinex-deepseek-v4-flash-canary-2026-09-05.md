@@ -10,6 +10,7 @@
 - Auth reference: `APINEX_API_KEY`
 - Adapter: `compatible-provider-v0.1`
 - Config version: `apinex-canary-2026-09-05-deepseek-v4-flash-0731`
+- Audit correction: 2026-09-21; no additional live canary traffic was generated.
 
 ## Credential and setup handling
 
@@ -27,12 +28,18 @@ binary and `git` was available.
 Two executor-only setup errors occurred before live task creation and are not
 provider failures: an initial smoke invocation omitted `RUNSTEAD_BIN` (exit
 127), and one shell invocation had malformed quoting. Both were corrected on
-fresh disposable workspaces. A separate Stage 3 attempt used an over-constrained
-additional temporary file-hash check; the provider-written implementation
-passed the real recipe but failed that extra check and then encountered an
-upstream failure. This was classified as `executor_acceptance_setup_error`, not
-as proof of provider incompatibility. The final accepted task used the
-committed fixture acceptance plan unchanged.
+fresh disposable workspaces.
+
+The Stage 3 audit found a separate executor acceptance-plan error that must be
+counted in the live chronology. The first two Stage 3 trajectories persisted the
+same temporary acceptance digest, `fc7194da72328fa942ec260f76cac5ba6623795e65478caeb4aa7861a3ced9c1`.
+On the second trajectory that plan exposed an extra `fix-hash` check that was
+not part of the committed fixture acceptance contract. The model-written
+implementation passed the real `test` recipe but failed only that extra check,
+then the next provider request ended in `upstream_server_failure`. This is
+`executor_acceptance_setup_error` plus a real upstream failure; it is not proof
+of provider incompatibility. Because the trajectory reached the provider and
+produced effects, it still counts against #129's bounded live-attempt history.
 
 ## Stage 1: authenticated preflight
 
@@ -65,45 +72,102 @@ The one controlled fresh rerun, `cli-1788637477563110805`, completed positively:
 
 ## Stage 3: coding task
 
-An initial fresh coding task, `cli-1788637609849099719`, made four successful
-provider-backed inspection turns and then timed out before a write. The final
-fresh accepted task was `cli-1788637879214590998`.
+The durable state contains three live Stage 3 trajectories. They must be read
+as one chronology; a later green trajectory does not erase earlier attempts.
 
-Durable Stage 3 evidence for the accepted task:
+### Trajectory 1 — initial attempt
+
+Task `cli-1788637609849099719` used acceptance digest
+`fc7194da72328fa942ec260f76cac5ba6623795e65478caeb4aa7861a3ced9c1`.
+It ended `failed` / `provider_failure` with stop reason `provider failure:
+timeout`.
+
+- provider attempts: 5 total; attempts 1-4 completed successfully, attempt 5
+  ended `sent_confirmed` / `timeout` with `upstream_reached=true`;
+- all 5 attempts were governor-accounted and debited exactly once;
+- evidence: `obs-000001` `list_files`, `obs-000002` `read_file`,
+  `obs-000003` `list_files`, `obs-000004` `read_file`;
+- no write, process/recipe result or verification attempt was reached;
+- no fallback, provider/model rotation or alternate route was used.
+
+This was the initial Stage 3 failure.
+
+### Trajectory 2 — first controlled rerun
+
+Task `cli-1788637741663589436` used the same temporary acceptance digest and
+ended `failed` / `provider_failure` with stop reason `provider failure:
+upstream_server_failure`.
+
+- provider attempts: 6 total; attempts 1-5 completed successfully and attempt 6
+  ended `delivery_state=completed`, `outcome=upstream_server_failure`,
+  `upstream_reached=true`;
+- all 6 attempts were governor-accounted and debited exactly once;
+- evidence `obs-000001` and `obs-000002`: `read_file` inspections;
+- evidence `obs-000003`: completed scoped `write_file`, with
+  `effect_after_hash=d520060356cb9acbb665b0cf2ebd5c9fba4a123198b2f192d2fab96e9ae4693c`;
+- evidence `obs-000004`: declared recipe `test`, exit 0, stdout/stderr
+  untruncated;
+- verification `verif-000014` was **failed** only because the temporary
+  `fix-hash` check expected prefix `1c5aa56c1715` while the observed file hash
+  prefix was `d520060356cb`; structural checks and `tests-pass` passed;
+- after that verifier refusal, the next provider request produced the terminal
+  upstream server failure;
+- Git observed no pre-existing changes and only `app/calc.go` modified.
+
+This trajectory is the one explicit controlled rerun permitted by #129. The
+extra `fix-hash` requirement was an executor acceptance setup error, but the
+live provider attempts and effects remain part of the audit trail.
+
+### Trajectory 3 — later successful but out-of-budget rerun
+
+Task `cli-1788637879214590998` corrected the acceptance plan to digest
+`cf4a8b3c63848a9350cf6beff5a8409145dc0cf6ad98f59f7f2f112a83797eb0`
+and completed positively:
 
 - final status/outcome: `completed` / `completed`;
 - final verifier: `verif-000024`, **passed**;
-- provider identity remained the exact configured provider, family, endpoint and
-  model on every attempt;
-- 9 admitted provider attempts were recorded, all upstream-reached successes,
-  each debited exactly once; no fallback or rotation occurred;
-- evidence `obs-000001` and `obs-000002`: repository inspection via `list_files`;
-- evidence `obs-000003` and `obs-000004`: source/test inspection via `read_file`;
+- 9 admitted provider attempts, all upstream-reached successes and each debited
+  exactly once;
+- evidence `obs-000001` and `obs-000002`: repository inspection via
+  `list_files`;
+- evidence `obs-000003` and `obs-000004`: source/test inspection via
+  `read_file`;
 - evidence `obs-000005`: one completed scoped `apply_patch` write, with
   `effect_after_hash=d520060356cb9acbb665b0cf2ebd5c9fba4a123198b2f192d2fab96e9ae4693c`;
 - evidence `obs-000006`: declared recipe `test`, `go test ./...`, exit 0,
   stdout/stderr untruncated;
 - acceptance `tests-pass`: **passed**;
-- Git observation: no pre-existing changes and only `app/calc.go` changed during
-  the task;
-- before/after hashes: baseline
-  `b8a1bd5dc67bfd9a64bd13503994fdf5e3fc78edaf80502f29992561c6986d94`, after
-  write `d520060356cb9acbb665b0cf2ebd5c9fba4a123198b2f192d2fab96e9ae4693c`.
+- Git observation: no pre-existing changes and only `app/calc.go` changed;
+- the two `apply_patch` approval pauses were resolved through `runstead decide`,
+  and only one write effect executed.
 
-The task encountered two normal operator approval pauses for the model's
-`apply_patch` proposal. Both approvals were recorded through `runstead decide`
-outside model prose. Recovery re-proposed the approved action and executed one
-write effect; the historical planned proposals were not executed as duplicate
-effects. A separate independent `go test ./...` also passed on the final
-workspace.
+This is valid positive runtime evidence for that exact trajectory, but it was a
+second rerun after the initial attempt and the already-used controlled rerun.
+Issue #129 authorizes only one explicit controlled rerun for a Stage 3 failure.
+Therefore this third trajectory cannot be selected retroactively as the Stage 3
+acceptance result.
 
-**Stage 3: PASS.**
+Across all Stage 3 trajectories there are 20 durable provider-attempt records
+(5 + 6 + 9), each separately governor-accounted and debited once. No hidden
+fallback, provider/model/key/account rotation or unaccounted live task remains
+in the Stage 3 chronology.
+
+**Stage 3: NOT ACCEPTED.** The runtime/provider evidence is useful, but the
+canary exceeded #129's bounded rerun allowance before the green trajectory.
+No new live run was performed to repair this documentation defect.
 
 ## Stage 4: interruption and resume
 
-The first Stage 4 task, `cli-1788638350661868905`, made three durable inspection
-observations and then ended in a `sent_confirmed` timeout before an effect. It
-was preserved and not resumed.
+Stage 4 was executed at the time because trajectory 3 above had been treated as
+a Stage 3 pass. The audit correction now establishes that Stage 3 was not
+admissibly satisfied under the one-rerun bound. Consequently the Stage 4 runs
+below are preserved as real interruption/resume evidence, but they cannot count
+as formal #129 gate evidence because their Stage 3 precondition was not met.
+
+The first Stage 4 task, `cli-1788638350661868905`, recorded 4 provider attempts:
+3 completed successes followed by one `sent_confirmed` timeout, with every
+attempt debited once. It made three durable inspection observations, ended
+`provider_failure`, and was preserved without resume.
 
 The controlled fresh Stage 4 task was `cli-1788638498811755793`, using the same
 provider declaration, exact model, acceptance digest, recipe catalog, recipe
@@ -160,19 +224,27 @@ This is the no-replay proof: the interrupted provider attempt was reconciled,
 not replayed; prior effects and evidence were preserved; only new post-recovery
 work was admitted.
 
-**Stage 4: PASS.**
+**Stage 4: OBSERVED, NOT ACCEPTED AS GATE EVIDENCE.** The resume/no-replay
+behavior is positive runtime evidence, but #129 required a valid Stage 3 pass
+before Stage 4 could count toward acceptance.
 
 ## Compatibility documentation
 
-`docs/provider-compatibility.md` was updated narrowly to state operational
-positive evidence only for:
+`docs/provider-compatibility.md` is intentionally conservative after this
+audit. It records that authenticated live traffic and useful positive runtime
+evidence exist for the exact Apinex endpoint/model, but it does **not** mark the
+OpenAI-compatible live acceptance gate as proven because #129's Stage 3 rerun
+contract was exceeded.
+
+The evidence remains scoped to:
 
 - endpoint `https://api.apinex.bond/v1`;
 - path `openai_compatible`;
 - model `free/deepseek-v4-flash-0731`.
 
-The report and documentation do not generalize to other Apinex endpoints,
-other Apinex models, the full Apinex API surface or other protocol families.
+No claim is made for other Apinex endpoints/models, the full Apinex API surface,
+or other protocol families. Issue #129 remains unaccepted on this evidence and
+downstream adoption gate #123 remains blocked.
 
 ## Final safety statement
 
