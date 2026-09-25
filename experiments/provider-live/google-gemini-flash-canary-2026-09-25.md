@@ -16,7 +16,7 @@
 
 - `test -n "${GEMINI_API_KEY:-}"`: passed before any live traffic. The key value was not printed or persisted; only its environment variable name was used in the declaration.
 - `go build -o /tmp/runstead-gemini-canary ./cmd/runstead`: passed.
-- Candidate config resolved through the existing provider registry and required `google_compatible` adapter contract. The CLI was deliberately stopped at a missing temporary acceptance file, before task bootstrap/dispatch; it reported only that acceptance-file error.
+- The candidate passed `Registry.Resolve` with the required capabilities and safe RouteSafety declaration; a deliberately missing temporary acceptance file stopped that no-dispatch CLI check before `compat.New`/adapter construction. The real Stage 2 invocation subsequently constructed and dispatched through the existing `google_compatible` adapter.
 - Candidate used `reference_required`, `auth_ref: GEMINI_API_KEY`, empty options, required `text_turn`/`runstead_protocol` capabilities, and the existing single-attempt `RouteSafety` declaration. No adapter or trust behavior was changed.
 - Committed fixture contracts inspected: `fixtures/coding-loop/acceptance.json` and `fixtures/coding-loop/recipes.json`.
 - Live canary stayed explicit opt-in. `experiments/provider-live/run.sh` still requires `RUNSTEAD_LIVE_SMOKE=1`; no normal CI workflow references it.
