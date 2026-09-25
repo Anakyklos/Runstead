@@ -41,12 +41,17 @@ document separates, explicitly and honestly:
 | Full inspect-edit-test-fix E2E (real runtime, real git, real recipes) | proven | proven | proven |
 | Crash/interruption + resume through the same provider | proven | proven | proven |
 | Wire details never become task truth | proven | proven | proven |
-| Live operational proof (real endpoint + real credentials) | **operationally unproven** | **operationally unproven** | **operationally unproven** |
+| Live operational proof (real endpoint + real credentials) | **partial live evidence (#129); acceptance not established** | **operationally unproven** | **operationally unproven** |
 
-**Live status:** no family has been exercised against a real configured
-endpoint in the environment where this gate was run, because no operator
-credentials/endpoint access were available. All three families are therefore
-reported **operationally unproven**. Mocks and `httptest` are deterministic
+**Live status:** Issue #129 exercised the exact configured Apinex endpoint
+`https://api.apinex.bond/v1` with real credentials through the
+`openai_compatible` path and model `free/deepseek-v4-flash-0731`. Stage 2
+completed positively and later coding/resume trajectories produced useful
+runtime evidence. However, the audited Stage 3 chronology used an initial run,
+one authorized controlled rerun, and then a second rerun before the green
+trajectory; that exceeds #129's bounded rerun contract. The live canary is
+therefore **not accepted**, and this document does not promote that evidence to
+a proven OpenAI-compatible live gate. Mocks and `httptest` remain deterministic
 contract proof, not live operational proof. See
 [Live opt-in smoke](#live-opt-in-smoke-procedure).
 
@@ -309,9 +314,15 @@ rotation, fallback, rate-limit workarounds, or inventing success when a
 credential does not exist. A family that cannot be exercised is reported as
 **operationally unproven**; mocks are not live proof.
 
-In the environment where this gate was executed, no family could be
-exercised live (no endpoint credentials available). All three families are
-therefore recorded as operationally unproven.
+Issue #129 produced authenticated partial live evidence for the exact
+configured endpoint `https://api.apinex.bond/v1` through the
+`openai_compatible` path with model `free/deepseek-v4-flash-0731`. That evidence
+includes a positive protocol task and successful individual coding/resume
+trajectories, but the Stage 3 audit found that the green coding trajectory was
+a second rerun after the issue's one-rerun allowance had already been used.
+Consequently #129 is not an accepted live canary and no protocol family is
+marked proven from it. Other endpoint/model combinations remain operationally
+unproven.
 
 ## Unsupported / not asserted
 
