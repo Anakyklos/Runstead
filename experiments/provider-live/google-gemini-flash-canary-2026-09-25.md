@@ -57,3 +57,17 @@ Stage 3 did not admissibly pass, so no interruption/resume trajectory was starte
 - Only the API's public model catalog and the committed public/synthetic `fixtures/coding-loop` prompt/workspace content were sent. No private repository or personal/confidential content was sent.
 - No API key, authentication header, raw model-list body, raw provider response, or private prompt/response was retained in Git, SQLite, logs, evidence, or this report. Persistent configuration contains only `auth_ref: GEMINI_API_KEY`.
 - Compatibility docs remain unchanged: the required Stage 2 + Stage 3 + Stage 4 positive proof was not achieved. `google_compatible` is not promoted to live-proven.
+
+## Final validation
+
+Final validation ran against code tree commit `57f9dc111c9ef01b416feacc4d8d93d94ad18ded`; this follow-up adds only these validation results to the report, with no Go/source changes.
+
+- `test -z "$(gofmt -l .)"`: PASS.
+- `go test ./...`: FAIL. `internal/state.TestBusyTimeoutBindsContendedWriter` timed out after 10 minutes in `second.db.Exec` while a transaction held the competing writer lock; `Store.Close` then also blocked in `wal_checkpoint(TRUNCATE)`. The test's configured busy timeout is 200 ms. Other package results shown before the failure passed. Root cause is not established; no unrelated state/test changes were made.
+- `go vet ./...`: PASS.
+- `go build ./cmd/runstead`: PASS.
+- `go test -race ./...`: PASS (23 packages; one package had no tests).
+- `bash experiments/protocol/test.sh`: PASS.
+- `git diff --check`: PASS.
+
+No Go source was changed in this canary. The full-suite failure remains an explicit validation blocker, not a canary PASS.
