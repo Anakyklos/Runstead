@@ -71,3 +71,36 @@ Final validation ran against code tree commit `57f9dc111c9ef01b416feacc4d8d93d94
 - `git diff --check`: PASS.
 
 No Go source was changed in this canary. The full-suite failure remains an explicit validation blocker, not a canary PASS.
+## Continuation — 2026-09-27
+
+### Revalidation and controlled Stage 2 rerun
+
+- Revalidated the PR branch HEAD as `be4bc6a8098016694caf90441935bef7f4104c82`, matching the maintainer-reviewed HEAD. PR #132 remains open with `CHANGES_REQUESTED`; Issue #131 remains open.
+- The one required pre-use check, `test -n "${GEMINI_API_KEY:-}"`, failed (exit 1). No credential was available in this execution environment. No provider request or Stage 2 rerun was started; there is therefore no second task ID, outcome, provider attempt, admission, debit, delivery state, retry, fallback, or rotation to claim.
+- The original Stage 2 trajectory above remains unchanged and is still the only live model-effect trajectory. Its one admitted/physical/debited request remains classified `provider_failure / upstream_server_failure`; verifier was not reached.
+- The bounded rerun is **not executed** because the required secret reference was unavailable before use. This is not a provider result and does not exhaust the allowed rerun contract. Stage 3 and Stage 4 remain unrun because Stage 2 rerun PASS was not established. No further live attempt was made.
+- Provider, protocol family, endpoint, model, auth reference, profile, RouteSafety, capabilities/policies, limits/timeouts, and trust model were not changed. No key/account/model rotation, retry, fallback, or additional model request occurred.
+
+### Busy-timeout investigation
+
+- PR HEAD `be4bc6a8098016694caf90441935bef7f4104c82`: `timeout 60s go test -count=1 -v ./internal/state -run '^TestBusyTimeoutBindsContendedWriter$'` passed; test duration 0.23s.
+- Clean detached checkout of fetched `origin/main` at `79ac8baaa2abcd428822fb39124b8490b64dfc21`: the same bounded command passed; test duration 0.23s.
+- The previous 10-minute block was not reproduced on either tree. These runs do not establish its cause; no test or SQLite implementation was modified.
+
+- Continuation attempt totals: 0 additional authenticated control-plane requests; 0 additional governed model-effect requests; 0 additional admitted attempts/debits. No content was sent during this continuation. The previously documented Stage 1 and initial Stage 2 evidence remain as recorded.
+- The environment lacked `GEMINI_API_KEY`; no secret value was displayed or persisted. Only previously documented public/synthetic fixture content was sent in the initial trajectory; no private repository or confidential content was sent.
+- Positive compatibility claim remains inadmissible because Stage 2 rerun, Stage 3, and Stage 4 have not all passed. `docs/provider-compatibility.md` remains unchanged.
+
+### Final validation on continuation content
+
+The following gates were run after the continuation report update on the PR branch content based on `be4bc6a8098016694caf90441935bef7f4104c82`:
+
+- `test -z "$(gofmt -l .)"`: PASS.
+- `go test ./...`: PASS.
+- `go vet ./...`: PASS.
+- `go build ./cmd/runstead`: PASS.
+- `go test -race ./...`: PASS.
+- `bash experiments/protocol/test.sh`: PASS.
+- `git diff --check`: PASS.
+
+GitHub Actions on reviewed HEAD `be4bc6a8098016694caf90441935bef7f4104c82`: Go CI run `36182515959` completed successfully. A new run for the continuation HEAD is still required after push.
