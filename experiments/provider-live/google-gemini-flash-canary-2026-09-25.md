@@ -103,4 +103,7 @@ The following gates were run after the continuation report update on the PR bran
 - `bash experiments/protocol/test.sh`: PASS.
 - `git diff --check`: PASS.
 
-GitHub Actions on reviewed HEAD `be4bc6a8098016694caf90441935bef7f4104c82`: Go CI run `36182515959` completed successfully. A new run for the continuation HEAD is still required after push.
+- GitHub Actions on reviewed HEAD `be4bc6a8098016694caf90441935bef7f4104c82`: Go CI run `36182515959` completed successfully. Continuation HEAD `45551102095c63f237284034dea76a2b7f7b09b3`: Go CI run `36321857970` completed successfully (12m55s).
+### Credential availability recheck
+
+After the operator reported that the key had been supplied, `test -n "${GEMINI_API_KEY:-}"` was run again in the execution environment and exited 1. The key is still unavailable to this process; no provider request or controlled rerun was started. No key content was read, printed, logged, or persisted. The single authorized Stage 2 rerun remains unexecuted; Stage 3/4 remain gated.
