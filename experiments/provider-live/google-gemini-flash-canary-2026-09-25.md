@@ -49,11 +49,11 @@ Stage 2 did not pass, so the required precondition was false. No Stage 3 task, r
 
 Stage 3 did not admissibly pass, so no interruption/resume trajectory was started.
 
-## Attempt totals and limitations
+## Original attempt totals — before the controlled rerun
 
 - Authenticated control-plane requests: 1 Models GET, HTTP 200; not a governed model-effect attempt.
-- Governed model-effect requests: 1 physical request / 1 admitted and durably accounted provider attempt / 1 debit.
-- Total observed outbound HTTP requests from the canary: 2 (one preflight GET plus one governed generation request). No hidden retry or fallback was used.
+- Original Stage 2: 1 physical model-effect request / 1 admitted and durably accounted provider attempt / 1 debit.
+- Original canary total at that point: 2 outbound HTTP requests (one preflight GET plus one governed generation request). No hidden retry or fallback was used.
 - Only the API's public model catalog and the committed public/synthetic `fixtures/coding-loop` prompt/workspace content were sent. No private repository or personal/confidential content was sent.
 - No API key, authentication header, raw model-list body, raw provider response, or private prompt/response was retained in Git, SQLite, logs, evidence, or this report. Persistent configuration contains only `auth_ref: GEMINI_API_KEY`.
 - Compatibility docs remain unchanged: the required Stage 2 + Stage 3 + Stage 4 positive proof was not achieved. `google_compatible` is not promoted to live-proven.
@@ -73,13 +73,12 @@ Final validation ran against code tree commit `57f9dc111c9ef01b416feacc4d8d93d94
 No Go source was changed in this canary. The full-suite failure remains an explicit validation blocker, not a canary PASS.
 ## Continuation — 2026-09-27
 
-### Revalidation and controlled Stage 2 rerun
+### First continuation check
 
-- Revalidated the PR branch HEAD as `be4bc6a8098016694caf90441935bef7f4104c82`, matching the maintainer-reviewed HEAD. PR #132 remains open with `CHANGES_REQUESTED`; Issue #131 remains open.
-- The one required pre-use check, `test -n "${GEMINI_API_KEY:-}"`, failed (exit 1). No credential was available in this execution environment. No provider request or Stage 2 rerun was started; there is therefore no second task ID, outcome, provider attempt, admission, debit, delivery state, retry, fallback, or rotation to claim.
-- The original Stage 2 trajectory above remains unchanged and is still the only live model-effect trajectory. Its one admitted/physical/debited request remains classified `provider_failure / upstream_server_failure`; verifier was not reached.
-- The bounded rerun is **not executed** because the required secret reference was unavailable before use. This is not a provider result and does not exhaust the allowed rerun contract. Stage 3 and Stage 4 remain unrun because Stage 2 rerun PASS was not established. No further live attempt was made.
-- Provider, protocol family, endpoint, model, auth reference, profile, RouteSafety, capabilities/policies, limits/timeouts, and trust model were not changed. No key/account/model rotation, retry, fallback, or additional model request occurred.
+- Revalidated PR HEAD `be4bc6a8098016694caf90441935bef7f4104c82`, matching the maintainer-reviewed HEAD. PR #132 remained open with `CHANGES_REQUESTED`; Issue #131 remained open.
+- The first required pre-use check, `test -n "${GEMINI_API_KEY:-}"`, failed (exit 1). At that check no credential was available, so no provider request or controlled rerun was started.
+- At that point, the original Stage 2 trajectory above remained the only live model-effect trajectory. It remained `provider_failure / upstream_server_failure`, with one admitted/physical/debited request and no verifier.
+- At that point Stage 3/4 remained gated. No config, key/account/model, limit/timeout, policy, or trust setting was changed.
 
 ### Busy-timeout investigation
 
@@ -87,9 +86,9 @@ No Go source was changed in this canary. The full-suite failure remains an expli
 - Clean detached checkout of fetched `origin/main` at `79ac8baaa2abcd428822fb39124b8490b64dfc21`: the same bounded command passed; test duration 0.23s.
 - The previous 10-minute block was not reproduced on either tree. These runs do not establish its cause; no test or SQLite implementation was modified.
 
-- Continuation attempt totals: 0 additional authenticated control-plane requests; 0 additional governed model-effect requests; 0 additional admitted attempts/debits. No content was sent during this continuation. The previously documented Stage 1 and initial Stage 2 evidence remain as recorded.
-- The environment lacked `GEMINI_API_KEY`; no secret value was displayed or persisted. Only previously documented public/synthetic fixture content was sent in the initial trajectory; no private repository or confidential content was sent.
-- Positive compatibility claim remains inadmissible because Stage 2 rerun, Stage 3, and Stage 4 have not all passed. `docs/provider-compatibility.md` remains unchanged.
+- At the first continuation check: 0 additional authenticated control-plane requests, 0 additional governed model-effect requests, and 0 additional admitted attempts/debits. This point-in-time accounting predates the rerun below.
+- At that check the environment lacked `GEMINI_API_KEY`; no key value was displayed or persisted. The earlier trajectory used only public/synthetic fixture content.
+- The positive compatibility claim remains inadmissible because Stage 2 did not pass and Stage 3/4 were not run. `docs/provider-compatibility.md` remains unchanged.
 
 ### Final validation on continuation content
 
@@ -103,7 +102,32 @@ The following gates were run after the continuation report update on the PR bran
 - `bash experiments/protocol/test.sh`: PASS.
 - `git diff --check`: PASS.
 
-- GitHub Actions on reviewed HEAD `be4bc6a8098016694caf90441935bef7f4104c82`: Go CI run `36182515959` completed successfully. Continuation HEAD `45551102095c63f237284034dea76a2b7f7b09b3`: Go CI run `36321857970` completed successfully (12m55s).
-### Credential availability recheck
+- GitHub Actions on reviewed HEAD `be4bc6a8098016694caf90441935bef7f4104c82`: Go CI run `36182515959` completed successfully. Continuation HEAD `45551102095c63f237284034dea76a2b7f7b09b3`: run `36321857970` passed; latest prior head `35096f5839e19ba4d01d9a43b4f27f8d0b4a1a6b`: run `36323110246` passed.
 
-After the operator reported that the key had been supplied, `test -n "${GEMINI_API_KEY:-}"` was run again in the execution environment and exited 1. The key is still unavailable to this process; no provider request or controlled rerun was started. No key content was read, printed, logged, or persisted. The single authorized Stage 2 rerun remains unexecuted; Stage 3/4 remain gated.
+### Credential recheck chronology
+
+After the operator first reported the key was supplied, the safe presence check still failed in this executor. A later check, immediately before the live rerun at 2026-09-27T14:01Z, passed; the key was never printed or persisted.
+
+### One controlled Stage 2 rerun — FAIL
+
+- Task ID: `cli-1790517701251474870`; started 2026-09-27T14:01:41Z and terminated `failed / provider_failure`, classified `upstream_server_failure`. The sole authorized controlled rerun has now been used; stop the live canary. No Stage 3 or Stage 4 task was started.
+- Provider declaration matched the required identity: `google-gemini-canary`, `google_compatible`, `https://generativelanguage.googleapis.com/v1beta`, `gemini-3.8-flash`, `auth_ref=GEMINI_API_KEY`, `reference_required`, empty options, config version `google-gemini-canary-2026-09-25-gemini-3.8-flash`, profile `v1`, capabilities `text_turn` and `runstead_protocol`, and the same safe single-attempt RouteSafety. CLI limits remained defaults: max steps 24, 10-minute task budget, provider budget 80; write tools remained `approval_required`, retry policy remained its default off, and no adapter timeout was increased.
+- The task objective was to inspect the fixture README and report its title, with no file changes authorized. The workspace root was `fixtures/coding-loop`. A temporary acceptance check `file_exists: README.md` was used (digest `e53f9f029bb2993402a33d9693cb13a5c8f912baa3d588a58ad3d995ed204e69`); the initial Stage 2 acceptance digest was not preserved, so exact acceptance-plan identity cannot be verified.
+- Provider attempt 1: `exec-000001`, request `cli-1790517701251474870-0001`; status `completed`, outcome `success`, upstream reached, delivery `completed`, debit 1. The model proposed `read_file` action `action-000002` with path `fixtures/coding-loop/README.md`; this path mismatch was caused by my task prompt using the repo-relative path while the workspace root was already `fixtures/coding-loop`. The tool attempt `exec-000003` therefore failed `path_not_found`; no successful tool observation/evidence resulted.
+- Provider attempt 2: `exec-000004`, request `cli-1790517701251474870-0002`; status `failed`, outcome `upstream_server_failure`, upstream reached, delivery `completed`, debit 1. This was the next normal task turn after the failed read, not a provider retry or replay.
+- Durable totals for the controlled rerun: 2 governor admissions, 2 physical model-effect requests, 2 debits; one successful provider attempt and one upstream-server failure; one failed `read_file` tool attempt, 0 observations/evidence, verifier not reached. No SDK retry, governor retry, fallback, provider/model/key/account rotation, or additional task was used.
+- Runstead inspection and `provider_attempts`/`governor_ledger` rows substantiate both admissions and debits. The runner's text record did not fully render config/outcome fields; the sanitized durable `inspect` view and SQLite rows were read directly. No raw provider response or key value was retained in the report.
+- The second Stage 2 task therefore did not pass. This bounded rerun is exhausted. Stop; do not make a third Stage 2 attempt. Stage 3/4 remain NOT RUN, and no positive compatibility claim is supported.
+- Combined total after the controlled rerun: 1 authenticated preflight GET plus 3 governed physical model-effect requests (1 initial + 2 in the one controlled rerun), 4 observed outbound HTTP requests total; 3 admitted attempts/debits. No retry/fallback/rotation was observed.
+
+### Final validation after controlled rerun report
+
+Run on the updated branch content before its report-only commit:
+
+- `test -z "$(gofmt -l .)"`: PASS.
+- `go test ./...`: PASS.
+- `go vet ./...`: PASS.
+- `go build ./cmd/runstead`: PASS.
+- `go test -race ./...`: PASS.
+- `bash experiments/protocol/test.sh`: PASS.
+- `git diff --check`: PASS.
