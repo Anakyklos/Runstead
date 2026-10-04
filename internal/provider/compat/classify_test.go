@@ -5,6 +5,7 @@ package compat
 // taxonomies / free text never become retryable classes.
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -48,6 +49,39 @@ func TestClassifierMapsAdapterKindsProviderNeutrally(t *testing.T) {
 			outcome := classifier(provider.Response{Metadata: provider.ResponseMetadata{DeliveryState: provider.DeliveryCompleted}}, testCase.err)
 			if outcome.Class != testCase.want {
 				t.Fatalf("class = %q, want %q", outcome.Class, testCase.want)
+			}
+		})
+	}
+}
+
+func TestClassifierRetainsOnlyKnownTypedFailureKinds(t *testing.T) {
+	classifier := NewClassifier()
+	typed := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"openai timeout wrapping context deadline", &openaicompat.Error{Kind: openaicompat.ErrorTimeout, Cause: errors.Join(errors.New("SECRET_DO_NOT_PERSIST"), context.DeadlineExceeded)}, "timeout"},
+		{"anthropic transport", &anthropiccompat.Error{Kind: anthropiccompat.ErrorTransport}, "transport"},
+		{"google auth unavailable", &googlecompat.Error{Kind: googlecompat.ErrorAuthUnavailable}, "auth_unavailable"},
+		{"openai authentication denied", &openaicompat.Error{Kind: openaicompat.ErrorAuthenticationDenied}, "authentication_denied"},
+		{"anthropic permission denied", &anthropiccompat.Error{Kind: anthropiccompat.ErrorPermissionDenied}, "permission_denied"},
+		{"google rate capacity", &googlecompat.Error{Kind: googlecompat.ErrorRateCapacity}, "rate_or_capacity"},
+		{"openai upstream server", &openaicompat.Error{Kind: openaicompat.ErrorUpstreamServerFailure}, "upstream_server_failure"},
+		{"anthropic malformed", &anthropiccompat.Error{Kind: anthropiccompat.ErrorMalformedResponse}, "malformed_response"},
+		{"google invalid envelope", &googlecompat.Error{Kind: googlecompat.ErrorInvalidEnvelope}, "invalid_envelope"},
+		{"openai response too large", &openaicompat.Error{Kind: openaicompat.ErrorResponseTooLarge}, "response_too_large"},
+		{"anthropic request too large", &anthropiccompat.Error{Kind: anthropiccompat.ErrorRequestTooLarge}, "request_too_large"},
+		{"google unsafe redirect", &googlecompat.Error{Kind: googlecompat.ErrorUnsafeRedirect}, "unsafe_redirect"},
+		{"openai config refused", &openaicompat.Error{Kind: openaicompat.ErrorConfigRefused}, "config_refused"},
+		{"unknown typed value", &googlecompat.Error{Kind: googlecompat.ErrorKind("SECRET_DO_NOT_PERSIST")}, ""},
+		{"untyped error", errors.New("SECRET_DO_NOT_PERSIST"), ""},
+	}
+	for _, testCase := range typed {
+		t.Run(testCase.name, func(t *testing.T) {
+			outcome := classifier(provider.Response{}, testCase.err)
+			if got := string(outcome.ProviderFailureClass); got != testCase.want {
+				t.Fatalf("provider failure class = %q, want %q", got, testCase.want)
 			}
 		})
 	}

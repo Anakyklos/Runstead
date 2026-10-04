@@ -152,6 +152,10 @@ func (s *Store) RecordProviderFinished(ctx context.Context, record governor.Prov
 	now := s.now()
 	status := providerAttemptStatus(record.Outcome, record.Uncertain)
 	receiptError := record.ReceiptErrorCode
+	failureClass := record.ProviderFailureClass
+	if !failureClass.Valid() {
+		failureClass = ""
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin provider attempt finish: %w", err)
@@ -160,10 +164,10 @@ func (s *Store) RecordProviderFinished(ctx context.Context, record governor.Prov
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE provider_attempts
 			 SET status = ?, outcome = ?, upstream_reached = ?, uncertain = ?, attempt_debited = ?,
-			     selected_backoff_ns = ?, error_class = ?, delivery_state = ?, request_id = ?, completed_at = ?
+			     selected_backoff_ns = ?, error_class = ?, provider_failure_class = ?, delivery_state = ?, request_id = ?, completed_at = ?
 			 WHERE task_id = ? AND client_request_id = ? AND status = 'prepared'`,
 		status, record.Outcome, boolInt(record.UpstreamReached), boolInt(record.Uncertain),
-		record.AttemptDebited, int64(record.SelectedBackoff), receiptError, persistedDeliveryState(record.DeliveryState),
+		record.AttemptDebited, int64(record.SelectedBackoff), receiptError, string(failureClass), persistedDeliveryState(record.DeliveryState),
 		Redact(record.RequestID), now,
 		record.TaskID, record.ClientRequestID); err != nil {
 		return fmt.Errorf("finish provider attempt: %w", err)
@@ -190,21 +194,22 @@ func (s *Store) RecordProviderFinished(ctx context.Context, record governor.Prov
 		eventKind = "provider_attempt_uncertain"
 	}
 	if err := appendEvent(ctx, tx, record.TaskID, eventKind, map[string]any{
-		"client_request_id": record.ClientRequestID,
-		"status":            status,
-		"outcome":           record.Outcome,
-		"upstream_reached":  record.UpstreamReached,
-		"uncertain":         record.Uncertain,
-		"delivery_state":    record.DeliveryState.String(),
-		"attempt_debited":   record.AttemptDebited,
-		"selected_backoff":  int64(record.SelectedBackoff),
-		"protocol_family":   string(record.ProtocolFamily),
-		"config_identity":   Redact(record.ConfigIdentity),
-		"request_id":        Redact(record.RequestID),
-		"receipts":          len(record.Receipts),
-		"receipt_error":     receiptError,
-		"circuit":           record.Circuit.State,
-		"governor":          governorEventPayload(record.State),
+		"client_request_id":      record.ClientRequestID,
+		"status":                 status,
+		"outcome":                record.Outcome,
+		"upstream_reached":       record.UpstreamReached,
+		"uncertain":              record.Uncertain,
+		"delivery_state":         record.DeliveryState.String(),
+		"attempt_debited":        record.AttemptDebited,
+		"selected_backoff":       int64(record.SelectedBackoff),
+		"protocol_family":        string(record.ProtocolFamily),
+		"config_identity":        Redact(record.ConfigIdentity),
+		"request_id":             Redact(record.RequestID),
+		"receipts":               len(record.Receipts),
+		"receipt_error":          receiptError,
+		"provider_failure_class": string(failureClass),
+		"circuit":                record.Circuit.State,
+		"governor":               governorEventPayload(record.State),
 	}, now); err != nil {
 		return err
 	}

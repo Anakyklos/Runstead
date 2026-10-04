@@ -448,3 +448,58 @@ func TestMigrationsOperationalProfilesTableAdditiveAndPreserving(t *testing.T) {
 		t.Fatalf("historical provider_attempts shape broken by migration: %v", err)
 	}
 }
+
+func TestProviderFailureClassMigrationPreservesHistoricalAttempts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := make(map[int]string)
+	for version := 1; version <= 16; version++ {
+		matches, matchErr := fs.Glob(migrationFS, fmt.Sprintf("migrations/%04d_*.sql", version))
+		if matchErr != nil || len(matches) != 1 {
+			t.Fatalf("embedded migration %04d not found: %v", version, matchErr)
+		}
+		migration, readErr := fs.ReadFile(migrationFS, matches[0])
+		if readErr != nil {
+			t.Fatalf("read embedded migration %d: %v", version, readErr)
+		}
+		entries[version] = string(migration)
+	}
+	if err := migrateFS(db, testMigrations(t, entries)); err != nil {
+		t.Fatalf("migrate legacy database to v16: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO tasks (task_id, objective, status, workspace, created_at, started_at)
+		VALUES ('legacy-task', 'inspect', 'running', '/ws', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed legacy task: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO provider_attempts
+		(execution_id, task_id, client_request_id, provider, model_pool, model, attempt_sequence, receipt_aware, protocol_family, config_identity, delivery_state, status, created_at, prepared_at)
+		VALUES ('legacy-exec', 'legacy-task', 'legacy-request', 'scripted', 'pool', 'model', 1, 0, '', '', '', 'uncertain', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed historical provider attempt: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close v16 database: %v", err)
+	}
+
+	store, err := Open(Options{Path: path})
+	if err != nil {
+		t.Fatalf("upgrade historical database: %v", err)
+	}
+	defer store.Close()
+	var status, outcome, failureClass string
+	if err := store.db.QueryRow(`SELECT status, outcome, provider_failure_class FROM provider_attempts WHERE execution_id = 'legacy-exec'`).Scan(&status, &outcome, &failureClass); err != nil {
+		t.Fatalf("read migrated provider attempt: %v", err)
+	}
+	if status != "uncertain" || outcome != "" || failureClass != "" {
+		t.Fatalf("migrated attempt = status %q outcome %q failure class %q", status, outcome, failureClass)
+	}
+	var inspect strings.Builder
+	if err := store.RenderInspect(context.Background(), &inspect, "legacy-task"); err != nil {
+		t.Fatalf("inspect historical task after migration: %v", err)
+	}
+	if !strings.Contains(inspect.String(), "Provider attempts:") || !strings.Contains(inspect.String(), "status=uncertain") {
+		t.Fatalf("historical provider attempt not readable through inspect:\n%s", inspect.String())
+	}
+}
