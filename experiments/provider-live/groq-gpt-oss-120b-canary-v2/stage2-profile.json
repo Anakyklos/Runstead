@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "profile_id": "groq-canary-v2-read-only",
+  "profile_version": "1.0.0",
+  "provider_id": "groq-gpt-oss-120b-canary-v2",
+  "packages": [
+    {"id": "repo.read", "version": "1.0.0"}
+  ]
+}
