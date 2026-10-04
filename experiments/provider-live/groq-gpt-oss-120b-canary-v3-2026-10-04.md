@@ -1,7 +1,7 @@
 # Groq GPT-OSS-120B Gate A canary v3
 
-Status: in progress. This report records only sanitized evidence; raw provider
-bodies and transcripts are not retained.
+Status: complete; Gate A NOT SATISFIED; report-only. This report records only
+sanitized evidence; raw provider bodies and transcripts are not retained.
 
 ## Identity
 
@@ -95,6 +95,34 @@ bodies and transcripts are not retained.
 - Preflight status: PASS; profile contains only the built-in `repo.read@1.0.0`
   package; acceptance hash is frozen before task dispatch.
 
+### Results
+
+- Fresh workspace: `/tmp/runstead-issue145-v3-stage2-one4hmd3/workspace`;
+  fresh state directory: `/tmp/runstead-issue145-v3-stage2-one4hmd3/state`.
+  The workspace `app/calc.go` hash matched the frozen acceptance hash before
+  and after the run.
+- Task: `cli-1791122946929726868`, exact requested objective persisted,
+  Runstead exit code `28`, terminal status `failed`, outcome `provider_failure`,
+  stop reason `uncertain_reached`.
+- Provider chronology: one prepared physical attempt (`exec-000001`) for
+  `groq-gpt-oss-120b-canary-v3` / `openai/gpt-oss-120b`; one governor task
+  attempt and one ledger entry; `attempt_debited=1`; retries `0`. The attempt
+  ended `uncertain`, `upstream_reached=1`, delivery `sent_unconfirmed`.
+- No action, tool attempt, or tool result was persisted. In particular, there
+  was no `read_file(app/calc.go)` observation and no final citation. There
+  were zero writes and zero recipe/process tool effects.
+- Verifier chronology: acceptance plan saved at task start; no verification
+  attempt ran because no completion proposal or usable provider response was
+  received. Runtime verifier PASS and terminal `completed` were not achieved.
+- Failure detail: durable `error_class` and HTTP status are unavailable. The
+  captured CLI output was discarded when the process exited, so the concrete
+  transient cause cannot be established. The one allowed controlled rerun is
+  therefore not admissible; the failed trajectory is preserved and no second
+  task was started. The request ID also failed the sanitized-ID pattern check,
+  so it was not used as diagnostic evidence.
+- Secret hygiene: no key value or raw provider response/body was persisted in
+  the report or repository. Only sanitized attempt metadata was retained.
+
 ## Stage 3 — bounded coding fixture
 
 Not dispatched; requires Stage 2 PASS and its own recorded preflight.
@@ -105,7 +133,8 @@ Not dispatched; requires Stage 3 PASS and its own recorded preflight.
 
 ## Gate A decision
 
-Not yet decided. Historical canaries #138 and #141 are context only; no task,
-database, attempt, branch, or trajectory is reused. The maximum allowance is
-one controlled rerun for a concrete transient or corrected operator/environment
-failure. Normal turns inside one task do not count as reruns.
+**NOT SATISFIED.** Stage 1 passed; Stage 2 failed terminally without enough
+evidence to qualify for the single controlled rerun; Stages 3 and 4 were not
+dispatched. Issue #123 remains blocked on Gate A. Historical canaries #138 and
+#141 are context only; no task, database, attempt, branch, or trajectory was
+reused. Normal turns inside one task do not count as reruns.
