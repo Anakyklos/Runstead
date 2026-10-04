@@ -1,0 +1,21 @@
+{
+  "objective": "Read app/calc.go and identify the whitespace-handling bug in ParseValues. Do not modify files and do not run recipes/processes. Base the final claim on the actual read_file evidence.",
+  "fixture": "fixtures/coding-loop",
+  "workspace": "fresh temporary Git copy of fixtures/coding-loop",
+  "required_evidence": [
+    "successful read_file action with path app/calc.go",
+    "successful observation whose data path and metadata path are app/calc.go and whose SHA-256 matches the committed fixture",
+    "final evidence citation resolves to that exact read_file observation",
+    "Runstead verifier passed the persisted calc-source-unchanged file_hash check",
+    "no write_file, apply_patch, or run_recipe action or tool attempt"
+  ],
+  "acceptance_plan": "stage2-acceptance.json",
+  "acceptance_checks": [
+    {"id": "calc-source-unchanged", "type": "file_hash", "path": "app/calc.go", "sha256": "b8a1bd5dc67bfd9a64bd13503994fdf5e3fc78edaf80502f29992561c6986d94"}
+  ],
+  "profile": "stage2-profile.json",
+  "allowed_tools": ["read_file", "list_files", "search_text", "git_status", "git_diff"],
+  "allowed_effects": ["read-only filesystem and Git observations"],
+  "prohibited_effects": ["file writes", "patches", "recipe execution", "process execution", "network access from tools"],
+  "external_verifier": "Check the task's authoritative actions, tool_attempts, tool_results, and verification_attempts before qualification; require the target read, exact evidence citation/path/hash, no prohibited tools, and completed/passed terminal state. Do not rely on the model's prose or the file_hash check alone."
+}
