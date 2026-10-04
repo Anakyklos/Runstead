@@ -38,6 +38,7 @@ The secret was checked for presence and loaded from the ignored local environmen
 - The deterministic missing-acceptance preflight stopped after provider resolution; it created no task state and made no provider request.
 - Sent exactly one authenticated `GET https://api.groq.com/openai/v1/models` using an explicit Runstead User-Agent. Result: HTTP 200; exact model `openai/gpt-oss-120b` was present.
 - No other model, endpoint, account, quota, or fallback was probed. The response body and credential were not printed or persisted.
+- The sanitized Stage 1 record is this report; no request-correlation ID or separate HTTP trace was retained. This direct preflight request did not create a Runstead task admission/debit row.
 
 ## Stage 2 — NOT QUALIFIED
 
@@ -75,6 +76,8 @@ The provider request completed, but the task finalized as `final_not_grounded` b
 ## Stages 3–4 — NOT RUN
 
 Stage 3 was gated on Stage 2 PASS. Stage 4 was gated on Stage 3 PASS. Neither stage sent a request or created a task.
+
+The Stage 2 SQLite ledger is scoped to its single task; it is not a global HTTP request ledger. The Stage 3/4 stop is recorded by the orchestration decision in this report, issue #141, and PR #142. No Stage 3/4 task, recipe, verifier, interruption, resume, or replay identifiers exist.
 
 ## Preflight and validation record
 
