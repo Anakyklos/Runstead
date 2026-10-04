@@ -57,6 +57,9 @@ type ProviderFinished struct {
 	WorkUnitID      string
 	ClientRequestID string
 	Outcome         OutcomeClass
+	// ProviderFailureClass is the sanitized adapter failure kind, separate
+	// from the governor outcome and from receipt validation errors.
+	ProviderFailureClass provider.ProviderFailureClass
 	// ProtocolFamily and ConfigIdentity mirror the prepared identity;
 	// RequestID is the upstream request identifier ONLY when actually
 	// observed, in its adapter-sanitized (hashed) form. Missing/unknown stays

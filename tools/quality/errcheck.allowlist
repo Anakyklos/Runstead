@@ -203,7 +203,7 @@ internal/state/provider_attempts.go:107  defer tx.Rollback()
 
 
 
-internal/state/provider_attempts.go:159  defer tx.Rollback()
+internal/state/provider_attempts.go:163  defer tx.Rollback()
 
 
 internal/recovery/recovery.go:772  _ = jsonUnmarshal(raw, value)
@@ -266,43 +266,43 @@ cmd/runstead/resume.go:366  defer store.Close()
 
 
 
-internal/state/inspect.go:568  defer rows.Close()
+internal/state/inspect.go:572  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:587  defer rows.Close()
+internal/state/inspect.go:591  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:610  defer rows.Close()
+internal/state/inspect.go:614  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:638  defer rows.Close()
+internal/state/inspect.go:642  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:698  defer rows.Close()
+internal/state/inspect.go:702  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:770  defer rows.Close()
+internal/state/inspect.go:774  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:788  defer rows.Close()
+internal/state/inspect.go:792  defer rows.Close()
 
 
 

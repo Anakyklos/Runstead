@@ -367,11 +367,15 @@ const (
 )
 
 type Outcome struct {
-	Class           OutcomeClass
-	RetryAfter      time.Duration
-	ResetAt         time.Time
-	UpstreamReached bool
-	DeliveryState   provider.DeliveryState
+	Class OutcomeClass
+	// ProviderFailureClass preserves the compatible adapter's sanitized
+	// failure taxonomy independently from Class, which may be made more
+	// conservative by applyDeliveryEvidence.
+	ProviderFailureClass provider.ProviderFailureClass
+	RetryAfter           time.Duration
+	ResetAt              time.Time
+	UpstreamReached      bool
+	DeliveryState        provider.DeliveryState
 	// Metadata is the sanitized provider response metadata of the classified
 	// attempt (#39). It is copied by Execute after classification and flows
 	// into emitted events; it never gates execution or accounting.

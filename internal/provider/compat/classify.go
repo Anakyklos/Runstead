@@ -42,15 +42,6 @@ func NewClassifier() governor.OutcomeClassifier {
 			outcome.UpstreamReached = true
 			return outcome
 		}
-		// Caller-side context errors (adapter errors carry finer kinds).
-		if errors.Is(err, context.Canceled) {
-			outcome.Class = governor.OutcomeCancelledBeforeUpstream
-			return outcome
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			outcome.Class = governor.OutcomeTimeout
-			return outcome
-		}
 		var openAI *openaicompat.Error
 		var anthropic *anthropiccompat.Error
 		var google *googlecompat.Error
@@ -61,12 +52,22 @@ func NewClassifier() governor.OutcomeClassifier {
 			return classifyError(outcome, string(anthropic.Kind), anthropic.RetryAfter)
 		case errors.As(err, &google):
 			return classifyError(outcome, string(google.Kind), google.RetryAfter)
-		default:
-			// Unknown failure taxonomy: never retryable (uncertain).
-			outcome.Class = governor.OutcomeUncertainReached
-			outcome.UpstreamReached = true
+		}
+		// Caller-side context errors apply only when no typed adapter taxonomy
+		// was available. A typed adapter timeout may wrap DeadlineExceeded in
+		// Cause, but its safe Kind must survive independently.
+		if errors.Is(err, context.Canceled) {
+			outcome.Class = governor.OutcomeCancelledBeforeUpstream
 			return outcome
 		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			outcome.Class = governor.OutcomeTimeout
+			return outcome
+		}
+		// Unknown failure taxonomy: never retryable (uncertain).
+		outcome.Class = governor.OutcomeUncertainReached
+		outcome.UpstreamReached = true
+		return outcome
 	}
 }
 
@@ -78,6 +79,7 @@ func NewClassifier() governor.OutcomeClassifier {
 // Retry-After when observed.
 func classifyError(outcome governor.Outcome, kind string, retryAfter time.Duration) governor.Outcome {
 	outcome.UpstreamReached = true
+	outcome.ProviderFailureClass = provider.ParseProviderFailureClass(kind)
 	switch kind {
 	case "rate_or_capacity":
 		outcome.Class = governor.OutcomeRateCapacity

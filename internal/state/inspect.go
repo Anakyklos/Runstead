@@ -68,26 +68,27 @@ type inspectToolAttempt struct {
 }
 
 type inspectProviderAttempt struct {
-	ExecutionID     string
-	ClientRequestID string
-	Provider        string
-	ProtocolFamily  string
-	ConfigIdentity  string
-	RequestID       string
-	Model           string
-	Status          string
-	Outcome         string
-	DeliveryState   provider.DeliveryState
-	UpstreamReached bool
-	Uncertain       bool
-	AttemptDebited  int
-	SelectedBackoff int64
-	ErrorClass      string
-	RecoveryReason  string
-	ReceiptCount    int
-	CreatedAt       string
-	PreparedAt      string
-	CompletedAt     string
+	ExecutionID          string
+	ClientRequestID      string
+	Provider             string
+	ProtocolFamily       string
+	ConfigIdentity       string
+	RequestID            string
+	Model                string
+	Status               string
+	Outcome              string
+	DeliveryState        provider.DeliveryState
+	UpstreamReached      bool
+	Uncertain            bool
+	AttemptDebited       int
+	SelectedBackoff      int64
+	ErrorClass           string
+	ProviderFailureClass string
+	RecoveryReason       string
+	ReceiptCount         int
+	CreatedAt            string
+	PreparedAt           string
+	CompletedAt          string
 }
 
 type inspectReceipt struct {
@@ -254,6 +255,9 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 		}
 		if attempt.ErrorClass != "" {
 			fmt.Fprintf(&builder, "    receipt_error=%s\n", attempt.ErrorClass)
+		}
+		if attempt.ProviderFailureClass != "" {
+			fmt.Fprintf(&builder, "    provider_failure_class=%s\n", attempt.ProviderFailureClass)
 		}
 		if attempt.Status == "prepared" {
 			fmt.Fprintf(&builder, "    uncertain=prepared: the upstream may have been reached; reconcile before re-execution\n")
@@ -600,7 +604,7 @@ func (s *Store) loadInspectToolAttempts(ctx context.Context, taskID string) ([]i
 func (s *Store) loadInspectProviderAttempts(ctx context.Context, taskID string) ([]inspectProviderAttempt, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT p.execution_id, p.client_request_id, p.provider, p.protocol_family, p.config_identity, p.request_id, p.model, p.status, p.outcome, p.delivery_state, p.upstream_reached,
-		        p.uncertain, p.attempt_debited, p.selected_backoff_ns, p.error_class, p.recovery_reason,
+		        p.uncertain, p.attempt_debited, p.selected_backoff_ns, p.error_class, p.provider_failure_class, p.recovery_reason,
 		        (SELECT COUNT(*) FROM provider_attempt_receipts r WHERE r.execution_id = p.execution_id),
 		        p.created_at, p.prepared_at, p.completed_at
 		 FROM provider_attempts p WHERE p.task_id = ? ORDER BY p.created_at, p.execution_id`, taskID)
@@ -615,7 +619,7 @@ func (s *Store) loadInspectProviderAttempts(ctx context.Context, taskID string) 
 		if err := rows.Scan(&attempt.ExecutionID, &attempt.ClientRequestID, &attempt.Provider, &attempt.ProtocolFamily,
 			&attempt.ConfigIdentity, &attempt.RequestID, &attempt.Model, &attempt.Status,
 			&attempt.Outcome, &deliveryState, &attempt.UpstreamReached, &attempt.Uncertain, &attempt.AttemptDebited,
-			&attempt.SelectedBackoff, &attempt.ErrorClass, &attempt.RecoveryReason, &attempt.ReceiptCount, &attempt.CreatedAt,
+			&attempt.SelectedBackoff, &attempt.ErrorClass, &attempt.ProviderFailureClass, &attempt.RecoveryReason, &attempt.ReceiptCount, &attempt.CreatedAt,
 			&attempt.PreparedAt, &attempt.CompletedAt); err != nil {
 			return nil, fmt.Errorf("scan provider attempt: %w", err)
 		}
