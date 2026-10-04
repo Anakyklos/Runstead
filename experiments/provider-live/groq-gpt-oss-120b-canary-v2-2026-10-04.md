@@ -4,10 +4,14 @@ Date: 2026-10-04 UTC
 
 Issue: [#141](https://github.com/Anakyklos/Runstead/issues/141)
 
-Branch: `issue-141-groq-gpt-oss-canary-v2`
+PR: [#142](https://github.com/Anakyklos/Runstead/pull/142)
+
+PR source branch: `issue-141-groq-oss-canary-v2`
+Local worktree branch: `issue-141-groq-gpt-oss-canary-v2`
 
 Base: `8595a660ed4b4be9ff484b1ecfd8c44e5d89de29` (`origin/main` at experiment start)
-Experiment commits before Stage 2: `c289de679357247de663ad9f76f5273dddf4c7dc`, `3acda03d963a21a4df79467e7f8ff2d55fe82d7d`
+Stage 2 dispatch HEAD: `3acda03d963a21a4df79467e7f8ff2d55fe82d7d`
+Initial report-only PR HEAD: `d9773b839a7827d0434af8b8ec2acb61f7279cef` (before this documentation audit update)
 
 ## Decision
 
@@ -58,9 +62,13 @@ The process boundary was frozen in issue #141 before dispatch. Only `read_file` 
 | Acceptance plan | Digest `3c1206c11be99bbd41f780830b899902ba3bb17c807d67081a30bfdd9e932af1`; pinned `app/calc.go` hash check |
 | Physical provider requests | 1; upstream reached; completed and certain |
 | Governor | 1 prepared admission before completion; 1 debit; 0 retries |
+| Request and admission identifiers | Execution `exec-000001`; client request `cli-1791085826705830653-0001`; sanitized request ID `sha256:9ef7d39dd4a494d1`; prepared/completed event sequence 4/5; governor ledger row 2 |
 | Task actions / tool attempts / tool results | 0 / 0 / 0 |
+| Action / observation IDs | None; no task action or observation was persisted |
 | Verifier attempts | 0; the task did not reach independently verified completion |
+| Verifier / recipe IDs | None; no verifier or recipe was run |
 | Process/write effects | No task tool action or attempt; no recipe was exposed; no process-backed observation action was attempted |
+| Resume / rerun / interruption | `resume_count=0`; no rerun or interruption/resume; Stage 3/4 were not dispatched |
 
 The provider request completed, but the task finalized as `final_not_grounded` before any actual `read_file(app/calc.go)` observation. Therefore the objective, evidence, acceptance, and terminal-completion requirements were not met. This is classified as a protocol/evidence-grounding failure for this trajectory; it is not evidence that the Stage 2 objective passed. The single trajectory is retained as-is, with no rerun or post-run acceptance change.
 
@@ -88,7 +96,7 @@ All required pre-PR gates passed on this report-only branch:
 - `bash experiments/protocol/test.sh` — PASS.
 - `git diff --check` — PASS.
 
-This experiment PR is not merged and makes no compatibility or Gate A success claim.
+PR #142 was open and unmerged when this report was prepared for review. Its initial report-only head is recorded above; consult current PR metadata for the latest head. This experiment makes no compatibility or Gate A success claim.
 
 ## Historical evidence
 
