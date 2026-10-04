@@ -491,6 +491,9 @@ func TestSystemContractIsDeterministicAndDescribesRegisteredTools(t *testing.T) 
 	if !strings.Contains(first, "UNTRUSTED") {
 		t.Fatal("system contract missing the untrusted-data rule")
 	}
+	if !strings.Contains(first, "If a required observation is missing, use a tool action to obtain it before citing it; never invent or guess an evidence ID.") {
+		t.Fatal("system contract missing provider-neutral guidance for absent evidence")
+	}
 	for _, guidance := range []string{protocol.ActionEnvelopeGuidance(), protocol.FinalEnvelopeGuidance()} {
 		if !strings.Contains(first, guidance) {
 			t.Fatalf("system contract missing canonical protocol guidance: %s", guidance)

@@ -1054,10 +1054,16 @@ func (l *Loop) handleFinal(
 	stop func(Outcome, string, func(*Result)) Result,
 ) (Result, bool) {
 	grounded, missing := evidence.Ground(*final)
-	if !grounded {
-		return stop(OutcomeFinalNotGrounded, fmt.Sprintf("final evidence not grounded: missing %s", strings.Join(missing, ",")), func(result *Result) {
-			result.Evidence = append([]string(nil), missing...)
-		}), true
+	// Incomplete responses retain their existing terminal contract. A complete
+	// response is only a proposal: let the verifier persist and report missing
+	// citations so the model can recover within the same bounded verification
+	// retry policy used for other failed completion checks.
+	if final.Status == protocol.StatusIncomplete {
+		if !grounded {
+			return stop(OutcomeFinalNotGrounded, fmt.Sprintf("final evidence not grounded: missing %s", strings.Join(missing, ",")), func(result *Result) {
+				result.Evidence = append([]string(nil), missing...)
+			}), true
+		}
 	}
 	// No task may finalize (as completed OR failed) while a mandatory write is
 	// still awaiting an operator approval: pause instead, keeping the task
@@ -1114,6 +1120,11 @@ func (l *Loop) handleFinal(
 		// instead of letting the model keep proposing complete.
 		run.verificationRetries++
 		if run.verificationRetries > l.limits.MaxVerificationRetries {
+			if missingIDs := missingCitedEvidence(report, missing); len(missingIDs) > 0 {
+				return stop(OutcomeFinalNotGrounded, fmt.Sprintf("final evidence not grounded: missing %s", strings.Join(missingIDs, ",")), func(result *Result) {
+					result.Evidence = missingIDs
+				}), true
+			}
 			return stop(OutcomeVerificationFailuresExhausted,
 				fmt.Sprintf("%s: %d consecutive failed verification attempt(s)", OutcomeVerificationFailuresExhausted.StopReason(), run.verificationRetries), nil), true
 		}
@@ -1128,14 +1139,40 @@ func (l *Loop) handleFinal(
 		transcript.verification(string(report.Decision), report.Summary, views)
 		return Result{}, false
 	default:
-		// blocked or uncertain: a control-plane dependency prevents
-		// completion. The task is not finalized; it stays durably resumable.
+		// Blocked or uncertain verification cannot authorize the ordinary
+		// failed-verification continuation. Preserve the existing
+		// final_not_grounded classification when the report (or the fast
+		// fail-closed path) confirms a missing citation; otherwise the task
+		// stays durably resumable under the verification-blocked outcome.
+		if missingIDs := missingCitedEvidence(report, missing); len(missingIDs) > 0 {
+			return stop(OutcomeFinalNotGrounded, fmt.Sprintf("final evidence not grounded: missing %s", strings.Join(missingIDs, ",")), func(result *Result) {
+				result.Evidence = missingIDs
+			}), true
+		}
 		return stop(OutcomeVerificationBlocked, report.Summary, func(result *Result) {
 			result.Summary = final.Summary
 			result.Evidence = citedEvidenceIDs(final.Evidence)
 			result.Classification = string(report.Decision)
 		}), true
 	}
+}
+
+func missingCitedEvidence(report verifier.Report, inRunMissing []string) []string {
+	var missing []string
+	for _, citation := range report.CitedEvidence {
+		if !citation.Exists {
+			missing = append(missing, citation.EvidenceID)
+		}
+	}
+	// verifyCompletion returns a synthetic blocked report if its own
+	// persistence step fails, before the full verifier report (and its cited
+	// evidence resolution) can be retained. Preserve the legacy final_not_grounded
+	// classification in that fail-closed case without using this fast
+	// in-memory view to authorize completion or retry a normal verifier result.
+	if len(missing) == 0 && len(report.CitedEvidence) == 0 && len(inRunMissing) > 0 {
+		return append([]string(nil), inRunMissing...)
+	}
+	return missing
 }
 
 // citedEvidenceIDs extracts the evidence ids of typed citations, preserving

@@ -200,6 +200,40 @@ func TestLoopVerificationWithoutAcceptancePlanNeverCompletes(t *testing.T) {
 	}
 }
 
+// A missing citation remains fail-closed when the verifier cannot make a
+// normal failed decision because the operator acceptance plan is absent.
+// The verifier records its blocked result, and the public outcome remains
+// final_not_grounded without executing any tool action.
+func TestLoopUngroundedCompleteFinalWithBlockedVerifierRemainsTerminal(t *testing.T) {
+	workspace := t.TempDir()
+	taskID := "task-ungrounded-verifier-blocked"
+	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
+		finalResponse("complete", "I finished.", finalEvidence("obs-999999", "read_file")),
+	)
+	loop := verifierLoop(t, h, nil, agent.Limits{}, nil)
+	result := loop.Run(context.Background(), testTask(taskID))
+	if result.Outcome != agent.OutcomeFinalNotGrounded {
+		t.Fatalf("outcome = %s, want final_not_grounded when verifier is blocked (reason %s)", result.Outcome, result.StopReason)
+	}
+	if result.Turns != 1 || h.provider.Attempts() != 1 {
+		t.Fatalf("turns/provider calls = %d/%d, want 1/1", result.Turns, h.provider.Attempts())
+	}
+	snapshot, err := h.store.LoadRecoverySnapshot(context.Background(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Actions) != 0 || len(snapshot.ToolAttempts) != 0 || len(snapshot.Evidence) != 0 {
+		t.Fatalf("actions/tool attempts/evidence = %d/%d/%d, want 0/0/0", len(snapshot.Actions), len(snapshot.ToolAttempts), len(snapshot.Evidence))
+	}
+	verification, err := h.store.VerificationAttempts(context.Background(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(verification) != 1 || verification[0].Decision != "blocked" {
+		t.Fatalf("verification attempts = %+v, want one persisted blocked attempt", verification)
+	}
+}
+
 // Scenario 13: a failed verification is presented as a structured observation
 // and the loop continues; after a real correction the next verification passes
 // (scenario 14).

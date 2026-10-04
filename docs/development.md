@@ -751,8 +751,18 @@ permissions, policy or approval. A `runstead_final` is syntax only; `completed`
 is accepted only when every cited evidence ID was produced by a successful
 observation in the current run, the declared tool of each citation matches the
 persisted evidence row (issue #11), and the control-plane verifier passes.
-Fabricated IDs produce `final_not_grounded`, and an `incomplete` final is a
-grounded terminal `final_incomplete`.
+For a `complete` proposal, the independent verifier resolves each cited ID.
+When it can make a normal `failed` decision, a missing ID is persisted as a
+failed `evidence_grounded` check and can be corrected through the normal
+bounded verification retries. The invalid final itself produces no tool
+effect; a later governed turn may obtain real evidence. If the retry bound is
+exhausted while citations remain missing, the terminal outcome stays
+`final_not_grounded` (exit code 27). If verification is blocked, uncertain,
+or cannot be persisted, the existing fail-closed `final_not_grounded`
+classification is retained for a missing citation; without one, the task
+stays resumable under its verification outcome. An `incomplete` final with
+missing evidence keeps the immediate `final_not_grounded` result; a grounded
+`incomplete` final is terminal `final_incomplete`.
 
 ### Safety invariants
 

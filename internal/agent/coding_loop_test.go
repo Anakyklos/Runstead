@@ -7,11 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/agent"
+	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/policy"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/recipe"
+	"github.com/RenyEnnos/Runstead/internal/recovery"
 	"github.com/RenyEnnos/Runstead/internal/state"
 	"github.com/RenyEnnos/Runstead/internal/tools"
 	"github.com/RenyEnnos/Runstead/internal/verifier"
@@ -20,6 +23,232 @@ import (
 // The recipe harness already carries everything the coding-loop tests need:
 // real store, real registry, fake clock, scripted provider and fake runner.
 // The loop-level tests build the loop directly from it.
+
+func TestLoopRecoversFromUngroundedFinalThroughVerifiedObservation(t *testing.T) {
+	workspace := t.TempDir()
+	fixtureFile(t, workspace, "readme.txt", "info\n")
+	taskID := "task-ungrounded-recovers"
+	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
+		finalResponse("complete", "I read the file.", finalEvidence("obs-999999", "read_file")),
+		actionResponse("read_file", `{"path":"readme.txt"}`),
+		finalResponse("complete", "The file contains info.", finalEvidence("obs-000001", "read_file")),
+	)
+	persistProviderAccounting(t, h)
+	loop := h.loopWithPlan(t, agent.Limits{MaxSteps: 10}, existsPlan("readme.txt"), nil)
+	result := loop.Run(context.Background(), testTask(taskID))
+	if result.Outcome != agent.OutcomeCompleted {
+		t.Fatalf("outcome = %s, want completed after a real observation (reason %s)", result.Outcome, result.StopReason)
+	}
+	if result.Turns != 3 || result.Attempts != 3 || result.Observations != 1 || h.provider.Attempts() != 3 {
+		t.Fatalf("turns/attempts/observations/provider calls = %d/%d/%d/%d, want 3/3/1/3", result.Turns, result.Attempts, result.Observations, h.provider.Attempts())
+	}
+	governorTask := h.governor.Snapshot().Tasks[taskID]
+	if governorTask.Attempts != 3 || governorTask.Retries != 0 {
+		t.Fatalf("governor attempts/retries = %d/%d, want 3/0", governorTask.Attempts, governorTask.Retries)
+	}
+	snapshot, err := h.store.LoadRecoverySnapshot(context.Background(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Actions) != 1 || len(snapshot.ToolAttempts) != 1 || len(snapshot.Evidence) != 1 {
+		t.Fatalf("persisted actions/tool attempts/evidence = %d/%d/%d, want 1/1/1", len(snapshot.Actions), len(snapshot.ToolAttempts), len(snapshot.Evidence))
+	}
+	if snapshot.Evidence[0].EvidenceID != "obs-000001" || snapshot.Evidence[0].Tool != "read_file" {
+		t.Fatalf("persisted evidence = %+v, want the real read_file observation obs-000001", snapshot.Evidence[0])
+	}
+	if len(snapshot.ProviderAttempts) != 3 {
+		t.Fatalf("persisted provider attempts = %d, want 3 one per admitted model turn", len(snapshot.ProviderAttempts))
+	}
+	for _, attempt := range snapshot.ProviderAttempts {
+		if attempt.AttemptDebited != 1 || attempt.Status != "completed" {
+			t.Fatalf("provider attempt = %+v, want completed with exactly one debit", attempt)
+		}
+	}
+	verification, err := h.store.VerificationAttempts(context.Background(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(verification) != 2 || verification[0].Decision != "failed" || verification[1].Decision != "passed" {
+		t.Fatalf("verification decisions = %+v, want chronological failed then passed", verification)
+	}
+	var groundingFailed bool
+	for _, check := range verification[0].Checks {
+		if check.CheckID == "evidence_grounded" && check.Status == "failed" && check.Reason == "evidence_ids_not_found" {
+			groundingFailed = true
+		}
+	}
+	if !groundingFailed {
+		t.Fatalf("first verifier attempt must reject the fabricated citation: %+v", verification[0].Checks)
+	}
+	prompts := h.provider.Requests()
+	if len(prompts) != 3 || !strings.Contains(prompts[1], "=== runstead:verification ===") || !strings.Contains(prompts[1], "evidence_ids_not_found") {
+		t.Fatalf("the turn after the invalid final must receive a structured verification result; prompts=%d", len(prompts))
+	}
+	var inspect strings.Builder
+	if err := h.store.RenderInspect(context.Background(), &inspect, taskID); err != nil {
+		t.Fatal(err)
+	}
+	journal := inspect.String()
+	failedVerificationAt := strings.Index(journal, "verification_recorded")
+	actionPlannedAt := strings.Index(journal, "action_planned")
+	lastVerificationAt := strings.LastIndex(journal, "verification_recorded")
+	if failedVerificationAt < 0 || actionPlannedAt <= failedVerificationAt || lastVerificationAt <= actionPlannedAt {
+		t.Fatalf("journal chronology must persist failed verification before the later action and passed verification after it:\n%s", journal)
+	}
+}
+
+func TestLoopUngroundedCompleteFinalsExhaustVerificationBound(t *testing.T) {
+	workspace := t.TempDir()
+	taskID := "task-ungrounded-bound"
+	responses := []provider.Response{
+		finalResponse("complete", "not grounded", finalEvidence("obs-999999", "read_file")),
+		finalResponse("complete", "still not grounded", finalEvidence("obs-999998", "read_file")),
+		finalResponse("complete", "again not grounded", finalEvidence("obs-999997", "read_file")),
+	}
+	h := newWriteHarness(t, workspace, allowAllPolicy(), nil, responses...)
+	persistProviderAccounting(t, h)
+	loop := h.loopWithPlan(t, agent.Limits{MaxSteps: 10, MaxVerificationRetries: 2}, existsPlan("never.txt"), nil)
+	result := loop.Run(context.Background(), testTask(taskID))
+	if result.Outcome != agent.OutcomeFinalNotGrounded {
+		t.Fatalf("outcome = %s, want final_not_grounded after the verification bound (reason %s)", result.Outcome, result.StopReason)
+	}
+	if result.Turns != 3 || result.Attempts != 3 || h.provider.Attempts() != 3 {
+		t.Fatalf("turns/attempts/provider calls = %d/%d/%d, want 3/3/3", result.Turns, result.Attempts, h.provider.Attempts())
+	}
+	governorTask := h.governor.Snapshot().Tasks[taskID]
+	if governorTask.Attempts != 3 || governorTask.Retries != 0 {
+		t.Fatalf("governor attempts/retries = %d/%d, want 3/0", governorTask.Attempts, governorTask.Retries)
+	}
+	verification, err := h.store.VerificationAttempts(context.Background(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(verification) != 3 {
+		t.Fatalf("persisted verification attempts = %d, want initial proposal plus 2 bounded continuations", len(verification))
+	}
+	for _, attempt := range verification {
+		if attempt.Decision != "failed" {
+			t.Fatalf("verification decision = %s, want failed", attempt.Decision)
+		}
+	}
+	snapshot, err := h.store.LoadRecoverySnapshot(context.Background(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Actions) != 0 || len(snapshot.ToolAttempts) != 0 || len(snapshot.Evidence) != 0 {
+		t.Fatalf("persisted actions/tool attempts/evidence = %d/%d/%d, want 0/0/0", len(snapshot.Actions), len(snapshot.ToolAttempts), len(snapshot.Evidence))
+	}
+	if len(snapshot.ProviderAttempts) != 3 {
+		t.Fatalf("persisted provider attempts = %d, want 3 one per admitted model turn", len(snapshot.ProviderAttempts))
+	}
+	for _, attempt := range snapshot.ProviderAttempts {
+		if attempt.AttemptDebited != 1 || attempt.Status != "completed" {
+			t.Fatalf("provider attempt = %+v, want completed with exactly one debit", attempt)
+		}
+	}
+}
+
+func TestLoopIncompleteFinalWithMissingEvidenceKeepsExistingTerminalMeaning(t *testing.T) {
+	workspace := t.TempDir()
+	taskID := "task-incomplete-ungrounded"
+	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
+		finalResponse("incomplete", "I could not answer fully.", finalEvidence("obs-999999", "read_file")),
+	)
+	loop := h.loopWithPlan(t, agent.Limits{}, existsPlan("never.txt"), nil)
+	result := loop.Run(context.Background(), testTask(taskID))
+	if result.Outcome != agent.OutcomeFinalNotGrounded || result.Outcome.ExitCode() != agent.OutcomeFinalNotGrounded.ExitCode() {
+		t.Fatalf("outcome/exit = %s/%d, want final_not_grounded/%d", result.Outcome, result.Outcome.ExitCode(), agent.OutcomeFinalNotGrounded.ExitCode())
+	}
+	if result.Turns != 1 || h.provider.Attempts() != 1 {
+		t.Fatalf("turns/provider calls = %d/%d, want 1/1", result.Turns, h.provider.Attempts())
+	}
+	verification, err := h.store.VerificationAttempts(context.Background(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(verification) != 0 {
+		t.Fatalf("incomplete final verifier attempts = %d, want 0", len(verification))
+	}
+}
+
+func TestLoopResumeCountsPersistedUngroundedVerificationFailures(t *testing.T) {
+	workspace := t.TempDir()
+	taskID := "task-resume-ungrounded"
+	ctx := context.Background()
+	plan := existsPlan("never.txt")
+	h := newWriteHarness(t, workspace, allowAllPolicy(), nil,
+		finalResponse("complete", "still fabricated", finalEvidence("obs-999999", "read_file")),
+	)
+	if err := h.store.CreateTask(ctx, state.TaskRecord{TaskID: taskID, Objective: "inspect", Workspace: workspace}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.StartTask(ctx, taskID); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := h.store.SaveVerificationAttempt(ctx, state.VerificationAttemptRecord{
+			TaskID: taskID, Decision: "failed", Summary: "completion refused: evidence_ids_not_found",
+			ReportJSON: []byte(`{"decision":"failed"}`), Checks: []state.VerificationCheckRecord{{
+				CheckID: "evidence_grounded", Type: "structural", Status: "failed", Reason: "evidence_ids_not_found",
+			}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recovered, err := recovery.Resume(ctx, h.store, recovery.Options{TaskID: taskID})
+	if err != nil {
+		t.Fatalf("recovery.Resume() error = %v", err)
+	}
+	if recovered.Decision != recovery.DecisionContinue || recovered.Seed == nil || recovered.Seed.VerificationRetries != 2 {
+		t.Fatalf("recovered decision/seed = %s/%+v, want continue with verification retry count 2", recovered.Decision, recovered.Seed)
+	}
+	persistedGovernor := persistProviderAccounting(t, h)
+	loop := h.loopWithPlan(t, agent.Limits{MaxSteps: 10, MaxVerificationRetries: 2}, plan, recovered.Seed)
+	result := loop.Run(ctx, testTask(taskID))
+	if result.Outcome != agent.OutcomeFinalNotGrounded {
+		t.Fatalf("outcome = %s, want final_not_grounded after the persisted retry streak", result.Outcome)
+	}
+	if result.Turns != 1 || result.Attempts != 1 || h.provider.Attempts() != 1 {
+		t.Fatalf("resumed turns/attempts/provider calls = %d/%d/%d, want 1/1/1", result.Turns, result.Attempts, h.provider.Attempts())
+	}
+	if task := persistedGovernor.Snapshot().Tasks[taskID]; task.Attempts != 1 || task.Retries != 0 {
+		t.Fatalf("resumed governor attempts/retries = %d/%d, want 1/0", task.Attempts, task.Retries)
+	}
+	snapshot, err := h.store.LoadRecoverySnapshot(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Evidence) != 0 || len(snapshot.ToolAttempts) != 0 {
+		t.Fatalf("resumed fabricated final persisted evidence/tool attempts = %d/%d, want 0/0", len(snapshot.Evidence), len(snapshot.ToolAttempts))
+	}
+	if len(snapshot.ProviderAttempts) != 1 || snapshot.ProviderAttempts[0].AttemptDebited != 1 || snapshot.ProviderAttempts[0].Status != "completed" {
+		t.Fatalf("persisted provider attempts = %+v, want one completed attempt with one debit", snapshot.ProviderAttempts)
+	}
+	verification, err := h.store.VerificationAttempts(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(verification) != 3 || verification[2].Decision != "failed" {
+		t.Fatalf("verification history = %+v, want two prior failures and one resumed failed check", verification)
+	}
+}
+
+func persistProviderAccounting(t *testing.T, h *writeHarness) *governor.Governor {
+	t.Helper()
+	config := governor.DefaultInstantConfig("policy-loop-test", "fake", "instant", provider.SafeRouteSafety())
+	config.MinimumStartInterval = time.Nanosecond
+	accountGovernor, err := governor.New(config, governor.Options{Clock: h.clock, Jitter: fixedJitter{}, Persistence: h.store})
+	if err != nil {
+		t.Fatalf("governor.New() error = %v", err)
+	}
+	executor, err := agent.NewExecutor(accountGovernor, h.provider, nil)
+	if err != nil {
+		t.Fatalf("agent.NewExecutor() error = %v", err)
+	}
+	h.governor = accountGovernor
+	h.executor = executor
+	return accountGovernor
+}
 
 // fixtureFile writes one fixture file into the workspace and returns its
 // content.

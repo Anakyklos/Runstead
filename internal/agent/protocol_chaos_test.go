@@ -143,20 +143,22 @@ func TestProtocolChaosMatrix(t *testing.T) {
 			wantCompleted:    true,
 		},
 		{
-			name: "completion without evidence",
-			// The final cites an evidence id no observation produced: the
-			// grounding gate rejects it and the task is finalized as
-			// final_not_grounded, never completed.
+			name: "completion without evidence recovers after new evidence",
+			// The first final cites an ID no observation produced. The verifier
+			// rejects and records it; only a later real list_files observation
+			// and a final citing that returned ID may complete the task.
 			responses: []string{
 				`<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"a.txt"}}</runstead_action>`,
 				`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"I did it","evidence":[{"evidence_id":"obs-000999","tool":"read_file"}]}</runstead_final>`,
+				`<runstead_action>{"version":"runstead.protocol.v1","tool":"list_files","arguments":{"path":"."}}</runstead_action>`,
+				`<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"I did it","evidence":[{"evidence_id":"obs-000002","tool":"list_files"}]}</runstead_final>`,
 			},
 			limits:           agent.Limits{MaxSteps: 10},
-			wantOutcome:      agent.OutcomeFinalNotGrounded,
-			wantActions:      1,
-			wantToolAttempts: 1,
+			wantOutcome:      agent.OutcomeCompleted,
+			wantActions:      2,
+			wantToolAttempts: 2,
 			wantTerminal:     true,
-			wantCompleted:    true,
+			wantCompleted:    false,
 		},
 	}
 

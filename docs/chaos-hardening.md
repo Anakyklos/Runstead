@@ -40,7 +40,7 @@ production); everything else is test code.
 | multiple conflicting actions | `TestProtocolChaosMatrix/multiple_conflicting_action_envelopes` | rejected as one parse failure, only the corrected single action executes |
 | unknown tool | `TestProtocolChaosMatrix/unknown_tool` | corrected, never executed, no tool attempt |
 | identical repeated action | `TestProtocolChaosMatrix/identical_repeated_action` + `TestProtocolChaosRepeatedActionRejectedProjection` | repeat guard stops typed; guard-rejected proposals persist as `rejected`, never `planned`/`completed` |
-| completion without evidence | `TestProtocolChaosMatrix/completion_without_evidence` | `final_not_grounded`, never `completed` |
+| fabricated evidence in completion proposal | `TestProtocolChaosMatrix/completion_without_evidence_recovers_after_new_evidence` | persisted verifier rejection, then completion only after a later real observation and grounded citation |
 | model claims completion while suite red | existing `TestLoopVerificationClaimedFileMissingNeverCompletes`, `TestCodingLoopPrematureCompletionFailsThenPasses` (reused) | verifier rejects the claim and returns the task to execution |
 
 Parser-level cases (truncated, malformed, multiple envelopes, unknown tool)
