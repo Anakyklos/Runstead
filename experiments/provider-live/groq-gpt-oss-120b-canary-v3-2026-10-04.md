@@ -54,21 +54,54 @@ bodies and transcripts are not retained.
 - Groq-specific adapter audit: none found under `internal/provider`.
 - `.env.local` ignore rule: confirmed before commit. Secret presence check:
   present in the ignored environment file; the value was not output or stored.
-- Authenticated `/models` request: pending; no provider request made yet.
+- Authenticated model-list request: PASS. Exactly one `GET /models` was made
+  with User-Agent `Runstead-GateA-Canary/1.0`; HTTP 200; exact model present.
+  The key was loaded from the ignored `.env.local` into the request process and
+  was not printed or persisted. No response body or headers were retained.
 
 ## Stage 2 — real read-only agent loop
 
-Not dispatched. A separate objective/evidence/effects preflight will be
-recorded before dispatch, and Stage 2 will use a fresh copy of
-`fixtures/coding-loop` and a new task/state directory.
+### Acceptance preflight (recorded before Stage 2 dispatch)
+
+- Objective: on a fresh copy of `fixtures/coding-loop`, run one new v3 task
+  with the exact requested objective: `Read app/calc.go using the available
+  repository tool. Complete only after citing the actual read_file observation
+  for app/calc.go. Do not modify files and do not run recipes or processes.`
+- Required observable evidence: fresh workspace and state directory; frozen
+  SHA-256 for `app/calc.go`; task ID; provider configuration identity; complete
+  task history including admissions, physical requests/debits, verification
+  attempts, actions, tool attempts/results and evidence IDs; `read_file` result
+  for `app/calc.go`; nonempty final citation matching that persisted result;
+  zero write or recipe/process effects; independent verifier PASS; terminal
+  `completed`.
+- Acceptance checks: runtime acceptance plan uses the verifier-supported
+  `file_hash` check for the unchanged `app/calc.go`; supplemental audit checks
+  every history predicate above, including that the citation exists and its
+  persisted tool is `read_file`. The hash alone cannot qualify Stage 2.
+  Each physical model request must have its own governor admission and exactly
+  one debit. Normal turns in this task are not reruns. The run will use
+  `--retry-policy off` and explicit `--max-verification-retries 3` (the current
+  runtime default), with adapter retry/fallback disabled. A fabricated or
+  nonexistent citation may receive normal verifier feedback and continue in
+  this same task, but a terminal failure or exhausted bound stops the canary.
+- Allowed effects: create one fresh fixture copy and state directory; create
+  and run one task using the declared v3 provider; repository read tools only;
+  normal governed model turns; independent verification; read-only inspection
+  of the task's SQLite state for audit.
+- Prohibited effects: any second task/restart/rerun; workspace writes; recipe
+  or process execution; changing provider, model, key/account, endpoint,
+  acceptance, or retry bounds after dispatch; adapter retry/fallback; retaining
+  raw provider transcripts/bodies; Gate A decisions by workers.
+- Preflight status: PASS; profile contains only the built-in `repo.read@1.0.0`
+  package; acceptance hash is frozen before task dispatch.
 
 ## Stage 3 — bounded coding fixture
 
-Not dispatched; requires Stage 2 PASS.
+Not dispatched; requires Stage 2 PASS and its own recorded preflight.
 
 ## Stage 4 — interruption and resume
 
-Not dispatched; requires Stage 3 PASS.
+Not dispatched; requires Stage 3 PASS and its own recorded preflight.
 
 ## Gate A decision
 
