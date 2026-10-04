@@ -1,9 +1,12 @@
 # Groq GPT-OSS-120B Gate A canary v2 — NOT QUALIFIED
 
-Date: 2026-10-04 UTC  
-Issue: [#141](https://github.com/Anakyklos/Runstead/issues/141)  
-Branch: `issue-141-groq-gpt-oss-canary-v2`  
-Base: `8595a660ed4b4be9ff484b1ecfd8c44e5d89de29` (`origin/main` at experiment start)  
+Date: 2026-10-04 UTC
+
+Issue: [#141](https://github.com/Anakyklos/Runstead/issues/141)
+
+Branch: `issue-141-groq-gpt-oss-canary-v2`
+
+Base: `8595a660ed4b4be9ff484b1ecfd8c44e5d89de29` (`origin/main` at experiment start)
 Experiment commits before Stage 2: `c289de679357247de663ad9f76f5273dddf4c7dc`, `3acda03d963a21a4df79467e7f8ff2d55fe82d7d`
 
 ## Decision
