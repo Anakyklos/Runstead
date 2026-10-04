@@ -1,6 +1,6 @@
 # Groq GPT-OSS-120B Gate A canary v3
 
-Status: complete; Gate A NOT SATISFIED; report-only. This report records only
+Status: audit complete; Gate A NOT SATISFIED; report-only. This report records only
 sanitized evidence; raw provider bodies and transcripts are not retained.
 
 ## Identity
@@ -13,9 +13,11 @@ sanitized evidence; raw provider bodies and transcripts are not retained.
 - Endpoint: `https://api.groq.com/openai/v1`
 - Model: `openai/gpt-oss-120b`
 - Auth declaration: `reference_required`, reference `GROQ_API_KEY`
-- Secret hygiene: the key value is not written to the repository, SQLite,
-  traces, evidence, fixtures, prompts, issue/PR, or this report. Only
-  presence/configuration status may be recorded.
+- Secret hygiene: this report contains no key value. The retained-state
+  auditor scans for the exact value only when a nonempty
+  `GROQ_API_KEY` is available to its process. The current offline audit could
+  not access a nonempty value, so it does not establish key absence from the
+  retained SQLite state.
 
 ## Stage 1 — authentication and exact model
 
@@ -120,8 +122,86 @@ sanitized evidence; raw provider bodies and transcripts are not retained.
   therefore not admissible; the failed trajectory is preserved and no second
   task was started. The request ID also failed the sanitized-ID pattern check,
   so it was not used as diagnostic evidence.
-- Secret hygiene: no key value or raw provider response/body was persisted in
-  the report or repository. Only sanitized attempt metadata was retained.
+- Secret hygiene: the auditor process had no nonempty `GROQ_API_KEY`. It
+  therefore records `secret_scan=unavailable` and `audit_result=LIMITED`;
+  this audit makes no claim that the key is absent from SQLite. The sanitized
+  audit output contains no provider body, prompt, or key value.
+
+### Offline retained-state audit
+
+Command, run from this experiment directory:
+
+```bash
+python3 stage2_audit.py \
+  --state-dir /tmp/runstead-issue145-v3-stage2-one4hmd3/state \
+  --task-id cli-1791122946929726868
+```
+
+Sanitized output:
+
+```text
+audit_result=LIMITED
+task_id=cli-1791122946929726868
+status=failed
+outcome=provider_failure
+stop_reason=uncertain_reached
+resume_count=0
+execution_contract_hash=sha256:564217c482efef00533cf1bc3163a2de1bb24892b70ceb895d59accbc3b62a54
+provider_id=groq-gpt-oss-120b-canary-v3
+protocol_family=openai_compatible
+model=openai/gpt-oss-120b
+config_identity_sha256=8c82364904527fe72536949d7c994b6e6f4c33f1664ae7faa4fe05e98505ecf9
+provider_attempts=1
+attempt_sequence=1
+attempt_status=uncertain
+attempt_outcome=uncertain_reached
+upstream_reached=1
+uncertain=1
+attempt_debited=1
+model_pool=instant
+selected_backoff_ns=0
+delivery_state=sent_unconfirmed
+request_id_present=False
+error_class=empty
+receipt_count=0
+receipt_error=empty
+governor_ledger_entries=1
+governor_admissions=1
+retries=0
+prepared_event_sequence=4
+uncertain_event_sequence=5
+event_ordering=prepared_then_uncertain
+actions=0
+tool_attempts=0
+tool_results=0
+writes=0
+recipes_processes=0
+verification_attempts=0
+acceptance_digest=3c1206c11be99bbd41f780830b899902ba3bb17c807d67081a30bfdd9e932af1
+acceptance_saved_before_dispatch=True
+acceptance_changes_after_dispatch=0
+secret_scan=unavailable
+transport_root_cause=unknown
+original_cli_output=not_retained
+additional_provider_requests=0
+```
+
+The audit reproduced the task ID/objective/terminal status and outcome,
+`resume_count`, execution-contract hash, and frozen provider/config/model
+identity. It proved one physical attempt at sequence 1, one debit, zero
+retries, `uncertain`/`sent_unconfirmed`, one governor ledger/admission, and
+the ordered `provider_attempt_prepared` then
+`provider_attempt_uncertain` events. It also proved zero actions, tool
+attempts/results, writes, recipes/processes, and verification attempts. The
+acceptance plan and digest match the task config and execution contract, and
+the sole acceptance save precedes dispatch with no later save event.
+
+Claims left `LIMITED`: exact-value secret scanning was unavailable because
+the auditor had no nonempty `GROQ_API_KEY`; the concrete transport root cause
+remains unknown because the original CLI output was not retained. The audit
+does not reinterpret `sent_unconfirmed` as a timeout or HTTP status.
+`additional_provider_requests=0`; the retained canary task was not created or
+restarted. Test-suite tasks use local temporary fixtures only.
 
 ## Stage 3 — bounded coding fixture
 
