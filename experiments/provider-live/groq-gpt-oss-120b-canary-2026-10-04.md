@@ -188,8 +188,10 @@ inspect/resume operation, recovery attempt, or Stage 4 verifier exists.
 
 ### Validation on the continuation branch
 
-These requested gates were run on the report-only continuation branch at
-`1d8be6162143ad4bedea4b97e63d3a4985983d10` plus this report update:
+These requested gates were run on the report-only continuation branch whose
+runtime and configuration sources are unchanged from
+`1d8be6162143ad4bedea4b97e63d3a4985983d10`. They ran after the continuation
+was recorded and before the final wording clarifications to this report:
 
 - `test -z "$(gofmt -l .)"`: PASS (exit 0; no output).
 - `go test ./...`: PASS (exit 0; `cmd/runstead` 313.723s; all packages
@@ -204,3 +206,8 @@ These requested gates were run on the report-only continuation branch at
 
 These repository gates validate the branch contents; they do not change the
 Stage 2 acceptance decision or satisfy Gate A.
+
+After the full-suite gates, only report wording/metadata was clarified. No
+runtime, configuration, fixture, or compatibility-document content changed.
+`test -z "$(gofmt -l .)"` and `git diff --check` were rerun after those final
+text edits and passed.
