@@ -1,21 +1,34 @@
 {
   "objective": "Read app/calc.go and identify the whitespace-handling bug in ParseValues. Do not modify files and do not run recipes/processes. Base the final claim on the actual read_file evidence.",
   "fixture": "fixtures/coding-loop",
-  "workspace": "fresh temporary Git copy of fixtures/coding-loop",
-  "required_evidence": [
-    "successful read_file action with path app/calc.go",
-    "successful observation whose data path and metadata path are app/calc.go and whose SHA-256 matches the committed fixture",
-    "final evidence citation resolves to that exact read_file observation",
-    "Runstead verifier passed the persisted calc-source-unchanged file_hash check",
-    "no write_file, apply_patch, or run_recipe action or tool attempt"
-  ],
+  "workspace": "fresh temporary copy of fixtures/coding-loop; do not initialize Git so verifier Git observation launches no process",
+  "post_run_verification": {
+    "required_action": {"tool": "read_file", "path": "app/calc.go", "success": true},
+    "required_observation": {"data_path": "app/calc.go", "metadata_path": "app/calc.go", "sha256_matches_fixture": true},
+    "final_claim": {
+      "requires": ["bug or defect assertion", "ParseValues", "strconv.Atoi(part)", "positive no-trim statement", "positive whitespace parse-failure statement"],
+      "single_sentence_full_match": true,
+      "rejects_contradiction_markers": ["not", "never", "but", "however", "actually", "except", "unless", "although"],
+      "citation_must_match_observation": true
+    },
+    "prohibited_effect_tools": ["apply_patch", "run_recipe", "write_file"],
+    "process_backed_tools": ["git_diff", "git_status", "search_text"],
+    "terminal": {"task_status": "completed", "latest_verifier": "passed", "acceptance_check": "calc-source-unchanged"},
+    "attempt_accounting": {"physical_requests_equal_admissions": true, "debits_equal_admissions": true, "retries": 0}
+  },
   "acceptance_plan": "stage2-acceptance.json",
+  "independent_audit_runner": "stage2-runner.py",
   "acceptance_checks": [
     {"id": "calc-source-unchanged", "type": "file_hash", "path": "app/calc.go", "sha256": "b8a1bd5dc67bfd9a64bd13503994fdf5e3fc78edaf80502f29992561c6986d94"}
   ],
   "profile": "stage2-profile.json",
   "allowed_tools": ["read_file", "list_files", "search_text", "git_status", "git_diff"],
-  "allowed_effects": ["read-only filesystem and Git observations"],
-  "prohibited_effects": ["file writes", "patches", "recipe execution", "process execution", "network access from tools"],
-  "external_verifier": "Check the task's authoritative actions, tool_attempts, tool_results, and verification_attempts before qualification; require the target read, exact evidence citation/path/hash, no prohibited tools, and completed/passed terminal state. Do not rely on the model's prose or the file_hash check alone."
+  "allowed_effects": ["read-only read_file/list_files observations"],
+  "prohibited_effects": ["file writes", "patches", "recipe execution", "process-backed search/Git tools", "network access from tools"],
+  "process_boundary": {
+    "task_actions": "no process-backed tools or recipes; only read_file/list_files may be attempted",
+    "control_plane": "Git and ripgrep are intentionally unavailable on the isolated task PATH, so bootstrap/verifier and observation tools cannot launch subprocesses",
+    "qualification": "any search_text, git_status, git_diff, run_recipe, write_file, or apply_patch action/attempt fails Stage 2"
+  },
+  "external_verifier": "stage2-runner.py independently checks the task's authoritative actions, tool_attempts, tool_results, verification_attempts, and governor/provider ledgers before qualification. It evaluates the model claim in memory against the cited observed source, then discards raw output."
 }
