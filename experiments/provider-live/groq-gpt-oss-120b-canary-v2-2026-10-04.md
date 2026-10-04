@@ -30,7 +30,7 @@ Initial report-only PR HEAD: `d9773b839a7827d0434af8b8ec2acb61f7279cef` (before 
 | Adapter version | `compatible-provider-v0.1` |
 | Stage 2 sanitized config identity | `provider.Config{ProviderID:"groq-gpt-oss-120b-canary-v2" ProtocolFamily:"openai_compatible" Endpoint:"https://api.groq.com/openai/v1" Model:"openai/gpt-oss-120b" AuthRequirement:"reference_required" AuthRef:true Options:[] ProfileVersion:"v1" RouteSafety:provider.RouteSafety{AttemptAccounting:0x1, SingleAttempt:0x1, InternalRetries:0x1, CooldownReplay:0x1, AccountPooling:0x1, AutomaticFallback:0x1, ComboRouting:0x1} ConfigVersion:"v1"}` |
 
-The secret was checked for presence and loaded from the ignored local environment file into the request process. Its value was never printed or written to the candidate configuration, task database, evidence, report, or issue. A read-only scan of all retained Stage 2 state files found no literal secret value. Captured CLI output and the unverified final note were not emitted in logs or this report.
+The original dispatch record states that the secret was checked and loaded from the ignored local environment file into the request process, and that captured CLI output and the unverified final note were withheld. Those historical handling claims were not independently reproduced during this review: `GROQ_API_KEY` was unset, so the post-review bounded scan reports `secret_scan=unavailable` and makes no claim that the retained state is free of the literal secret. The earlier sentence claiming that a read-only scan found no secret is superseded and remains unverified here. No credential value was read, printed, or added to this report during this review.
 
 ## Stage 1 — PASS
 
@@ -73,6 +73,18 @@ The process boundary was frozen in issue #141 before dispatch. Only `read_file` 
 
 The provider request completed, but the task finalized as `final_not_grounded` before any actual `read_file(app/calc.go)` observation. Therefore the objective, evidence, acceptance, and terminal-completion requirements were not met. This is classified as a protocol/evidence-grounding failure for this trajectory; it is not evidence that the Stage 2 objective passed. The single trajectory is retained as-is, with no rerun or post-run acceptance change.
 
+### Post-review read-only evidence audit
+
+The P1 correction added an opt-in `--audit-existing` path. It opens the existing SQLite database with SQLite read-only/query-only settings and never invokes the Runstead executable or a provider. The audit command was:
+
+```text
+python3 experiments/provider-live/groq-gpt-oss-120b-canary-v2/stage2-runner.py --audit-existing --state-dir /tmp/groq-gpt-oss-v2-stage2-state --task-id cli-1791085826705830653
+```
+
+Result: `db_predicates=pass`, `secret_scan=unavailable`, `audit_result=LIMITED`, exit code 3, and `secret_absence=not_proven`. The database recheck reproduced the task ID/status/outcome and `resume_count=0`; one completed, certain, upstream-reached provider attempt with the expected provider/family/model/config identity and reconciled execution/client/upstream request IDs; one admission and debit with zero retries; the frozen acceptance digest saved before dispatch; and zero task actions, tool attempts/results, verifier attempts, write-policy decisions, and approvals. The exact canonical frozen contract and acceptance plan also matched the pinned experiment inputs.
+
+The SQLite record does not persist the original CLI exit status, so exit 27 is part of the original harness record and was not reproduced by this audit. The audit confirms one persisted upstream-reached attempt; the SQLite ledger alone does not independently establish physical HTTP request count. Provider/model behavior, secret absence, and the historical Stage 1 secret-handling claim were not revalidated. This evidence checker is experiment tooling only; it is not Runstead's verifier, policy, governor, or source of truth. Its result does not qualify Stage 2 or Gate A.
+
 ## Stages 3–4 — NOT RUN
 
 Stage 3 was gated on Stage 2 PASS. Stage 4 was gated on Stage 3 PASS. Neither stage sent a request or created a task.
@@ -98,6 +110,8 @@ All required pre-PR gates passed on this report-only branch:
 - `go test -race ./...` — PASS; `cmd/runstead` completed in 406.229s.
 - `bash experiments/protocol/test.sh` — PASS.
 - `git diff --check` — PASS.
+
+For the P1 audit correction, 17 offline synthetic SQLite tests passed, including the expected failure shape, attempt and ID mismatches, late acceptance events, unexpected action/verifier rows, retry/debit mismatches, secret presence, symlink/incomplete and bounded-size scans, unavailable-key limitation, sanitized preflight failure, and checks that the database is not modified and the Runstead executable is not invoked. `py_compile` passed for both Stage 2 Python files. These are audit-tool checks; they do not qualify the canary.
 
 PR #142 was open and unmerged when this report was prepared for review. Its initial report-only head is recorded above; consult current PR metadata for the latest head. This experiment makes no compatibility or Gate A success claim.
 
