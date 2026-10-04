@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Run one Stage 2 task and independently audit its durable evidence.
+"""Run one Stage 2 task or inspect an existing experiment task's evidence.
 
 The model's final note and Runstead stdout/stderr are held only in process
 memory. This runner prints bounded identifiers and predicates, never the note,
 provider response, credential, or raw SQLite rows.
+
+This is an experiment evidence checker only. It is not Runstead's verifier,
+policy, governor, or durable truth.
 """
 import argparse
 import hashlib
@@ -12,6 +15,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -30,6 +34,22 @@ READ_TOOLS = {"read_file", "list_files", "search_text", "git_status", "git_diff"
 FORBIDDEN_TOOLS = {"write_file", "apply_patch", "run_recipe"}
 PROCESS_BACKED_TOOLS = {"search_text", "git_status", "git_diff"}
 NON_PROCESS_TOOLS = {"read_file", "list_files"}
+EXPECTED_ADAPTER_VERSION = "compatible-provider-v0.1"
+EXPECTED_TASK_ID = "cli-1791085826705830653"
+EXPECTED_EXECUTION_ID = "exec-000001"
+EXPECTED_CLIENT_REQUEST_ID = EXPECTED_TASK_ID + "-0001"
+EXPECTED_CONFIG_IDENTITY = (
+    'provider.Config{ProviderID:"groq-gpt-oss-120b-canary-v2" '
+    'ProtocolFamily:"openai_compatible" Endpoint:"https://api.groq.com/openai/v1" '
+    'Model:"openai/gpt-oss-120b" AuthRequirement:"reference_required" AuthRef:true '
+    'Options:[] ProfileVersion:"v1" RouteSafety:provider.RouteSafety{AttemptAccounting:0x1, '
+    'SingleAttempt:0x1, InternalRetries:0x1, CooldownReplay:0x1, AccountPooling:0x1, '
+    'AutomaticFallback:0x1, ComboRouting:0x1} ConfigVersion:"v1"}'
+)
+MAX_SCAN_FILES = 256
+MAX_SCAN_ENTRIES = 2048
+MAX_SCAN_FILE_BYTES = 8 * 1024 * 1024
+MAX_SCAN_TOTAL_BYTES = 64 * 1024 * 1024
 CLAIM_TEMPLATE = re.compile(
     r"^\s*[^.!?;\n]{0,80}\b(?:bug|defect|issue)\b[^.!?;\n]*\bparsevalues\b"
     r"[^.!?;\n]*\bstrconv\.atoi\(part\)[^.!?;\n]*"
@@ -481,6 +501,326 @@ def audit_database(db_path: Path, task_id: str, note: str, cited_ids: list[str],
         db.close()
 
 
+class AuditViolation(Exception):
+    """A sanitized evidence predicate failed; never retain source row data."""
+
+    def __init__(self, predicate: str):
+        super().__init__(predicate)
+        self.predicate = predicate
+
+
+def require_audit(condition: bool, predicate: str) -> None:
+    if not condition:
+        raise AuditViolation(predicate)
+
+
+def scan_secret(state_dir: Path) -> str:
+    """Boundedly scan regular state files without following symlinks."""
+    secret = os.environ.get("GROQ_API_KEY", "")
+    if not secret:
+        return "unavailable"
+    needle = secret.encode("utf-8", errors="surrogateescape")
+    if not needle:
+        return "unavailable"
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    if not nofollow or not directory_flag:
+        return "incomplete"
+    pending = []
+    files_seen = entries_seen = bytes_seen = 0
+    try:
+        pending.append(os.open(state_dir, os.O_RDONLY | directory_flag | nofollow))
+        while pending:
+            directory_fd = pending.pop()
+            try:
+                with os.scandir(directory_fd) as entries:
+                    for entry in entries:
+                        entries_seen += 1
+                        if entries_seen > MAX_SCAN_ENTRIES:
+                            return "incomplete"
+                        info = entry.stat(follow_symlinks=False)
+                        if stat.S_ISLNK(info.st_mode):
+                            return "incomplete"
+                        if stat.S_ISDIR(info.st_mode):
+                            child_fd = os.open(
+                                entry.name, os.O_RDONLY | directory_flag | nofollow,
+                                dir_fd=directory_fd,
+                            )
+                            if not stat.S_ISDIR(os.fstat(child_fd).st_mode):
+                                os.close(child_fd)
+                                return "incomplete"
+                            pending.append(child_fd)
+                            continue
+                        if not stat.S_ISREG(info.st_mode):
+                            continue
+                        files_seen += 1
+                        if files_seen > MAX_SCAN_FILES:
+                            return "incomplete"
+                        remaining = MAX_SCAN_TOTAL_BYTES - bytes_seen
+                        if info.st_size > MAX_SCAN_FILE_BYTES or info.st_size > remaining:
+                            return "incomplete"
+                        file_fd = os.open(
+                            entry.name, os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0),
+                            dir_fd=directory_fd,
+                        )
+                        with os.fdopen(file_fd, "rb") as source:
+                            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                                return "incomplete"
+                            limit = min(MAX_SCAN_FILE_BYTES, remaining)
+                            data = source.read(limit + 1)
+                        if len(data) > MAX_SCAN_FILE_BYTES or len(data) > remaining:
+                            return "incomplete"
+                        bytes_seen += len(data)
+                        if needle in data:
+                            return "present"
+            finally:
+                os.close(directory_fd)
+    except OSError:
+        return "incomplete"
+    finally:
+        for directory_fd in pending:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                pass
+    return "clean"
+
+
+def audit_existing_database(db_path: Path, task_id: str) -> dict:
+    """Check the known Stage 2 failure shape using SQLite read-only evidence."""
+    uri = db_path.resolve().as_uri() + "?mode=ro"
+    db = sqlite3.connect(uri, uri=True, timeout=5)
+    db.row_factory = sqlite3.Row
+    try:
+        db.execute("PRAGMA query_only=ON")
+        require_audit(db.execute("PRAGMA query_only").fetchone()[0] == 1, "sqlite_query_only")
+
+        require_audit(task_id == EXPECTED_TASK_ID and
+                      re.fullmatch(r"cli-[0-9]+", task_id) is not None, "task_id_exact_safe")
+        expected_hash = static_preflight()
+        task = db.execute(
+            "SELECT task_id,objective,status,outcome,resume_count,model,config_json,execution_contract_json,execution_contract_hash "
+            "FROM tasks WHERE task_id=?", (task_id,),
+        ).fetchone()
+        require_audit(task is not None, "task_row_present")
+        require_audit(task["task_id"] == EXPECTED_TASK_ID, "persisted_task_id_exact_safe")
+        require_audit(task["objective"] == OBJECTIVE, "task_objective_exact")
+        require_audit(task["status"] == "failed" and task["outcome"] == "final_not_grounded",
+                      "task_failure_shape")
+        require_audit(task["resume_count"] == 0, "task_resume_count_zero")
+        require_audit(task["model"] == MODEL, "task_model_exact")
+
+        # Exit status is emitted by the CLI, not persisted in the task row.
+        task_config = json.loads(task["config_json"])
+        contract_bytes = task["execution_contract_json"].encode("utf-8")
+        require_audit(task["execution_contract_hash"] == "sha256:" + sha(contract_bytes),
+                      "frozen_contract_hash")
+        frozen = json.loads(contract_bytes, object_pairs_hook=reject_duplicate_keys)
+        require_audit(canonical_contract_bytes(frozen) == contract_bytes,
+                      "frozen_contract_canonical")
+        require_audit(frozen.get("contract_version") == 1 and
+                      frozen.get("protocol_identity") == "runstead.protocol.v1",
+                      "frozen_contract_identity")
+        require_audit(frozen.get("profile") == {"id": "groq-canary-v2-read-only", "version": "1.0.0"},
+                      "frozen_profile_identity")
+        frozen_provider = frozen.get("provider", {})
+        frozen_identity = frozen_provider.get("config_identity")
+
+        stage_contract = load_json(HERE / "stage2-preflight.json")
+        stage_provider = load_json(HERE / "providers.json")["providers"][0]
+        profile = load_json(HERE / stage_contract["profile"])
+        plan_row = db.execute(
+            "SELECT version,spec_json,digest FROM acceptance_plans WHERE task_id=?", (task_id,),
+        ).fetchone()
+        require_audit(plan_row is not None, "acceptance_plan_present")
+        stored_plan = json.loads(plan_row["spec_json"])
+        expected_check = {
+            "id": "calc-source-unchanged", "type": "file_hash",
+            "path": "app/calc.go", "sha256": expected_hash,
+        }
+        expected_plan = {"version": 1, "checks": [expected_check]}
+        require_audit(plan_row["version"] == 1 and stored_plan == expected_plan,
+                      "acceptance_plan_exact")
+        check_json = json.dumps(expected_check, ensure_ascii=False, separators=(",", ":"))
+        expected_plan_digest = sha(f"version=1\ncalc-source-unchanged={check_json}".encode("utf-8"))
+        require_audit(plan_row["digest"] == expected_plan_digest, "acceptance_plan_digest_exact")
+        require_audit(stage_contract.get("acceptance_plan") == "stage2-acceptance.json" and
+                      stage_contract.get("acceptance_checks") == [expected_check],
+                      "stage2_preflight_acceptance_exact")
+
+        config_provider_id = task_config.get("provider_id")
+        config_family = task_config.get("protocol_family")
+        config_model = task_config.get("provider_model")
+        config_model_alias = task_config.get("model")
+        config_identity = task_config.get("provider_config_identity")
+        config_profile = task_config.get("provider_profile_version")
+        config_adapter = task_config.get("provider_adapter_version")
+        config_acceptance = task_config.get("acceptance_plan_digest")
+        require_audit(
+            config_provider_id == PROVIDER_ID == stage_provider.get("provider_id") == profile.get("provider_id") == frozen_provider.get("provider_id") and
+            config_family == FAMILY == stage_provider.get("protocol_family") == frozen_provider.get("protocol_family") and
+            config_model == MODEL == stage_provider.get("model") == frozen_provider.get("model") and
+            config_model_alias == MODEL and config_profile == frozen_provider.get("provider_profile_version") == "v1" and
+            config_adapter == frozen_provider.get("adapter_version") == EXPECTED_ADAPTER_VERSION and
+            config_acceptance == plan_row["digest"] == frozen.get("acceptance_plan_digest") and
+            config_identity == EXPECTED_CONFIG_IDENTITY and
+            config_identity == frozen_identity,
+            "task_config_matches_preflight_and_frozen_contract",
+        )
+
+        attempts = db.execute(
+            "SELECT execution_id,client_request_id,provider,protocol_family,config_identity,model,attempt_sequence,status,outcome,delivery_state,request_id,upstream_reached,uncertain,attempt_debited "
+            "FROM provider_attempts WHERE task_id=? ORDER BY attempt_sequence,execution_id", (task_id,),
+        ).fetchall()
+        require_audit(len(attempts) == 1, "provider_attempt_count_one")
+        attempt = attempts[0]
+        require_audit(
+            attempt["provider"] == PROVIDER_ID and attempt["protocol_family"] == FAMILY and
+            attempt["model"] == MODEL and attempt["status"] == "completed" and
+            attempt["outcome"] == "success" and attempt["delivery_state"] == "completed" and
+            re.fullmatch(r"sha256:[0-9a-f]{16}", attempt["request_id"] or "") is not None and
+            attempt["upstream_reached"] == 1 and attempt["uncertain"] == 0 and
+            attempt["attempt_debited"] == 1 and attempt["attempt_sequence"] == 1 and
+            attempt["config_identity"] == config_identity == frozen_identity,
+            "provider_attempt_exact_and_certain",
+        )
+        require_audit(attempt["execution_id"] == EXPECTED_EXECUTION_ID and
+                      re.fullmatch(r"exec-[0-9]{6}", attempt["execution_id"] or "") is not None and
+                      attempt["client_request_id"] == EXPECTED_CLIENT_REQUEST_ID and
+                      attempt["client_request_id"] == f"{EXPECTED_TASK_ID}-{attempt['attempt_sequence']:04d}",
+                      "provider_identifier_format")
+
+        events = db.execute(
+            "SELECT sequence,kind,payload_json FROM events WHERE task_id=? ORDER BY sequence", (task_id,),
+        ).fetchall()
+        acceptance_events = [row for row in events if row["kind"] == "acceptance_plan_saved"]
+        acceptance_related_events = [row for row in events if "acceptance" in row["kind"].casefold()]
+        prepared_events = [row for row in events if row["kind"] == "provider_attempt_prepared"]
+        completed_events = [row for row in events if row["kind"] == "provider_attempt_completed"]
+        require_audit(len(acceptance_events) == 1, "acceptance_saved_once")
+        require_audit(len(prepared_events) == 1 and len(completed_events) == 1,
+                      "provider_events_exactly_once")
+        saved_payload = json.loads(acceptance_events[0]["payload_json"])
+        prepared_payload = json.loads(prepared_events[0]["payload_json"])
+        completed_payload = json.loads(completed_events[0]["payload_json"])
+        debited_event = completed_payload.get("attempt_debited")
+        debited_event_is_one = (type(debited_event) is int and debited_event == 1) or debited_event is True
+        require_audit(saved_payload.get("digest") == plan_row["digest"] and
+                      acceptance_events[0]["sequence"] < prepared_events[0]["sequence"] < completed_events[0]["sequence"],
+                      "acceptance_frozen_before_dispatch")
+        require_audit(all(row["sequence"] < prepared_events[0]["sequence"]
+                          for row in acceptance_related_events),
+                      "no_acceptance_event_after_dispatch")
+        require_audit(
+            prepared_payload.get("execution_id") == attempt["execution_id"] and
+            prepared_payload.get("client_request_id") == attempt["client_request_id"] and
+            prepared_payload.get("provider") == PROVIDER_ID and
+            prepared_payload.get("model") == MODEL and
+            prepared_payload.get("protocol_family") == FAMILY and
+            prepared_payload.get("config_identity") == config_identity and
+            isinstance(prepared_payload.get("governor"), dict) and
+            completed_payload.get("client_request_id") == attempt["client_request_id"] and
+            completed_payload.get("status") == "completed" and
+            completed_payload.get("outcome") == "success" and
+            completed_payload.get("delivery_state") == "completed" and
+            completed_payload.get("request_id") == attempt["request_id"] and
+            completed_payload.get("config_identity") == config_identity and
+            completed_payload.get("upstream_reached") is True and
+            completed_payload.get("uncertain") is False and
+            debited_event_is_one,
+            "provider_event_ids_and_identity_reconciled",
+        )
+
+        usage = db.execute(
+            "SELECT attempts,retries FROM governor_task_states WHERE task_id=?", (task_id,),
+        ).fetchone()
+        ledger_count = db.execute(
+            "SELECT count(*) FROM governor_ledger WHERE task_id=?", (task_id,),
+        ).fetchone()[0]
+        require_audit(usage is not None and usage["attempts"] == 1 and usage["retries"] == 0 and
+                      ledger_count == 1, "governor_retry_and_debit_counts")
+
+        zero_tables = (
+            "actions", "tool_attempts", "tool_results", "verification_attempts",
+            "write_policy_decisions", "approvals",
+        )
+        counts = {}
+        for table in zero_tables:
+            counts[table] = db.execute(
+                f"SELECT count(*) FROM {table} WHERE task_id=?", (task_id,),
+            ).fetchone()[0]
+        require_audit(all(count == 0 for count in counts.values()), "zero_task_actions_and_effects")
+        return {
+            "task_id": EXPECTED_TASK_ID,
+            "task_status": task["status"],
+            "task_outcome": task["outcome"],
+            "resume_count": task["resume_count"],
+            "provider_execution_id": attempt["execution_id"],
+            "client_request_id": attempt["client_request_id"],
+            "upstream_request_id": attempt["request_id"],
+            "provider_attempts": len(attempts),
+            "admissions": usage["attempts"],
+            "debits": ledger_count,
+            "retries": usage["retries"],
+            "acceptance_saved_before_dispatch": True,
+            "provider_event_ids_reconciled": True,
+            "actions": counts["actions"],
+            "tool_attempts": counts["tool_attempts"],
+            "tool_results": counts["tool_results"],
+            "verifiers": counts["verification_attempts"],
+            "write_decisions": counts["write_policy_decisions"],
+            "approvals": counts["approvals"],
+            "config_identity_reconciled": True,
+            "cli_exit_context": "not_persisted_in_sqlite",
+        }
+    finally:
+        db.close()
+
+
+def audit_existing(state_dir: Path, task_id: str) -> int:
+    """Read existing state only; this path never invokes Runstead or a provider."""
+    secret_result = scan_secret(state_dir)
+    summary = None
+    failed_predicate = ""
+    try:
+        require_audit(state_dir.is_dir(), "state_directory_present")
+        require_audit((state_dir / "runstead.db").is_file(), "state_database_present")
+        summary = audit_existing_database(state_dir / "runstead.db", task_id)
+    except AuditViolation as exc:
+        failed_predicate = exc.predicate
+    except SystemExit:
+        failed_predicate = "stage2_static_preflight"
+    except RuntimeError:
+        failed_predicate = "stage2_static_preflight"
+    except (OSError, ValueError, KeyError, IndexError, TypeError, sqlite3.Error):
+        failed_predicate = "database_or_contract_readable"
+
+    if summary is not None:
+        print("db_predicates=pass")
+        for key, value in summary.items():
+            print(f"{key}={value}")
+    else:
+        print("db_predicates=fail")
+        print(f"failed_predicate={failed_predicate or 'audit_failed'}")
+    print(f"secret_scan={secret_result}")
+    if secret_result == "present":
+        print("audit_result=FAIL")
+        print("secret_absence=not_proven")
+        return 2
+    if summary is None:
+        print("audit_result=FAIL")
+        print("secret_absence=not_proven" if secret_result != "clean" else "secret_absence=checked_clean")
+        return 2
+    if secret_result != "clean":
+        print("audit_result=LIMITED")
+        print("secret_absence=not_proven")
+        return 3
+    print("audit_result=EVIDENCE_SHAPE_CONFIRMED")
+    print("stage2=NOT_QUALIFIED gate_a=NOT_SATISFIED")
+    print("secret_absence=checked_clean")
+    return 0
+
+
 def run(args) -> None:
     expected_hash = static_preflight()
     if args.preflight_only:
@@ -497,7 +837,7 @@ def run(args) -> None:
     if not binary.is_file():
         stop("Runstead binary is unavailable; zero task requests made")
     workspace = Path(args.workspace).resolve()
-    state_dir = Path(args.state_dir).resolve()
+    state_dir = Path(args.state_dir or "/tmp/groq-gpt-oss-v2-stage2-state").resolve()
     if workspace.exists() or state_dir.exists():
         stop("Stage 2 workspace/state path already exists; refusing reuse")
     workspace.parent.mkdir(parents=True, exist_ok=True)
@@ -566,12 +906,25 @@ def run(args) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--audit-existing", action="store_true",
+                        help="read-only audit of an existing Stage 2 state directory; never runs Runstead")
     parser.add_argument("--runstead-bin", default="/tmp/runstead-v2")
     parser.add_argument("--workspace", default="/tmp/groq-gpt-oss-v2-stage2-workspace")
-    parser.add_argument("--state-dir", default="/tmp/groq-gpt-oss-v2-stage2-state")
+    parser.add_argument("--state-dir", default=None)
     parser.add_argument("--empty-path", default="/tmp/runstead-stage2-empty-path")
     parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument("--task-id", default=None,
+                        help="required with --audit-existing; existing task identifier only")
     args = parser.parse_args()
+    if args.audit_existing:
+        if not args.state_dir or not args.task_id:
+            print("audit_result=FAIL")
+            print("failed_predicate=audit_existing_requires_state_dir_and_task_id")
+            raise SystemExit(2)
+        raise SystemExit(audit_existing(Path(args.state_dir), args.task_id))
+    if args.task_id is not None:
+        print("STAGE2 STOP: --task-id is only valid with --audit-existing", file=sys.stderr)
+        raise SystemExit(2)
     try:
         run(args)
     except (OSError, ValueError, KeyError, IndexError, sqlite3.Error, RuntimeError) as exc:
