@@ -42,7 +42,7 @@ deterministic validation/classification
    ↓               ↓                  ↓
 irrelevant      actionable          terminal
    │               │                  │
-keep waiting    READY             finish/block
+keep waiting    READY          finish wait/block
                    │                  │
                    ↓                  └─ no model call when reasoning is unnecessary
              normal governed
@@ -159,7 +159,7 @@ For one explicitly registered PR identity, v1 semantics are:
 
 | Observation | Default Runstead behavior |
 | --- | --- |
-| PR merged | End the external-review wait through a deterministic terminal path. Do not call a model merely to acknowledge merge. |
+| PR merged | Satisfy the external-review wait through a deterministic terminal path. Do not call a model merely to acknowledge merge. Overall task/Work Unit completion still requires the existing verifier/state completion gates and is never granted by GitHub. |
 | Authorized review = `REQUEST_CHANGES` | Persist sanitized review evidence, revalidate target identity/freshness, then make the owning work eligible for normal governed resume. |
 | Review = `APPROVED` | Persist/observe as needed; do not wake a model by default. |
 | Ordinary comment | Do not wake a model by default. |
@@ -210,8 +210,9 @@ safe. At minimum #161 must prove:
 - two watcher processes cannot both claim the same satisfied wait for
   continuation;
 - PR state changing between observation and resume is revalidated fail-closed;
-- a merged PR observed after restart can close the review stage without a
-  provider call;
+- a merged PR observed after restart can satisfy the external-review wait
+  without a provider call, while any overall task/Work Unit completion still
+  passes the existing verifier/state completion gates;
 - canceled/invalid waits cannot later wake execution;
 - unsupported/corrupt wait versions fail closed;
 - external API failures do not mutate task truth into success.
