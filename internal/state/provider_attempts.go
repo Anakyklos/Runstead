@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/provider"
@@ -95,6 +96,51 @@ func parsePersistedDeliveryState(raw string) (provider.DeliveryState, error) {
 	}
 }
 
+type persistedRateLimitObservation struct {
+	statusCode           any
+	observedResetAt      any
+	observedRetryAfterNS any
+	limitRequests        any
+	remainingRequests    any
+	resetRequestsNS      any
+	limitTokens          any
+	remainingTokens      any
+	resetTokensNS        any
+}
+
+func persistRateLimitObservation(record governor.ProviderFinished) persistedRateLimitObservation {
+	var result persistedRateLimitObservation
+	observation := record.RateLimitObservation.Sanitized()
+	if record.StatusCode >= 100 && record.StatusCode <= 599 {
+		result.statusCode = record.StatusCode
+	}
+	if !record.ObservedResetAt.IsZero() && record.ObservedResetAt.Year() >= 1970 && record.ObservedResetAt.Year() <= 9999 {
+		result.observedResetAt = formatTime(record.ObservedResetAt)
+	}
+	result.observedRetryAfterNS = persistObservedDuration(observation.ObservedRetryAfter)
+	result.limitRequests = persistRateLimitCounter(observation.LimitRequests)
+	result.remainingRequests = persistRateLimitCounter(observation.RemainingRequests)
+	result.resetRequestsNS = persistObservedDuration(observation.ResetRequests)
+	result.limitTokens = persistRateLimitCounter(observation.LimitTokens)
+	result.remainingTokens = persistRateLimitCounter(observation.RemainingTokens)
+	result.resetTokensNS = persistObservedDuration(observation.ResetTokens)
+	return result
+}
+
+func persistRateLimitCounter(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func persistObservedDuration(value time.Duration) any {
+	if value <= 0 || value > 30*24*time.Hour {
+		return nil
+	}
+	return int64(value)
+}
+
 // RecordProviderPrepared implements governor.Persistence (TX 1): the provider
 // attempt intent, the post-start governor protection projection and the
 // provider_attempt_prepared event commit atomically BEFORE the provider call.
@@ -151,6 +197,7 @@ func (s *Store) RecordProviderFinished(ctx context.Context, record governor.Prov
 	hitCrashPoint("provider_tx2_before")
 	now := s.now()
 	status := providerAttemptStatus(record.Outcome, record.Uncertain)
+	rateLimitObservation := persistRateLimitObservation(record)
 	receiptError := record.ReceiptErrorCode
 	failureClass := record.ProviderFailureClass
 	if !failureClass.Valid() {
@@ -164,11 +211,16 @@ func (s *Store) RecordProviderFinished(ctx context.Context, record governor.Prov
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE provider_attempts
 			 SET status = ?, outcome = ?, upstream_reached = ?, uncertain = ?, attempt_debited = ?,
-			     selected_backoff_ns = ?, error_class = ?, provider_failure_class = ?, delivery_state = ?, request_id = ?, completed_at = ?
+			     selected_backoff_ns = ?, error_class = ?, provider_failure_class = ?, delivery_state = ?, request_id = ?, completed_at = ?,
+			     status_code = ?, observed_reset_at = ?, observed_retry_after_ns = ?, limit_requests = ?, remaining_requests = ?,
+			     reset_requests_ns = ?, limit_tokens = ?, remaining_tokens = ?, reset_tokens_ns = ?
 			 WHERE task_id = ? AND client_request_id = ? AND status = 'prepared'`,
 		status, record.Outcome, boolInt(record.UpstreamReached), boolInt(record.Uncertain),
 		record.AttemptDebited, int64(record.SelectedBackoff), receiptError, string(failureClass), persistedDeliveryState(record.DeliveryState),
-		Redact(record.RequestID), now,
+		Redact(record.RequestID), now, rateLimitObservation.statusCode, rateLimitObservation.observedResetAt,
+		rateLimitObservation.observedRetryAfterNS, rateLimitObservation.limitRequests, rateLimitObservation.remainingRequests,
+		rateLimitObservation.resetRequestsNS, rateLimitObservation.limitTokens, rateLimitObservation.remainingTokens,
+		rateLimitObservation.resetTokensNS,
 		record.TaskID, record.ClientRequestID); err != nil {
 		return fmt.Errorf("finish provider attempt: %w", err)
 	}
@@ -194,22 +246,31 @@ func (s *Store) RecordProviderFinished(ctx context.Context, record governor.Prov
 		eventKind = "provider_attempt_uncertain"
 	}
 	if err := appendEvent(ctx, tx, record.TaskID, eventKind, map[string]any{
-		"client_request_id":      record.ClientRequestID,
-		"status":                 status,
-		"outcome":                record.Outcome,
-		"upstream_reached":       record.UpstreamReached,
-		"uncertain":              record.Uncertain,
-		"delivery_state":         record.DeliveryState.String(),
-		"attempt_debited":        record.AttemptDebited,
-		"selected_backoff":       int64(record.SelectedBackoff),
-		"protocol_family":        string(record.ProtocolFamily),
-		"config_identity":        Redact(record.ConfigIdentity),
-		"request_id":             Redact(record.RequestID),
-		"receipts":               len(record.Receipts),
-		"receipt_error":          receiptError,
-		"provider_failure_class": string(failureClass),
-		"circuit":                record.Circuit.State,
-		"governor":               governorEventPayload(record.State),
+		"client_request_id":       record.ClientRequestID,
+		"status":                  status,
+		"outcome":                 record.Outcome,
+		"upstream_reached":        record.UpstreamReached,
+		"uncertain":               record.Uncertain,
+		"delivery_state":          record.DeliveryState.String(),
+		"attempt_debited":         record.AttemptDebited,
+		"selected_backoff":        int64(record.SelectedBackoff),
+		"protocol_family":         string(record.ProtocolFamily),
+		"config_identity":         Redact(record.ConfigIdentity),
+		"request_id":              Redact(record.RequestID),
+		"receipts":                len(record.Receipts),
+		"receipt_error":           receiptError,
+		"provider_failure_class":  string(failureClass),
+		"status_code":             rateLimitObservation.statusCode,
+		"observed_reset_at":       rateLimitObservation.observedResetAt,
+		"observed_retry_after_ns": rateLimitObservation.observedRetryAfterNS,
+		"limit_requests":          rateLimitObservation.limitRequests,
+		"remaining_requests":      rateLimitObservation.remainingRequests,
+		"reset_requests_ns":       rateLimitObservation.resetRequestsNS,
+		"limit_tokens":            rateLimitObservation.limitTokens,
+		"remaining_tokens":        rateLimitObservation.remainingTokens,
+		"reset_tokens_ns":         rateLimitObservation.resetTokensNS,
+		"circuit":                 record.Circuit.State,
+		"governor":                governorEventPayload(record.State),
 	}, now); err != nil {
 		return err
 	}
