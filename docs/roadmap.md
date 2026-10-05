@@ -307,6 +307,23 @@ candidates keep their own gates and are not scheduled:
   the deferred section below and the historical record); it is not
   reintroduced into the core runtime by this closeout.
 
+## Post-adoption product candidates — accepted direction, not promoted
+
+- **#161 — durable external waits with GitHub PR review resume.** Architectural
+  direction is accepted in
+  [`adr/0002-durable-external-waits.md`](adr/0002-durable-external-waits.md),
+  but implementation is unscheduled and does not promote M12. The capability
+  is a provider-free durable wait primitive: persist an explicit external
+  condition, terminate the model session, consume zero provider attempts while
+  waiting, deterministically classify normalized external observations, and
+  return actionable work through the existing governed resume path. GitHub PR
+  review is the first planned consumer: `MERGED` should end the review stage
+  without an LLM call, while an authorized `REQUEST_CHANGES` may make the
+  owning work runnable again. External review/comment/webhook content remains
+  untrusted data and cannot grant policy, approval, capability or verifier
+  authority. #161 is explicitly downstream of the current #121 adoption path;
+  it does not block Gate A, #123 dogfood, #124 packaging or initial cutover.
+
 ## Deferred to plugin/composable-provider tracks
 
 - additional web providers such as Qwen or GLM;
