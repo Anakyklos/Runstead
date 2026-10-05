@@ -68,4 +68,4 @@ The full Gate A contract remains unproven. No downstream work on #123 was starte
 
 ## Delivery and merge boundary
 
-Open exactly one PR from this branch using the issue's specified title. Do not merge it and do not start #123.
+Exactly one PR is open: [#158](https://github.com/Anakyklos/Runstead/pull/158), titled `test(provider): run NVIDIA NIM Laguna XS 2.1 Gate A canary v1 (#157)`. It targets `main` from this branch. Do not merge it and do not start #123.
