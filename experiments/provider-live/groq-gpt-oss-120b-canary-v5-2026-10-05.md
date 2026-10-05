@@ -18,7 +18,15 @@
 
 ## Decision summary
 
-**Gate A = NOT SATISFIED.** No provider request was made. The required `GROQ_API_KEY` reference was absent from the canary process environment at preflight. The order requires stopping before the first live request if the reference is absent. Stage 1 therefore stopped before authenticated model discovery; Stages 2, 3, and 4 were skipped. Classification: **operator/environment prerequisite missing**, not a provider failure, model-protocol failure, or Runstead defect.
+**Gate A = NOT SATISFIED.** No provider request was made. The initial preflight found neither `GROQ_API_KEY` nor `RUNSTEAD_GROQ_ENV_FILE` in the canary process environment. On continuation, the operator-owned file was found at the supplied external path and its reference was explicitly supplied, but `load_key_into_process()` could not obtain a nonempty key. Stage 1 remains blocked before authenticated model discovery; Stages 2, 3, and 4 remain skipped. Classification: **operator/environment prerequisite missing**, not a provider failure, model-protocol failure, or Runstead defect.
+
+## Continuation checkpoint — external reference supplied, key unavailable
+
+The initial checkpoint below is preserved as historical evidence. It was an environment-propagation failure: the external file existed, but the canary process did not receive `RUNSTEAD_GROQ_ENV_FILE`. That checkpoint had zero provider requests, attempts, admissions, and debits and consumed no controlled rerun.
+
+On continuation, the same branch and PR #156 were reused. Boolean checks proved the expected file is a regular file and that `RUNSTEAD_GROQ_ENV_FILE` matched the expected path in the isolated loader process. `load_key_into_process()` was called without authorizing dispatch. The loader found the `GROQ_API_KEY` declaration but did not produce a nonempty value (`key_loaded=false`); no credential value was emitted. The sanitized source reference was `external_env_file`, but Stage 1 cannot proceed until the external file yields a nonempty key.
+
+Provider requests before and after the environment-reference correction: **0**. Controlled rerun consumed: **NO**. No SQLite state/task or external provider effect was created. Stage 1 remains blocked and Stages 2–4 remain skipped. No value from the external file was added to Git, SQLite, logs, or this report.
 
 No task IDs, governed attempts, admissions, debits, actions, tool results, observations, verifier attempts, provider failure classes, rate-limit observations, governor outcomes, or delivery states exist for this v5 trajectory. These are not inferred from prior canaries.
 
@@ -30,7 +38,7 @@ No task IDs, governed attempts, admissions, debits, actions, tool results, obser
 - Allowed effects: local config resolution; at most the one authenticated exact-model control needed after confirming the external secret reference.
 - Prohibited effects: any task/model request before the required secret reference exists; model sweep; fallback/rotation; credential persistence.
 - Acceptance: exact config resolves with no provider dispatch; `GROQ_API_KEY` reference is externally available without displaying its value; no more than one authenticated `GET /models` proves `openai/gpt-oss-120b`; no alternate selection/fallback or credential persistence.
-- Secret check: `GROQ_API_KEY` was absent from the process environment and the optional `RUNSTEAD_GROQ_ENV_FILE` reference was also absent. Neither a credential value nor a local environment file was read or loaded. Per the issue contract, execution stopped before authenticated model discovery.
+- Initial secret check: `GROQ_API_KEY` and the optional `RUNSTEAD_GROQ_ENV_FILE` reference were absent from the process environment. On continuation, only the external path was supplied to the loader process; no nonempty value loaded, and no credential was displayed or persisted. Per the issue contract, execution stopped before authenticated model discovery.
 - The exact declaration resolved through the existing `openai_compatible` path with `adapter_constructed=false` and `provider_dispatches=0`. The authenticated model's availability to this account and auth handling in a live request remain unproven.
 
 ### Stage 2 — read-only protocol/evidence/verifier: SKIPPED
@@ -53,7 +61,7 @@ Conditional on Stage 3 PASS. No task, interruption, inspect, or resume occurred.
 
 ## Secret hygiene
 
-- The canary process environment did not contain the `GROQ_API_KEY` reference at preflight.
+- The initial canary process environment did not contain `GROQ_API_KEY`; on continuation the external file path was supplied, but the loader did not obtain a nonempty key.
 - No credential value was read, printed, logged, requested, persisted, or added to the repository.
 - No live request, provider body, private transcript, or response header exists for this trajectory.
 - Exact-value retained-state scanning is unavailable without the external key; this report makes no claim based on a key value that was not present.
@@ -82,4 +90,4 @@ Results are recorded after executing the pre-dispatch and repository gates on th
 
 ## Limitations and next step
 
-This v5 trajectory provides no live provider compatibility or Gate A evidence. It stops solely because the required external secret reference was unavailable in the execution environment. A future attempt requires a fresh, explicitly authorized child issue and branch/state trajectory with `GROQ_API_KEY` injected externally before Stage 1; this report and issue #155 must remain an honest failed/preflight-blocked record. #123 remains blocked. No provider failure, rate-limit diagnosis, or Runstead defect is claimed.
+This v5 trajectory provides no live provider compatibility or Gate A evidence. The environment-path propagation problem was corrected for the loader process, but the operator-owned file did not yield a nonempty key, so Stage 1 could not dispatch. Resume this same Issue #155 / PR #156 only after the external file provides a nonempty usable value; no new issue, branch, canary, or controlled rerun is needed or created by this continuation. #123 remains blocked. No provider failure, rate-limit diagnosis, or Runstead defect is claimed.
