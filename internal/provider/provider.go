@@ -191,16 +191,20 @@ type Response struct {
 // completed request. It deliberately excludes prompts, response bodies,
 // credentials and raw headers.
 type ResponseMetadata struct {
-	StatusCode      int
-	RequestID       string
-	SessionID       string
-	Duration        time.Duration
-	RetryAfter      time.Duration
-	ResetAt         time.Time
-	Endpoint        string
-	Model           string
-	DeliveryState   DeliveryState
-	AttemptReceipts *AttemptReceiptSet
+	StatusCode int
+	RequestID  string
+	SessionID  string
+	Duration   time.Duration
+	RetryAfter time.Duration
+	ResetAt    time.Time
+	// RateLimitObservation contains only closed, bounded numeric/duration
+	// observations normalized by a protocol adapter. It is diagnostic data;
+	// RetryAfter above remains the existing governor input.
+	RateLimitObservation RateLimitObservation
+	Endpoint             string
+	Model                string
+	DeliveryState        DeliveryState
+	AttemptReceipts      *AttemptReceiptSet
 
 	// Issue #39 request telemetry. All fields are conservative zero values
 	// unless the adapter can prove the observation; nothing is ever guessed.

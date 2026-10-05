@@ -294,6 +294,7 @@ func (c *Client) responseMetadata(response *http.Response, duration, firstByteLa
 	metadata.Duration = duration
 	metadata.FirstByteLatency = firstByteLatency
 	metadata.RetryAfter = parseRetryAfter(response.Header.Get("Retry-After"), c.now())
+	metadata.RateLimitObservation = observeRateLimits(response.Header, c.now())
 	metadata.Endpoint = logicalEndpoint(endpointURL)
 	metadata.Model = c.resolved.Model
 	return metadata
