@@ -191,19 +191,19 @@ internal/state/workunits.go:750  defer rows.Close()
 # same best-effort convention as the other state/* entries; the
 internal/state/workunits.go:774  defer rows.Close()
 
-internal/state/provider_attempts.go:46  defer rows.Close()
+internal/state/provider_attempts.go:47  defer rows.Close()
 
 
 
 
 
-internal/state/provider_attempts.go:107  defer tx.Rollback()
+internal/state/provider_attempts.go:153  defer tx.Rollback()
 
 
 
 
 
-internal/state/provider_attempts.go:163  defer tx.Rollback()
+internal/state/provider_attempts.go:210  defer tx.Rollback()
 
 
 internal/recovery/recovery.go:772  _ = jsonUnmarshal(raw, value)
@@ -266,43 +266,43 @@ cmd/runstead/resume.go:366  defer store.Close()
 
 
 
-internal/state/inspect.go:572  defer rows.Close()
+internal/state/inspect.go:585  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:591  defer rows.Close()
+internal/state/inspect.go:604  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:614  defer rows.Close()
+internal/state/inspect.go:629  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:642  defer rows.Close()
+internal/state/inspect.go:697  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:702  defer rows.Close()
+internal/state/inspect.go:757  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:774  defer rows.Close()
+internal/state/inspect.go:829  defer rows.Close()
 
 
 
 
 
-internal/state/inspect.go:792  defer rows.Close()
+internal/state/inspect.go:847  defer rows.Close()
 
 
 
