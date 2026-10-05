@@ -380,6 +380,23 @@ through another compatible adapter. Reconstruction never means re-executing
 historical calls: the run counters, grounding set and repeat guard continue
 seeded from persisted state.
 
+### Durable external waits (accepted direction, not implemented)
+
+ADR [`0002-durable-external-waits.md`](adr/0002-durable-external-waits.md)
+records the accepted post-adoption product direction tracked by #161: a task or
+Work Unit may eventually suspend on a typed external condition, terminate its
+provider session, consume zero provider attempts while waiting, and return to
+the normal governed resume path only after deterministic Runstead logic accepts
+a matching external observation. GitHub Pull Request review state is the first
+planned consumer.
+
+This is **not current runtime behavior** and does not promote M12. External
+reviews/comments/webhook payloads remain untrusted observations: they cannot
+grant policy, approval, capabilities, verifier success, retries or broader
+effects. A future watcher/webhook transport may notify the same durable wait
+contract, but SQLite remains authoritative and duplicate/stale observations
+must reconcile without duplicate dispatch.
+
 ## Context compiler (issue #51)
 
 The model-facing context is a deterministic, bounded projection of
