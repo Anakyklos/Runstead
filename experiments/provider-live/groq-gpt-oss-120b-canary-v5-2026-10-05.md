@@ -18,9 +18,9 @@
 
 ## Decision summary
 
-**Gate A = NOT SATISFIED.** No provider request was made. The initial preflight found neither `GROQ_API_KEY` nor `RUNSTEAD_GROQ_ENV_FILE` in the canary process environment. On continuation, the operator-owned file was found at the supplied external path and its reference was explicitly supplied, but `load_key_into_process()` could not obtain a nonempty key. Stage 1 remains blocked before authenticated model discovery; Stages 2, 3, and 4 remain skipped. Classification: **operator/environment prerequisite missing**, not a provider failure, model-protocol failure, or Runstead defect.
+**Gate A = NOT SATISFIED.** Stage 1 PASS: the one authorized authenticated `GET /models` returned HTTP 200 with exact model `openai/gpt-oss-120b`. Stage 2 PASS: task `cli-1791215619229247194` completed with real `read_file` evidence and independent verifier PASS. Stage 3 FAIL: task `cli-1791215744924042767` received provider HTTP 429, classified as `rate_or_capacity`, after seven governed attempts; replay safety was not proven, so the single controlled rerun allowance was not used. Stage 4 SKIPPED. Classification: **provider failure**, with no specific rate-limit dimension inferred; no Runstead defect observed.
 
-## Continuation checkpoint — external reference supplied, key unavailable
+## Historical checkpoint — external reference supplied, key unavailable
 
 The initial checkpoint below is preserved as historical evidence. It was an environment-propagation failure: the external file existed, but the canary process did not receive `RUNSTEAD_GROQ_ENV_FILE`. That checkpoint had zero provider requests, attempts, admissions, and debits and consumed no controlled rerun.
 
@@ -32,51 +32,70 @@ No task IDs, governed attempts, admissions, debits, actions, tool results, obser
 
 ## Stage preflight and outcome
 
-### Stage 1 — auth/model: BLOCKED before live dispatch
+### Stage 1 — auth/model: PASS
 
 - Objective: resolve the fixed declaration through the existing `openai_compatible` family; prove reference-only auth and the exact authenticated model; no alternate selection or persisted credential.
 - Allowed effects: local config resolution; at most the one authenticated exact-model control needed after confirming the external secret reference.
 - Prohibited effects: any task/model request before the required secret reference exists; model sweep; fallback/rotation; credential persistence.
 - Acceptance: exact config resolves with no provider dispatch; `GROQ_API_KEY` reference is externally available without displaying its value; no more than one authenticated `GET /models` proves `openai/gpt-oss-120b`; no alternate selection/fallback or credential persistence.
-- Initial secret check: `GROQ_API_KEY` and the optional `RUNSTEAD_GROQ_ENV_FILE` reference were absent from the process environment. On continuation, only the external path was supplied to the loader process; no nonempty value loaded, and no credential was displayed or persisted. Per the issue contract, execution stopped before authenticated model discovery.
-- The exact declaration resolved through the existing `openai_compatible` path with `adapter_constructed=false` and `provider_dispatches=0`. The authenticated model's availability to this account and auth handling in a live request remain unproven.
+- Boolean-only secret preflight confirmed an external regular env file, a nonempty loaded key, and `secret_value_emitted=false`; sanitized source: `external_env_file`. Exact provider resolution used the existing `openai_compatible` path with `adapter_constructed=false` and `provider_dispatches=0` before dispatch.
+- Exactly one authenticated control request was sent: `GET /models`, `request_count=1`, HTTP 200, and exact `openai/gpt-oss-120b` present. No other model was selected. Stage 1 acceptance passed; no key was printed, logged, committed, or persisted.
 
-### Stage 2 — read-only protocol/evidence/verifier: SKIPPED
+### Stage 2 — read-only protocol/evidence/verifier: PASS
 
-Conditional on Stage 1 PASS. No fixture copy or task was created. Required task objective and acceptance remain frozen in #155. Task ID: none. Attempts/admissions/debits: 0/0/0. Actions/tools/evidence/verifiers: none.
+Task `cli-1791215619229247194` ran on a fresh no-Git fixture copy and fresh SQLite state. Attempts/admissions/debits: 2/2/2; retries: 0. One successful `read_file` of `app/calc.go` produced real result/observation `obs-000001`; the grounded final response and independent verifier both cite `obs-000001`. Writes: 0; recipes/processes: 0. Verifier PASS; terminal `completed`; sanitized retained-state secret scan clean. Artifacts are preserved under `/tmp/runstead-v5-stage2-worker/run-1/`.
 
-### Stage 3 — bounded coding fixture: SKIPPED
+### Stage 3 — bounded coding fixture: FAIL — provider failure
 
-Conditional on Stage 2 PASS. No coding workspace or task was created; no recipe or process ran. Task ID: none. Attempts/admissions/debits: 0/0/0. Writes/hashes/verifiers: none. No v5 rate/capacity failure occurred, so all provider rate observations are not applicable/unknown; no rerun was considered or used.
+- Preflight: the unchanged objective, allowed/prohibited effects, and acceptance from `stage3-preflight.json` were checked before dispatch. A fresh Git workspace copied from the committed fixture started clean at `d6d06f1507c642f9d064406f8872d993ce8dfa28`; initial `app/calc.go` SHA-256 was `b8a1bd5…6986d94`, expected accepted fix hash was `1c5aa56…883b03`. The declared recipe was `go test ./...` in `app/`, timeout 120s.
+- Task `cli-1791215744924042767` ended `failed/provider_failure`, stop reason `rate_or_capacity`. Attempts/admissions/debits: 7/7/7; retries: 0. Attempts 1–6 succeeded (HTTP 200); attempt 7 failed on HTTP 429. The provider response was fully observed (`delivery_state=completed`, `uncertain=0`, `upstream_reached=1`).
+- The task performed two `list_files` and two `read_file` actions, including actual inspection of `app/calc.go` and `app/calc_test.go`; four corresponding tool results were recorded. It made no write, ran no recipe, attempted no verifier, and the terminal task did not complete. The fixture remained clean at its baseline commit and original source hash. No runtime defect was observed.
+- **Provider observations and governor decisions are separate.** The following allowlisted fields were read from durable typed attempt evidence. Missing values are `unknown`. Durations are provider-reported reset hints, not interpreted quota dimensions.
+
+| Attempt | Provider `http_status` | `observed_retry_after` | `observed_reset_at` | `limit_requests / remaining_requests / reset_requests` | `limit_tokens / remaining_tokens / reset_tokens` | Governor `selected_backoff` | `provider_failure_class` | `delivery_state` |
+|---:|---:|---:|---:|---|---|---:|---|---|
+| 1 | 200 | unknown | unknown | 1000 / 998 / 172800ms | 8000 / 6475 / 11437ms | 0s | unknown | completed |
+| 2 | 200 | unknown | unknown | 1000 / 997 / 259200ms | 8000 / 5531 / 18517ms | 0s | unknown | completed |
+| 3 | 200 | unknown | unknown | 1000 / 996 / 345600ms | 8000 / 4771 / 24217ms | 0s | unknown | completed |
+| 4 | 200 | unknown | unknown | 1000 / 995 / 432000ms | 8000 / 3549 / 33382ms | 0s | unknown | completed |
+| 5 | 200 | unknown | unknown | 1000 / 994 / 518400ms | 8000 / 2022 / 44835ms | 0s | unknown | completed |
+| 6 | 200 | unknown | unknown | 1000 / 993 / 604800ms | 8000 / 1587 / 48097ms | 0s | unknown | completed |
+| 7 | 429 | 3s | unknown | 1000 / 993 / 604800ms | 8000 / 3036 / 37230ms | 3s | rate_or_capacity | completed |
+
+- The HTTP 429 alone does not establish RPM, TPM, ITPM, OTPM, RPD, TPD, or generic capacity exhaustion. No rate-limit dimension is inferred. Attempt 7 was certain and fully delivered; the failure is classified as **provider failure: rate_or_capacity**.
+
+#### Controlled rerun decision
+
+No controlled rerun was dispatched; the one-run allowance remains unused. Query-only inspection of the preserved SQLite state showed attempt 7 had `uncertain=0`, `delivery_state=completed`, `upstream_reached=1`, no receipt-aware retry, a closed circuit, and an elapsed 3-second cooldown. However, the existing `DeliveryState.ReplaySafe()` contract proves replay safety only for `not_sent`; this request reached the provider and completed. The task used `--retry-policy off` and has no durable `RetryEligible` decision. Because current policy/evidence therefore does not prove a fresh-task replay safe, the explicit rerun condition was not met. The initial trajectory is preserved unchanged.
 
 ### Stage 4 — interruption/resume: SKIPPED
 
-Conditional on Stage 3 PASS. No task, interruption, inspect, or resume occurred. Task ID: none. Recovery, effect replay, and uncertain-delivery behavior were not exercised in v5.
+Conditional on Stage 3 PASS, which did not occur. No task, interruption, inspect, or resume was created. Recovery, effect replay, and uncertain-delivery behavior remain untested in v5.
 
 ## External Groq documentation (checked 2026-10-05)
 
 - Groq's [OpenAI compatibility documentation](https://console.groq.com/docs/openai) documents use of the `https://api.groq.com/openai/v1` base URL with OpenAI client libraries.
-- Groq's [supported models documentation](https://console.groq.com/docs/models) lists `openai/gpt-oss-120b` and describes the authenticated `/models` endpoint. This public documentation does not establish that the model was available to this account; the required authenticated check did not run.
-- Groq's [rate limits documentation](https://console.groq.com/docs/rate-limits) describes rate-limit dimensions and response headers, including request/token counters and resets. Published plan values and account limits are mutable external information, not Runstead invariants. No v5 request was made, so no live headers or provider limits were observed.
+- Groq's [supported models documentation](https://console.groq.com/docs/models) lists `openai/gpt-oss-120b` and describes the `/models` endpoint. The one authorized authenticated account check returned HTTP 200 and confirmed the exact model ID.
+- Groq's [rate limits documentation](https://console.groq.com/docs/rate-limits) describes rate-limit dimensions and response headers, including request/token counters and resets. Published plan values and account limits are mutable external information, not Runstead invariants. V5 records only the typed allowlisted observations above; it does not treat the observed values as current account limits or infer a limit dimension.
 
 ## Secret hygiene
 
-- The initial canary process environment did not contain `GROQ_API_KEY`; on continuation the external file path was supplied, but the loader did not obtain a nonempty key.
-- No credential value was read, printed, logged, requested, persisted, or added to the repository.
-- No live request, provider body, private transcript, or response header exists for this trajectory.
-- Exact-value retained-state scanning is unavailable without the external key; this report makes no claim based on a key value that was not present.
+- The key was loaded from the operator-owned external env file into the authorized request process; only boolean presence and sanitized source (`external_env_file`) were recorded.
+- No credential value was emitted, logged, committed, or persisted in report, SQLite, or repository artifacts.
+- Raw provider bodies, private transcripts, prompts, and arbitrary response headers are not retained. Stage 1 kept only request count, method/path, HTTP status, and exact-model-present boolean; Stage 3 kept only the typed fields enumerated in the report.
+- Stage 2 and Stage 3 retained-state secret scans were clean. No exact credential value is retained for scanning.
 
 ## Offline validation
 
-Results are recorded after executing the pre-dispatch and repository gates on this branch. The required CI gate inventory is taken from `.github/workflows/ci.yml`; v5 offline harness checks are additional where present.
+Final required gates were rerun against the canary source HEAD `1f581c88b2578f9327e6b945dc502d9e472b5661` with the final report content present in the working tree. The report-only commit does not change executable source. The required CI gate inventory is taken from `.github/workflows/ci.yml`; v5 offline harness checks are additional where present.
 
 | Gate | Result | Evidence |
 |---|---|---|
-| `test -z "$(gofmt -l .)"` | PASS | exit 0 on final code |
-| `go test ./...` | PASS | rerun on continuation HEAD `0b3bf8a`; exit 0; CLI package completed in 317.7 s |
-| `go vet ./...` | PASS | exit 0 on final code |
-| `go build ./cmd/runstead` | PASS | exit 0 on final code; generated binary removed |
-| `go test -race ./...` | PASS | rerun on continuation HEAD `0b3bf8a`; exit 0; CLI package completed in 551.6 s. One earlier run timed out after 735.8 s |
+| `test -z "$(gofmt -l .)"` | PASS | exit 0 on final source HEAD |
+| `go test ./...` | PASS | exit 0; CLI package completed in 314.058 s |
+| `go vet ./...` | PASS | exit 0 |
+| `go build ./cmd/runstead` | PASS | exit 0; generated binary removed |
+| `go test -race ./...` | PASS | exit 0; CLI package completed in 451.337 s |
 | `bash experiments/protocol/test.sh` | PASS | `PASS: protocol parser and offline experiment checks` |
 | provider-abstraction Go test/vet/build | PASS | all three commands exit 0 |
 | sidecar install, tests, lint, compile | PASS | temporary Python 3.11 environment; 36 tests passed; Ruff and compileall passed |
@@ -85,10 +104,11 @@ Results are recorded after executing the pre-dispatch and repository gates on th
 | protocol golden-corpus gate | PASS | `go test -count=1 ...` exit 0 |
 | quality tool build, self-tests, vet, growth, errcheck, live-convention | PASS | all commands exit 0 |
 | v5 no-dispatch resolver | PASS | exact config; `adapter_constructed=false`; `provider_dispatches=0` |
-| v5 model-control guard and offline harness/audit tests | PASS | missing explicit dispatch flag yields 0 requests; 12 Python unit tests pass with mock only |
-| external secret-reference check | BLOCKED | expected file is regular; path matches; loader did not obtain a nonempty key; no provider request |
-| `git diff --check` | PASS | clean worktree exits 0 after the continuation commit |
+| v5 model-control guard and offline harness/audit tests | PASS | missing explicit dispatch flag yields 0 requests; 12 Python unit tests pass with mocks only |
+| Stage 3 audit/typed-observation offline tests | PASS | five tests passed before the single governed Stage 3 dispatch |
+| external secret-reference and exact model control | PASS | sanitized booleans confirmed key loaded from external env file; exactly one authenticated `GET /models`, HTTP 200, exact model present; no secret emitted |
+| `git diff --check` | PASS | rerun after final report edit; exit 0 |
 
 ## Limitations and next step
 
-This v5 trajectory provides no live provider compatibility or Gate A evidence. The environment-path propagation problem was corrected for the loader process, but the operator-owned file did not yield a nonempty key, so Stage 1 could not dispatch. Resume this same Issue #155 / PR #156 only after the external file provides a nonempty usable value; no new issue, branch, canary, or controlled rerun is needed or created by this continuation. #123 remains blocked. No provider failure, rate-limit diagnosis, or Runstead defect is claimed.
+**Gate A = NOT SATISFIED.** Stages 1 and 2 passed; Stage 3 failed with a provider-reported HTTP 429 classified as `rate_or_capacity`; Stage 4 was skipped. The persisted provider observations establish HTTP status, Retry-After, and counters/resets as listed, but do not identify a specific rate-limit dimension or prove a capacity subtype. The one controlled rerun allowance remains unused because current policy/evidence does not prove replay safety for a completed, upstream-reached delivery. No Runstead defect was observed. Secret hygiene passed. #123 remains blocked; no merge, dogfood, or follow-on issue was started.
