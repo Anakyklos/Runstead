@@ -10,7 +10,7 @@
 - Protocol: `openai_compatible`
 - Base URL: `https://integrate.api.nvidia.com/v1`
 - Model: `poolside/laguna-xs-2.1`
-- Authentication: `reference_required`, `NVIDIA_API_KEY`; loaded from the operator-owned external env file in an isolated process. The file path and credential value are not in tracked artifacts.
+- Authentication: `reference_required`, `NVIDIA_API_KEY`; loaded from the operator-owned external env file in an isolated process.
 
 The previous checkpoint was a **preflight environment propagation failure before trajectory creation**, not an NVIDIA canary failure. It had zero provider requests, tasks, attempts, admissions, and debits and consumed no controlled rerun. It created no issue or branch. This v1 continues that preparation; it does not create a second trajectory.
 
@@ -40,12 +40,12 @@ The objective, acceptance checks, allowed effects, prohibited effects, and stop 
   - `nvidia_key_nonempty=true`
   - `secret_value_emitted=false`
 - One authenticated exact-model control request was authorized: `POST /v1/chat/completions`, fixed model only.
-- Result: `request_count=1`, `error_type=HTTPError`. The script did not emit the numeric HTTP status, and no response body or arbitrary headers were retained. Exact-model response validity is therefore unknown.
-- No fallback, rotation, model sweep, or second control request occurred.
+- Result: `request_count=1`, `error_type=HTTPError`. The executed harness did not emit `exc.code`; the HTTP response status is **unknown/not retained**. The `HTTPError` proves that urllib surfaced an HTTP error response, but its subtype cannot be determined from preserved evidence. No response body or arbitrary headers were retained.
+- No fallback, rotation, model sweep, retry, or second control request occurred.
 
-Classification: **provider/model control failure**, with root cause undetermined. The available sanitized result does not establish whether this was authentication, request compatibility, availability, rate/capacity, or another HTTP response. No Runstead task was created, so task-level provider attempts, admissions, debits, actions, tool results, observations, and verifier attempts are all zero. No Runstead runtime defect is established by this stage.
+**Stage 1 = NOT PASSED. Failure subtype = INCONCLUSIVE. Reason = experiment-harness observability gap.** The #157 requirement to classify exactly as provider/model protocol, operator/environment, or Runstead defect remains **UNPROVEN**. There is not enough evidence to attribute this failure to the provider/model. There is also no evidence of a Runstead runtime defect: no Runstead task was created, so task-level provider attempts, admissions, debits, actions, tool results, observations, and verifier attempts are all zero.
 
-A second control request is not admissible: replay safety for the direct completion request was not established. The one controlled-rerun allowance remains unused.
+No replay is authorized solely to obtain better diagnostics. The one controlled-rerun allowance remains unused; replay safety for the direct completion request was not established.
 
 ## Stages 2–4 and Gate A
 
@@ -63,8 +63,15 @@ The full Gate A contract remains unproven. No downstream work on #123 was starte
 - Governed attempts / admissions / debits: 0 / 0 / 0.
 - Automatic retries / fallback / rotation: 0 / 0 / 0.
 - Controlled rerun: not used.
-- Secret value emitted, logged, committed, persisted, or derived: no.
+- credential value: **NOT tracked**.
+- credential derivation/hash: **NOT tracked**.
+- operator env-file path: **tracked in the executed harness** at `experiments/provider-live/nvidia-nim-laguna-xs-2-1-canary-v1/stage1_models.py`.
+- Secret value emitted in the sanitized execution output: no.
 - Raw provider body, private transcript, prompt output, and arbitrary headers retained: no.
+
+## Future harness limitation
+
+Before any future canary, its harness must preserve sufficient sanitized, allowlisted HTTP failure fields to classify the result, including the numeric status. It must continue to omit response bodies, arbitrary headers, and secrets. This PR records the limitation only; it does not implement reusable harness changes.
 
 ## Delivery and merge boundary
 
