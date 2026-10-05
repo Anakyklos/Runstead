@@ -73,10 +73,10 @@ Results are recorded after executing the pre-dispatch and repository gates on th
 | Gate | Result | Evidence |
 |---|---|---|
 | `test -z "$(gofmt -l .)"` | PASS | exit 0 on final code |
-| `go test ./...` | PASS | exit 0 on final code; CLI package completed in 314.8 s |
+| `go test ./...` | PASS | rerun on continuation HEAD `0b3bf8a`; exit 0; CLI package completed in 317.7 s |
 | `go vet ./...` | PASS | exit 0 on final code |
 | `go build ./cmd/runstead` | PASS | exit 0 on final code; generated binary removed |
-| `go test -race ./...` | PASS | final run exit 0; CLI package completed in 501.9 s. One earlier run timed out after 735.8 s; all packages passed on this final run |
+| `go test -race ./...` | PASS | rerun on continuation HEAD `0b3bf8a`; exit 0; CLI package completed in 551.6 s. One earlier run timed out after 735.8 s |
 | `bash experiments/protocol/test.sh` | PASS | `PASS: protocol parser and offline experiment checks` |
 | provider-abstraction Go test/vet/build | PASS | all three commands exit 0 |
 | sidecar install, tests, lint, compile | PASS | temporary Python 3.11 environment; 36 tests passed; Ruff and compileall passed |
@@ -86,7 +86,8 @@ Results are recorded after executing the pre-dispatch and repository gates on th
 | quality tool build, self-tests, vet, growth, errcheck, live-convention | PASS | all commands exit 0 |
 | v5 no-dispatch resolver | PASS | exact config; `adapter_constructed=false`; `provider_dispatches=0` |
 | v5 model-control guard and offline harness/audit tests | PASS | missing explicit dispatch flag yields 0 requests; 12 Python unit tests pass with mock only |
-| `git diff --check` | PASS | staged diff exits 0 |
+| external secret-reference check | BLOCKED | expected file is regular; path matches; loader did not obtain a nonempty key; no provider request |
+| `git diff --check` | PASS | clean worktree exits 0 after the continuation commit |
 
 ## Limitations and next step
 
