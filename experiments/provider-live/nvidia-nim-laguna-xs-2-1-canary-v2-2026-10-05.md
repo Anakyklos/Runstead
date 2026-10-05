@@ -70,4 +70,4 @@ Initial local verification on the same source contents later committed to the PR
 - NVIDIA v2 harness tests: PASS (7 tests).
 - `git diff --check`: PASS.
 
-GitHub CI: current PR checks are linked at https://github.com/Anakyklos/Runstead/pull/163/checks; their status is reported from the final PR head after push.
+GitHub CI: [run 37387767805](https://github.com/Anakyklos/Runstead/actions/runs/37387767805) completed successfully on HEAD `573dcebb116570e393c62002b66d078f3456ffc1`. The PR checks page is https://github.com/Anakyklos/Runstead/pull/164/checks. This records the CI evidence for the reviewed canary commit; the following traceability-only commit changes no harness or canary result.
