@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "stage": "stage2-read-only-protocol-evidence-verifier",
+  "objective": "Read app/calc.go using the available repository tool. Complete only after citing the actual read_file observation for app/calc.go. Do not modify files and do not run recipes or processes.",
+  "fixture": "fixtures/coding-loop",
+  "workspace": "fresh temporary fixture copy; do not initialize Git so verifier Git observation launches no process",
+  "allowed_effects": [
+    "one fresh task with the frozen v5 provider configuration",
+    "governed provider attempts under the committed stage2 runner bounds",
+    "read_file app/calc.go and the durable tool result/evidence needed for a grounded citation",
+    "independent acceptance verifier and read-only SQLite audit"
+  ],
+  "prohibited_effects": [
+    "file writes, apply_patch, recipes, processes, shell, or workspace mutation",
+    "provider/model/key/account/protocol changes, retry-policy changes, or hidden retry/fallback",
+    "reusing a prior task, state directory, or workspace"
+  ],
+  "acceptance_file": "stage2-acceptance.json",
+  "acceptance": [
+    "attempts, admissions, and debits reconcile exactly once with zero automatic retries",
+    "a real successful read_file app/calc.go action links to a successful tool result and durable observation",
+    "grounded final response cites that exact observation",
+    "zero write attempts, recipes, processes, and changed workspace files",
+    "independent verifier passes and task reaches terminal completed"
+  ]
+}

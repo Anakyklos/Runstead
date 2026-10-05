@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "stage": "stage1-auth-model",
+  "provider": {
+    "provider_id": "groq-gpt-oss-120b-canary-v5",
+    "protocol_family": "openai_compatible",
+    "base_url": "https://api.groq.com/openai/v1",
+    "model": "openai/gpt-oss-120b",
+    "auth_requirement": "reference_required",
+    "auth_ref": "GROQ_API_KEY"
+  },
+  "allowed_effects": [
+    "no-dispatch local provider resolution",
+    "at most one explicitly authorized authenticated GET /models control request",
+    "retain only request count, HTTP status, and exact-model presence"
+  ],
+  "prohibited_effects": [
+    "alternate provider, model, key, account, or protocol family",
+    "redirects, retries, fallback, model sweep, quota probing, or response-body persistence",
+    "printing or persisting the secret value"
+  ],
+  "acceptance": [
+    "exact provider declaration resolves through openai_compatible without adapter construction or dispatch",
+    "GROQ_API_KEY reference is configured without reading or displaying its value during no-dispatch resolution",
+    "one authorized model-list control returns HTTP 200 and contains exact model openai/gpt-oss-120b",
+    "no alternate model is selected and no credential is persisted"
+  ]
+}
