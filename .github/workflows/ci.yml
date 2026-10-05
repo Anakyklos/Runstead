@@ -29,6 +29,10 @@ jobs:
           cache: pip
           cache-dependency-path: experiments/provider-abstraction/chatgptweb-sidecar/pyproject.toml
 
+      - name: Test provider-live sanitized HTTP harness
+        working-directory: experiments/provider-live
+        run: python3 -m unittest -v test_sanitized_http.py
+
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
 
