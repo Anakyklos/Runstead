@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "provider_id": "nvidia-nim-laguna-xs-2-1-canary-v1",
+  "protocol_family": "openai_compatible",
+  "base_url": "https://integrate.api.nvidia.com/v1",
+  "model": "poolside/laguna-xs-2.1",
+  "auth_requirement": "reference_required",
+  "auth_ref": "NVIDIA_API_KEY",
+  "objective": "Resolve the fixed provider declaration through Runstead's existing OpenAI-compatible path, prove the explicit external secret reference is available, and make at most one authenticated exact-model control request.",
+  "acceptance": {
+    "provider_resolution_exact": true,
+    "adapter_constructed_before_control": false,
+    "provider_dispatches_before_control": 0,
+    "env_file_path_matches_expected": true,
+    "env_file_regular": true,
+    "nvidia_key_declaration_present": true,
+    "nvidia_key_loaded": true,
+    "nvidia_key_nonempty": true,
+    "secret_value_emitted": false,
+    "control_request_limit": 1,
+    "control_request_method": "POST",
+    "control_request_path": "/v1/chat/completions",
+    "control_request_model": "poolside/laguna-xs-2.1",
+    "control_request_success_requires_http_200_and_valid_chat_completion": true,
+    "no_alternate_selection_or_fallback": true,
+    "no_credential_persistence": true
+  },
+  "allowed_effects": [
+    "local provider declaration resolution",
+    "one authenticated exact-model control request after all preflight checks pass"
+  ],
+  "prohibited_effects": [
+    "model sweep or alternate model selection",
+    "fallback, rotation, quota probing, or extra control requests",
+    "credential value or derivation in output, logs, repository, or state",
+    "task creation before Stage 1 passes"
+  ],
+  "stop_conditions": [
+    "any required preflight boolean is false",
+    "provider declaration does not resolve exactly",
+    "the exact model control fails or its response cannot be safely classified"
+  ],
+  "external_docs_checked": "2026-10-05",
+  "external_model_page": "https://build.nvidia.com/poolside/laguna-xs-2.1"
+}
