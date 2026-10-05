@@ -42,6 +42,8 @@ func TestObserveRateLimitsInvalidValuesBecomeUnknown(t *testing.T) {
 		{"malformed integer", "X-Ratelimit-Limit-Requests", "12x"},
 		{"negative integer", "X-Ratelimit-Limit-Requests", "-12"},
 		{"overflow integer", "X-Ratelimit-Remaining-Tokens", "9223372036854775808"},
+		{"counter above bound", "X-Ratelimit-Limit-Requests", "1000000001"},
+		{"MaxInt64 counter", "X-Ratelimit-Remaining-Tokens", "9223372036854775807"},
 		{"oversized integer", "X-Ratelimit-Limit-Tokens", strings.Repeat("1", 129)},
 		{"remaining negative", "X-Ratelimit-Remaining-Requests", "-1"},
 		{"duration malformed", "X-Ratelimit-Reset-Requests", "later"},
@@ -62,6 +64,30 @@ func TestObserveRateLimitsInvalidValuesBecomeUnknown(t *testing.T) {
 				t.Fatalf("invalid field was not discarded: %+v", got)
 			}
 		})
+	}
+}
+
+func TestObserveRateLimitsPreservesMaximumSupportedCounter(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("X-Ratelimit-Limit-Tokens", "1000000000")
+	got := observeRateLimits(headers, time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC))
+	if got.LimitTokens == nil || *got.LimitTokens != 1_000_000_000 {
+		t.Fatalf("maximum supported token counter = %v, want 1000000000", got.LimitTokens)
+	}
+}
+
+func TestParseRateLimitCounterRejectsValuesAboveSharedBound(t *testing.T) {
+	for _, input := range []string{"1000000001", "9223372036854775807"} {
+		headers := http.Header{}
+		headers.Set("X-Ratelimit-Limit-Requests", input)
+		if got := parseRateLimitCounter(headers, "X-Ratelimit-Limit-Requests", false); got != nil {
+			t.Errorf("parseRateLimitCounter(%q) = %d, want unknown", input, *got)
+		}
+	}
+	maximum := http.Header{}
+	maximum.Set("X-Ratelimit-Limit-Requests", "1000000000")
+	if got := parseRateLimitCounter(maximum, "X-Ratelimit-Limit-Requests", false); got == nil || *got != 1_000_000_000 {
+		t.Fatalf("parser rejected maximum supported counter: %v", got)
 	}
 }
 

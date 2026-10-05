@@ -26,31 +26,59 @@ func (c observedRateLimitClient) Complete(context.Context, provider.Request) (pr
 }
 
 func TestPersistRateLimitObservationDropsInvalidValuesIndependently(t *testing.T) {
-	zero, negative, max := int64(0), int64(-1), int64(1<<63-1)
+	maxAllowed := int64(1_000_000_000)
+	zero, negative := int64(0), int64(-1)
+	maxPlusOne := maxAllowed + 1
+	recordedAt := time.Date(2026, time.October, 5, 12, 0, 0, 0, time.UTC)
 	got := persistRateLimitObservation(governor.ProviderFinished{
-		StatusCode: 700,
+		StatusCode:      700,
+		ObservedResetAt: time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC),
 		RateLimitObservation: provider.RateLimitObservation{
 			ObservedRetryAfter: 30*24*time.Hour + time.Nanosecond,
-			LimitRequests:      &zero,
+			LimitRequests:      &maxAllowed,
 			RemainingRequests:  &negative,
 			ResetRequests:      31 * 24 * time.Hour,
-			LimitTokens:        &max,
+			LimitTokens:        &maxPlusOne,
 			RemainingTokens:    &zero,
 			ResetTokens:        30 * 24 * time.Hour,
 		},
-	})
-	if got.statusCode != nil || got.observedRetryAfterNS != nil || got.limitRequests != nil ||
-		got.remainingRequests != nil || got.resetRequestsNS != nil {
+	}, recordedAt)
+	if got.statusCode != nil || got.observedRetryAfterNS != nil || got.remainingRequests != nil ||
+		got.resetRequestsNS != nil || got.limitTokens != nil || got.observedResetAt != nil {
 		t.Fatalf("invalid status/request values survived persistence validation: %#v", got)
 	}
-	if got.limitTokens != max || got.remainingTokens != zero || got.resetTokensNS != int64(30*24*time.Hour) {
-		t.Fatalf("valid token values were lost or altered: %#v", got)
+	if got.limitRequests != maxAllowed || got.remainingTokens != zero || got.resetTokensNS != int64(30*24*time.Hour) {
+		t.Fatalf("valid counter/duration values were lost or altered: %#v", got)
+	}
+}
+
+func TestPersistRateLimitObservationKeepsResetAtWithinThirtyDays(t *testing.T) {
+	recordedAt := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name string
+		at   time.Time
+		want string
+	}{
+		{"upper bound", recordedAt.Add(30 * 24 * time.Hour), "2026-01-31T00:00:00Z"},
+		{"lower bound", recordedAt.Add(-30 * 24 * time.Hour), "2025-12-02T00:00:00Z"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := persistRateLimitObservation(governor.ProviderFinished{ObservedResetAt: test.at}, recordedAt)
+			if got.observedResetAt != test.want {
+				t.Fatalf("bounded reset timestamp = %#v, want %q", got.observedResetAt, test.want)
+			}
+		})
+	}
+	tooFar := time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC)
+	got := persistRateLimitObservation(governor.ProviderFinished{ObservedResetAt: tooFar}, recordedAt)
+	if got.observedResetAt != nil {
+		t.Fatalf("year-9999 reset timestamp survived the persistence bound: %#v", got.observedResetAt)
 	}
 }
 
 func TestRateLimitObservationPersistsAndRendersSeparatelyFromGovernorDecision(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runstead.db")
-	store, err := Open(Options{Path: path, Clock: newFixedClock()})
+	store, err := Open(Options{Path: path})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -139,7 +167,7 @@ func TestRateLimitObservationPersistsAndRendersSeparatelyFromGovernorDecision(t 
 		t.Fatalf("close before reopen: %v", err)
 	}
 
-	reopened, err := Open(Options{Path: path, Clock: newFixedClock()})
+	reopened, err := Open(Options{Path: path})
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}
@@ -162,6 +190,54 @@ func TestRateLimitObservationPersistsAndRendersSeparatelyFromGovernorDecision(t 
 		if strings.Contains(text, secret) {
 			t.Fatalf("inspect contains raw provider text %q", secret)
 		}
+	}
+}
+
+func TestPersistenceNullsOutOfBoundRateLimitValues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runstead.db")
+	store, err := Open(Options{Path: path})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+	mustGovernorTask(t, store)
+	state := governor.PersistedState{AccountPolicyID: "policy-test", ProviderID: "scripted"}
+	if err := store.RecordProviderPrepared(context.Background(), governor.ProviderPrepared{
+		TaskID: "task-1", ClientRequestID: "task-1-out-of-bounds", ProviderID: "scripted",
+		ModelPool: "pool", Model: "scripted", AttemptSequence: 1, State: state,
+	}); err != nil {
+		t.Fatalf("RecordProviderPrepared() error = %v", err)
+	}
+	const maxAllowed int64 = 1_000_000_000
+	maxPlusOne, maxInt := maxAllowed+1, int64(1<<63-1)
+	zero := int64(0)
+	if err := store.RecordProviderFinished(context.Background(), governor.ProviderFinished{
+		TaskID: "task-1", ClientRequestID: "task-1-out-of-bounds", Outcome: governor.OutcomeRateCapacity,
+		ObservedResetAt: time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC),
+		RateLimitObservation: provider.RateLimitObservation{
+			LimitRequests:     &maxPlusOne,
+			RemainingRequests: &zero,
+			LimitTokens:       &maxInt,
+		},
+		AttemptDebited: 1, SelectedBackoff: 29 * time.Second, State: state,
+	}); err != nil {
+		t.Fatalf("RecordProviderFinished() error = %v", err)
+	}
+	var resetAt sql.NullString
+	var limitRequests, remainingRequests, limitTokens, selectedBackoff sql.NullInt64
+	if err := store.db.QueryRow(`SELECT observed_reset_at, limit_requests, remaining_requests, limit_tokens, selected_backoff_ns
+		FROM provider_attempts WHERE task_id = 'task-1' AND client_request_id = 'task-1-out-of-bounds'`).Scan(
+		&resetAt, &limitRequests, &remainingRequests, &limitTokens, &selectedBackoff); err != nil {
+		t.Fatalf("read persisted out-of-bounds observations: %v", err)
+	}
+	if resetAt.Valid || limitRequests.Valid || limitTokens.Valid {
+		t.Fatalf("out-of-bounds provider evidence was persisted instead of NULL: reset=%#v limits=%#v/%#v", resetAt, limitRequests, limitTokens)
+	}
+	if !remainingRequests.Valid || remainingRequests.Int64 != 0 {
+		t.Fatalf("observed remaining=0 did not remain valid: %#v", remainingRequests)
+	}
+	if !selectedBackoff.Valid || selectedBackoff.Int64 != int64(29*time.Second) {
+		t.Fatalf("outcome accounting/backoff changed while dropping diagnostics: %#v", selectedBackoff)
 	}
 }
 

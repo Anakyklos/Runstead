@@ -191,19 +191,19 @@ internal/state/workunits.go:750  defer rows.Close()
 # same best-effort convention as the other state/* entries; the
 internal/state/workunits.go:774  defer rows.Close()
 
-internal/state/provider_attempts.go:47  defer rows.Close()
+internal/state/provider_attempts.go:49  defer rows.Close()
 
 
 
 
 
-internal/state/provider_attempts.go:153  defer tx.Rollback()
+internal/state/provider_attempts.go:162  defer tx.Rollback()
 
 
 
 
 
-internal/state/provider_attempts.go:210  defer tx.Rollback()
+internal/state/provider_attempts.go:219  defer tx.Rollback()
 
 
 internal/recovery/recovery.go:772  _ = jsonUnmarshal(raw, value)

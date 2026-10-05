@@ -10,6 +10,8 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
+const maxObservedResetDistance = 30 * 24 * time.Hour
+
 // providerAttemptStatus maps a classified governor outcome to the persisted
 // provider attempt status. An uncertain outcome stays uncertain and is never
 // reinterpreted as success or failure on restart.
@@ -108,15 +110,13 @@ type persistedRateLimitObservation struct {
 	resetTokensNS        any
 }
 
-func persistRateLimitObservation(record governor.ProviderFinished) persistedRateLimitObservation {
+func persistRateLimitObservation(record governor.ProviderFinished, recordedAt time.Time) persistedRateLimitObservation {
 	var result persistedRateLimitObservation
 	observation := record.RateLimitObservation.Sanitized()
 	if record.StatusCode >= 100 && record.StatusCode <= 599 {
 		result.statusCode = record.StatusCode
 	}
-	if !record.ObservedResetAt.IsZero() && record.ObservedResetAt.Year() >= 1970 && record.ObservedResetAt.Year() <= 9999 {
-		result.observedResetAt = formatTime(record.ObservedResetAt)
-	}
+	result.observedResetAt = persistObservedResetAt(record.ObservedResetAt, recordedAt)
 	result.observedRetryAfterNS = persistObservedDuration(observation.ObservedRetryAfter)
 	result.limitRequests = persistRateLimitCounter(observation.LimitRequests)
 	result.remainingRequests = persistRateLimitCounter(observation.RemainingRequests)
@@ -125,6 +125,15 @@ func persistRateLimitObservation(record governor.ProviderFinished) persistedRate
 	result.remainingTokens = persistRateLimitCounter(observation.RemainingTokens)
 	result.resetTokensNS = persistObservedDuration(observation.ResetTokens)
 	return result
+}
+
+func persistObservedResetAt(value, recordedAt time.Time) any {
+	if value.IsZero() || recordedAt.IsZero() ||
+		value.Before(recordedAt.Add(-maxObservedResetDistance)) ||
+		value.After(recordedAt.Add(maxObservedResetDistance)) {
+		return nil
+	}
+	return formatTime(value)
 }
 
 func persistRateLimitCounter(value *int64) any {
@@ -197,7 +206,7 @@ func (s *Store) RecordProviderFinished(ctx context.Context, record governor.Prov
 	hitCrashPoint("provider_tx2_before")
 	now := s.now()
 	status := providerAttemptStatus(record.Outcome, record.Uncertain)
-	rateLimitObservation := persistRateLimitObservation(record)
+	rateLimitObservation := persistRateLimitObservation(record, parseTime(now))
 	receiptError := record.ReceiptErrorCode
 	failureClass := record.ProviderFailureClass
 	if !failureClass.Valid() {

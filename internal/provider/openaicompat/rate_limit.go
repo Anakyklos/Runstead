@@ -49,7 +49,7 @@ func parseRateLimitCounter(headers http.Header, name string, allowZero bool) *in
 		}
 	}
 	parsed, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || parsed < 0 || (!allowZero && parsed == 0) {
+	if err != nil || parsed < 0 || parsed > provider.MaxRateLimitCounter || (!allowZero && parsed == 0) {
 		return nil
 	}
 	return &parsed

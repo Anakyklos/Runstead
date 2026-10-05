@@ -7,6 +7,12 @@ const (
 	maxRateLimitObservationDuration   = 30 * 24 * time.Hour
 )
 
+// MaxRateLimitCounter bounds provider-reported request and token counts at one
+// billion per reported window. This provider-neutral ceiling is far above
+// practical quota values while ensuring implausibly large integers remain
+// unknown instead of becoming durable evidence.
+const MaxRateLimitCounter int64 = 1_000_000_000
+
 // RateLimitObservation is the closed, sanitized rate-limit subset supported by
 // compatible provider adapters. Nil counters mean unknown; pointers preserve
 // an observed remaining value of zero. Durations of zero mean unknown.
@@ -39,7 +45,7 @@ func (o RateLimitObservation) Sanitized() RateLimitObservation {
 }
 
 func sanitizeRateLimitCounter(value *int64, allowZero bool) *int64 {
-	if value == nil || *value < 0 || (!allowZero && *value == 0) {
+	if value == nil || *value < 0 || *value > MaxRateLimitCounter || (!allowZero && *value == 0) {
 		return nil
 	}
 	copy := *value
