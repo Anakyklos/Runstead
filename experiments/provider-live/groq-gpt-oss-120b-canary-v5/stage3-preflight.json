@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "stage": "stage3-bounded-coding-fixture",
+  "objective": "Fix the whitespace handling bug in app/calc.go so the test suite passes. Inspect the relevant code and tests, make the minimum correct scoped change, run the declared test recipe, and finish only after Runstead's independent acceptance verification passes.",
+  "fixture": "fixtures/coding-loop",
+  "workspace": "fresh disposable Git workspace copied from the committed fixture",
+  "allowed_effects": [
+    "one fresh task after Stage 2 PASS with frozen v5 provider configuration",
+    "read tools; scoped write_file or apply_patch only for app/calc.go",
+    "the fixture's declared test recipe only",
+    "normal governed turns within the committed runner's explicit budgets",
+    "independent verifier and read-only SQLite audit"
+  ],
+  "prohibited_effects": [
+    "writes outside app/calc.go, undeclared recipes, arbitrary processes, or shell",
+    "provider/model/key/account/protocol changes, fallback, rotation, hidden retry, or altered acceptance",
+    "rerun-until-green, quota probing, deliberate exhaustion, or a changed pacing experiment",
+    "raw provider bodies, prompts, transcripts, arbitrary headers, or secret persistence"
+  ],
+  "acceptance_file": "stage3-acceptance.json",
+  "acceptance": [
+    "real code and test inspection precede a stale-state-protected scoped write with matching before/after hashes",
+    "only app/calc.go changes and its final hash matches the reviewed correct fixture file",
+    "declared test recipe is durably executed and passes without timeout, cancellation, or truncation",
+    "provider attempts, admissions, and debits reconcile with no hidden retries",
+    "independent acceptance verifier passes and task reaches terminal completed",
+    "typed provider rate-limit observations are reported as observed or unknown, separately from governor decisions"
+  ]
+}
