@@ -81,11 +81,20 @@ type inspectProviderAttempt struct {
 	UpstreamReached      bool
 	Uncertain            bool
 	AttemptDebited       int
-	SelectedBackoff      int64
+	SelectedBackoffNS    int64
 	ErrorClass           string
 	ProviderFailureClass string
 	RecoveryReason       string
 	ReceiptCount         int
+	StatusCode           sql.NullInt64
+	ObservedResetAt      sql.NullString
+	ObservedRetryAfterNS sql.NullInt64
+	LimitRequests        sql.NullInt64
+	RemainingRequests    sql.NullInt64
+	ResetRequestsNS      sql.NullInt64
+	LimitTokens          sql.NullInt64
+	RemainingTokens      sql.NullInt64
+	ResetTokensNS        sql.NullInt64
 	CreatedAt            string
 	PreparedAt           string
 	CompletedAt          string
@@ -253,12 +262,16 @@ func (s *Store) RenderInspect(ctx context.Context, out io.Writer, taskID string)
 		if attempt.AttemptDebited > 0 {
 			fmt.Fprintf(&builder, "    debited=%d\n", attempt.AttemptDebited)
 		}
+		if attempt.SelectedBackoffNS > 0 {
+			fmt.Fprintf(&builder, "    selected_backoff=%s\n", time.Duration(attempt.SelectedBackoffNS))
+		}
 		if attempt.ErrorClass != "" {
 			fmt.Fprintf(&builder, "    receipt_error=%s\n", attempt.ErrorClass)
 		}
 		if attempt.ProviderFailureClass != "" {
 			fmt.Fprintf(&builder, "    provider_failure_class=%s\n", attempt.ProviderFailureClass)
 		}
+		renderRateLimitObservation(&builder, attempt)
 		if attempt.Status == "prepared" {
 			fmt.Fprintf(&builder, "    uncertain=prepared: the upstream may have been reached; reconcile before re-execution\n")
 		}
@@ -605,6 +618,8 @@ func (s *Store) loadInspectProviderAttempts(ctx context.Context, taskID string) 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT p.execution_id, p.client_request_id, p.provider, p.protocol_family, p.config_identity, p.request_id, p.model, p.status, p.outcome, p.delivery_state, p.upstream_reached,
 		        p.uncertain, p.attempt_debited, p.selected_backoff_ns, p.error_class, p.provider_failure_class, p.recovery_reason,
+		        p.status_code, p.observed_reset_at, p.observed_retry_after_ns, p.limit_requests, p.remaining_requests, p.reset_requests_ns,
+		        p.limit_tokens, p.remaining_tokens, p.reset_tokens_ns,
 		        (SELECT COUNT(*) FROM provider_attempt_receipts r WHERE r.execution_id = p.execution_id),
 		        p.created_at, p.prepared_at, p.completed_at
 		 FROM provider_attempts p WHERE p.task_id = ? ORDER BY p.created_at, p.execution_id`, taskID)
@@ -619,7 +634,10 @@ func (s *Store) loadInspectProviderAttempts(ctx context.Context, taskID string) 
 		if err := rows.Scan(&attempt.ExecutionID, &attempt.ClientRequestID, &attempt.Provider, &attempt.ProtocolFamily,
 			&attempt.ConfigIdentity, &attempt.RequestID, &attempt.Model, &attempt.Status,
 			&attempt.Outcome, &deliveryState, &attempt.UpstreamReached, &attempt.Uncertain, &attempt.AttemptDebited,
-			&attempt.SelectedBackoff, &attempt.ErrorClass, &attempt.ProviderFailureClass, &attempt.RecoveryReason, &attempt.ReceiptCount, &attempt.CreatedAt,
+			&attempt.SelectedBackoffNS, &attempt.ErrorClass, &attempt.ProviderFailureClass, &attempt.RecoveryReason,
+			&attempt.StatusCode, &attempt.ObservedResetAt, &attempt.ObservedRetryAfterNS, &attempt.LimitRequests,
+			&attempt.RemainingRequests, &attempt.ResetRequestsNS, &attempt.LimitTokens, &attempt.RemainingTokens, &attempt.ResetTokensNS,
+			&attempt.ReceiptCount, &attempt.CreatedAt,
 			&attempt.PreparedAt, &attempt.CompletedAt); err != nil {
 			return nil, fmt.Errorf("scan provider attempt: %w", err)
 		}
@@ -630,6 +648,43 @@ func (s *Store) loadInspectProviderAttempts(ctx context.Context, taskID string) 
 		attempts = append(attempts, attempt)
 	}
 	return attempts, rows.Err()
+}
+
+func renderRateLimitObservation(builder *strings.Builder, attempt inspectProviderAttempt) {
+	if !attempt.StatusCode.Valid && !attempt.ObservedResetAt.Valid && !attempt.ObservedRetryAfterNS.Valid &&
+		!attempt.LimitRequests.Valid && !attempt.RemainingRequests.Valid && !attempt.ResetRequestsNS.Valid &&
+		!attempt.LimitTokens.Valid && !attempt.RemainingTokens.Valid && !attempt.ResetTokensNS.Valid {
+		return
+	}
+	builder.WriteString("    rate_limit_observation:")
+	if attempt.StatusCode.Valid {
+		fmt.Fprintf(builder, " status_code=%d", attempt.StatusCode.Int64)
+	}
+	if attempt.ObservedResetAt.Valid {
+		fmt.Fprintf(builder, " reset_at=%s", attempt.ObservedResetAt.String)
+	}
+	if attempt.ObservedRetryAfterNS.Valid {
+		fmt.Fprintf(builder, " observed_retry_after=%s", time.Duration(attempt.ObservedRetryAfterNS.Int64))
+	}
+	if attempt.LimitRequests.Valid {
+		fmt.Fprintf(builder, " limit_requests=%d", attempt.LimitRequests.Int64)
+	}
+	if attempt.RemainingRequests.Valid {
+		fmt.Fprintf(builder, " remaining_requests=%d", attempt.RemainingRequests.Int64)
+	}
+	if attempt.ResetRequestsNS.Valid {
+		fmt.Fprintf(builder, " reset_requests=%s", time.Duration(attempt.ResetRequestsNS.Int64))
+	}
+	if attempt.LimitTokens.Valid {
+		fmt.Fprintf(builder, " limit_tokens=%d", attempt.LimitTokens.Int64)
+	}
+	if attempt.RemainingTokens.Valid {
+		fmt.Fprintf(builder, " remaining_tokens=%d", attempt.RemainingTokens.Int64)
+	}
+	if attempt.ResetTokensNS.Valid {
+		fmt.Fprintf(builder, " reset_tokens=%s", time.Duration(attempt.ResetTokensNS.Int64))
+	}
+	builder.WriteByte('\n')
 }
 
 func (s *Store) loadInspectReceipts(ctx context.Context, taskID string) ([]inspectReceipt, error) {

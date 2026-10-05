@@ -67,6 +67,30 @@ func TestObservationRateWithoutWaitLearnsNothing(t *testing.T) {
 	}
 }
 
+// TestRateLimitCountersAreNotAdaptiveEvidence: diagnostic quota counters do
+// not become a reviewed RPM ceiling or permission to loosen OperationalProfile
+// learning merely because the attempt was classified as rate limited.
+func TestRateLimitCountersAreNotAdaptiveEvidence(t *testing.T) {
+	limitRequests, remainingRequests := int64(600), int64(0)
+	response := provider.Response{Metadata: provider.ResponseMetadata{
+		RateLimitObservation: provider.RateLimitObservation{
+			LimitRequests:     &limitRequests,
+			RemainingRequests: &remainingRequests,
+			LimitTokens:       int64Pointer(100000),
+			RemainingTokens:   int64Pointer(0),
+		},
+	}}
+	ev := Observation(response, &openaicompat.Error{Kind: openaicompat.ErrorRateCapacity}, observeNow)
+	if ev.Kind != adaptive.KindRateLimited || ev.RetryAfter != 0 || ev.RequestsPerMinute != 0 {
+		t.Fatalf("diagnostic quota counters were reinterpreted as adaptive evidence: %+v", ev)
+	}
+	if updates := adaptive.Updates(evidenceWithRef(ev)); len(updates) != 0 {
+		t.Fatalf("unreviewed diagnostic quota counters must not update OperationalProfile: %+v", updates)
+	}
+}
+
+func int64Pointer(value int64) *int64 { return &value }
+
 // TestObservationFallsBackToMetadataWait: when the typed error carries no
 // wait, a sanitized metadata Retry-After or a future ResetAt still proves one.
 func TestObservationFallsBackToMetadataWait(t *testing.T) {

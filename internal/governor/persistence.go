@@ -70,10 +70,17 @@ type ProviderFinished struct {
 	UpstreamReached bool
 	Uncertain       bool
 	DeliveryState   provider.DeliveryState
-	AttemptDebited  int
-	SelectedBackoff time.Duration
-	Circuit         CircuitSnapshot
-	RetryEligible   bool
+	// StatusCode and the raw, typed rate-limit observation preserve bounded
+	// response evidence independently from governor-selected retry behavior.
+	// ObservedResetAt is only populated when the provider actually reports an
+	// absolute reset time; it is never derived from the governor cooldown.
+	StatusCode           int
+	ObservedResetAt      time.Time
+	RateLimitObservation provider.RateLimitObservation
+	AttemptDebited       int
+	SelectedBackoff      time.Duration
+	Circuit              CircuitSnapshot
+	RetryEligible        bool
 	// Receipts are the sanitized authoritative receipt evidence (#29). The
 	// receipt attempt IDs are upstream-owned and never Runstead execution
 	// identities.
