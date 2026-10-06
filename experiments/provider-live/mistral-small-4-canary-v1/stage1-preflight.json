@@ -1,0 +1,17 @@
+{
+  "provider_id": "mistral-small-4-canary-v1",
+  "protocol_family": "openai_compatible",
+  "base_url": "https://api.mistral.ai/v1",
+  "model": "mistral-small-2603",
+  "auth_ref": "MISTRAL_API_KEY",
+  "request": {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "model": "mistral-small-2603",
+    "messages": [{"role": "user", "content": "Reply with OK."}],
+    "max_tokens": 1,
+    "stream": false
+  },
+  "maximum_control_requests": 1,
+  "stop_later_stages_on_failure": true
+}
