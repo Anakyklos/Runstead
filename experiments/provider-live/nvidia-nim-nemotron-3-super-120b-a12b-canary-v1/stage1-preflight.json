@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "provider_id": "nvidia-nim-nemotron-3-super-120b-a12b-canary-v1",
+  "protocol_family": "openai_compatible",
+  "base_url": "https://integrate.api.nvidia.com/v1",
+  "model": "nvidia/nemotron-3-super-120b-a12b",
+  "auth_requirement": "reference_required",
+  "auth_ref": "NVIDIA_API_KEY",
+  "objective": "Resolve the exact fixed provider contract through the existing registry without constructing an adapter or sending a request. Do not dispatch Stage 1 because the current adapter cannot encode the required max_tokens=1 field.",
+  "request_contract_if_adapter_supports_it": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [{"role": "user", "content": "Reply with OK."}],
+    "max_tokens": 1,
+    "stream": false
+  },
+  "maximum_control_requests": 1,
+  "stage1_dispatch_authorized": false,
+  "stop_later_stages_on_stage1_failure_or_block": true,
+  "secret_value_emitted": false
+}
