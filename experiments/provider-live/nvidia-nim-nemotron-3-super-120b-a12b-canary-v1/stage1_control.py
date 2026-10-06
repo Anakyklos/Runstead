@@ -35,10 +35,31 @@ MAX_RESPONSE_BYTES = 1_048_576
 
 
 @dataclass(frozen=True)
+class ResponseDiagnostics:
+    json_object_valid: bool
+    completion_object_valid: bool
+    choices_valid: bool
+    message_valid: bool
+    assistant_role_valid: bool
+    content_type_valid: bool
+    returned_model_matches: bool
+
+    @property
+    def compatible_shape_valid(self) -> bool:
+        return all((
+            self.json_object_valid,
+            self.completion_object_valid,
+            self.choices_valid,
+            self.message_valid,
+            self.assistant_role_valid,
+            self.content_type_valid,
+        ))
+
+
+@dataclass(frozen=True)
 class Stage1Result:
     observation: dict[str, int | str]
-    response_shape_valid: bool
-    returned_model_matches: bool
+    diagnostics: ResponseDiagnostics
 
     @property
     def request_count(self) -> int:
@@ -62,23 +83,45 @@ def _payload() -> bytes:
     ).encode("utf-8")
 
 
-def _validate_response(payload: object) -> tuple[bool, bool]:
+def _invalid_diagnostics() -> ResponseDiagnostics:
+    return ResponseDiagnostics(False, False, False, False, False, False, False)
+
+
+def _validate_response(payload: object) -> ResponseDiagnostics:
     if not isinstance(payload, dict):
-        return False, False
+        return _invalid_diagnostics()
     model = payload.get("model")
     model_matches = type(model) is str and model == MODEL_ID
-    choices = payload.get("choices")
-    if payload.get("object") != "chat.completion" or not isinstance(choices, list) or not choices:
-        return False, model_matches
-    first = choices[0]
-    message = first.get("message") if isinstance(first, dict) else None
-    shape_valid = (
-        isinstance(message, dict)
-        and type(message.get("role")) is str
-        and message.get("role") == "assistant"
-        and type(message.get("content")) is str
+
+    completion_object = payload.get("object")
+    completion_object_valid = (
+        "object" not in payload
+        or (type(completion_object) is str and completion_object == "chat.completion")
     )
-    return shape_valid, model_matches
+
+    choices = payload.get("choices")
+    choices_valid = (
+        isinstance(choices, list)
+        and bool(choices)
+        and isinstance(choices[0], dict)
+    )
+    first_choice = choices[0] if choices_valid else None
+    message = first_choice.get("message") if isinstance(first_choice, dict) else None
+    message_valid = isinstance(message, dict)
+    role = message.get("role") if message_valid else None
+    assistant_role_valid = type(role) is str and role == "assistant"
+    content = message.get("content") if message_valid else object()
+    content_type_valid = "content" in message and (type(content) is str or content is None) if message_valid else False
+
+    return ResponseDiagnostics(
+        json_object_valid=True,
+        completion_object_valid=completion_object_valid,
+        choices_valid=choices_valid,
+        message_valid=message_valid,
+        assistant_role_valid=assistant_role_valid,
+        content_type_valid=content_type_valid,
+        returned_model_matches=model_matches,
+    )
 
 
 def _dispatch_once(
@@ -111,19 +154,19 @@ def _dispatch_once(
     except HTTPError as exc:
         observation = http_error_observation(1, "POST", OBSERVATION_PATH, exc)
         exc.close()
-        return Stage1Result(observation, False, False)
+        return Stage1Result(observation, _invalid_diagnostics())
     except (URLError, OSError, TimeoutError) as exc:
         observation = transport_error_observation(1, "POST", OBSERVATION_PATH, exc)
-        return Stage1Result(observation, False, False)
+        return Stage1Result(observation, _invalid_diagnostics())
 
     if len(response_body) > MAX_RESPONSE_BYTES:
-        return Stage1Result(observation, False, False)
+        return Stage1Result(observation, _invalid_diagnostics())
     try:
         payload = json.loads(response_body)
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return Stage1Result(observation, False, False)
-    shape_valid, model_matches = _validate_response(payload)
-    return Stage1Result(observation, shape_valid, model_matches)
+        return Stage1Result(observation, _invalid_diagnostics())
+    diagnostics = _validate_response(payload)
+    return Stage1Result(observation, diagnostics)
 
 
 def dispatch_once(api_key: str, *, opener_factory=build_opener) -> Stage1Result:
@@ -173,8 +216,13 @@ def render_result(result: Stage1Result) -> str:
     return "\n".join(
         (
             render_observation(result.observation),
-            f"response_shape_valid={str(result.response_shape_valid).lower()}",
-            f"returned_model_matches={str(result.returned_model_matches).lower()}",
+            f"json_object_valid={str(result.diagnostics.json_object_valid).lower()}",
+            f"completion_object_valid={str(result.diagnostics.completion_object_valid).lower()}",
+            f"choices_valid={str(result.diagnostics.choices_valid).lower()}",
+            f"message_valid={str(result.diagnostics.message_valid).lower()}",
+            f"assistant_role_valid={str(result.diagnostics.assistant_role_valid).lower()}",
+            f"content_type_valid={str(result.diagnostics.content_type_valid).lower()}",
+            f"returned_model_matches={str(result.diagnostics.returned_model_matches).lower()}",
         )
     )
 
@@ -213,8 +261,8 @@ def main(argv: list[str] | None = None) -> int:
     passed = (
         type(status) is int
         and 200 <= status < 300
-        and result.response_shape_valid
-        and result.returned_model_matches
+        and result.diagnostics.compatible_shape_valid
+        and result.diagnostics.returned_model_matches
     )
     print(f"stage1_pass={str(passed).lower()}")
     return 0 if passed else 1
