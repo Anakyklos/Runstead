@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "provider_id": "nvidia-nim-laguna-xs-2-1-canary-v2",
+  "protocol_family": "openai_compatible",
+  "base_url": "https://integrate.api.nvidia.com/v1",
+  "model": "poolside/laguna-xs-2.1",
+  "auth_requirement": "reference_required",
+  "auth_ref": "NVIDIA_API_KEY",
+  "objective": "Resolve the fixed provider declaration without dispatch and, only after all local and dated upstream checks pass, make at most one exact authenticated chat-completions control request.",
+  "request": {
+    "method": "POST",
+    "path": "/chat/completions",
+    "model": "poolside/laguna-xs-2.1",
+    "user_content": "Reply with OK.",
+    "max_tokens": 1,
+    "stream": false
+  },
+  "maximum_control_requests": 1,
+  "acceptance": {
+    "provider_resolution_exact": true,
+    "adapter_constructed_before_control": false,
+    "provider_dispatches_before_control": 0,
+    "env_file_regular": true,
+    "nvidia_key_declaration_present": true,
+    "nvidia_key_loaded": true,
+    "nvidia_key_nonempty": true,
+    "secret_value_emitted": false,
+    "http_observation_fields": [
+      "request_count",
+      "method",
+      "path",
+      "http_status",
+      "error_type"
+    ],
+    "http_error_status_is_exc_code": true,
+    "response_requires_exact_model_and_chat_completion_shape": true,
+    "no_redirect_retry_fallback_or_rotation": true,
+    "no_credential_persistence": true
+  },
+  "allowed_effects": [
+    "local provider declaration resolution",
+    "one authenticated exact-model control request after all preflight checks pass"
+  ],
+  "prohibited_effects": [
+    "alternate provider/model/key/account/protocol",
+    "request tuning",
+    "redirects/retries/fallback/rotation/quota probing",
+    "raw response, arbitrary headers, URL/query, exception text, prompt, or secret retention",
+    "task creation before Stage 1 passes"
+  ],
+  "stop_conditions": [
+    "official documentation or local preflight fails",
+    "provider resolution differs from contract",
+    "the single exact request fails or response model/shape is invalid"
+  ],
+  "external_docs_checked": "2026-10-05",
+  "external_model_page": "https://build.nvidia.com/poolside/laguna-xs-2.1",
+  "external_api_reference": "https://docs.api.nvidia.com/nim/reference/poolside-laguna-xs-2-1",
+  "stop_later_stages_on_failure": true
+}
