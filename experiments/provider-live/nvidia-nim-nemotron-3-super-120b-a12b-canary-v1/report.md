@@ -6,7 +6,8 @@
 
 - Parent: [#121](https://github.com/Anakyklos/Runstead/issues/121)
 - Child: [#168](https://github.com/Anakyklos/Runstead/issues/168)
-- PR: pending
+- PR: [#169](https://github.com/Anakyklos/Runstead/pull/169)
+- PR head when opened: `9d73058e3f46040c18fcc82e2a98f02d76b72035` (the report URL metadata update will advance the branch; current final HEAD is in the PR metadata).
 - Source base and preflight HEAD: `c079f80321fde3a687416afb5a055cece9ed4762` (merged PR #167)
 - Candidate: `nvidia-nim-nemotron-3-super-120b-a12b-canary-v1`
 - Protocol: `openai_compatible`
