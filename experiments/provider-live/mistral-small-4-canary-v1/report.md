@@ -6,6 +6,8 @@
 - Canary issue: #166 — `[P0][PROVIDER CANARY] Mistral Small 4 Gate A canary v1`
 - Branch: `issue-166-mistral-small-4-canary-v1`
 - Base SHA: `17b9fb09a4b2952c49970d47a5bcd9a34ef4f43c`
+- HEAD SHA at initial PR: `1989937a0fb0d4c8586c7c8712f7a164d6e6a285`
+- PR: #167 — https://github.com/Anakyklos/Runstead/pull/167
 - Provider ID: `mistral-small-4-canary-v1`
 - Protocol family: `openai_compatible`
 - Base URL: `https://api.mistral.ai/v1`
@@ -83,7 +85,7 @@ The sanitized control preserved `HTTPError.code`. `response_shape_valid=false` a
 - `python3 -m unittest -v test_sanitized_http.py`: PASS (4 tests).
 - Mistral offline harness: PASS (6 tests).
 - `git diff --check` and staged diff check: PASS.
-- GitHub CI: pending at report creation; results will be appended after PR creation.
+- GitHub CI run [#37394394973](https://github.com/Anakyklos/Runstead/actions/runs/37394394973): PASS, 29 steps with no failed steps; `test` completed in 12m48s. This run tested initial PR HEAD `1989937a0fb0d4c8586c7c8712f7a164d6e6a285`.
 
 ## Decision and limits
 
