@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "checks": [
+    {"id": "calc-source-unchanged", "type": "file_hash", "path": "app/calc.go", "sha256": "b8a1bd5dc67bfd9a64bd13503994fdf5e3fc78edaf80502f29992561c6986d94"}
+  ]
+}

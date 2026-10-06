@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "checks": [
+    {"id": "tests-pass", "type": "recipe_exit_zero", "recipe": "test", "require_untruncated": true},
+    {"id": "calc-correct-fix", "type": "file_hash", "path": "app/calc.go", "sha256": "1c5aa56c1715d93c8d72f6d62b4695c123047977d81528e12d7be5776a883b03"}
+  ]
+}

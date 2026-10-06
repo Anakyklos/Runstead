@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "profile_id": "nvidia-nim-nemotron-3-super-120b-a12b-canary-v1-stage3-coding",
+  "profile_version": "v1",
+  "provider_id": "nvidia-nim-nemotron-3-super-120b-a12b-canary-v1",
+  "packages": [
+    {"id": "repo.read", "version": "1.0.0"},
+    {"id": "repo.write", "version": "1.0.0"},
+    {"id": "process.recipes", "version": "1.0.0"}
+  ]
+}
