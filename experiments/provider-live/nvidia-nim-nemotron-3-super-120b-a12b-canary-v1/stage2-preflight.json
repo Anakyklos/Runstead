@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "stage": "stage2-read-only-protocol-evidence-verifier",
+  "requires_previous_stage_pass": "stage1",
+  "objective": "Read app/calc.go using the available repository tool. Complete only after citing the actual read_file observation for app/calc.go. Do not modify files and do not run recipes/processes.",
+  "fixture": "fixtures/coding-loop",
+  "workspace": "fresh copy of fixture; no Git initialization or changed files",
+  "allowed_effects": [
+    "one fresh Runstead task with the frozen Nemotron provider configuration",
+    "governed provider attempts under the explicit stage2 budgets",
+    "successful read_file app/calc.go and durable action/result/observation evidence",
+    "independent acceptance verifier and read-only SQLite audit"
+  ],
+  "prohibited_effects": [
+    "workspace writes, recipe/process execution, shell, or Git initialization",
+    "provider/model/key/account/protocol changes, fallback, pooling, hidden retry, or rotation",
+    "reusing a previous task, workspace, or state directory"
+  ],
+  "acceptance_file": "stage2-acceptance.json",
+  "acceptance": [
+    "attempts, admissions, and debits reconcile exactly once with zero automatic retries",
+    "a real successful read_file app/calc.go action links to a successful result and durable observation",
+    "the grounded final response cites that exact observation",
+    "zero write attempts, recipes, processes, and changed workspace files",
+    "independent verifier passes and task reaches terminal completed"
+  ]
+}

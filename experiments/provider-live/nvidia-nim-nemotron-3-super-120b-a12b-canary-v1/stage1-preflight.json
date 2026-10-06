@@ -6,8 +6,9 @@
   "model": "nvidia/nemotron-3-super-120b-a12b",
   "auth_requirement": "reference_required",
   "auth_ref": "NVIDIA_API_KEY",
-  "objective": "Resolve the exact fixed provider contract through the existing registry without constructing an adapter or sending a request. Do not dispatch Stage 1 because the current adapter cannot encode the required max_tokens=1 field.",
-  "request_contract_if_adapter_supports_it": {
+  "objective": "Resolve the exact provider declaration with SafeRouteSafety without constructing an adapter or sending a request. After fresh NVIDIA documentation and credential preflight pass, execute exactly one sanitized direct HTTP control before any Runstead task; this control does not prove the runtime adapter.",
+  "stage1_dispatch_mode": "direct_pre_task_http_control",
+  "request_contract": {
     "method": "POST",
     "path": "/chat/completions",
     "model": "nvidia/nemotron-3-super-120b-a12b",
@@ -16,7 +17,8 @@
     "stream": false
   },
   "maximum_control_requests": 1,
-  "stage1_dispatch_authorized": false,
+  "fresh_preflight_required_before_dispatch": true,
+  "stage1_dispatch_authorized": true,
   "stop_later_stages_on_stage1_failure_or_block": true,
   "secret_value_emitted": false
 }

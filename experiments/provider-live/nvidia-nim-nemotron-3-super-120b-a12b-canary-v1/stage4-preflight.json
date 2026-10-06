@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "stage": "stage4-interruption-resume",
+  "requires_previous_stage_pass": "stage3",
+  "objective": "Fix the whitespace handling bug in app/calc.go so the test suite passes. Inspect relevant code and tests, make the minimum scoped change, run the declared test recipe, and finish only after independent Runstead acceptance verification passes.",
+  "fixture": "fixtures/coding-loop",
+  "workspace": "fresh Git workspace equivalent to Stage 3, with its own fresh state directory",
+  "profile": "stage3-profile.json",
+  "acceptance_file": "stage3-acceptance.json",
+  "interrupt_checkpoint": "after the successful declared test recipe is durable and before final verification begins",
+  "same_task_id_required": true,
+  "resume_after_read_only_inspect": true,
+  "acceptance": [
+    "interrupted and resumed records retain one task ID and the same frozen provider, profile, acceptance, and budgets",
+    "SQLite state reconstructs after interruption and inspect precedes resume",
+    "budgets and prior evidence remain present after resume",
+    "completed writes and successful recipe effects are not repeated after resume",
+    "uncertain upstream delivery remains conservatively accounted and is not replayed",
+    "independent verifier passes and terminal task state is completed"
+  ],
+  "prohibited_effects": [
+    "a new task, state directory, provider config, profile, or acceptance plan on resume",
+    "repeating a completed write or successful recipe, fallback, hidden retry, or provider rotation",
+    "writes outside app/calc.go, undeclared recipes, arbitrary processes, or shell"
+  ]
+}
