@@ -62,6 +62,20 @@ The key was held only in process memory and sent only as the required Bearer val
 
 ## Verification and publication
 
+Local gates were run on implementation commit `b238295fe6e5cc88a397a675335376e3f69dd7c8`, before this post-campaign report-only update. The canary code and runtime source are unchanged by that later documentation commit.
+
+| Gate | Result |
+|---|---|
+| `test -z "$(gofmt -l .)"` | PASS |
+| `go test ./...` | FAIL in sandbox: `httptest.NewServer` cannot bind `[::1]:0` (`socket: operation not permitted`) in `cmd/runstead/TestLearningCooldownFromRetryAfterAllFamilies` and OpenAI-compatible provider tests; unrelated packages passed. |
+| `go vet ./...` | PASS |
+| `go build ./cmd/runstead` | PASS; generated local binary removed. |
+| `go test -race ./...` | FAIL on the same sandbox loopback-listener restriction in `cmd/runstead` and OpenAI-compatible provider tests; other reported packages passed. |
+| `bash experiments/protocol/test.sh` | PASS: protocol parser and offline experiment checks. |
+| `python3 -m unittest -v test_sanitized_http` from `experiments/provider-live/` | PASS: 4 tests. |
+| `python3 -m unittest -v test_stage1_control test_provider_contract` from this canary directory | PASS: 12 tests. |
+| `git diff --check` | PASS. |
+
 The focused Stage 1 harness and provider-contract tests passed after replacing a loopback redirect test that cannot bind sockets in this sandbox with a no-network test of the injected no-redirect handler. The test-first request-contract assertion was observed RED against the copied Nemotron values before the implementation was adapted to DeepSeek and `max_tokens=64`.
 
-Final repository gates, PR HEAD, and GitHub CI state are recorded in the PR after publication. Gate A remains **NOT SATISFIED** regardless of those code/repository gates because no Stage 1 response was obtained.
+PR and GitHub CI state are recorded here after publication. Gate A remains **NOT SATISFIED** regardless of repository gate results because no Stage 1 response was obtained.
