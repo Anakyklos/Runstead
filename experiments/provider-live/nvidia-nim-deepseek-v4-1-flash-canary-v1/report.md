@@ -14,8 +14,8 @@
 - Branch: `issue-170-nvidia-nim-deepseek-v4-1-flash-canary-v1`.
 - Base: `2cfb46ffbc934c238f220e1c1e0ca1551a9c9c4c`.
 - Live trajectory HEAD: `2cfb46ffbc934c238f220e1c1e0ca1551a9c9c4c`. The one Stage 1 HTTP control occurred against this source state; no Runstead task, adapter, governor, or task accounting was involved.
-- Report/harness commit: recorded in the PR HEAD. These post-trajectory artifacts do not change the live trajectory HEAD or its result.
-- PR: pending creation; requested title `test(provider): run NVIDIA NIM DeepSeek V4.1 Flash Gate A canary v1 (#170)`.
+- Implementation/report commit before PR metadata: `23b8d7abd18a5416f45989b3a4602305aabef0d1`. This report metadata update is documentation-only and does not change the live trajectory HEAD or the tested implementation.
+- PR: [#171](https://github.com/Anakyklos/Runstead/pull/171), open and unmerged; title `test(provider): run NVIDIA NIM DeepSeek V4.1 Flash Gate A canary v1 (#170)`.
 
 ## NVIDIA documentation revalidated
 
@@ -78,4 +78,4 @@ Local gates were run on implementation commit `b238295fe6e5cc88a397a675335376e3f
 
 The focused Stage 1 harness and provider-contract tests passed after replacing a loopback redirect test that cannot bind sockets in this sandbox with a no-network test of the injected no-redirect handler. The test-first request-contract assertion was observed RED against the copied Nemotron values before the implementation was adapted to DeepSeek and `max_tokens=64`.
 
-PR and GitHub CI state are recorded here after publication. Gate A remains **NOT SATISFIED** regardless of repository gate results because no Stage 1 response was obtained.
+PR #171 was opened on 2026-10-06 and remains unmerged. GitHub Go CI run [#312](https://github.com/Anakyklos/Runstead/actions/runs/37547518860) passed on implementation/report commit `23b8d7abd18a5416f45989b3a4602305aabef0d1`, including tests, race detector, vet/build, protocol, provider abstraction, sidecar, and quality gates. This documentation-only PR metadata update triggers a fresh exact-head run; its conclusion is checked on the PR before completion. Gate A remains **NOT SATISFIED** regardless of repository gate results because no Stage 1 response was obtained.
