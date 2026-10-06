@@ -78,4 +78,4 @@ Consider a separate maintainer-scoped issue for a governed, provider-neutral gen
 - `go test -race ./...`: PASS with local-listener permission.
 - `bash experiments/protocol/test.sh`: PASS.
 - `git diff --check`: PASS.
-- GitHub Actions for the PR HEAD: pending PR creation.
+- GitHub Actions: PASS — Go CI run #305 on PR head `160f11f9668e54fc4231c364c342749d1aa67810` (2026-10-06). Recording this result advances the report-only PR head; CI for that revision is tracked in PR #169.
