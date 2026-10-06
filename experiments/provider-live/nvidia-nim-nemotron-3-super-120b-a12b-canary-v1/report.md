@@ -6,10 +6,10 @@
 
 - Parent: [#121](https://github.com/Anakyklos/Runstead/issues/121)
 - Issue: [#168](https://github.com/Anakyklos/Runstead/issues/168)
-- PR: [#169](https://github.com/Anakyklos/Runstead/pull/169), kept open, draft, and unmerged
+- PR: [#169](https://github.com/Anakyklos/Runstead/pull/169); the canary remained draft and unmerged through its evidence-correction review
 - Source base: `c079f80321fde3a687416afb5a055cece9ed4762`
 - **Live trajectory code HEAD:** `aebcf9b85023b881ac935abfa31361f7ec9c7d54`
-- **Post-trajectory validator correction:** implemented offline in this PR update after the maintainer review; it was not used to process the consumed response. The live request count remains one.
+- **Post-trajectory validator correction:** implemented offline after maintainer review; it was not used to process the consumed response. Final reviewed correction HEAD before this provenance-only update: `0ed3da9ce5d5f14cf70f25ecdc461508209e04a0`. The live request count remains one.
 - Candidate: `nvidia-nim-nemotron-3-super-120b-a12b-canary-v1`
 - Protocol: `openai_compatible`
 - Base URL: `https://integrate.api.nvidia.com/v1`
@@ -63,4 +63,4 @@ After the live trajectory, the validator was changed to accept assistant `conten
 
 Only the existing external credential reference was used. The key was never printed, copied into the repository or state files, hashed, measured, or fingerprinted. No response body, generated text, reasoning text, arbitrary header, or prompt transcript was retained.
 
-The post-trajectory correction passed 10 canary Stage 1 unit tests, covering nullable content and granular structural diagnostics. All 20 canary-specific Python tests and the 4 shared sanitized HTTP tests passed. On this source tree, `gofmt`, `go test ./...`, `go vet ./...`, `go build ./cmd/runstead`, `go test -race ./...`, and `bash experiments/protocol/test.sh` also passed. GitHub CI #308 passed on the prior report revision `3c74edee2539371c56da8328454fe3e6332dc74b`; it is not evidence for the post-trajectory correction. The final CI result for the correction revision is tracked in the PR description.
+The post-trajectory correction passed 10 canary Stage 1 unit tests, covering nullable content and granular structural diagnostics. All 20 canary-specific Python tests and the 4 shared sanitized HTTP tests passed. On correction HEAD `0ed3da9ce5d5f14cf70f25ecdc461508209e04a0`, `gofmt`, `go test ./...`, `go vet ./...`, `go build ./cmd/runstead`, `go test -race ./...`, `bash experiments/protocol/test.sh`, and `git diff --check` passed. GitHub Actions Go CI run #309 also passed on that exact correction HEAD. This later provenance-only report update performs no provider dispatch and does not alter the live trajectory.
