@@ -104,4 +104,4 @@ The offline correction was validated in its isolated worker worktree. No NVIDIA 
 | `bash experiments/protocol/test.sh` | PASS: protocol parser and offline experiment checks. |
 | `git diff --check` | PASS. |
 
-Hosted CI for the P1 correction is pending publication of the reviewed worker commit to PR #171; the earlier CI runs above do not validate this later correction. Gate A remains **NOT SATISFIED**.
+The P1 correction code HEAD `8cbdebc2d301f17b755a835811aac44b3f0e5375` passed hosted Go CI run #317 (`37650503964`) on that exact commit, including the full tests and race detector that the local sandbox could not execute because of its IPv6 loopback restriction. Any later documentation-only provenance commit must also pass final-head CI before merge. Gate A remains **NOT SATISFIED**.
