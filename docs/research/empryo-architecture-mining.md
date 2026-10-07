@@ -1,7 +1,7 @@
 # Empryo architectural mining for Runstead
 
-**Date:** 2026-09-28  
-**Status:** Research reference; non-normative  
+**Date:** 2026-09-28
+**Status:** Research reference; non-normative
 **Doctrine:** issue #49 — mine the gold, preserve Runstead
 
 This note records ideas observed in Empryo that may be worth testing in
