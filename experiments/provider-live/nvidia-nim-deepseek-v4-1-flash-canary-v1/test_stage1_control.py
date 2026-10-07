@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from io import StringIO
 from pathlib import Path
@@ -268,6 +268,24 @@ class Stage1ControlTests(unittest.TestCase):
             result = control.resolve_provider_config(runner=runner)
 
         self.assertFalse(result)
+        self.assertNotIn(secret, repr(result))
+
+    def test_resolver_child_stdout_and_stderr_are_not_emitted_or_returned(self):
+        secret = "CHILD_STREAM_SECRET_SENTINEL"
+        output = StringIO()
+        error = StringIO()
+
+        def runner(argv, **_kwargs):
+            return subprocess.CompletedProcess(
+                argv, 1, stdout=f"{secret}\n", stderr=f"{secret}\n",
+            )
+
+        with redirect_stdout(output), redirect_stderr(error):
+            result = control.resolve_provider_config(runner=runner)
+
+        self.assertIs(result, False)
+        self.assertNotIn(secret, output.getvalue())
+        self.assertNotIn(secret, error.getvalue())
         self.assertNotIn(secret, repr(result))
 
     def test_unauthorized_main_does_not_load_external_key(self):
