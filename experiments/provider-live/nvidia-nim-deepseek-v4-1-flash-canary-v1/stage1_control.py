@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import stat
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,8 @@ from sanitized_http import (  # noqa: E402
 )
 
 EXPECTED_ENV_FILE = Path("/home/pedro/.config/runstead-canary/nvidia.env")
+HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parents[2]
 BASE_URL = "https://integrate.api.nvidia.com/v1"
 MODEL_ID = "deepseek-ai/deepseek-v4.1-flash"
 AUTH_REF = "NVIDIA_API_KEY"
@@ -32,6 +35,17 @@ ENDPOINT_PATH = "/chat/completions"
 OBSERVATION_PATH = "/chat/completions"
 TIMEOUT_SECONDS = 30
 MAX_RESPONSE_BYTES = 1_048_576
+_RESOLVER_SUCCESS = (
+    "provider_id=nvidia-nim-deepseek-v4-1-flash-canary-v1\n"
+    "protocol_family=openai_compatible\n"
+    "base_url=https://integrate.api.nvidia.com/v1\n"
+    "model=deepseek-ai/deepseek-v4.1-flash\n"
+    "auth_requirement=reference_required\n"
+    "auth_ref=NVIDIA_API_KEY\n"
+    "route_safety=SafeRouteSafety\n"
+    "adapter_constructed=false\n"
+    "provider_requests=0\n"
+)
 
 
 @dataclass(frozen=True)
@@ -174,8 +188,31 @@ def dispatch_once(api_key: str, *, opener_factory=build_opener) -> Stage1Result:
     return _dispatch_once(BASE_URL, MODEL_ID, api_key, opener_factory=opener_factory)
 
 
+def resolve_provider_config(
+    *, config_path: Path | None = None, runner=subprocess.run,
+) -> bool:
+    """Resolve only the fixed static contract in a child without the auth secret."""
+    env = os.environ.copy()
+    env.pop(AUTH_REF, None)
+    env["GOPROXY"] = "off"
+    env["GOTOOLCHAIN"] = "local"
+    argv = ["go", "run", str(HERE / "stage1_resolve.go"), str(config_path or HERE / "providers.json")]
+    try:
+        result = runner(
+            argv,
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            shell=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and result.stdout == _RESOLVER_SUCCESS and result.stderr == ""
+
+
 def load_key_without_emitting(env_file: Path) -> tuple[dict[str, bool], str | None]:
-    os.environ.pop(AUTH_REF, None)
     checks = {
         "env_file_regular": False,
         "nvidia_key_declaration_present": False,
@@ -206,10 +243,9 @@ def load_key_without_emitting(env_file: Path) -> tuple[dict[str, bool], str | No
 
     key = declarations[0]
     if key:
-        os.environ[AUTH_REF] = key
-    checks["nvidia_key_loaded"] = AUTH_REF in os.environ
-    checks["nvidia_key_nonempty"] = bool(os.environ.get(AUTH_REF))
-    return checks, os.environ.get(AUTH_REF) if checks["nvidia_key_nonempty"] else None
+        checks["nvidia_key_loaded"] = True
+    checks["nvidia_key_nonempty"] = bool(key)
+    return checks, key if checks["nvidia_key_nonempty"] else None
 
 
 def render_result(result: Stage1Result) -> str:
@@ -238,6 +274,17 @@ def main(argv: list[str] | None = None) -> int:
         print("stage1_result=stopped_preflight")
         return 2
 
+    if not resolve_provider_config():
+        print("provider_config_resolved=false")
+        print("request_count=0")
+        print("stage1_result=stopped_preflight")
+        return 2
+
+    if not args.dispatch_authorized:
+        print("request_count=0")
+        print("stage1_result=not_dispatched authorization_required=true")
+        return 2
+
     checks, key = load_key_without_emitting(args.env_file)
     for name, value in checks.items():
         print(f"{name}={str(value).lower()}")
@@ -245,17 +292,10 @@ def main(argv: list[str] | None = None) -> int:
         print("request_count=0")
         print("stage1_result=stopped_preflight")
         return 2
-    if not args.dispatch_authorized:
-        print("request_count=0")
-        print("stage1_result=not_dispatched authorization_required=true")
-        os.environ.pop(AUTH_REF, None)
-        return 2
-
     try:
         result = dispatch_once(key)
     finally:
         key = None
-        os.environ.pop(AUTH_REF, None)
     print(render_result(result))
     status = result.observation["http_status"]
     passed = (

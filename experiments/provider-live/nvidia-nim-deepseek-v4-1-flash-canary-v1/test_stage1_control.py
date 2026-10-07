@@ -1,12 +1,16 @@
 import io
 import json
 import os
+import subprocess
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from io import StringIO
 from pathlib import Path
 from urllib.error import HTTPError
+from unittest.mock import patch
 
 import stage1_control as control
 
@@ -208,13 +212,12 @@ class Stage1ControlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             env_file = Path(directory) / "nvidia.env"
             env_file.write_text("NVIDIA_API_KEY='FILE_KEY_SENTINEL'\n", encoding="utf-8")
-            os.environ["NVIDIA_API_KEY"] = "AMBIENT_KEY_SENTINEL"
-            checks, key = control.load_key_without_emitting(env_file)
-            loaded_value = os.environ.get("NVIDIA_API_KEY")
-            os.environ.pop("NVIDIA_API_KEY", None)
+            with patch.dict(os.environ, {"NVIDIA_API_KEY": "AMBIENT_KEY_SENTINEL"}):
+                checks, key = control.load_key_without_emitting(env_file)
+                loaded_value = os.environ.get("NVIDIA_API_KEY")
 
         self.assertEqual(key, "FILE_KEY_SENTINEL")
-        self.assertEqual(loaded_value, "FILE_KEY_SENTINEL")
+        self.assertEqual(loaded_value, "AMBIENT_KEY_SENTINEL")
         self.assertEqual(checks, {
             "env_file_regular": True,
             "nvidia_key_declaration_present": True,
@@ -222,6 +225,80 @@ class Stage1ControlTests(unittest.TestCase):
             "nvidia_key_nonempty": True,
             "secret_value_emitted": False,
         })
+
+    def test_env_loader_does_not_fallback_to_ambient_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / "nvidia.env"
+            env_file.write_text("OTHER_SETTING=value\n", encoding="utf-8")
+            with patch.dict(os.environ, {"NVIDIA_API_KEY": "AMBIENT_KEY_SENTINEL"}):
+                checks, key = control.load_key_without_emitting(env_file)
+                ambient_after = os.environ.get("NVIDIA_API_KEY")
+
+        self.assertIsNone(key)
+        self.assertEqual(ambient_after, "AMBIENT_KEY_SENTINEL")
+        self.assertFalse(checks["nvidia_key_loaded"])
+        self.assertFalse(checks["nvidia_key_nonempty"])
+
+    def test_resolver_child_environment_removes_synthetic_key(self):
+        observed = {}
+
+        def runner(argv, **kwargs):
+            observed["argv"] = argv
+            observed.update(kwargs)
+            return subprocess.CompletedProcess(argv, 0, stdout=control._RESOLVER_SUCCESS, stderr="")
+
+        with patch.dict(os.environ, {"NVIDIA_API_KEY": "CHILD_ENV_SENTINEL"}):
+            self.assertTrue(control.resolve_provider_config(runner=runner))
+
+        self.assertNotIn("NVIDIA_API_KEY", observed["env"])
+        self.assertFalse(observed["shell"])
+        self.assertEqual(observed["argv"][0:2], ["go", "run"])
+        self.assertEqual(observed["capture_output"], True)
+        self.assertEqual(observed["text"], True)
+        self.assertEqual(observed["env"]["GOPROXY"], "off")
+        self.assertEqual(observed["env"]["GOTOOLCHAIN"], "local")
+
+    def test_resolver_failure_does_not_leak_child_output_or_exception(self):
+        secret = "RESOLVER_OUTPUT_SENTINEL"
+
+        def runner(argv, **_kwargs):
+            raise OSError(f"failed with {secret}")
+
+        with patch.dict(os.environ, {"NVIDIA_API_KEY": "CHILD_ENV_SENTINEL"}):
+            result = control.resolve_provider_config(runner=runner)
+
+        self.assertFalse(result)
+        self.assertNotIn(secret, repr(result))
+
+    def test_unauthorized_main_does_not_load_external_key(self):
+        output = StringIO()
+        with patch.object(control, "resolve_provider_config", return_value=True), \
+                patch.object(control, "load_key_without_emitting", side_effect=AssertionError("KEY_SENTINEL")) as loader, \
+                redirect_stdout(output):
+            result = control.main(["--env-file", str(control.EXPECTED_ENV_FILE)])
+
+        self.assertEqual(result, 2)
+        loader.assert_not_called()
+        self.assertIn("authorization_required=true", output.getvalue())
+        self.assertNotIn("KEY_SENTINEL", output.getvalue())
+
+    def test_resolver_runs_offline_without_key_and_rejects_invalid_config(self):
+        config = control.HERE / "providers.json"
+        with tempfile.TemporaryDirectory() as go_cache, patch.dict(os.environ, {"GOCACHE": go_cache}):
+            with patch.dict(os.environ):
+                os.environ.pop("NVIDIA_API_KEY", None)
+                self.assertTrue(control.resolve_provider_config(config_path=config))
+
+                with tempfile.TemporaryDirectory() as directory:
+                    invalid = Path(directory) / "invalid-providers.json"
+                    invalid.write_text("{}\n", encoding="utf-8")
+                    self.assertFalse(control.resolve_provider_config(config_path=invalid))
+
+                    wrong_identity = Path(directory) / "wrong-identity.json"
+                    changed = json.loads(config.read_text(encoding="utf-8"))
+                    changed["providers"][0]["model"] = "another/model"
+                    wrong_identity.write_text(json.dumps(changed), encoding="utf-8")
+                    self.assertFalse(control.resolve_provider_config(config_path=wrong_identity))
 
 
 if __name__ == "__main__":

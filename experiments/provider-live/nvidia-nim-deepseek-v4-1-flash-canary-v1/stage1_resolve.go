@@ -13,7 +13,7 @@ func main() {
 	const base = "https://integrate.api.nvidia.com/v1"
 	const model = "deepseek-ai/deepseek-v4.1-flash"
 	const auth = "NVIDIA_API_KEY"
-	if len(os.Args) != 2 || os.Getenv(auth) == "" {
+	if len(os.Args) != 2 {
 		fmt.Fprintln(os.Stderr, "fixed preflight inputs unavailable")
 		os.Exit(2)
 	}
