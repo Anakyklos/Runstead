@@ -39,7 +39,7 @@ Immediately before dispatch:
 - Adapter constructed: false.
 - Provider requests before dispatch: 0.
 
-The key was held only in process memory and sent only as the required Bearer value for the single authorized Stage 1 request. It was not echoed, persisted, hashed, sized, fingerprinted, or committed. No raw request/response bodies, generated text, reasoning, headers, or exception strings were retained.
+The key value was not echoed, persisted to a file, hashed, sized, fingerprinted, or committed. However, the final preflight driver copied the Python process environment containing the key into the Go config-resolver subprocess. That local subprocess received the key in its environment, contrary to the contract's Bearer-only transmission rule. The resolver used it only as a nonempty auth-reference check and printed static identity fields; no evidence shows it was logged, persisted, or transmitted elsewhere. `secret_value_emitted=false` remains accurate, but strict secret-hygiene compliance is **NOT SATISFIED**. The sole authorized external Stage 1 call used the key only as its Bearer value. No raw request/response bodies, generated text, reasoning, headers, or exception strings were retained.
 
 ## Stage results
 
