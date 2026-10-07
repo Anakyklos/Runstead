@@ -40,6 +40,16 @@ The runtime depends only on the small provider-neutral contract (`provider.Clien
 
 ChatGPT Web and OmniRoute are **out of the v0.1 critical path** and explicitly deferred to future plugin/composable-provider work. OmniRoute may later be used as an ordinary compatible endpoint if it satisfies one of the supported protocol contracts, but it holds no special core status. The historical browser/web research under [`docs/research/`](docs/research/) remains preserved as provenance/reference material only.
 
+## Role inside Anakyklos
+
+Runstead remains a standalone product and is also the canonical software-work executor for Anakyklos. The accepted direction is for Runstead to become the default coding CLI/harness for supported work while Ouroboros remains the mission-level coordinator.
+
+This does not make Runstead a universal orchestrator and does not mean the migration is complete. Adoption requires an accepted fresh live canary with a compatible provider, followed by #123 dogfood, #124 release readiness and #121 cutover. #124 requires both the accepted canary and #123 dogfood evidence.
+
+Vendor coding CLIs such as Codex CLI, Claude Code, OpenCode and Antigravity are not hidden Runstead backends. Any future compatibility adapter requires separate evidence and must preserve or explicitly declare losses in Runstead's attempt accounting, policy, recovery and verification guarantees.
+
+See docs/architecture.md and Anakyklos/architecture ADR 0004 for the cross-project authority and unlock gates.
+
 ## Core rules
 
 1. **Runstead owns the agent runtime, regardless of transport.**

@@ -6,6 +6,73 @@ Runstead exists to make model access behave as a dependable local agent by ownin
 
 The project deliberately separates the **agent runtime** from the **provider layer**. The runtime depends on a small provider-neutral contract, and concrete transports are configurable endpoints implementing one of three compatibility protocol families (`openai_compatible`, `anthropic_compatible`, `google_compatible`). Official OpenAI, Anthropic and Google services are only examples of those families: they are valid implementations, not privileged architectural dependencies (#86). ChatGPT Web/OmniRoute work is deferred to future plugin/composable-provider tracks.
 
+## Anakyklos default coding CLI direction
+
+Status: architectural Direction. This section does not claim the adoption cutover is complete.
+
+Runstead is the canonical owner of bounded software-engineering execution in Anakyklos and the target default coding CLI/harness for ordinary supported maintainer work. The operator should eventually choose the provider/model inside Runstead instead of choosing a different coding harness merely because the model vendor changes.
+
+~~~text
+operator
+   |
+Runstead
+   |
+Runstead-owned task / policy / tools / recovery / verification
+   |
+provider-neutral contract
+   |
+configured compatible endpoint
+   |
+model
+~~~
+
+This direction preserves the existing standalone contract: Runstead must remain useful without Ouroboros, Mission Control, Katherine or Control Center.
+
+### Boundary with vendor coding CLIs
+
+Codex CLI, Claude Code, OpenCode, Antigravity and similar products are external tools, not Runstead architectural layers.
+
+They may remain explicit reference/rescue tooling during adoption. Runstead must not silently delegate supported work to them, treat their session state as authoritative, or add feature parity merely because they expose a convenience.
+
+A future subprocess/black-box adapter to another coding CLI is blocked by default. It requires real dogfood evidence that the needed capability cannot reasonably be provided through the normal Runstead provider contract, plus an explicit assurance review covering physical attempt accounting, cancellation, side effects, durable recovery, secret handling and verification. Unknown assurance fails closed. Such an adapter can never be a hidden fallback.
+
+### Boundary with Ouroboros
+
+Ouroboros owns Missions and cross-capability coordination. Runstead owns software-work execution and technical proof.
+
+The intended integration is:
+
+~~~text
+Ouroboros Mission
+      |
+versioned CapabilityInvocation
+      |
+Runstead public software-work contract
+      |
+Runstead task + independent technical verification
+      |
+typed result + evidence refs
+      |
+Ouroboros mission-level verification
+~~~
+
+Ouroboros may reject a technically valid result because the larger Mission is unsatisfied. It may not accept software work that Runstead's own verifier rejected, and it must not read Runstead's private SQLite state or internal packages as an integration contract.
+
+### Unlock gate
+
+Do not claim that Runstead has replaced the ordinary vendor/JCode coding workflow until the adoption program proves it. The provider-candidate-neutral adoption sequence is:
+
+~~~text
+accepted fresh live canary with a compatible provider
+   -> #123 representative dogfood
+   -> #124 release readiness
+   -> #121 cutover
+~~~
+
+Issue #124 follows both the accepted canary and #123 dogfood evidence. The canary is not tied to a particular provider candidate; no provider-specific issue is a permanent dependency. Issue #133 is historical and superseded: it ended without a live execution and did not establish an accepted canary. The latest attempt, issue #170 / PR #171, ended with inconclusive Gate A evidence and no accepted canary, so Gate A remains unsatisfied. The adoption evidence still needs to establish interruption/resume, independent evidence, Runstead-primary stability and release/operator ergonomics.
+
+The cross-repository normative decision is Anakyklos/architecture ADR 0004.
+
 ## System boundary
 
 ### Runstead core owns
