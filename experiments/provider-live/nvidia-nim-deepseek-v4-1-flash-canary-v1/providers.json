@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "providers": [{
+    "provider_id": "nvidia-nim-deepseek-v4-1-flash-canary-v1",
+    "protocol_family": "openai_compatible",
+    "base_url": "https://integrate.api.nvidia.com/v1",
+    "model": "deepseek-ai/deepseek-v4.1-flash",
+    "auth_ref": "NVIDIA_API_KEY",
+    "auth_requirement": "reference_required",
+    "options": {},
+    "config_version": "nvidia-nim-deepseek-v4-1-flash-canary-v1",
+    "profile": {
+      "profile_version": "v1",
+      "capabilities": ["text_turn", "runstead_protocol"],
+      "route_safety": {
+        "attempt_accounting": "single",
+        "single_attempt": "guaranteed",
+        "internal_retries": "disabled",
+        "cooldown_replay": "disabled",
+        "account_pooling": "disabled",
+        "automatic_fallback": "disabled",
+        "combo_routing": "disabled"
+      }
+    }
+  }]
+}
