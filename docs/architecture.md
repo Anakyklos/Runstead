@@ -60,7 +60,16 @@ Ouroboros may reject a technically valid result because the larger Mission is un
 
 ### Unlock gate
 
-Do not claim that Runstead has replaced the ordinary vendor/JCode coding workflow until the existing adoption program proves it. The current gate remains the evidence chain tracked by #133, #123, #124 and umbrella #121: live compatible-provider proof, representative dogfood, interruption/resume, independent evidence, Runstead-primary stability and release/operator ergonomics.
+Do not claim that Runstead has replaced the ordinary vendor/JCode coding workflow until the adoption program proves it. The provider-candidate-neutral adoption sequence is:
+
+~~~text
+accepted fresh live canary with a compatible provider
+   -> #123 representative dogfood
+   -> #124 release readiness
+   -> #121 cutover
+~~~
+
+Issue #124 follows both the accepted canary and #123 dogfood evidence. The canary is not tied to a particular provider candidate; no provider-specific issue is a permanent dependency. Issue #133 is historical and superseded: it ended without a live execution and did not establish an accepted canary. The latest attempt, issue #170 / PR #171, ended with inconclusive Gate A evidence and no accepted canary, so Gate A remains unsatisfied. The adoption evidence still needs to establish interruption/resume, independent evidence, Runstead-primary stability and release/operator ergonomics.
 
 The cross-repository normative decision is Anakyklos/architecture ADR 0004.
 

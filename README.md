@@ -44,7 +44,7 @@ ChatGPT Web and OmniRoute are **out of the v0.1 critical path** and explicitly d
 
 Runstead remains a standalone product and is also the canonical software-work executor for Anakyklos. The accepted direction is for Runstead to become the default coding CLI/harness for supported work while Ouroboros remains the mission-level coordinator.
 
-This does not make Runstead a universal orchestrator and does not mean the migration is complete. The existing adoption gates remain required before external/JCode coding CLIs can be considered replaced for ordinary supported work.
+This does not make Runstead a universal orchestrator and does not mean the migration is complete. Adoption requires an accepted fresh live canary with a compatible provider, followed by #123 dogfood, #124 release readiness and #121 cutover. #124 requires both the accepted canary and #123 dogfood evidence.
 
 Vendor coding CLIs such as Codex CLI, Claude Code, OpenCode and Antigravity are not hidden Runstead backends. Any future compatibility adapter requires separate evidence and must preserve or explicitly declare losses in Runstead's attempt accounting, policy, recovery and verification guarantees.
 
