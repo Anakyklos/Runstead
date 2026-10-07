@@ -33,6 +33,64 @@ The strongest transferable principle is:
 Empryo is therefore a useful source of mechanisms and experiments, not a
 target architecture.
 
+## Current Runstead status (2026-10-07)
+
+This is historical provenance research, not an implementation plan, roadmap,
+or proposal to reopen completed milestones. M8–M11 are complete on `main`.
+The current implementation and its limits are described by the canonical
+architecture, persistence, composition, improvement, and roadmap documents.
+
+**Implemented in Runstead:**
+
+- M8 provider compatibility hardening and the configured endpoint contract;
+- M9 durable Work Units, serial execution by default, and opt-in bounded
+  shared execution for explicitly read-only units (maximum concurrency 4;
+  parallel writers remain disabled);
+- M10 static built-in capability metadata, strict operator Profiles,
+  deterministic composition, and a persisted frozen execution contract;
+- M11 non-authoritative, evidence-backed Improvement Proposals with explicit
+  operator review, versioned apply, later validation, and deterministic
+  rollback;
+- deterministic, bounded reconstruction of model context from durable task
+  state and evidence, with provenance, authority separation, and fail-closed
+  budget handling.
+
+**Partially available:**
+
+- Existing recipes group local execution, and Work Units organize durable
+  subtasks, but Runstead has no general compound-tool framework. Composition
+  selects existing built-in surfaces; it does not load executable packages.
+- M11 records operator-attested outcome classifications against durable
+  evidence. It is not a statistical benchmark framework and does not
+  automatically change runtime behavior.
+
+**Still hypotheses or future experiments:**
+
+- long-conversation context compaction is deferred; it is distinct from the
+  implemented recovery-context reconstruction described above;
+- repository intelligence indexing, semantic editing, an optional semantic
+  reviewer, and provenance-aware retrieval are not established Runstead
+  capabilities;
+- additional role/model routing and broader orchestration have no promoted
+  milestone. Any future experiment needs a concrete Runstead problem, a
+  baseline, and its own evidence and maintainer decision;
+- Empryo's benchmark and performance claims remain external hypotheses and
+  must be reproduced on Runstead workloads before they can support adoption.
+
+The authoritative details are in [`architecture.md`](../architecture.md),
+[`persistence.md`](../persistence.md), [`composition.md`](../composition.md),
+[`improvements.md`](../improvements.md), and [`roadmap.md`](../roadmap.md).
+SQLite, governor, policy, recovery, and verifier remain authoritative;
+indexes, summaries, reviewers, and memory derived from them do not.
+
+Implementation and test entry points: [M8 compatibility contract](../../internal/provider/compat/compat.go)
+and [matrix tests](../../internal/provider/compat/matrix_test.go); [M9 Work Unit driver](../../internal/workunit/driver.go),
+[scheduler](../../internal/workunit/scheduler.go), and [governed concurrency E2E](../../cmd/runstead/workunit_m9_evidence_e2e_test.go);
+[M10 resolver](../../internal/composition/resolve.go), [composition tests](../../internal/composition/composition_test.go),
+and [CLI E2E](../../cmd/runstead/composition_e2e_test.go); [M11 proposal contract](../../internal/improvement/contract.go)
+and [lifecycle E2E](../../cmd/runstead/improvement_e2e_test.go); [context compiler](../../internal/context/compiler.go),
+[recovery adapter](../../internal/recovery/context.go), and [authority tests](../../internal/context/authority_test.go).
+
 ## Candidate mechanisms to evaluate
 
 ### 1. Derived repository intelligence map
@@ -72,8 +130,10 @@ correctness.
 
 ### 3. Compound deterministic tools
 
-Evaluate typed compound operations that group several predictable local steps
-behind one model decision.
+Runstead recipes and Work Units already provide bounded ways to group
+deterministic local work. M10 composition selects existing built-in surfaces;
+it does not add a general compound-tool framework or load executable
+capability packages. A broader typed compound operation remains an experiment.
 
 A compound tool is acceptable only when its internal work remains bounded,
 policy-visible, cancelable, auditable and decomposable into durable evidence.
@@ -124,7 +184,10 @@ as the source of truth.
 
 ### 7. Benchmark-driven feature admission
 
-This is one of the most useful practices observed in Empryo.
+This remains a useful research practice observed in Empryo. M11's implemented
+ImprovementProposal lifecycle supplies a non-authoritative, evidence-linked
+operator workflow, but it is not a statistical benchmark harness or an
+automatic feature-admission mechanism.
 
 Runstead should benchmark agent mechanisms, not only models/providers. Each new
 mechanism should start with a falsifiable question and a baseline. Examples:
@@ -139,30 +202,36 @@ mechanism should start with a falsifiable question and a baseline. Examples:
 Record negative results. Do not ship a mechanism merely because one headline
 metric improved if end-to-end work regressed.
 
-This fits Runstead's existing improvement-proposal model:
+When experiment evidence exists, the existing improvement-proposal model can
+carry it through an explicit operator decision:
 
 experiment evidence -> non-authoritative proposal -> operator decision ->
 versioned change -> later validation.
 
 ### 8. Context reconstruction and compaction
 
-Borrow the problem framing, not advertised compression ratios.
+Deterministic, bounded recovery-context reconstruction from durable task state
+and evidence is already implemented (issue #51). It preserves authoritative
+facts and provenance, separates non-authoritative notes, and fails closed when
+mandatory context exceeds its budget. See the current architecture and
+persistence documentation for its contract.
 
-Prefer deterministic context reconstruction from frozen task contracts,
-durable Work Units, accepted effects, unresolved failures, relevant
-observations and current workspace evidence.
-
-Summaries may be useful but must not replace durable records. Evaluate loss of
-constraints, pending approvals, unresolved failures and repository freshness.
+Long-conversation compaction is a separate, deferred capability. Any future
+compaction experiment must preserve tool/action-result relationships and make
+loss explicit; summaries cannot replace SQLite records, pending approvals,
+unresolved failures, or current workspace evidence. Empryo's compression
+claims do not establish a Runstead benefit.
 
 ### 9. Model roles and multi-agent routing
 
-Treat separate scout/worker/reviewer roles as later optimization mechanisms,
-not product identity.
+Treat separate scout/worker/reviewer roles and model routing as unpromoted
+future optimization mechanisms, not as delivered Runstead capabilities or
+product identity.
 
-Runstead already has Work Units and bounded concurrency. Add role/model routing
-only when measured task classes show that it improves completed work per
-cost/provider attempt.
+Runstead already has durable Work Units and an opt-in bounded shared/exclusive
+scheduler for explicitly read-only units. This is M9 implementation, not a
+general multi-agent runtime. Additional role/model routing would require
+measured benefit in completed work per cost/provider attempt.
 
 Do not assume that additional agents or parallel exploration are improvements
 by default.
