@@ -217,8 +217,12 @@ func Resolve(input ResolveInput) (Resolved, error) {
 		return Resolved{}, compositionError(ErrorInvalidContract, ErrInvalidContract, "tool_schema_digest", "cannot encode tool schema")
 	}
 
+	version := ContractSchemaVersion
+	if input.Provider.WireContract != "" {
+		version = ContractSchemaVersionSIWC
+	}
 	contract := FrozenExecutionContract{
-		ContractVersion: ContractSchemaVersion, RuntimeIdentity: runtimeIdentity, ProtocolIdentity: protocolIdentity,
+		ContractVersion: version, RuntimeIdentity: runtimeIdentity, ProtocolIdentity: protocolIdentity,
 		Profile:  ProfileIdentity{ID: input.Profile.ProfileID, Version: input.Profile.ProfileVersion},
 		Packages: packages, Provider: providerMaterial, Tools: toolsMaterial, ToolSchemaDigest: toolSchemaDigest,
 		RecipeCatalog:       RecipeCatalogIdentity{Digest: recipeDigest, RecipeIDs: recipeIDs},

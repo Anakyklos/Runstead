@@ -84,15 +84,19 @@ func (r AuthRequirement) Valid() bool {
 //
 // Config contains no secret values by construction; Auth is only a reference.
 type Config struct {
-	ProviderID      string
-	ProtocolFamily  ProtocolFamily
-	BaseURL         string
-	Model           string
-	Auth            SecretRef
-	AuthRequirement AuthRequirement
-	Options         map[string]string
-	Profile         CapabilityProfile
-	ConfigVersion   string
+	DocumentVersion   int
+	WireContract      WireContract
+	AccountBinding    string
+	CredentialBinding string
+	ProviderID        string
+	ProtocolFamily    ProtocolFamily
+	BaseURL           string
+	Model             string
+	Auth              SecretRef
+	AuthRequirement   AuthRequirement
+	Options           map[string]string
+	Profile           CapabilityProfile
+	ConfigVersion     string
 }
 
 // sanitizedEndpoint renders the endpoint keeping only its non-secret
@@ -120,6 +124,9 @@ func sanitizedEndpoint(rawBaseURL string) string {
 // and authentication appears only as a boolean. Safe to persist, trace or
 // embed in diagnostics.
 func (c Config) Sanitized() string {
+	if c.DocumentVersion == 2 {
+		return siwcConfigIdentity(c)
+	}
 	optionKeys := make([]string, 0, len(c.Options))
 	for key := range c.Options {
 		optionKeys = append(optionKeys, key)
@@ -142,12 +149,17 @@ func (c Config) GoString() string { return c.Sanitized() }
 // before any dispatch. Every field is normalized and proven; a Resolved value
 // existing means the provider passed all pre-flight contract checks.
 type Resolved struct {
-	ProviderID      string
-	ProtocolFamily  ProtocolFamily
-	BaseURL         string
-	Model           string
-	Auth            SecretRef
-	AuthRequirement AuthRequirement
+	DocumentVersion   int
+	WireContract      WireContract
+	AccountBinding    string
+	CredentialBinding string
+	BehaviorDigest    string
+	ProviderID        string
+	ProtocolFamily    ProtocolFamily
+	BaseURL           string
+	Model             string
+	Auth              SecretRef
+	AuthRequirement   AuthRequirement
 	// Options is a DEFENSIVE COPY of the validated non-secret protocol options
 	// from Config.Options. It exists so adapters can consume strictly
 	// necessary, non-secret protocol parameters (for example generation
@@ -170,6 +182,12 @@ type Resolved struct {
 // requirements are enforced at Resolve time, when the required-capability set
 // is known.
 func (c Config) Validate() error {
+	if err := validateWireConfig(c); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidProviderConfig, err)
+	}
+	if c.DocumentVersion == 2 && siwcBehaviorDigest(c) == "" {
+		return fmt.Errorf("%w: cannot derive canonical v2 behavior identity", ErrInvalidProviderConfig)
+	}
 	if strings.TrimSpace(c.ProviderID) == "" {
 		return fmt.Errorf("%w: provider id must not be empty", ErrInvalidProviderConfig)
 	}
@@ -330,15 +348,20 @@ func (r *Registry) Resolve(providerID string, required []Capability, safety Rout
 	baseURL := strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
 	model := strings.TrimSpace(config.Model)
 	return &Resolved{
-		ProviderID:      strings.TrimSpace(config.ProviderID),
-		ProtocolFamily:  config.ProtocolFamily,
-		BaseURL:         baseURL,
-		Model:           model,
-		Auth:            auth,
-		AuthRequirement: config.AuthRequirement,
-		Options:         copyStringMap(config.Options),
-		Profile:         profile,
-		ConfigIdentity:  config.Sanitized(),
+		DocumentVersion:   config.DocumentVersion,
+		WireContract:      config.WireContract,
+		AccountBinding:    config.AccountBinding,
+		CredentialBinding: config.CredentialBinding,
+		BehaviorDigest:    siwcBehaviorDigest(config),
+		ProviderID:        strings.TrimSpace(config.ProviderID),
+		ProtocolFamily:    config.ProtocolFamily,
+		BaseURL:           baseURL,
+		Model:             model,
+		Auth:              auth,
+		AuthRequirement:   config.AuthRequirement,
+		Options:           copyStringMap(config.Options),
+		Profile:           profile,
+		ConfigIdentity:    config.Sanitized(),
 	}, nil
 }
 

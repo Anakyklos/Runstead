@@ -55,6 +55,19 @@ func EnvSecretResolver(lookup func(string) (string, bool)) SecretResolver {
 // is no router, fallback, load balancing or automatic selection anywhere in
 // this function. An unknown or invalid family refuses before any dispatch.
 func New(resolved provider.Resolved, resolver SecretResolver) (provider.Client, error) {
+	switch resolved.WireContract {
+	case "", provider.WireChatCompletionsV1:
+		if resolved.DocumentVersion == 2 && resolved.WireContract == "" {
+			return nil, fmt.Errorf("compat: v2 wire contract missing")
+		}
+		if resolved.WireContract == provider.WireChatCompletionsV1 && resolved.ProtocolFamily != provider.FamilyOpenAICompatible {
+			return nil, fmt.Errorf("compat: Chat Completions wire with incompatible family")
+		}
+	case provider.WireResponsesSIWCV1:
+		return nil, fmt.Errorf("compat: SIWC Responses wire contract is not implemented; refusing dispatch")
+	default:
+		return nil, fmt.Errorf("compat: unsupported wire contract; refusing dispatch")
+	}
 	family := resolved.ProtocolFamily
 	switch family {
 	case provider.FamilyOpenAICompatible:

@@ -8,12 +8,16 @@ package provider
 // Config.Sanitized for the configuration identity and never renders option
 // values, authentication material or request bodies.
 type Identity struct {
-	ProviderID     string
-	ProtocolFamily ProtocolFamily
-	Model          string
-	ConfigIdentity string
-	ProfileVersion string
-	AdapterVersion string
+	WireContract      WireContract
+	AccountBinding    string
+	CredentialBinding string
+	BehaviorDigest    string
+	ProviderID        string
+	ProtocolFamily    ProtocolFamily
+	Model             string
+	ConfigIdentity    string
+	ProfileVersion    string
+	AdapterVersion    string
 }
 
 // IdentityFromResolved derives the sanitized identity of a resolved provider
@@ -23,12 +27,16 @@ type Identity struct {
 // (for example "openaicompat v0.1") and never contains secrets.
 func IdentityFromResolved(resolved Resolved, adapterVersion string) Identity {
 	return Identity{
-		ProviderID:     resolved.ProviderID,
-		ProtocolFamily: resolved.ProtocolFamily,
-		Model:          resolved.Model,
-		ConfigIdentity: resolved.ConfigIdentity,
-		ProfileVersion: resolved.Profile.ProfileVersion,
-		AdapterVersion: adapterVersion,
+		WireContract:      resolved.WireContract,
+		AccountBinding:    resolved.AccountBinding,
+		CredentialBinding: resolved.CredentialBinding,
+		BehaviorDigest:    resolved.BehaviorDigest,
+		ProviderID:        resolved.ProviderID,
+		ProtocolFamily:    resolved.ProtocolFamily,
+		Model:             resolved.Model,
+		ConfigIdentity:    resolved.ConfigIdentity,
+		ProfileVersion:    resolved.Profile.ProfileVersion,
+		AdapterVersion:    adapterVersion,
 	}
 }
 
