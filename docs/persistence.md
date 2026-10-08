@@ -128,6 +128,40 @@ after the busy timeout instead of hanging.
   task rows with the SQLite CLI, but the journal and governor projections are
   account-scoped and should be retained while protection state matters.
 
+## SIWC domain lock and admission barrier (offline Stage 3)
+
+For `--state-domain siwc`, every CLI command that opens the database takes an
+exclusive Linux `flock` on the persistent, versioned
+`.siwc-domain-lock-v1` file inside the registered canonical directory. The
+file is owner-only, opened with `O_NOFOLLOW`, bound to the manifest's domain
+identity, and kept after release so cooperating processes always address the
+same inode. Lock contention is retried non-blockingly for at most 250 ms;
+timeouts return an unavailable result. The implementation accepts only the
+ext2/3/4, XFS, Btrfs, tmpfs and overlayfs magic values; other filesystems fail
+closed. No parent directory is created as a lock fallback.
+
+Locator/manifest/database preflight is immutable and read-only. After lock
+acquisition, the command resolves the registered domain again and only then
+calls `state.Open`, which can perform SQLite WAL replay, migrations or other
+mutations. The lock spans all store access, including the full `inspect`
+snapshot and improvement artifact projection. `run` restores the singleton
+governor state and refuses fresh admission if the database contains a
+`prepared`, `running`, `uncertain` or `human_review_required` provider attempt.
+`resume` holds the same lock while its existing recovery pipeline classifies
+and reconciles the selected task before continuing. Prepared/uncertain history
+and accounting are retained; an interrupted provider request is never
+re-issued. Approval pauses return from `run` with durable pending state, so
+the lock is released before a human decision; `decide` reacquires it.
+
+Kernel process termination releases `flock`; the lock marker is deliberately
+not deleted. Tests use separate OS processes and kill a lock holder to prove
+exclusion and reacquisition on the test filesystem. This is cooperative CLI
+exclusion: a same-user process that bypasses Runstead and writes SQLite
+directly is outside the guarantee. The preflight's immutable SQLite view
+checks the main DB marker, while SQLite replays any durable sidecar state only
+after the lock is held. This offline stage does not authenticate an account
+or enable Responses inference.
+
 ## Migrations
 
 Versioned SQL migrations are embedded in the executable

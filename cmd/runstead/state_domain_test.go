@@ -8,11 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/config"
+	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/provider/compat"
 	"github.com/RenyEnnos/Runstead/internal/siwcstate"
@@ -32,6 +35,26 @@ func cliSIWCIdentity() provider.Identity {
 	sum := sha256.Sum256([]byte(identity.BehaviorDigest + "\x00" + identity.AccountBinding + "\x00" + identity.CredentialBinding))
 	identity.ConfigIdentity = "provider.v2:sha256:" + hex.EncodeToString(sum[:])
 	return identity
+}
+
+func TestSIWCDomainWriterLockHelper(t *testing.T) {
+	mode := os.Getenv("RUNSTEAD_SIWC_WRITER_HELPER")
+	if mode == "" {
+		return
+	}
+	var out, errOut bytes.Buffer
+	var args []string
+	switch mode {
+	case "decide":
+		args = []string{"decide", "siwc-task", "action-000001", "approved", "--state-domain", "siwc"}
+	case "improvement":
+		args = []string{"improvement", "review", "proposal-1", "--decision", "approved", "--state-domain", "siwc"}
+	default:
+		t.Fatalf("unknown helper mode %q", mode)
+	}
+	if code := run(context.Background(), args, &out, &errOut); code != exitUnavailable || !strings.Contains(errOut.String(), "SIWC domain unavailable") {
+		t.Fatalf("%s writer result = (%d, %q), want bounded lock refusal", mode, code, errOut.String())
+	}
 }
 
 func seedSIWCDomain(t *testing.T, home, xdg, stateDir, taskID string, withPendingApproval bool, registeredIdentity ...provider.Identity) provider.Identity {
@@ -216,6 +239,34 @@ func TestSIWCInspectDecideAndImprovementUseRegisteredDomain(t *testing.T) {
 	}
 }
 
+func TestSIWCDecideAndImprovementWritersHonorCrossProcessLock(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	xdg := filepath.Join(base, "xdg")
+	stateDir := filepath.Join(base, "registered-state")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	setSIWCEnv(t, home, xdg)
+	seedSIWCDomain(t, home, xdg, stateDir, "siwc-task", true)
+	location, err := resolveCommandStateDomain("siwc", true, "", false, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := siwcstate.AcquireLock(context.Background(), *location.SIWC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	for _, mode := range []string{"decide", "improvement"} {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestSIWCDomainWriterLockHelper$")
+		cmd.Env = append(os.Environ(), "RUNSTEAD_SIWC_WRITER_HELPER="+mode)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s subprocess: %v: %s", mode, err, output)
+		}
+	}
+}
+
 func TestImprovementStateDomainDiagnosticsRemainDistinct(t *testing.T) {
 	base := t.TempDir()
 	home := filepath.Join(base, "home")
@@ -367,7 +418,7 @@ func TestSIWCDivergentFlagEnvAndChangedDiscoveryRootFailWithoutCreatingDB(t *tes
 	}
 }
 
-func TestSIWCResumeRemainsNonOperationalBeforeOpeningStore(t *testing.T) {
+func TestSIWCResumeLocksDomainBeforeOfflineProviderRefusal(t *testing.T) {
 	base := t.TempDir()
 	home := filepath.Join(base, "home")
 	xdg := filepath.Join(base, "xdg")
@@ -380,21 +431,13 @@ func TestSIWCResumeRemainsNonOperationalBeforeOpeningStore(t *testing.T) {
 	writeSIWCProviderFixture(t, providers)
 	identity := loadSIWCFixtureIdentity(t, providers)
 	seedSIWCDomain(t, home, xdg, stateDir, "siwc-task", false, identity)
-	before, err := os.ReadFile(filepath.Join(stateDir, state.DefaultDBFile))
-	if err != nil {
-		t.Fatal(err)
-	}
 	var out, errOut bytes.Buffer
 	code := run(context.Background(), []string{"resume", "siwc-task", "--state-domain", "siwc", "--providers", providers, "--provider-id", "siwc-cli-test"}, &out, &errOut)
-	if code != exitUnavailable || !strings.Contains(errOut.String(), "recovery barrier") {
-		t.Fatalf("resume = (%d, %q), want unavailable at the lock/recovery gate", code, errOut.String())
+	if code == exitSuccess || strings.Contains(errOut.String(), "recovery barrier") {
+		t.Fatalf("resume = (%d, %q), expected locked offline refusal or preflight failure", code, errOut.String())
 	}
-	after, err := os.ReadFile(filepath.Join(stateDir, state.DefaultDBFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(before, after) {
-		t.Fatal("non-operational SIWC resume changed the database")
+	if _, err := os.Stat(filepath.Join(stateDir, ".siwc-domain-lock-v1")); err != nil {
+		t.Fatalf("resume did not establish the persistent domain lock marker: %v", err)
 	}
 }
 
@@ -443,7 +486,7 @@ func TestSIWCRunRequiresDomainBeforeOpeningLegacyPath(t *testing.T) {
 	}
 }
 
-func TestSIWCRunValidatesRegisteredDomainThenRefusesBeforeSQLiteOpen(t *testing.T) {
+func TestSIWCRunValidatesRegisteredDomainThenRefusesUnsupportedAdapter(t *testing.T) {
 	base := t.TempDir()
 	home := filepath.Join(base, "home")
 	xdg := filepath.Join(base, "xdg")
@@ -466,15 +509,67 @@ func TestSIWCRunValidatesRegisteredDomainThenRefusesBeforeSQLiteOpen(t *testing.
 		"run", "--task", "synthetic", "--workspace", base, "--state-domain", "siwc",
 		"--state-dir", stateDir, "--providers", providers, "--provider-id", "siwc-cli-test", "--max-steps", "1",
 	}, &out, &errOut)
-	if code != exitUnavailable || !strings.Contains(errOut.String(), "recovery barrier") {
-		t.Fatalf("run = (%d, %q), want unavailable at the lock/recovery gate", code, errOut.String())
+	if code != exitUnavailable || !strings.Contains(errOut.String(), "SIWC Responses wire contract is not implemented; refusing dispatch") {
+		t.Fatalf("run = (%d, %q), want explicit offline adapter refusal", code, errOut.String())
 	}
 	after, err := os.ReadFile(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(before, after) {
-		t.Fatal("non-operational SIWC run changed the database")
+		t.Fatal("adapter refusal unexpectedly changed the SIWC database")
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, ".siwc-domain-lock-v1")); err != nil {
+		t.Fatalf("run did not establish the persistent domain lock marker: %v", err)
+	}
+}
+
+func TestSIWCRunBlocksFreshAdmissionForPreparedAttempt(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	xdg := filepath.Join(base, "xdg")
+	stateDir := filepath.Join(base, "registered-state")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	setSIWCEnv(t, home, xdg)
+	providers := filepath.Join(base, "providers.json")
+	writeSIWCProviderFixture(t, providers)
+	identity := loadSIWCFixtureIdentity(t, providers)
+	seedSIWCDomain(t, home, xdg, stateDir, "siwc-task", false, identity)
+	store, err := state.Open(state.Options{Path: filepath.Join(stateDir, state.DefaultDBFile)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	persisted := governor.PersistedState{
+		AccountPolicyID: "runstead-cli", ProviderID: identity.ProviderID, ModelPool: "instant", Model: identity.Model,
+		AllowanceProfile: governor.ProfileInstant, NextAttempt: 2,
+		Circuit:    governor.CircuitSnapshot{State: governor.CircuitClosed},
+		Ceilings:   governor.BudgetCeilings{Rolling3h: 140, Rolling1h: 80, Rolling10m: 25, TaskBudget: 80, RetryBudget: 2},
+		TaskStates: []governor.TaskStateRecord{{TaskID: "siwc-task", Attempts: 1, LastTouched: now}},
+	}
+	if err := store.RecordProviderPrepared(context.Background(), governor.ProviderPrepared{
+		TaskID: "siwc-task", ClientRequestID: "siwc-task-0001", ProviderID: identity.ProviderID,
+		ModelPool: "instant", Model: identity.Model, ProtocolFamily: identity.ProtocolFamily,
+		ConfigIdentity: identity.ConfigIdentity, AllowanceProfile: governor.ProfileInstant,
+		AttemptSequence: 1, StartedAt: now, State: persisted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{
+		"run", "--task", "synthetic", "--workspace", base, "--state-domain", "siwc",
+		"--providers", providers, "--provider-id", "siwc-cli-test", "--max-steps", "1",
+	}, &out, &errOut)
+	if code != exitUnavailable || !strings.Contains(errOut.String(), "SIWC admission blocked by unresolved durable attempt") {
+		t.Fatalf("run result = (%d, %q), want durable admission barrier", code, errOut.String())
+	}
+	if strings.Contains(errOut.String(), "refusing dispatch") {
+		t.Fatalf("run reached adapter refusal before checking durable admission: %q", errOut.String())
 	}
 }
 

@@ -37,7 +37,6 @@ var (
 	ErrDivergentPath     = errors.New("SIWC state directory override diverges from registered domain")
 	ErrIdentityMismatch  = errors.New("SIWC provider identity does not match registered domain")
 	ErrUnsafePath        = errors.New("unsafe SIWC state path")
-	ErrDatabaseBusy      = errors.New("SIWC database has active or unreconciled sidecars")
 )
 
 // Locator is deliberately read-only in this stage. A future authenticated
@@ -105,10 +104,11 @@ func DefaultLocatorPath(home, xdgStateHome string) (string, error) {
 	return filepath.Join(filepath.Clean(base), "runstead", "siwc", LocatorFile), nil
 }
 
-// Resolve validates an existing locator, manifest and initialized Runstead
-// SQLite database, then checks every explicit state-dir override. It does not
-// create, migrate, repair or rewrite any state. Callers may open the validated
-// DB only after this function succeeds.
+// Resolve performs a read-only preflight over an existing locator, manifest
+// and initialized Runstead SQLite database, then checks explicit state-dir
+// overrides. It never creates, migrates, repairs or rewrites state. Callers
+// must acquire the domain lock and call Resolve again before opening the
+// mutable store.
 func Resolve(options Options) (Domain, error) {
 	if strings.TrimSpace(options.LocatorPath) == "" {
 		return Domain{}, fmt.Errorf("%w: locator path is required", ErrDomainUnavailable)
@@ -166,25 +166,28 @@ func Resolve(options Options) (Domain, error) {
 		return Domain{}, fmt.Errorf("%w: database is missing or unsafe: %w", ErrDomainUnavailable, err)
 	}
 	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
-		if err := rejectExistingSidecar(dbPath + suffix); err != nil {
-			return Domain{}, fmt.Errorf("%w: SQLite sidecar requires reconciliation: %w", ErrDomainUnavailable, err)
+		if err := validateExistingSidecar(dbPath + suffix); err != nil {
+			return Domain{}, fmt.Errorf("%w: SQLite sidecar is unsafe: %w", ErrDomainUnavailable, err)
 		}
 	}
+	// SQLite sidecars are expected after a process crash. This is an
+	// immutable, read-only validation only; command callers must acquire the
+	// domain lock and repeat Resolve before opening the mutable store.
 	if err := verifyExistingRunsteadDB(dbPath, manifest.ConfigIdentity); err != nil {
 		return Domain{}, fmt.Errorf("%w: database is not an initialized Runstead store", ErrDomainUnavailable)
 	}
 	return Domain{Dir: canonicalDir, Identity: manifest}, nil
 }
 
-func rejectExistingSidecar(path string) error {
-	_, err := os.Lstat(path)
+func validateExistingSidecar(path string) error {
+	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	if err != nil {
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || !ownedByCurrentUser(info) {
 		return ErrUnsafePath
 	}
-	return ErrDatabaseBusy
+	return nil
 }
 
 func validManifest(manifest Manifest) bool {

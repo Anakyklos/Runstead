@@ -39,18 +39,18 @@ versions and mixed v1/v2 material fail closed.
 
 ## Activation gate
 
-This PR **does not implement OAuth, secure credential custody, domain locks,
-canonical state location, Responses SSE, quota management or live canaries**.
-Both the compatibility composition and direct legacy Chat Completions adapter
-refuse `responses_siwc_v1` instead of silently dispatching it as Chat
-Completions. An operator cannot use SIWC from this version.
+The offline deliveries through Stage 3 establish canonical state discovery,
+Linux interprocess exclusion, and a durable recovery/admission boundary. They
+do **not** implement OAuth, protected credential custody, account registration,
+Responses SSE, quota management or live canaries. Both the compatibility
+composition and direct legacy Chat Completions adapter continue to refuse
+`responses_siwc_v1` instead of silently dispatching it as Chat Completions.
+SIWC authentication and inference remain inactive.
 
 Remaining bounded deliveries:
-1. Canonical SIWC CLI state domain across run/resume/inspect/decide (issue #177).
-2. Interprocess lock, durable recovery and admission barrier.
-3. Official PKCE/OIDC sign-in, protected refresh rotation and model catalog.
-4. Direct Responses/SSE adapter and provider-governed multiple turns.
-5. Full offline E2E tests and operational documentation.
+1. Official PKCE/OIDC sign-in, protected refresh rotation and model catalog.
+2. Direct Responses/SSE adapter and provider-governed multiple turns.
+3. Full offline E2E tests and operational documentation.
 
 The user-approved delivery plan and detailed acceptance criteria are in
 [issue #174](https://github.com/Anakyklos/Runstead/issues/174). This offline
@@ -79,12 +79,10 @@ path to the CLI. The database must contain the versioned `meta` key
 `config_identity`; this durable marker prevents a valid legacy SQLite file
 from being claimed by a crafted locator and manifest. Stage 2 only verifies
 this marker. Only a future authenticated registration flow may create it.
-Existing WAL, SHM or journal sidecars cause a fail-closed refusal because
-Stage 2 has no domain lock/reconciliation barrier.
-Because Stage 3 has not added the interprocess lock and recovery barrier,
-`run` and `resume` validate the SIWC locator and then refuse before opening
-SQLite. `inspect`, `decide` and improvement commands may use the registered
-database for their read or operator-controlled state operations.
+The read-only resolver accepts SQLite WAL/SHM/journal sidecars; command use
+is permitted only after the Stage 3 lock is held and metadata is revalidated.
+`state.Open` (which may create directories, migrate, checkpoint or recover
+SQLite) is reached only while the SIWC domain lock is held.
 
 Changing `HOME` or `XDG_STATE_HOME` can make the locator inaccessible. In that
 case commands fail closed without creating a replacement database. The
@@ -97,6 +95,38 @@ manifest, never accepted as proof by themselves. Until a later authenticated
 registration flow exists, there is no supported way to create a usable SIWC
 domain; deterministic tests construct local synthetic fixtures. The Responses
 adapter remains inactive and refuses dispatch. Stage 2 rejects symlink paths,
-non-owner files, and directories or files accessible to other users. It does
-not claim interprocess exclusion or complete TOCTOU protection; those belong
-to Stage 3.
+non-owner files, and directories or files accessible to other users. Stage 3 supplies cooperative interprocess exclusion for the CLI paths described below. It does not claim protection from a same-user process that bypasses the CLI and directly edits the database.
+
+## Stage 3: Linux lock and recovery/admission barrier
+
+All SIWC CLI commands that open the store (`run`, `resume`, `inspect`,
+`decide`, and every `improvement` subcommand) take the same persistent
+`.siwc-domain-lock-v1` file inside the registered canonical directory. Linux
+`flock(LOCK_EX|LOCK_NB)` is retried for at most 250 ms at 10 ms intervals;
+contention returns a bounded refusal. The lock file is versioned and bound to
+the manifest's `config_identity`, has private owner-only permissions, is
+opened without following symlinks, and is never unlinked on release or
+recovery. Crash termination releases the kernel lock while preserving the
+inode/marker for the next process. Only ext2/3/4, XFS, Btrfs, tmpfs and
+overlayfs are accepted; other or unverifiable filesystems fail closed.
+
+The resolver's preflight uses immutable SQLite reads and does not create or
+repair files. Each command then acquires the lock and resolves locator,
+manifest and DB marker again before `state.Open`. For `run`, persisted
+`prepared`, `running`, `uncertain` or `human_review_required` provider attempts
+block a fresh task admission. `resume` restores the singleton governor state
+and runs the existing reconciliation pipeline under the lock before a new
+provider admission. Prepared/uncertain attempts retain their ledger/history
+and conservative debit; they are not replayed. Operator approval is a durable
+pause that returns control and releases the lock; `decide` later acquires the
+same domain lock. `inspect` holds the lock through its complete rendered
+snapshot, and improvement artifact writes remain inside the critical section.
+
+The tests prove Linux process contention and automatic lock release after
+process termination on the test filesystem, plus stable marker reuse and
+symlink/marker rejection. The allowlist does not prove behavior on every
+local filesystem or protect against a same-user process that directly edits
+SQLite without using Runstead. The immutable preflight can only inspect the
+main DB image; durable SQLite sidecar replay is performed by SQLite when the
+locked store opens. Synthetic offline fixtures do not constitute account
+authentication or Responses inference evidence.

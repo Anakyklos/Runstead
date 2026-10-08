@@ -310,7 +310,7 @@ func TestResolveRejectsDuplicateLocatorKeys(t *testing.T) {
 	}
 }
 
-func TestResolveRejectsSQLiteSidecarsWithoutOpeningStore(t *testing.T) {
+func TestResolveAllowsSQLiteSidecarsReadOnlyForLockedRecovery(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "canonical")
 	locator := filepath.Join(root, "locator", LocatorFile)
@@ -320,9 +320,8 @@ func TestResolveRejectsSQLiteSidecarsWithoutOpeningStore(t *testing.T) {
 	if err := os.WriteFile(wal, []byte("pending"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Resolve(Options{LocatorPath: locator, Identity: &identity})
-	if !errors.Is(err, ErrDomainUnavailable) || !errors.Is(err, ErrDatabaseBusy) {
-		t.Fatalf("error = %v, want unavailable with ErrDatabaseBusy", err)
+	if _, err := Resolve(Options{LocatorPath: locator, Identity: &identity}); err != nil {
+		t.Fatalf("read-only resolver error = %v", err)
 	}
 	if _, err := os.Stat(wal); err != nil {
 		t.Fatalf("resolver modified or removed WAL sidecar: %v", err)
