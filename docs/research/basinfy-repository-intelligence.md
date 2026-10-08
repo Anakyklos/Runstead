@@ -1,18 +1,18 @@
 # Basinfy-derived repository intelligence — research note
 
-**Status:** Research / non-normative  
-**Date:** 2026-10-03  
-**Source:** Basinfy / BasinMind — https://basinfy.com/  
-**Observed package surface:** Basinfy 1.1.0 documentation as inspected on 2026-10-03  
+**Status:** Research / non-normative; no mechanism below is adopted or scheduled
+**Date:** 2026-10-03
+**Source:** Basinfy / BasinMind — https://basinfy.com/
+**Observed package surface:** Basinfy 1.1.0 documentation as inspected on 2026-10-03
 **Governance:** issue #49, "mine the gold, preserve Runstead"
 
 ## Purpose
 
-Record the repository-intelligence mechanisms worth mining from Basinfy while preserving Runstead's trust kernel, roadmap gates and evidence model.
+Record repository-intelligence mechanisms observed in Basinfy as hypotheses for possible future, evidence-driven optimization, while preserving Runstead's trust kernel and evidence model.
 
 Basinfy is useful here because it treats a repository as structured dependency data rather than a bag of text. The strongest Runstead opportunity is not to copy Basinfy or make it a required dependency; it is to make **repository understanding a deterministic, freshness-aware preflight feeding the existing Runstead action/policy/evidence/verifier chain.**
 
-This document is research provenance only. It does not start a new milestone, add a dependency, authorize implementation or change the active adoption/cutover gates.
+M8–M11 are complete on `main`. This document does not reopen or extend those milestones, start a new milestone, add a dependency, authorize implementation or change any adoption/cutover gate. Every mechanism below remains a hypothesis; considering implementation would require real Runstead dogfood evidence and a separate maintainer decision.
 
 ## External provenance
 
@@ -22,7 +22,7 @@ This document is research provenance only. It does not start a new milestone, ad
 
 **Runstead problem addressed:** coding tasks currently benefit from authoritative task/evidence state, but repository understanding can still require broad reads/searches and may not deterministically expose dependency impact, stale edit anchors or likely affected verification targets before an effect.
 
-**What we adopt:** only the smallest Runstead-native mechanisms described below, gated by measurement.
+**Research hypotheses only:** the mechanisms below are possible Runstead-native optimizations to investigate if real dogfood evidence demonstrates a concrete need and measurable benefit. None is currently adopted, approved or scheduled.
 
 **What we explicitly reject:** Basinfy's autonomous harness/agent loop, mandatory Basinfy runtime/dependency, model-controlled memory promotion, architectural warnings as execution authority, mandatory embeddings/vector infrastructure, background watcher requirements and any bypass of Runstead policy/governor/effect/evidence/verifier boundaries.
 
@@ -54,7 +54,7 @@ The Runstead value is the **shape of the preflight and evidence**, not Basinfy's
 
 ### 1. Repository Intelligence Layer
 
-Future M8-compatible context compilation may consume a local structural index that can represent, where evidence supports it:
+A possible future context-compilation optimization could consume a local structural index that can represent, where evidence supports it:
 
 - files/packages/modules;
 - declared symbols;
@@ -116,7 +116,7 @@ anchor mismatch
     → continue only under current evidence
 ```
 
-This complements durable interruption/resume and future concurrent Work Unit behavior.
+This could complement existing interruption/resume behavior and any separately approved future Work Unit optimization.
 
 ### 4. Blast radius as verification input
 
@@ -142,16 +142,16 @@ It **cannot prove absence of impact** unless the underlying index/analysis has a
 
 The independent verifier remains authoritative.
 
-### 5. Context pyramid inside M8
+### 5. Context pyramid as a possible future optimization
 
-M8 already owns authoritative context and durable working state. If measured useful, repository context can be delivered progressively:
+M8's authoritative context and durable working-state milestone is complete. If real dogfood evidence later shows a measurable need, repository context could be delivered progressively:
 
 - **L0:** task objective, acceptance and repository baseline;
 - **L1:** exact relevant symbols/files;
 - **L2:** dependencies, impact, repository evidence/history;
 - **L3:** broader architectural context only on demand.
 
-This is a context-compiler policy, not a second agent memory.
+This is a research hypothesis for a context compiler, not an adopted policy or a second agent memory.
 
 ### 6. Deterministic context budget
 
@@ -251,9 +251,9 @@ Uses:
 
 This does not replace the task's durable evidence/history.
 
-### 12. Scoped lessons under M11
+### 12. Scoped lessons as a possible future optimization
 
-Basinfy's region-scoped lessons combine well with M11 only after translation into Runstead's approved improvement lifecycle.
+M11's evidence-backed improvement-proposal lifecycle is complete. Basinfy's region-scoped lessons are only a possible future input to that existing lifecycle, if actual Runstead evidence supports exploring them; they do not reopen or extend M11.
 
 Runstead shape:
 
@@ -289,58 +289,36 @@ Useful future measurements:
 
 This corpus may justify later ranking changes. Runtime weights/policy must not mutate automatically from model feedback.
 
-## Relationship to existing milestones
+## Relationship to completed milestones
 
-### M8 — Authoritative context and durable working state
+M8–M11 are complete on `main`. The Basinfy mechanisms in this note are not milestone requirements, accepted deliverables, or approved follow-up work. They remain hypotheses for possible future dogfood optimization, dependent on real Runstead evidence and a separate maintainer decision.
 
-Primary home for:
+The completed milestones provide relevant boundaries and evidence lifecycle:
 
-- repository context compilation;
-- hierarchical context delivery;
-- freshness/reconstruction;
-- exact repository anchors;
-- bounded context budgets.
+- M8 provides authoritative context and durable working state. The note's context, freshness and anchor ideas do not imply unfinished M8 scope.
+- M9 provides durable Work Units. Repository intelligence cannot authorize parallel writers or override the existing scheduler.
+- M10 defines the frozen execution contract and trust-kernel boundary. Repository intelligence remains derived, advisory data and cannot change effect or policy authority.
+- M11 provides the evidence-backed improvement-proposal lifecycle. Any future proposal must use that lifecycle; this note itself is not a proposal or approval.
 
-Do not widen M8 merely to reach Basinfy feature parity. Promote only mechanisms required by actual Runstead dogfood evidence.
+## Hypotheses for evidence-gated exploration
 
-### M9 — Durable Work Units
+The ordering below is a research convenience only. It is not a roadmap priority, acceptance plan or authorization to implement.
 
-Potential beneficiary of:
-
-- stable/stale anchor checks;
-- explicit repository snapshot identity;
-- structural read-only context for scoped Work Units;
-- impact information that helps reconcile independent units.
-
-Repository intelligence must not authorize parallel writers or override the existing shared/exclusive scheduler.
-
-### M11 — Evidence-backed harness improvement proposals
-
-Primary home for:
-
-- scoped lessons;
-- retrieval-quality feedback;
-- evidence-backed proposals to adjust context/repository capabilities.
-
-No self-modifying retrieval/policy loop.
-
-## Priority if evidence justifies promotion
-
-### P0 candidates
+### Initial questions to validate
 
 1. exact anchor + content-hash contract;
 2. `PrepareEdit` preflight;
 3. blast-radius / candidate affected-test report;
-4. freshness/reconstruction contract integrated with M8/resume.
+4. freshness/reconstruction compatibility with the completed M8 resume contract.
 
-### P1 candidates
+### Additional questions
 
 5. repository dependency/path queries;
 6. deterministic context-budget allocation;
 7. incremental structural reindex after observed effects;
 8. `PrepareCreate`;
 9. historical commit-scoped context;
-10. M11-scoped lessons and retrieval-quality telemetry.
+10. scoped lessons and retrieval-quality telemetry as possible inputs to the existing M11 proposal lifecycle.
 
 ## Explicit non-goals
 
@@ -357,11 +335,11 @@ This research does not authorize:
 - an indexer selecting providers, approvals, retries or execution authority;
 - an indexer declaring task completion;
 - weakening verifier/acceptance gates because blast-radius analysis predicts low impact;
-- reopening active provider/adoption gates to land repository-intelligence work early.
+- reopening or extending completed M8–M11 milestones, or changing provider/adoption gates.
 
-## Evidence gates before promotion
+## Evidence required before any separate proposal
 
-A future experiment should use representative Runstead dogfood repositories/tasks and record at least:
+No experiment or implementation is approved by this note. Any separately authorized future proposal should use representative Runstead dogfood repositories/tasks and record at least:
 
 - retrieval precision/recall or another declared relevance metric;
 - delivered-context token reduction versus current inspection behavior;
@@ -378,15 +356,15 @@ A benchmark from Basinfy itself is evidence about Basinfy, not proof of Runstead
 
 ## Maintainer decision
 
-Mine these mechanisms selectively:
+Keep these observations as hypotheses for possible future study:
 
-> Basinfy repository map → Runstead derived repository intelligence  
-> `prepare-edit` → bounded preflight feeding existing effect policy  
-> blast radius → verifier input, never completion authority  
-> exact anchor/hash → stale-edit protection and recovery evidence  
-> scoped lessons → M11 reviewed improvement proposals  
+> Basinfy repository map → Runstead derived repository intelligence
+> `prepare-edit` → bounded preflight feeding existing effect policy
+> blast radius → verifier input, never completion authority
+> exact anchor/hash → stale-edit protection and recovery evidence
+> scoped lessons → proposals through the existing M11 lifecycle
 > index freshness → durable context/reconstruction contract
 
-Do not import the surrounding harness or trust model.
+Do not import the surrounding harness or trust model. M8–M11 remain complete; considering any implementation requires real Runstead dogfood evidence and a separate maintainer decision.
 
-The first implementation candidate, when M8/dogfood evidence actually requires it, should be the smallest measurable slice around **exact anchors + pre-edit context + stale detection**, not a general Basinfy clone.
+If real evidence later supports a proposal, an initial slice to evaluate could combine **exact anchors + pre-edit context + stale detection**. This is not an implementation commitment or a reopening of M8, and it does not authorize a general Basinfy clone.
