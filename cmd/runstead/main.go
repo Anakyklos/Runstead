@@ -151,6 +151,10 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		printRunHelp(errOut)
 		return exitUsage
 	}
+	if flagWasSet(flags, "state-domain") && stateDomain != "siwc" {
+		fmt.Fprintln(errOut, "run: invalid state domain selector")
+		return exitUsage
+	}
 	// The Work Unit scheduler bound (issue #109) is validated BEFORE any
 	// Work Unit executes: values outside [1, 4] fail here, before the store
 	// is opened or any unit is created.
@@ -407,7 +411,8 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		identity := provider.IdentityFromResolved(*resolvedProvider, compat.AdapterVersion)
 		selectedIdentity = &identity
 	}
-	stateLocation, err := resolveCommandStateDomain(stateDomain, stateDir, flagWasSet(flags, "state-dir"), flagWasSet(flags, "state-dir"), selectedIdentity)
+	stateLocation, err := resolveCommandStateDomain(stateDomain, flagWasSet(flags, "state-domain"), stateDir,
+		flagWasSet(flags, "state-dir"), flagWasSet(flags, "state-dir"), selectedIdentity)
 	if err != nil {
 		fmt.Fprintf(errOut, "run: %v\n", err)
 		return stateDomainResolveExitCode(stateDomain)
@@ -1110,6 +1115,7 @@ func inspectCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 	stateDir := ""
 	stateDirSet := false
 	stateDomain := ""
+	stateDomainSet := false
 	for index := 0; index < len(args); index++ {
 		arg := args[index]
 		switch {
@@ -1131,8 +1137,10 @@ func inspectCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 			}
 			index++
 			stateDomain = args[index]
+			stateDomainSet = true
 		case strings.HasPrefix(arg, "--state-domain="):
 			stateDomain = strings.TrimPrefix(arg, "--state-domain=")
+			stateDomainSet = true
 		case strings.HasPrefix(arg, "-"):
 			fmt.Fprintf(errOut, "inspect: unknown flag %q\n", arg)
 			printInspectHelp(errOut)
@@ -1156,7 +1164,7 @@ func inspectCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 		return agent.OutcomeCanceled.ExitCode()
 	}
 
-	location, err := resolveCommandStateDomain(stateDomain, stateDir, stateDirSet, stateDir != "", nil)
+	location, err := resolveCommandStateDomain(stateDomain, stateDomainSet, stateDir, stateDirSet, stateDir != "", nil)
 	if err != nil {
 		fmt.Fprintf(errOut, "inspect: %v\n", err)
 		return stateDomainResolveExitCode(stateDomain)
@@ -1195,6 +1203,7 @@ func decideCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	stateDir := ""
 	stateDirSet := false
 	stateDomain := ""
+	stateDomainSet := false
 	reason := ""
 	// Parse manually so flags may appear before or after the positionals (the
 	// flag package stops at the first positional argument).
@@ -1222,11 +1231,13 @@ func decideCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		case arg == "--state-domain":
 			if next, ok := value("--state-domain"); ok {
 				stateDomain = next
+				stateDomainSet = true
 			} else {
 				return exitUsage
 			}
 		case strings.HasPrefix(arg, "--state-domain="):
 			stateDomain = strings.TrimPrefix(arg, "--state-domain=")
+			stateDomainSet = true
 		case arg == "--reason":
 			if next, ok := value("--reason"); ok {
 				reason = next
@@ -1268,7 +1279,7 @@ func decideCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		return agent.OutcomeCanceled.ExitCode()
 	}
 
-	location, err := resolveCommandStateDomain(stateDomain, stateDir, stateDirSet, stateDir != "", nil)
+	location, err := resolveCommandStateDomain(stateDomain, stateDomainSet, stateDir, stateDirSet, stateDir != "", nil)
 	if err != nil {
 		fmt.Fprintf(errOut, "decide: %v\n", err)
 		return stateDomainResolveExitCode(stateDomain)

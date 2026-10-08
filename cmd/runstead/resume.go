@@ -53,6 +53,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	stateDir := ""
 	stateDirSet := false
 	stateDomain := ""
+	stateDomainSet := false
 	scripted := ""
 	logLevel := ""
 	minStartInterval := ""
@@ -113,11 +114,13 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		case arg == "--state-domain":
 			if next, ok := value("--state-domain"); ok {
 				stateDomain = next
+				stateDomainSet = true
 			} else {
 				return exitUsage
 			}
 		case strings.HasPrefix(arg, "--state-domain="):
 			stateDomain = strings.TrimPrefix(arg, "--state-domain=")
+			stateDomainSet = true
 		case arg == "--scripted":
 			if next, ok := value("--scripted"); ok {
 				scripted = next
@@ -355,6 +358,10 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintln(errOut, "resume: --profile requires a non-empty file path")
 		return exitUsage
 	}
+	if stateDomainSet && stateDomain != "siwc" {
+		fmt.Fprintln(errOut, "resume: invalid state domain selector")
+		return exitUsage
+	}
 	if workUnitConcurrencySet && (workUnitConcurrency < workunit.MinConcurrency || workUnitConcurrency > workunit.MaxConcurrency) {
 		fmt.Fprintf(errOut, "resume: --workunit-concurrency must be between %d and %d (got %d)\n",
 			workunit.MinConcurrency, workunit.MaxConcurrency, workUnitConcurrency)
@@ -385,21 +392,32 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		identity := provider.IdentityFromResolved(*resolved, compat.AdapterVersion)
 		selectedSIWCIdentity = &identity
 	}
-	if stateDomain == "" {
+	if !stateDomainSet {
 		providersPath, providersSet := resolveProvidersFlag(providersFile)
 		selectedID, selectedSet := resolveProviderIDFlag(providerID)
-		if providersSet && selectedSet {
+		if providersSet || selectedSet {
+			if !providersSet || !selectedSet {
+				fmt.Fprintln(errOut, "resume: --providers and --provider-id must be used together")
+				return exitUsage
+			}
 			registry, loadErr := loadProviderRegistry(providersPath)
-			if loadErr == nil {
-				if selected, resolveErr := registry.Resolve(selectedID, provider.RequiredCapabilities(), provider.SafeRouteSafety()); resolveErr == nil && selected.WireContract == provider.WireResponsesSIWCV1 {
-					fmt.Fprintln(errOut, "resume: SIWC provider requires --state-domain siwc")
-					return exitUsage
-				}
+			if loadErr != nil {
+				fmt.Fprintf(errOut, "resume: %v\n", loadErr)
+				return exitUsage
+			}
+			selected, resolveErr := registry.Resolve(selectedID, provider.RequiredCapabilities(), provider.SafeRouteSafety())
+			if resolveErr != nil {
+				fmt.Fprintf(errOut, "resume: %v\n", resolveErr)
+				return exitUsage
+			}
+			if selected.WireContract == provider.WireResponsesSIWCV1 {
+				fmt.Fprintln(errOut, "resume: SIWC provider requires --state-domain siwc")
+				return exitUsage
 			}
 		}
 	}
 
-	location, err := resolveCommandStateDomain(stateDomain, stateDir, stateDirSet, stateDir != "", selectedSIWCIdentity)
+	location, err := resolveCommandStateDomain(stateDomain, stateDomainSet, stateDir, stateDirSet, stateDir != "", selectedSIWCIdentity)
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: %v\n", err)
 		return stateDomainResolveExitCode(stateDomain)

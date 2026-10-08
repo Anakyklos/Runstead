@@ -210,18 +210,18 @@ internal/recovery/recovery.go:772  _ = jsonUnmarshal(raw, value)
 
 
 
-cmd/runstead/main.go:424  defer store.Close()
+cmd/runstead/main.go:429  defer store.Close()
 
 
 
 
-cmd/runstead/main.go:1170  defer store.Close()
+cmd/runstead/main.go:1178  defer store.Close()
 
 
 
 
 
-cmd/runstead/main.go:1282  defer store.Close()
+cmd/runstead/main.go:1293  defer store.Close()
 
 
 
@@ -260,7 +260,7 @@ internal/tools/registry.go:134  rgPath, _ = lookPath("rg")
 
 
 
-cmd/runstead/resume.go:417  defer store.Close()
+cmd/runstead/resume.go:435  defer store.Close()
 
 
 
@@ -840,21 +840,21 @@ internal/state/tool_attempts.go:184  defer rows.Close()
 # database close on every command path is best-effort cleanup; the command has
 # already produced its authoritative result or error and a close failure after
 # that cannot affect it (same convention as the other CLI commands).
-cmd/runstead/improvement_cmd.go:174  defer store.Close()
-cmd/runstead/improvement_cmd.go:205  defer store.Close()
-cmd/runstead/improvement_cmd.go:240  defer store.Close()
-cmd/runstead/improvement_cmd.go:334  defer store.Close()
-cmd/runstead/improvement_cmd.go:372  defer store.Close()
-cmd/runstead/improvement_cmd.go:416  defer store.Close()
-cmd/runstead/improvement_cmd.go:446  defer store.Close()
+cmd/runstead/improvement_cmd.go:180  defer store.Close()
+cmd/runstead/improvement_cmd.go:211  defer store.Close()
+cmd/runstead/improvement_cmd.go:246  defer store.Close()
+cmd/runstead/improvement_cmd.go:340  defer store.Close()
+cmd/runstead/improvement_cmd.go:378  defer store.Close()
+cmd/runstead/improvement_cmd.go:422  defer store.Close()
+cmd/runstead/improvement_cmd.go:452  defer store.Close()
 
 # Improvement artifact projection write (issue #55): the atomic temp+rename
 # writer removes its temp file and closes it while the authoritative error is
 # already being returned; cleanup failures after that cannot change the
 # outcome (matches the tools/atomic-write allowlist convention).
-cmd/runstead/improvement_cmd.go:516  tmp.Close()
-cmd/runstead/improvement_cmd.go:517  os.Remove(tmpName)
-cmd/runstead/improvement_cmd.go:521  os.Remove(tmpName)
+cmd/runstead/improvement_cmd.go:522  tmp.Close()
+cmd/runstead/improvement_cmd.go:523  os.Remove(tmpName)
+cmd/runstead/improvement_cmd.go:527  os.Remove(tmpName)
 
 # Issue #55 state layer (internal/state/improvements.go): transaction/row
 # cleanup follows the same best-effort convention as every other state/*

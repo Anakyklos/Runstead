@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -14,6 +15,8 @@ type resolvedStateDomain struct {
 	SIWC *siwcstate.Domain
 }
 
+var errInvalidStateDomainSelector = errors.New("invalid state domain selector")
+
 func stateDomainResolveExitCode(selection string) int {
 	if selection == "siwc" {
 		return exitUnavailable
@@ -21,11 +24,8 @@ func stateDomainResolveExitCode(selection string) int {
 	return exitUsage
 }
 
-func resolveCommandStateDomain(selection, stateDir string, stateDirExplicit, legacyStateDirSet bool, identity *provider.Identity) (resolvedStateDomain, error) {
-	if identity != nil && identity.WireContract == provider.WireResponsesSIWCV1 && selection != "siwc" {
-		return resolvedStateDomain{}, fmt.Errorf("SIWC provider requires --state-domain siwc")
-	}
-	if selection == "" {
+func resolveCommandStateDomain(selection string, selectionSet bool, stateDir string, stateDirExplicit, legacyStateDirSet bool, identity *provider.Identity) (resolvedStateDomain, error) {
+	if !selectionSet {
 		if identity != nil && identity.WireContract == provider.WireResponsesSIWCV1 {
 			return resolvedStateDomain{}, fmt.Errorf("SIWC provider requires --state-domain siwc")
 		}
@@ -36,7 +36,7 @@ func resolveCommandStateDomain(selection, stateDir string, stateDirExplicit, leg
 		return resolvedStateDomain{Dir: dir}, nil
 	}
 	if selection != "siwc" {
-		return resolvedStateDomain{}, fmt.Errorf("unsupported state domain %q", selection)
+		return resolvedStateDomain{}, errInvalidStateDomainSelector
 	}
 	if identity != nil && identity.WireContract != provider.WireResponsesSIWCV1 {
 		return resolvedStateDomain{}, fmt.Errorf("--state-domain siwc requires a responses_siwc_v1 provider")
@@ -61,4 +61,26 @@ func resolveCommandStateDomain(selection, stateDir string, stateDirExplicit, leg
 		return resolvedStateDomain{}, err
 	}
 	return resolvedStateDomain{Dir: domain.Dir, SIWC: &domain}, nil
+}
+
+// stateDomainDiagnostic returns stable, sanitized error text for operator
+// commands. It intentionally omits filesystem paths and decoder/SQLite detail.
+func stateDomainDiagnostic(err error, selectorSet bool) string {
+	switch {
+	case errors.Is(err, siwcstate.ErrDivergentPath):
+		return "SIWC state directory override diverges from registered domain"
+	case errors.Is(err, siwcstate.ErrUnsafePath):
+		return "unsafe SIWC state path"
+	case errors.Is(err, siwcstate.ErrIdentityMismatch):
+		return "SIWC provider identity does not match registered domain"
+	case errors.Is(err, siwcstate.ErrDomainUnavailable):
+		return "SIWC state domain unavailable"
+	case errors.Is(err, errInvalidStateDomainSelector):
+		return "invalid state domain selector"
+	default:
+		if selectorSet {
+			return "invalid state domain selector"
+		}
+		return "invalid state dir"
+	}
 }

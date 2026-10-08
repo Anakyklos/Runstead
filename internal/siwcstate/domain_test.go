@@ -32,6 +32,14 @@ func testIdentity() provider.Identity {
 }
 
 func registerFixture(t *testing.T, locatorPath, stateDir string, identity provider.Identity) {
+	registerFixtureWithBinding(t, locatorPath, stateDir, identity, true)
+}
+
+func registerFixtureWithoutBinding(t *testing.T, locatorPath, stateDir string, identity provider.Identity) {
+	registerFixtureWithBinding(t, locatorPath, stateDir, identity, false)
+}
+
+func registerFixtureWithBinding(t *testing.T, locatorPath, stateDir string, identity provider.Identity, bind bool) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(locatorPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -48,6 +56,11 @@ func registerFixture(t *testing.T, locatorPath, stateDir string, identity provid
 	store, err := state.Open(state.Options{Path: filepath.Join(stateDir, "runstead.db")})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if bind {
+		if _, err := store.DB().Exec("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", DomainMarkerKey, identity.ConfigIdentity); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -83,6 +96,26 @@ func TestResolveRegisteredDomainAndEquivalentOverride(t *testing.T) {
 	}
 	if domain.Dir != stateDir {
 		t.Fatalf("resolved directory = %q, want %q", domain.Dir, stateDir)
+	}
+}
+
+func TestResolveRejectsLegacyDatabaseWithoutSIWCDomainBinding(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "legacy-state")
+	locator := filepath.Join(root, "locator", LocatorFile)
+	identity := testIdentity()
+	registerFixtureWithoutBinding(t, locator, stateDir, identity)
+	before, err := os.ReadFile(filepath.Join(stateDir, "runstead.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Resolve(Options{LocatorPath: locator, Identity: &identity})
+	if !errors.Is(err, ErrDomainUnavailable) {
+		t.Fatalf("legacy database error = %v, want ErrDomainUnavailable", err)
+	}
+	after, err := os.ReadFile(filepath.Join(stateDir, "runstead.db"))
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("legacy DB changed after rejected resolution: err=%v", err)
 	}
 }
 

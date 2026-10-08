@@ -74,8 +74,13 @@ decoding with duplicate and unknown keys rejected. `domain_id` must equal the
 manifest's v2 config identity, which binds the behavior digest and both opaque
 bindings. The database must already be a valid initialized Runstead SQLite
 store; the resolver checks it in immutable/read-only mode before handing its
-path to the CLI. Existing WAL, SHM or journal sidecars cause a fail-closed
-refusal because Stage 2 has no domain lock/reconciliation barrier.
+path to the CLI. The database must contain the versioned `meta` key
+`siwc_state_domain_v1` whose value exactly matches the manifest's
+`config_identity`; this durable marker prevents a valid legacy SQLite file
+from being claimed by a crafted locator and manifest. Stage 2 only verifies
+this marker. Only a future authenticated registration flow may create it.
+Existing WAL, SHM or journal sidecars cause a fail-closed refusal because
+Stage 2 has no domain lock/reconciliation barrier.
 Because Stage 3 has not added the interprocess lock and recovery barrier,
 `run` and `resume` validate the SIWC locator and then refuse before opening
 SQLite. `inspect`, `decide` and improvement commands may use the registered

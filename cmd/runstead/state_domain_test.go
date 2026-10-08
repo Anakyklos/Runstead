@@ -35,7 +35,15 @@ func cliSIWCIdentity() provider.Identity {
 }
 
 func seedSIWCDomain(t *testing.T, home, xdg, stateDir, taskID string, withPendingApproval bool, registeredIdentity ...provider.Identity) provider.Identity {
+	return seedSIWCDomainWithBinding(t, home, xdg, stateDir, taskID, withPendingApproval, true, registeredIdentity...)
+}
+
+func seedSIWCDomainWithBinding(t *testing.T, home, xdg, stateDir, taskID string, withPendingApproval, bindDatabase bool, registeredIdentity ...provider.Identity) provider.Identity {
 	t.Helper()
+	identity := cliSIWCIdentity()
+	if len(registeredIdentity) > 0 {
+		identity = registeredIdentity[0]
+	}
 	if err := os.MkdirAll(filepath.Join(xdg, "runstead", "siwc"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -54,6 +62,11 @@ func seedSIWCDomain(t *testing.T, home, xdg, stateDir, taskID string, withPendin
 	store, err := state.Open(state.Options{Path: filepath.Join(stateDir, state.DefaultDBFile)})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if bindDatabase {
+		if _, err := store.DB().Exec("INSERT INTO meta (key, value) VALUES (?, ?)", siwcstate.DomainMarkerKey, identity.ConfigIdentity); err != nil {
+			t.Fatal(err)
+		}
 	}
 	ctx := context.Background()
 	if err := store.CreateTask(ctx, state.TaskRecord{TaskID: taskID, Objective: "synthetic SIWC task", Workspace: t.TempDir(), Model: "gpt-test", ConfigJSON: []byte(`{"provider_id":"siwc-cli-test"}`)}); err != nil {
@@ -75,10 +88,6 @@ func seedSIWCDomain(t *testing.T, home, xdg, stateDir, taskID string, withPendin
 		t.Fatal(err)
 	}
 
-	identity := cliSIWCIdentity()
-	if len(registeredIdentity) > 0 {
-		identity = registeredIdentity[0]
-	}
 	manifest := siwcstate.Manifest{
 		Version: siwcstate.ManifestVersion, WireContract: identity.WireContract,
 		AccountBinding: identity.AccountBinding, CredentialBinding: identity.CredentialBinding,
@@ -207,6 +216,109 @@ func TestSIWCInspectDecideAndImprovementUseRegisteredDomain(t *testing.T) {
 	}
 }
 
+func TestImprovementStateDomainDiagnosticsRemainDistinct(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	xdg := filepath.Join(base, "xdg")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	setSIWCEnv(t, home, xdg)
+
+	t.Run("missing domain", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		code := run(context.Background(), []string{"improvement", "list", "--state-domain", "siwc"}, &out, &errOut)
+		if code != exitUnavailable || !strings.Contains(errOut.String(), "SIWC state domain unavailable") {
+			t.Fatalf("improvement missing-domain result = (%d, %q)", code, errOut.String())
+		}
+	})
+
+	canonical := filepath.Join(base, "canonical")
+	seedSIWCDomain(t, home, xdg, canonical, "siwc-task", false)
+	t.Run("divergent override", func(t *testing.T) {
+		alternate := filepath.Join(base, "alternate")
+		t.Setenv("RUNSTEAD_STATE_DIR", alternate)
+		var out, errOut bytes.Buffer
+		code := run(context.Background(), []string{"improvement", "list", "--state-domain=siwc"}, &out, &errOut)
+		if code != exitUnavailable || !strings.Contains(errOut.String(), "override diverges") {
+			t.Fatalf("improvement divergent-domain result = (%d, %q)", code, errOut.String())
+		}
+		if _, err := os.Stat(alternate); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("divergent improvement path was created: %v", err)
+		}
+	})
+
+	t.Run("unsafe registered path", func(t *testing.T) {
+		t.Setenv("RUNSTEAD_STATE_DIR", "")
+		if err := os.Unsetenv("RUNSTEAD_STATE_DIR"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(canonical, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		var out, errOut bytes.Buffer
+		code := run(context.Background(), []string{"improvement", "list", "--state-domain=siwc"}, &out, &errOut)
+		if code != exitUnavailable || !strings.Contains(errOut.String(), "unsafe SIWC state path") {
+			t.Fatalf("improvement unsafe-domain result = (%d, %q)", code, errOut.String())
+		}
+	})
+}
+
+func TestSIWCManifestCannotClaimLegacyDatabaseForApprovalOrImprovement(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	xdg := filepath.Join(base, "xdg")
+	stateDir := filepath.Join(base, "legacy-state")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	setSIWCEnv(t, home, xdg)
+	seedSIWCDomainWithBinding(t, home, xdg, stateDir, "legacy-task", true, false)
+	dbPath := filepath.Join(stateDir, state.DefaultDBFile)
+	before, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{"decide", "legacy-task", "action-000001", "approved", "--state-domain", "siwc"}, &out, &errOut)
+	if code != exitUnavailable || !strings.Contains(errOut.String(), "SIWC state domain unavailable") {
+		t.Fatalf("decide against legacy DB = (%d, %q), want fail-closed domain rejection", code, errOut.String())
+	}
+
+	change := filepath.Join(base, "change.json")
+	if err := os.WriteFile(change, []byte(`{"version":1,"profile":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errOut.Reset()
+	code = run(context.Background(), []string{
+		"improvement", "propose", "--state-domain", "siwc", "--kind", "composition",
+		"--scope", "workspace", "--title", "synthetic", "--target", "composition",
+		"--base", "v1", "--change", change, "--rationale", "synthetic",
+		"--expected-benefit", "synthetic", "--validation-plan", "go-test",
+	}, &out, &errOut)
+	if code != exitUnavailable || !strings.Contains(errOut.String(), "SIWC state domain unavailable") {
+		t.Fatalf("improvement against legacy DB = (%d, %q), want fail-closed domain rejection", code, errOut.String())
+	}
+	after, err := os.ReadFile(dbPath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("legacy database changed after rejected actions: err=%v", err)
+	}
+	store, err := state.Open(state.Options{Path: dbPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	pending, err := store.PendingApprovals(context.Background(), "legacy-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("legacy pending approvals = %d, want unchanged 1", len(pending))
+	}
+}
+
 func TestSIWCDivergentFlagEnvAndChangedDiscoveryRootFailWithoutCreatingDB(t *testing.T) {
 	base := t.TempDir()
 	home := filepath.Join(base, "home")
@@ -218,18 +330,18 @@ func TestSIWCDivergentFlagEnvAndChangedDiscoveryRootFailWithoutCreatingDB(t *tes
 	setSIWCEnv(t, home, xdg)
 	identity := seedSIWCDomain(t, home, xdg, canonical, "siwc-task", false)
 
-	if _, err := resolveCommandStateDomain("siwc", filepath.Join(base, "alternate"), true, true, &identity); !errors.Is(err, siwcstate.ErrDivergentPath) {
+	if _, err := resolveCommandStateDomain("siwc", true, filepath.Join(base, "alternate"), true, true, &identity); !errors.Is(err, siwcstate.ErrDivergentPath) {
 		t.Fatalf("divergent --state-dir error = %v, want ErrDivergentPath", err)
 	}
 	if _, err := os.Stat(filepath.Join(base, "alternate")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("divergent --state-dir created a path: %v", err)
 	}
-	if _, err := resolveCommandStateDomain("siwc", canonical, true, true, &identity); err != nil {
+	if _, err := resolveCommandStateDomain("siwc", true, canonical, true, true, &identity); err != nil {
 		t.Fatalf("canonical --state-dir override should be accepted: %v", err)
 	}
 
 	t.Setenv("RUNSTEAD_STATE_DIR", filepath.Join(base, "env-alternate"))
-	if _, err := resolveCommandStateDomain("siwc", "", false, false, &identity); !errors.Is(err, siwcstate.ErrDivergentPath) {
+	if _, err := resolveCommandStateDomain("siwc", true, "", false, false, &identity); !errors.Is(err, siwcstate.ErrDivergentPath) {
 		t.Fatalf("divergent RUNSTEAD_STATE_DIR error = %v, want ErrDivergentPath", err)
 	}
 	if _, err := os.Stat(filepath.Join(base, "env-alternate")); !errors.Is(err, os.ErrNotExist) {
@@ -247,7 +359,7 @@ func TestSIWCDivergentFlagEnvAndChangedDiscoveryRootFailWithoutCreatingDB(t *tes
 	if err := os.Unsetenv("RUNSTEAD_STATE_DIR"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveCommandStateDomain("siwc", "", false, false, nil); !errors.Is(err, siwcstate.ErrDomainUnavailable) {
+	if _, err := resolveCommandStateDomain("siwc", true, "", false, false, nil); !errors.Is(err, siwcstate.ErrDomainUnavailable) {
 		t.Fatalf("changed discovery root error = %v, want ErrDomainUnavailable", err)
 	}
 	if _, err := os.Stat(filepath.Join(changedXDG, "runstead", "siwc", "runstead.db")); !errors.Is(err, os.ErrNotExist) {
@@ -366,9 +478,81 @@ func TestSIWCRunValidatesRegisteredDomainThenRefusesBeforeSQLiteOpen(t *testing.
 	}
 }
 
+func TestExplicitEmptyStateDomainFailsClosedAcrossCommands(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	setSIWCEnv(t, home, filepath.Join(base, "xdg"))
+	commands := []struct {
+		args     []string
+		stateDir string
+	}{
+		{args: []string{"inspect", "task", "--state-domain=", "--state-dir", filepath.Join(base, "inspect-state-inline")}, stateDir: filepath.Join(base, "inspect-state-inline")},
+		{args: []string{"inspect", "task", "--state-domain", "", "--state-dir", filepath.Join(base, "inspect-state-separated")}, stateDir: filepath.Join(base, "inspect-state-separated")},
+		{args: []string{"decide", "task", "action", "approved", "--state-domain=", "--state-dir", filepath.Join(base, "decide-state-inline")}, stateDir: filepath.Join(base, "decide-state-inline")},
+		{args: []string{"decide", "task", "action", "approved", "--state-domain", "", "--state-dir", filepath.Join(base, "decide-state-separated")}, stateDir: filepath.Join(base, "decide-state-separated")},
+		{args: []string{"improvement", "list", "--state-domain=", "--state-dir", filepath.Join(base, "improvement-state-inline")}, stateDir: filepath.Join(base, "improvement-state-inline")},
+		{args: []string{"improvement", "list", "--state-domain", "", "--state-dir", filepath.Join(base, "improvement-state-separated")}, stateDir: filepath.Join(base, "improvement-state-separated")},
+		{args: []string{"run", "--task", "task", "--workspace", base, "--state-domain=", "--state-dir", filepath.Join(base, "run-state-inline")}, stateDir: filepath.Join(base, "run-state-inline")},
+		{args: []string{"run", "--task", "task", "--workspace", base, "--state-domain", "", "--state-dir", filepath.Join(base, "run-state-separated")}, stateDir: filepath.Join(base, "run-state-separated")},
+		{args: []string{"resume", "task", "--state-domain=", "--state-dir", filepath.Join(base, "resume-state-inline")}, stateDir: filepath.Join(base, "resume-state-inline")},
+		{args: []string{"resume", "task", "--state-domain", "", "--state-dir", filepath.Join(base, "resume-state-separated")}, stateDir: filepath.Join(base, "resume-state-separated")},
+	}
+	for _, test := range commands {
+		var out, errOut bytes.Buffer
+		code := run(context.Background(), test.args, &out, &errOut)
+		if code != exitUsage || !strings.Contains(errOut.String(), "state domain") {
+			t.Errorf("run(%q) = (%d, %q), want invalid state-domain selector", test.args, code, errOut.String())
+		}
+		if _, err := os.Stat(test.stateDir); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("run(%q) created alternate state path: %v", test.args, err)
+		}
+	}
+}
+
+func TestResumeInvalidProviderConfigurationFailsBeforeOpeningAlternateState(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	setSIWCEnv(t, home, filepath.Join(base, "xdg"))
+	providers := filepath.Join(base, "providers.json")
+	writeSIWCProviderFixture(t, providers)
+	for _, test := range []struct {
+		name       string
+		providerID string
+		writeFile  func()
+	}{
+		{name: "load error", providerID: "siwc-cli-test", writeFile: func() {
+			if err := os.WriteFile(providers, []byte(`{"version":2,`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "resolve error", providerID: "missing-provider", writeFile: func() { writeSIWCProviderFixture(t, providers) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.writeFile()
+			alternate := filepath.Join(base, strings.ReplaceAll(test.name, " ", "-")+"-state")
+			var out, errOut bytes.Buffer
+			code := run(context.Background(), []string{
+				"resume", "task", "--providers", providers, "--provider-id", test.providerID, "--state-dir", alternate,
+			}, &out, &errOut)
+			if code != exitUsage || !strings.Contains(strings.ToLower(errOut.String()), "provider") {
+				t.Fatalf("resume exit=%d stderr=%q; wanted provider configuration error", code, errOut.String())
+			}
+			if _, err := os.Stat(alternate); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("resume created state after invalid provider configuration: %v", err)
+			}
+		})
+	}
+}
+
 func TestLegacyStateDirectoryResolutionRemainsUnchanged(t *testing.T) {
 	want := filepath.Join(t.TempDir(), "legacy")
-	location, err := resolveCommandStateDomain("", want, true, true, nil)
+	location, err := resolveCommandStateDomain("", false, want, true, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,10 +564,10 @@ func TestLegacyStateDirectoryResolutionRemainsUnchanged(t *testing.T) {
 func TestLegacyExplicitEmptyStateDirSemanticsRemainCommandSpecific(t *testing.T) {
 	envDir := filepath.Join(t.TempDir(), "env-state")
 	t.Setenv("RUNSTEAD_STATE_DIR", envDir)
-	if _, err := resolveCommandStateDomain("", "", true, true, nil); err == nil {
+	if _, err := resolveCommandStateDomain("", false, "", true, true, nil); err == nil {
 		t.Fatal("run's explicit empty --state-dir must continue to fail")
 	}
-	location, err := resolveCommandStateDomain("", "", true, false, nil)
+	location, err := resolveCommandStateDomain("", false, "", true, false, nil)
 	if err != nil {
 		t.Fatalf("legacy inspect-style empty --state-dir should retain env fallback: %v", err)
 	}

@@ -112,13 +112,19 @@ func improvementCommand(ctx context.Context, args []string, out, errOut io.Write
 	}
 }
 
-func improvementStoreDir(values map[string]string) (string, int) {
+func improvementStoreDir(values map[string]string) (string, int, error) {
 	stateDir, stateDirSet := values["--state-dir"]
-	location, err := resolveCommandStateDomain(values["--state-domain"], stateDir, stateDirSet, stateDir != "", nil)
+	stateDomain, stateDomainSet := values["--state-domain"]
+	location, err := resolveCommandStateDomain(stateDomain, stateDomainSet, stateDir, stateDirSet, stateDir != "", nil)
 	if err != nil {
-		return "", stateDomainResolveExitCode(values["--state-domain"])
+		return "", stateDomainResolveExitCode(stateDomain), err
 	}
-	return location.Dir, exitSuccess
+	return location.Dir, exitSuccess, nil
+}
+
+func writeImprovementStateResolutionError(errOut io.Writer, command string, err error, values map[string]string) {
+	_, selectorSet := values["--state-domain"]
+	fmt.Fprintf(errOut, "improvement %s: %s\n", command, stateDomainDiagnostic(err, selectorSet))
 }
 
 func improvementNow() string { return time.Now().UTC().Format(improvementTimeFormat) }
@@ -161,9 +167,9 @@ func improvementProposeCommand(ctx context.Context, args []string, out, errOut i
 		InvariantsTouched:  splitCSV(values["--invariant"]),
 		ValidationPlan:     splitCSV(values["--validation-plan"]),
 	}
-	dir, code := improvementStoreDir(values)
+	dir, code, stateErr := improvementStoreDir(values)
 	if code != exitSuccess {
-		fmt.Fprintf(errOut, "improvement propose: invalid state dir\n")
+		writeImprovementStateResolutionError(errOut, "propose", stateErr, values)
 		return code
 	}
 	store, err := openStore(dir)
@@ -192,9 +198,9 @@ func improvementListCommand(ctx context.Context, args []string, out, errOut io.W
 		fmt.Fprintln(errOut, "improvement list: no positional arguments are accepted")
 		return exitUsage
 	}
-	dir, code := improvementStoreDir(values)
+	dir, code, stateErr := improvementStoreDir(values)
 	if code != exitSuccess {
-		fmt.Fprintf(errOut, "improvement list: invalid state dir\n")
+		writeImprovementStateResolutionError(errOut, "list", stateErr, values)
 		return code
 	}
 	store, err := openStore(dir)
@@ -227,9 +233,9 @@ func improvementShowCommand(ctx context.Context, args []string, out, errOut io.W
 		return exitUsage
 	}
 	proposalID := positionals[0]
-	dir, code := improvementStoreDir(values)
+	dir, code, stateErr := improvementStoreDir(values)
 	if code != exitSuccess {
-		fmt.Fprintf(errOut, "improvement show: invalid state dir\n")
+		writeImprovementStateResolutionError(errOut, "show", stateErr, values)
 		return code
 	}
 	store, err := openStore(dir)
@@ -321,9 +327,9 @@ func improvementReviewCommand(ctx context.Context, args []string, out, errOut io
 		fmt.Fprintln(errOut, "improvement review: exactly one proposal id is required")
 		return exitUsage
 	}
-	dir, code := improvementStoreDir(values)
+	dir, code, stateErr := improvementStoreDir(values)
 	if code != exitSuccess {
-		fmt.Fprintf(errOut, "improvement review: invalid state dir\n")
+		writeImprovementStateResolutionError(errOut, "review", stateErr, values)
 		return code
 	}
 	store, err := openStore(dir)
@@ -359,9 +365,9 @@ func improvementApplyCommand(ctx context.Context, args []string, out, errOut io.
 		fmt.Fprintln(errOut, "improvement apply: --output path is required")
 		return exitUsage
 	}
-	dir, code := improvementStoreDir(values)
+	dir, code, stateErr := improvementStoreDir(values)
 	if code != exitSuccess {
-		fmt.Fprintf(errOut, "improvement apply: invalid state dir\n")
+		writeImprovementStateResolutionError(errOut, "apply", stateErr, values)
 		return code
 	}
 	store, err := openStore(dir)
@@ -403,9 +409,9 @@ func improvementValidateCommand(ctx context.Context, args []string, out, errOut 
 		fmt.Fprintf(errOut, "improvement validate: %v\n", err)
 		return exitUsage
 	}
-	dir, code := improvementStoreDir(values)
+	dir, code, stateErr := improvementStoreDir(values)
 	if code != exitSuccess {
-		fmt.Fprintf(errOut, "improvement validate: invalid state dir\n")
+		writeImprovementStateResolutionError(errOut, "validate", stateErr, values)
 		return code
 	}
 	store, err := openStore(dir)
@@ -433,9 +439,9 @@ func improvementRollbackCommand(ctx context.Context, args []string, out, errOut 
 		fmt.Fprintln(errOut, "improvement rollback: exactly one proposal id is required")
 		return exitUsage
 	}
-	dir, code := improvementStoreDir(values)
+	dir, code, stateErr := improvementStoreDir(values)
 	if code != exitSuccess {
-		fmt.Fprintf(errOut, "improvement rollback: invalid state dir\n")
+		writeImprovementStateResolutionError(errOut, "rollback", stateErr, values)
 		return code
 	}
 	store, err := openStore(dir)

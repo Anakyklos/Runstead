@@ -28,6 +28,7 @@ const (
 	ManifestVersion  = 1
 	LocatorFile      = "siwc-locator.json"
 	ManifestFile     = "siwc-manifest.json"
+	DomainMarkerKey  = "siwc_state_domain_v1" // Reserved for writes by future authenticated registration.
 	maxMetadataBytes = 16 << 10
 )
 
@@ -169,7 +170,7 @@ func Resolve(options Options) (Domain, error) {
 			return Domain{}, fmt.Errorf("%w: SQLite sidecar requires reconciliation: %w", ErrDomainUnavailable, err)
 		}
 	}
-	if err := verifyExistingRunsteadDB(dbPath); err != nil {
+	if err := verifyExistingRunsteadDB(dbPath, manifest.ConfigIdentity); err != nil {
 		return Domain{}, fmt.Errorf("%w: database is not an initialized Runstead store", ErrDomainUnavailable)
 	}
 	return Domain{Dir: canonicalDir, Identity: manifest}, nil
@@ -424,7 +425,7 @@ func scanJSONValue(decoder *json.Decoder, depth int) error {
 	}
 }
 
-func verifyExistingRunsteadDB(path string) (resultErr error) {
+func verifyExistingRunsteadDB(path, expectedDomainID string) (resultErr error) {
 	fileURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String() + "?mode=ro&immutable=1"
 	db, err := sql.Open("sqlite", fileURL)
 	if err != nil {
@@ -443,6 +444,10 @@ func verifyExistingRunsteadDB(path string) (resultErr error) {
 	var required int
 	if err := db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('tasks', 'events', 'meta')").Scan(&required); err != nil || required != 3 {
 		return errors.New("required Runstead tables are missing")
+	}
+	var domainID string
+	if err := db.QueryRow("SELECT value FROM meta WHERE key = ?", DomainMarkerKey).Scan(&domainID); err != nil || domainID != expectedDomainID {
+		return errors.New("SIWC database domain binding is missing or mismatched")
 	}
 	var integrity string
 	if err := db.QueryRow("PRAGMA quick_check").Scan(&integrity); err != nil || integrity != "ok" {
