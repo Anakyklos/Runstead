@@ -68,6 +68,10 @@ var (
 // resolution already proved: wrong family, unsafe route safety or missing
 // authentication plumbing fail closed before any dispatch is possible.
 func New(resolved provider.Resolved, resolver SecretResolver, options Options) (*Client, error) {
+	if (resolved.WireContract != "" && resolved.WireContract != provider.WireChatCompletionsV1) ||
+		(resolved.DocumentVersion == 2 && resolved.WireContract == "") {
+		return nil, configRefusedError(errors.New("unsupported OpenAI wire contract; refusing Chat Completions dispatch"))
+	}
 	if resolved.ProviderID == "" || resolved.ConfigIdentity == "" {
 		return nil, configRefusedError(errors.New("adapter requires a fully resolved provider configuration"))
 	}

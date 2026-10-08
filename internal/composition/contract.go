@@ -14,6 +14,7 @@ import (
 )
 
 const ContractSchemaVersion = 1
+const ContractSchemaVersionSIWC = 2
 
 const (
 	DefaultRuntimeIdentity  = "runstead-runtime.v1"
@@ -55,12 +56,16 @@ type PackageIdentity struct {
 // ProviderIdentity is the sanitized subset of provider.Identity. It contains
 // no authentication reference or wire configuration.
 type ProviderIdentity struct {
-	ProviderID     string `json:"provider_id,omitempty"`
-	ProtocolFamily string `json:"protocol_family,omitempty"`
-	Model          string `json:"model,omitempty"`
-	ConfigIdentity string `json:"config_identity,omitempty"`
-	ProfileVersion string `json:"provider_profile_version,omitempty"`
-	AdapterVersion string `json:"adapter_version,omitempty"`
+	WireContract      string `json:"wire_contract,omitempty"`
+	AccountBinding    string `json:"account_binding,omitempty"`
+	CredentialBinding string `json:"credential_binding,omitempty"`
+	BehaviorDigest    string `json:"behavior_digest,omitempty"`
+	ProviderID        string `json:"provider_id,omitempty"`
+	ProtocolFamily    string `json:"protocol_family,omitempty"`
+	Model             string `json:"model,omitempty"`
+	ConfigIdentity    string `json:"config_identity,omitempty"`
+	ProfileVersion    string `json:"provider_profile_version,omitempty"`
+	AdapterVersion    string `json:"adapter_version,omitempty"`
 }
 
 // ArgumentIdentity and ToolIdentity are the static schema material supplied by
@@ -180,6 +185,8 @@ func providerIdentityMaterial(identity provider.Identity) (ProviderIdentity, err
 	material := ProviderIdentity{
 		ProviderID: identity.ProviderID, ProtocolFamily: string(identity.ProtocolFamily), Model: identity.Model,
 		ConfigIdentity: identity.ConfigIdentity, ProfileVersion: identity.ProfileVersion, AdapterVersion: identity.AdapterVersion,
+		WireContract: string(identity.WireContract), AccountBinding: identity.AccountBinding,
+		CredentialBinding: identity.CredentialBinding, BehaviorDigest: identity.BehaviorDigest,
 	}
 	if err := validateProviderIdentity(material); err != nil {
 		return ProviderIdentity{}, compositionError(ErrorInvalidContract, ErrInvalidContract, "provider", "%v", err)
@@ -188,6 +195,34 @@ func providerIdentityMaterial(identity provider.Identity) (ProviderIdentity, err
 }
 
 func validateProviderIdentity(identity ProviderIdentity) error {
+	if identity.WireContract == "" {
+		if identity.AccountBinding != "" || identity.CredentialBinding != "" || identity.BehaviorDigest != "" {
+			return fmt.Errorf("legacy provider identity cannot contain v2 material")
+		}
+	} else {
+		switch identity.WireContract {
+		case string(provider.WireResponsesSIWCV1):
+			if !validHMACBinding(identity.AccountBinding) || !validHMACBinding(identity.CredentialBinding) || identity.AccountBinding == identity.CredentialBinding {
+				return fmt.Errorf("SIWC requires distinct canonical opaque bindings")
+			}
+		case string(provider.WireChatCompletionsV1):
+			if identity.AccountBinding != "" || identity.CredentialBinding != "" {
+				return fmt.Errorf("Chat Completions cannot contain SIWC bindings")
+			}
+		default:
+			return fmt.Errorf("unsupported wire contract")
+		}
+		if !strings.HasPrefix(identity.ConfigIdentity, "provider.v2:") || !validHash(strings.TrimPrefix(identity.ConfigIdentity, "provider.v2:")) || !validHash(identity.BehaviorDigest) {
+			return fmt.Errorf("v2 identity requires canonical config and behavior digests")
+		}
+		if identity.ProtocolFamily != string(provider.FamilyOpenAICompatible) {
+			return fmt.Errorf("v2 wire identity requires openai_compatible family")
+		}
+		computed := sha256.Sum256([]byte(identity.BehaviorDigest + "\x00" + identity.AccountBinding + "\x00" + identity.CredentialBinding))
+		if identity.ConfigIdentity != "provider.v2:sha256:"+hex.EncodeToString(computed[:]) {
+			return fmt.Errorf("v2 config identity does not bind behavior and account/credential identities")
+		}
+	}
 	values := []struct {
 		name  string
 		value string
@@ -224,10 +259,26 @@ func validateProviderIdentity(identity ProviderIdentity) error {
 	if !provider.ProtocolFamily(identity.ProtocolFamily).Valid() {
 		return fmt.Errorf("unknown protocol family %q", identity.ProtocolFamily)
 	}
-	if !strings.HasPrefix(identity.ConfigIdentity, "provider.Config{") {
+	if identity.WireContract == "" && !strings.HasPrefix(identity.ConfigIdentity, "provider.Config{") {
 		return fmt.Errorf("config identity is not a provider.Config sanitized identity")
 	}
 	return nil
+}
+
+func validHMACBinding(s string) bool {
+	if !strings.HasPrefix(s, "hmac-sha256:v1:") {
+		return false
+	}
+	part := strings.TrimPrefix(s, "hmac-sha256:v1:")
+	if len(part) != 64 {
+		return false
+	}
+	for _, c := range part {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func looksCredentialShaped(value string) bool {
@@ -243,7 +294,7 @@ func looksCredentialShaped(value string) bool {
 }
 
 func validateContractMaterial(c FrozenExecutionContract) error {
-	if c.ContractVersion != ContractSchemaVersion {
+	if c.ContractVersion != ContractSchemaVersion && c.ContractVersion != ContractSchemaVersionSIWC {
 		return compositionError(ErrorInvalidContract, ErrInvalidContract, "contract_version", "unsupported contract version %d", c.ContractVersion)
 	}
 	if strings.TrimSpace(c.RuntimeIdentity) == "" || strings.TrimSpace(c.ProtocolIdentity) == "" {
@@ -251,6 +302,12 @@ func validateContractMaterial(c FrozenExecutionContract) error {
 	}
 	if strings.TrimSpace(c.Profile.ID) == "" || strings.TrimSpace(c.Profile.Version) == "" {
 		return compositionError(ErrorInvalidContract, ErrInvalidContract, "profile", "profile id and version are required")
+	}
+	if c.ContractVersion == ContractSchemaVersion && c.Provider.WireContract != "" {
+		return compositionError(ErrorInvalidContract, ErrInvalidContract, "provider", "v1 contract cannot contain v2 provider wire identity")
+	}
+	if c.ContractVersion == ContractSchemaVersionSIWC && c.Provider.WireContract == "" {
+		return compositionError(ErrorInvalidContract, ErrInvalidContract, "provider", "v2 contract must specify a wire contract")
 	}
 	if err := validateProviderIdentity(c.Provider); err != nil {
 		return compositionError(ErrorInvalidContract, ErrInvalidContract, "provider", "%v", err)

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,15 +32,18 @@ type providersDocument struct {
 }
 
 type providersFileEntry struct {
-	ProviderID      string            `json:"provider_id"`
-	ProtocolFamily  string            `json:"protocol_family"`
-	BaseURL         string            `json:"base_url"`
-	Model           string            `json:"model"`
-	AuthRef         string            `json:"auth_ref"`
-	AuthRequirement string            `json:"auth_requirement"`
-	Options         map[string]string `json:"options"`
-	ConfigVersion   string            `json:"config_version"`
-	Profile         providersProfile  `json:"profile"`
+	WireContract      string            `json:"wire_contract,omitempty"`
+	AccountBinding    string            `json:"account_binding,omitempty"`
+	CredentialBinding string            `json:"credential_binding,omitempty"`
+	ProviderID        string            `json:"provider_id"`
+	ProtocolFamily    string            `json:"protocol_family"`
+	BaseURL           string            `json:"base_url"`
+	Model             string            `json:"model"`
+	AuthRef           string            `json:"auth_ref"`
+	AuthRequirement   string            `json:"auth_requirement"`
+	Options           map[string]string `json:"options"`
+	ConfigVersion     string            `json:"config_version"`
+	Profile           providersProfile  `json:"profile"`
 }
 
 type providersProfile struct {
@@ -75,7 +79,14 @@ func LoadProvidersFile(path string) (*provider.Registry, error) {
 }
 
 func parseProviders(reader io.Reader) (*provider.Registry, error) {
-	decoder := json.NewDecoder(reader)
+	raw, err := io.ReadAll(io.LimitReader(reader, (2<<20)+1))
+	if err != nil {
+		return nil, fmt.Errorf("provider declarations: unreadable document")
+	}
+	if len(raw) > 2<<20 {
+		return nil, fmt.Errorf("provider declarations: document exceeds size limit")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	var document providersDocument
 	if err := decoder.Decode(&document); err != nil {
@@ -84,8 +95,28 @@ func parseProviders(reader io.Reader) (*provider.Registry, error) {
 	// The document is explicitly versioned: only the supported version is
 	// accepted, and absent/unknown/future versions fail closed instead of
 	// being interpreted with a different meaning.
-	if document.Version != 1 {
-		return nil, fmt.Errorf("provider declarations: unsupported version %d (supported: 1)", document.Version)
+	if document.Version != 1 && document.Version != 2 {
+		return nil, fmt.Errorf("provider declarations: unsupported version %d (supported: 1, 2)", document.Version)
+	}
+	if document.Version == 1 {
+		var top struct {
+			Providers []map[string]json.RawMessage `json:"providers"`
+		}
+		if err := json.Unmarshal(raw, &top); err != nil {
+			return nil, fmt.Errorf("provider declarations: malformed provider fields")
+		}
+		for _, fields := range top.Providers {
+			for _, name := range []string{"wire_contract", "account_binding", "credential_binding"} {
+				if _, ok := fields[name]; ok {
+					return nil, fmt.Errorf("provider declarations: v2-only field %q in v1", name)
+				}
+			}
+		}
+	}
+	if document.Version == 2 {
+		if err := rejectDuplicateProviderKeys(raw); err != nil {
+			return nil, fmt.Errorf("provider declarations: %v", err)
+		}
 	}
 	// The document must be exactly one JSON document: trailing JSON or data
 	// after the first value is a configuration error, never a silent ignore.
@@ -112,15 +143,19 @@ func parseProviders(reader io.Reader) (*provider.Registry, error) {
 			return nil, fmt.Errorf("provider declarations #%d (%s): %v", index+1, displayProviderName(entry.ProviderID), err)
 		}
 		configs = append(configs, provider.Config{
-			ProviderID:      entry.ProviderID,
-			ProtocolFamily:  family,
-			BaseURL:         entry.BaseURL,
-			Model:           entry.Model,
-			Auth:            provider.SecretRef(strings.TrimSpace(entry.AuthRef)),
-			AuthRequirement: authRequirement,
-			Options:         entry.Options,
-			Profile:         profile,
-			ConfigVersion:   entry.ConfigVersion,
+			DocumentVersion:   document.Version,
+			WireContract:      provider.WireContract(entry.WireContract),
+			AccountBinding:    entry.AccountBinding,
+			CredentialBinding: entry.CredentialBinding,
+			ProviderID:        entry.ProviderID,
+			ProtocolFamily:    family,
+			BaseURL:           entry.BaseURL,
+			Model:             entry.Model,
+			Auth:              provider.SecretRef(strings.TrimSpace(entry.AuthRef)),
+			AuthRequirement:   authRequirement,
+			Options:           entry.Options,
+			Profile:           profile,
+			ConfigVersion:     entry.ConfigVersion,
 		})
 	}
 	registry, err := provider.NewRegistry(configs...)
