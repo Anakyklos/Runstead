@@ -51,6 +51,9 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 
 	taskID := ""
 	stateDir := ""
+	stateDirSet := false
+	stateDomain := ""
+	stateDomainSet := false
 	scripted := ""
 	logLevel := ""
 	minStartInterval := ""
@@ -101,11 +104,23 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		case arg == "--state-dir":
 			if next, ok := value("--state-dir"); ok {
 				stateDir = next
+				stateDirSet = true
 			} else {
 				return exitUsage
 			}
 		case strings.HasPrefix(arg, "--state-dir="):
 			stateDir = strings.TrimPrefix(arg, "--state-dir=")
+			stateDirSet = true
+		case arg == "--state-domain":
+			if next, ok := value("--state-domain"); ok {
+				stateDomain = next
+				stateDomainSet = true
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--state-domain="):
+			stateDomain = strings.TrimPrefix(arg, "--state-domain=")
+			stateDomainSet = true
 		case arg == "--scripted":
 			if next, ok := value("--scripted"); ok {
 				scripted = next
@@ -343,6 +358,10 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintln(errOut, "resume: --profile requires a non-empty file path")
 		return exitUsage
 	}
+	if stateDomainSet && stateDomain != "siwc" {
+		fmt.Fprintln(errOut, "resume: invalid state domain selector")
+		return exitUsage
+	}
 	if workUnitConcurrencySet && (workUnitConcurrency < workunit.MinConcurrency || workUnitConcurrency > workunit.MaxConcurrency) {
 		fmt.Fprintf(errOut, "resume: --workunit-concurrency must be between %d and %d (got %d)\n",
 			workunit.MinConcurrency, workunit.MaxConcurrency, workUnitConcurrency)
@@ -352,12 +371,62 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintf(errOut, "resume: canceled\n")
 		return agent.OutcomeCanceled.ExitCode()
 	}
+	var selectedSIWCIdentity *provider.Identity
+	if stateDomain == "siwc" {
+		providersPath, providersSet := resolveProvidersFlag(providersFile)
+		selectedID, selectedSet := resolveProviderIDFlag(providerID)
+		if !providersSet || !selectedSet {
+			fmt.Fprintln(errOut, "resume: --state-domain siwc requires --providers and --provider-id")
+			return exitUsage
+		}
+		registry, loadErr := loadProviderRegistry(providersPath)
+		if loadErr != nil {
+			fmt.Fprintf(errOut, "resume: %v\n", loadErr)
+			return exitUsage
+		}
+		resolved, resolveErr := registry.Resolve(selectedID, provider.RequiredCapabilities(), provider.SafeRouteSafety())
+		if resolveErr != nil {
+			fmt.Fprintf(errOut, "resume: %v\n", resolveErr)
+			return exitUsage
+		}
+		identity := provider.IdentityFromResolved(*resolved, compat.AdapterVersion)
+		selectedSIWCIdentity = &identity
+	}
+	if !stateDomainSet {
+		providersPath, providersSet := resolveProvidersFlag(providersFile)
+		selectedID, selectedSet := resolveProviderIDFlag(providerID)
+		if providersSet || selectedSet {
+			if !providersSet || !selectedSet {
+				fmt.Fprintln(errOut, "resume: --providers and --provider-id must be used together")
+				return exitUsage
+			}
+			registry, loadErr := loadProviderRegistry(providersPath)
+			if loadErr != nil {
+				fmt.Fprintf(errOut, "resume: %v\n", loadErr)
+				return exitUsage
+			}
+			selected, resolveErr := registry.Resolve(selectedID, provider.RequiredCapabilities(), provider.SafeRouteSafety())
+			if resolveErr != nil {
+				fmt.Fprintf(errOut, "resume: %v\n", resolveErr)
+				return exitUsage
+			}
+			if selected.WireContract == provider.WireResponsesSIWCV1 {
+				fmt.Fprintln(errOut, "resume: SIWC provider requires --state-domain siwc")
+				return exitUsage
+			}
+		}
+	}
 
-	dir, err := resolveStateDir(stateDir, stateDir != "")
+	location, err := resolveCommandStateDomain(stateDomain, stateDomainSet, stateDir, stateDirSet, stateDir != "", selectedSIWCIdentity)
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: %v\n", err)
-		return exitUsage
+		return stateDomainResolveExitCode(stateDomain)
 	}
+	if location.SIWC != nil {
+		fmt.Fprintln(errOut, "resume: SIWC state is not operational until the interprocess lock and recovery barrier stage is implemented")
+		return exitUnavailable
+	}
+	dir := location.Dir
 	store, err := openStore(dir)
 	if err != nil {
 		fmt.Fprintf(errOut, "resume: %v\n", err)
@@ -1523,6 +1592,7 @@ func printResumeHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --providers FILE          provider declarations file (RUNSTEAD_PROVIDERS); required to resume a task that ran through a configured provider")
 	fmt.Fprintln(out, "  --provider-id ID          the exact persisted provider_id (RUNSTEAD_PROVIDER_ID); provider/model/config divergence fails closed")
 	fmt.Fprintln(out, "  --state-dir PATH          durable state directory (RUNSTEAD_STATE_DIR)")
+	fmt.Fprintln(out, "  --state-domain siwc       use the previously registered SIWC state domain; registration is not available in this stage")
 	fmt.Fprintln(out, "  --log-level LEVEL         debug, info, warn or error (RUNSTEAD_LOG_LEVEL, default info)")
 	fmt.Fprintln(out, "  --write-policy SPEC       write tool modes, e.g. write_file=allow (RUNSTEAD_WRITE_POLICY, default approval_required)")
 	fmt.Fprintln(out, "  --recipes FILE            operator-controlled recipe catalog (RUNSTEAD_RECIPES); re-supplied at resume")
