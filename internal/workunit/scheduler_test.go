@@ -637,6 +637,96 @@ func TestSchedulerCanceledOutcomeSurvivesBoundary(t *testing.T) {
 	}
 }
 
+// TestSchedulerCanceledSignalStopsDispatchBeforeSettle proves that an
+// already-reported canceled outcome prevents refilling the shared lane even
+// before the main loop consumes its settle event. It processes a sibling's
+// completed event first, then releases and joins the canceled worker before
+// the next scheduling decision; no wall-clock ordering is involved.
+func TestSchedulerCanceledSignalStopsDispatchBeforeSettle(t *testing.T) {
+	driver, store := newSchedulerDriver(t, "wu-pending-cancel", 2)
+	ctx := context.Background()
+	if _, _, err := driver.EnsureDefinitions(ctx, readOnlyDefs("wu", 3)); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"wu-1", "wu-2"} {
+		for _, transition := range [][2]string{{"created", "ready"}, {"ready", "running"}} {
+			if err := store.TransitionWorkUnit(ctx, "wu-pending-cancel", id, transition[0], transition[1], ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	var dispatched atomic.Int32
+	releaseCancellation := make(chan struct{})
+	scheduler := &boundedScheduler{
+		driver: driver,
+		runFunc: func(_ context.Context, unit state.WorkUnit) (RunResult, error) {
+			switch unit.WorkUnitID {
+			case "wu-1":
+				<-releaseCancellation
+				return RunResult{Outcome: "canceled"}, nil
+			case "wu-2":
+				return completeRun(t, store, unit)
+			default:
+				dispatched.Add(1)
+				return RunResult{Outcome: "blocked"}, nil
+			}
+		},
+		ctx:         ctx,
+		concurrency: 2,
+		settleCh:    make(chan settleEvent, 2),
+		active:      2,
+	}
+	wu1, err := store.GetWorkUnit(ctx, "wu-pending-cancel", "wu-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wu2, err := store.GetWorkUnit(ctx, "wu-pending-cancel", "wu-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancellationWorkerDone := make(chan struct{})
+	go func() {
+		scheduler.worker(*wu1)
+		close(cancellationWorkerDone)
+	}()
+	go scheduler.worker(*wu2)
+	// Only wu-2 can settle before the cancellation gate is released.
+	scheduler.settle()
+	close(releaseCancellation)
+	waitFor(t, cancellationWorkerDone, "canceled worker to report its outcome")
+	if got := len(scheduler.settleCh); got != 1 {
+		t.Fatalf("pending settle events = %d, want canceled event queued", got)
+	}
+
+	err = scheduler.schedule()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("schedule() = %v, want wrapped context.Canceled", err)
+	}
+	if got := dispatched.Load(); got != 0 {
+		t.Fatalf("dispatched %d new units after canceled outcome was queued, want 0", got)
+	}
+	wu1After, err := store.GetWorkUnit(ctx, "wu-pending-cancel", "wu-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wu1After.Status != "running" {
+		t.Fatalf("wu-1 = %s, want running for conservative recovery", wu1After.Status)
+	}
+	for _, id := range []string{"wu-2", "wu-3"} {
+		unit, err := store.GetWorkUnit(ctx, "wu-pending-cancel", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "created"
+		if id == "wu-2" {
+			want = "completed"
+		}
+		if unit.Status != want {
+			t.Fatalf("%s = %s, want %s", id, unit.Status, want)
+		}
+	}
+}
+
 // TestSchedulerOutOfRangeConcurrencyFailsClosed proves invalid bounds fail
 // BEFORE any unit executes (acceptance items: invalid values fail before
 // executing Work Units).

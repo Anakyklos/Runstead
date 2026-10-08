@@ -14,6 +14,7 @@ package workunit
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/RenyEnnos/Runstead/internal/state"
 )
@@ -59,6 +60,11 @@ type boundedScheduler struct {
 	// non-completed terminal outcome). Once set, no new unit is dispatched
 	// and the scheduler only drains the active batch to durable states.
 	stop error
+	// dispatchMu linearizes durable dispatch reservation against a worker's
+	// canceled outcome signal. Workers latch cancellation before enqueueing
+	// settle events, so a sibling settle cannot open a slot for new work first.
+	dispatchMu      sync.Mutex
+	canceledOutcome *settleEvent
 }
 
 // run implements the main scheduling loop. Termination rules:
@@ -76,6 +82,12 @@ type boundedScheduler struct {
 func (s *boundedScheduler) schedule() error {
 	for {
 		if err := s.ctx.Err(); err != nil {
+			if s.stop == nil {
+				s.stop = err
+			}
+			return s.drain(s.stop)
+		}
+		if err := s.canceledOutcomeError(); err != nil {
 			if s.stop == nil {
 				s.stop = err
 			}
@@ -160,6 +172,14 @@ func (s *boundedScheduler) schedule() error {
 // a running unit is durable before its loop starts), then hands the bounded
 // run to its own worker goroutine.
 func (s *boundedScheduler) dispatch(unit state.WorkUnit) error {
+	// The gate remains held until the unit is durably running and its worker
+	// has been launched. A prior cancellation signal therefore prevents any
+	// later dispatch reservation.
+	s.dispatchMu.Lock()
+	defer s.dispatchMu.Unlock()
+	if err := s.canceledOutcomeErrorLocked(); err != nil {
+		return err
+	}
 	// Re-validate the envelope against the live parent contract before any
 	// effect (escalation can never sneak in after create).
 	if err := s.driver.ValidateEnvelope(unit.Tools, unit.WorkspaceScope); err != nil {
@@ -188,6 +208,10 @@ func (s *boundedScheduler) dispatch(unit state.WorkUnit) error {
 func (s *boundedScheduler) worker(unit state.WorkUnit) {
 	result, runErr := s.runFunc(s.ctx, unit)
 	event := settleEvent{unitID: unit.WorkUnitID, exclusive: Classify(unit.Tools) == LaneExclusive}
+	if runErr == nil && result.Outcome == "canceled" {
+		event.outcome = "canceled"
+		s.recordCanceledOutcome(event)
+	}
 	if runErr != nil {
 		// The unit stays 'running': recovery reset handles interruption; the
 		// error propagates without a fabricated terminal state.
@@ -268,6 +292,29 @@ func (s *boundedScheduler) worker(unit state.WorkUnit) {
 		event.outcome = "interrupted"
 	}
 	s.settleCh <- event
+}
+
+// recordCanceledOutcome publishes the hard-stop signal before the worker
+// sends its settle event. The dispatch gate orders it against new reservations.
+func (s *boundedScheduler) recordCanceledOutcome(event settleEvent) {
+	s.dispatchMu.Lock()
+	if s.canceledOutcome == nil {
+		s.canceledOutcome = &event
+	}
+	s.dispatchMu.Unlock()
+}
+
+func (s *boundedScheduler) canceledOutcomeError() error {
+	s.dispatchMu.Lock()
+	defer s.dispatchMu.Unlock()
+	return s.canceledOutcomeErrorLocked()
+}
+
+func (s *boundedScheduler) canceledOutcomeErrorLocked() error {
+	if s.canceledOutcome == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: work unit %s canceled", context.Canceled, s.canceledOutcome.unitID)
 }
 
 // settle blocks on the next durable outcome of a dispatched unit, updates the
