@@ -31,7 +31,7 @@ const (
 
 // improvementValueFlags are the flags that consume a value.
 var improvementValueFlags = map[string]bool{
-	"--state-dir": true, "--kind": true, "--scope": true, "--title": true,
+	"--state-dir": true, "--state-domain": true, "--kind": true, "--scope": true, "--title": true,
 	"--target": true, "--base": true, "--change": true, "--rationale": true,
 	"--expected-benefit": true, "--source-task": true, "--source-workunit": true,
 	"--evidence": true, "--invariant": true, "--validation-plan": true,
@@ -113,11 +113,12 @@ func improvementCommand(ctx context.Context, args []string, out, errOut io.Write
 }
 
 func improvementStoreDir(values map[string]string) (string, int) {
-	dir, err := resolveStateDir(values["--state-dir"], values["--state-dir"] != "")
+	stateDir, stateDirSet := values["--state-dir"]
+	location, err := resolveCommandStateDomain(values["--state-domain"], stateDir, stateDirSet, stateDir != "", nil)
 	if err != nil {
-		return "", exitUsage
+		return "", stateDomainResolveExitCode(values["--state-domain"])
 	}
-	return dir, exitSuccess
+	return location.Dir, exitSuccess
 }
 
 func improvementNow() string { return time.Now().UTC().Format(improvementTimeFormat) }
@@ -541,6 +542,6 @@ func printImprovementHelp(out io.Writer) {
 	fmt.Fprintln(out, "  validate  attach an objective validation record: --outcome and --evidence TASK:EVIDENCE")
 	fmt.Fprintln(out, "  rollback  restore the previous revision deterministically [--reason]")
 	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Common flags: --state-dir PATH")
+	fmt.Fprintln(out, "Common flags: --state-dir PATH, --state-domain siwc")
 	fmt.Fprintln(out, "Exit codes: 0 success, 1 not found, 2 usage, 3 state unavailable, 6 corrupt state")
 }

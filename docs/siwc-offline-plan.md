@@ -46,7 +46,7 @@ refuse `responses_siwc_v1` instead of silently dispatching it as Chat
 Completions. An operator cannot use SIWC from this version.
 
 Remaining bounded deliveries:
-1. Canonical SIWC CLI state domain across run/resume/inspect/decide.
+1. Canonical SIWC CLI state domain across run/resume/inspect/decide (issue #177).
 2. Interprocess lock, durable recovery and admission barrier.
 3. Official PKCE/OIDC sign-in, protected refresh rotation and model catalog.
 4. Direct Responses/SSE adapter and provider-governed multiple turns.
@@ -55,3 +55,43 @@ Remaining bounded deliveries:
 The user-approved delivery plan and detailed acceptance criteria are in
 [issue #174](https://github.com/Anakyklos/Runstead/issues/174). This offline
 work never satisfies Gate A by itself; a live canary needs separate approval.
+
+## Stage 2: canonical state-domain discovery
+
+Stage 2 adds an opt-in `--state-domain siwc` selector for commands that access
+durable state. Its locator is discovered at
+`$XDG_STATE_HOME/runstead/siwc/siwc-locator.json`, falling back to
+`$HOME/.local/state/runstead/siwc/siwc-locator.json`. The locator records one
+absolute canonical state directory and a domain identifier; that directory
+contains a versioned manifest and an already initialized `runstead.db`.
+`--state-dir` and `RUNSTEAD_STATE_DIR`, when explicitly supplied with the SIWC
+selector, must normalize to the registered path. Stage 2 reads these records
+only: it does not create, repair or migrate a locator, manifest or database.
+The locator schema is `{version, canonical_dir, domain_id}`; the manifest
+schema is `{version, wire_contract, account_binding, credential_binding,
+behavior_digest, provider_id, model, config_identity}`. Both use strict JSON
+decoding with duplicate and unknown keys rejected. `domain_id` must equal the
+manifest's v2 config identity, which binds the behavior digest and both opaque
+bindings. The database must already be a valid initialized Runstead SQLite
+store; the resolver checks it in immutable/read-only mode before handing its
+path to the CLI. Existing WAL, SHM or journal sidecars cause a fail-closed
+refusal because Stage 2 has no domain lock/reconciliation barrier.
+Because Stage 3 has not added the interprocess lock and recovery barrier,
+`run` and `resume` validate the SIWC locator and then refuse before opening
+SQLite. `inspect`, `decide` and improvement commands may use the registered
+database for their read or operator-controlled state operations.
+
+Changing `HOME` or `XDG_STATE_HOME` can make the locator inaccessible. In that
+case commands fail closed without creating a replacement database. The
+operator must restore the original discovery environment. `XDG_DATA_HOME`
+and legacy state-dir precedence continue to apply to non-SIWC providers.
+
+The locator and manifest are not an authenticated account attestation. The
+provider declaration's HMAC-shaped bindings are compared with the registered
+manifest, never accepted as proof by themselves. Until a later authenticated
+registration flow exists, there is no supported way to create a usable SIWC
+domain; deterministic tests construct local synthetic fixtures. The Responses
+adapter remains inactive and refuses dispatch. Stage 2 rejects symlink paths,
+non-owner files, and directories or files accessible to other users. It does
+not claim interprocess exclusion or complete TOCTOU protection; those belong
+to Stage 3.

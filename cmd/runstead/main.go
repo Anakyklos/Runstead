@@ -97,6 +97,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	omniTimeout := ""
 	omniSafeRoute := false
 	stateDir := ""
+	stateDomain := ""
 	writePolicy := ""
 	recipesFile := ""
 	recipePolicy := ""
@@ -112,6 +113,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	flags.StringVar(&task, "task", "", "task prompt (RUNSTEAD_TASK)")
 	flags.StringVar(&scripted, "scripted", "", "JSONL file of scripted model responses for a deterministic offline run (RUNSTEAD_SCRIPTED_RESPONSES)")
 	flags.StringVar(&stateDir, "state-dir", "", "durable state directory (RUNSTEAD_STATE_DIR; default: $XDG_DATA_HOME/runstead or ~/.local/share/runstead)")
+	flags.StringVar(&stateDomain, "state-domain", "", "select the registered SIWC state domain (siwc); unavailable until authenticated registration is implemented")
 	flags.StringVar(&writePolicy, "write-policy", "", "write tool policy modes, e.g. write_file=allow,apply_patch=approval_required (RUNSTEAD_WRITE_POLICY; default: approval_required for every write tool)")
 	flags.StringVar(&recipesFile, "recipes", "", "operator-controlled recipe catalog file (RUNSTEAD_RECIPES): JSON array of recipes; run_recipe fails closed without it")
 	flags.StringVar(&recipePolicy, "recipe-policy", "", "recipe policy modes, e.g. test=allow,vet=approval_required (RUNSTEAD_RECIPE_POLICY; default: approval_required for every recipe)")
@@ -270,6 +272,14 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		}
 		resolvedProvider = resolved
 	}
+	if stateDomain != "" && stateDomain != "siwc" {
+		fmt.Fprintf(errOut, "run: unsupported state domain %q\n", stateDomain)
+		return exitUsage
+	}
+	if stateDomain == "siwc" && (resolvedProvider == nil || resolvedProvider.WireContract != provider.WireResponsesSIWCV1) {
+		fmt.Fprintln(errOut, "run: --state-domain siwc requires the responses_siwc_v1 provider")
+		return exitUsage
+	}
 
 	var providerIdentity provider.Identity
 	if resolvedProvider != nil {
@@ -392,12 +402,21 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	// Open the durable store before any execution: persistence is part of the
 	// runtime, not an afterthought. A store that cannot be created or opened
 	// is a hard failure.
-	stateDirPath, err := resolveStateDir(stateDir, flagWasSet(flags, "state-dir"))
+	var selectedIdentity *provider.Identity
+	if resolvedProvider != nil {
+		identity := provider.IdentityFromResolved(*resolvedProvider, compat.AdapterVersion)
+		selectedIdentity = &identity
+	}
+	stateLocation, err := resolveCommandStateDomain(stateDomain, stateDir, flagWasSet(flags, "state-dir"), flagWasSet(flags, "state-dir"), selectedIdentity)
 	if err != nil {
 		fmt.Fprintf(errOut, "run: %v\n", err)
-		return exitUsage
+		return stateDomainResolveExitCode(stateDomain)
 	}
-	store, err := openStore(stateDirPath)
+	if stateLocation.SIWC != nil {
+		fmt.Fprintln(errOut, "run: SIWC state is not operational until the interprocess lock and recovery barrier stage is implemented")
+		return exitUnavailable
+	}
+	store, err := openStore(stateLocation.Dir)
 	if err != nil {
 		fmt.Fprintf(errOut, "run: %v\n", err)
 		return exitUnavailable
@@ -1089,6 +1108,8 @@ func inspectCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 	// (the flag package stops at the first positional argument).
 	taskID := ""
 	stateDir := ""
+	stateDirSet := false
+	stateDomain := ""
 	for index := 0; index < len(args); index++ {
 		arg := args[index]
 		switch {
@@ -1099,8 +1120,19 @@ func inspectCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 			}
 			index++
 			stateDir = args[index]
+			stateDirSet = true
 		case strings.HasPrefix(arg, "--state-dir="):
 			stateDir = strings.TrimPrefix(arg, "--state-dir=")
+			stateDirSet = true
+		case arg == "--state-domain":
+			if index+1 >= len(args) {
+				fmt.Fprintln(errOut, "inspect: --state-domain requires a value")
+				return exitUsage
+			}
+			index++
+			stateDomain = args[index]
+		case strings.HasPrefix(arg, "--state-domain="):
+			stateDomain = strings.TrimPrefix(arg, "--state-domain=")
 		case strings.HasPrefix(arg, "-"):
 			fmt.Fprintf(errOut, "inspect: unknown flag %q\n", arg)
 			printInspectHelp(errOut)
@@ -1124,11 +1156,12 @@ func inspectCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 		return agent.OutcomeCanceled.ExitCode()
 	}
 
-	dir, err := resolveStateDir(stateDir, stateDir != "")
+	location, err := resolveCommandStateDomain(stateDomain, stateDir, stateDirSet, stateDir != "", nil)
 	if err != nil {
 		fmt.Fprintf(errOut, "inspect: %v\n", err)
-		return exitUsage
+		return stateDomainResolveExitCode(stateDomain)
 	}
+	dir := location.Dir
 	store, err := openStore(dir)
 	if err != nil {
 		fmt.Fprintf(errOut, "inspect: %v\n", err)
@@ -1160,6 +1193,8 @@ func decideCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	actionID := ""
 	decision := ""
 	stateDir := ""
+	stateDirSet := false
+	stateDomain := ""
 	reason := ""
 	// Parse manually so flags may appear before or after the positionals (the
 	// flag package stops at the first positional argument).
@@ -1177,11 +1212,21 @@ func decideCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		case arg == "--state-dir":
 			if next, ok := value("--state-dir"); ok {
 				stateDir = next
+				stateDirSet = true
 			} else {
 				return exitUsage
 			}
 		case strings.HasPrefix(arg, "--state-dir="):
 			stateDir = strings.TrimPrefix(arg, "--state-dir=")
+			stateDirSet = true
+		case arg == "--state-domain":
+			if next, ok := value("--state-domain"); ok {
+				stateDomain = next
+			} else {
+				return exitUsage
+			}
+		case strings.HasPrefix(arg, "--state-domain="):
+			stateDomain = strings.TrimPrefix(arg, "--state-domain=")
 		case arg == "--reason":
 			if next, ok := value("--reason"); ok {
 				reason = next
@@ -1223,11 +1268,12 @@ func decideCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		return agent.OutcomeCanceled.ExitCode()
 	}
 
-	dir, err := resolveStateDir(stateDir, stateDir != "")
+	location, err := resolveCommandStateDomain(stateDomain, stateDir, stateDirSet, stateDir != "", nil)
 	if err != nil {
 		fmt.Fprintf(errOut, "decide: %v\n", err)
-		return exitUsage
+		return stateDomainResolveExitCode(stateDomain)
 	}
+	dir := location.Dir
 	store, err := openStore(dir)
 	if err != nil {
 		fmt.Fprintf(errOut, "decide: %v\n", err)
@@ -1415,6 +1461,7 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --scripted FILE           scripted responses for a deterministic offline run (RUNSTEAD_SCRIPTED_RESPONSES)")
 	fmt.Fprintln(out, "  --workspace PATH          workspace path (RUNSTEAD_WORKSPACE, default .)")
 	fmt.Fprintln(out, "  --state-dir PATH          durable state directory (RUNSTEAD_STATE_DIR, default $XDG_DATA_HOME/runstead or ~/.local/share/runstead)")
+	fmt.Fprintln(out, "  --state-domain siwc       use the previously registered SIWC state domain; registration is not available in this stage")
 	fmt.Fprintln(out, "  --write-policy SPEC       write tool modes, e.g. write_file=allow,apply_patch=deny (RUNSTEAD_WRITE_POLICY, default approval_required)")
 	fmt.Fprintln(out, "  --recipes FILE            operator-controlled recipe catalog (RUNSTEAD_RECIPES); run_recipe fails closed without it")
 	fmt.Fprintln(out, "  --recipe-policy SPEC      recipe modes, e.g. test=allow,vet=deny (RUNSTEAD_RECIPE_POLICY, default approval_required)")
@@ -1453,7 +1500,7 @@ func printRunHelp(out io.Writer) {
 }
 
 func printInspectHelp(out io.Writer) {
-	fmt.Fprintln(out, "Usage: runstead inspect <task-id> [--state-dir PATH]")
+	fmt.Fprintln(out, "Usage: runstead inspect <task-id> [--state-domain siwc] [--state-dir PATH]")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Renders the durable state of one task after the original run process has")
 	fmt.Fprintln(out, "exited: task identity, objective, status and typed outcome, the chronological")
@@ -1466,7 +1513,7 @@ func printInspectHelp(out io.Writer) {
 }
 
 func printDecideHelp(out io.Writer) {
-	fmt.Fprintln(out, "Usage: runstead decide <task-id> <action-id> approved|rejected [--state-dir PATH] [--reason TEXT]")
+	fmt.Fprintln(out, "Usage: runstead decide <task-id> <action-id> approved|rejected [--state-domain siwc] [--state-dir PATH] [--reason TEXT]")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Records the operator control-plane decision for one write action. Only this")
 	fmt.Fprintln(out, "command (or the equivalent state API) can approve or reject a write: model")
