@@ -185,6 +185,9 @@ func (c Config) Validate() error {
 	if err := validateWireConfig(c); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidProviderConfig, err)
 	}
+	if c.DocumentVersion == 2 && siwcBehaviorDigest(c) == "" {
+		return fmt.Errorf("%w: cannot derive canonical v2 behavior identity", ErrInvalidProviderConfig)
+	}
 	if strings.TrimSpace(c.ProviderID) == "" {
 		return fmt.Errorf("%w: provider id must not be empty", ErrInvalidProviderConfig)
 	}

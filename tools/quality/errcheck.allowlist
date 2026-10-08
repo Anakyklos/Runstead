@@ -738,7 +738,7 @@ internal/tools/write_file.go:316  defer file.Close()
 
 # providers.go: closing the providers declarations document is best-effort
 # on a read-only parse path; a close failure cannot affect the parsed result.
-internal/config/providers.go:73  defer file.Close()
+internal/config/providers.go:77  defer file.Close()
 
 
 
@@ -762,13 +762,13 @@ internal/provider/anthropiccompat/client.go:268  body, _ := io.ReadAll(io.LimitR
 
 
 
-internal/provider/openaicompat/client.go:226  defer response.Body.Close()
+internal/provider/openaicompat/client.go:230  defer response.Body.Close()
 
 
 
 
 
-internal/provider/openaicompat/client.go:235  body, _ := io.ReadAll(io.LimitReader(response.Body, int64(c.maxResponse)+1))
+internal/provider/openaicompat/client.go:239  body, _ := io.ReadAll(io.LimitReader(response.Body, int64(c.maxResponse)+1))
 
 
 

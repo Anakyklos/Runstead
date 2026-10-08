@@ -101,7 +101,10 @@ func siwcBehaviorDigest(c Config) string {
 		MaxRequestBytes  int
 		MaxResponseBytes int
 	}{c.DocumentVersion, c.ProviderID, c.ProtocolFamily, sanitizedEndpoint(c.BaseURL), c.Model, c.WireContract, c.AuthRequirement, c.ConfigVersion, keys, c.Profile.ProfileVersion, c.Profile.RouteSafety, c.Profile.MaxRequestBytes, c.Profile.MaxResponseBytes}
-	encoded, _ := json.Marshal(material)
+	encoded, err := json.Marshal(material)
+	if err != nil {
+		return ""
+	}
 	sum := sha256.Sum256(encoded)
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
