@@ -111,8 +111,12 @@ inode/marker for the next process. Only ext2/3/4, XFS, Btrfs, tmpfs and
 overlayfs are accepted; other or unverifiable filesystems fail closed.
 
 The resolver's preflight uses immutable SQLite reads and does not create or
-repair files. Each command then acquires the lock and resolves locator,
-manifest and DB marker again before `state.Open`. For `run`, persisted
+repair files. It rejects database, locator, manifest and present SQLite
+sidecars unless they are private regular files with `st_nlink == 1`; it also
+confirms the database and sidecar inode identities remain stable through
+the immutable check. Each command then acquires the lock and repeats locator,
+manifest, file-link and DB-marker validation before `state.Open`. For `run`,
+persisted
 `prepared`, `running`, `uncertain` or `human_review_required` provider attempts
 block a fresh task admission. `resume` restores the singleton governor state
 and runs the existing reconciliation pipeline under the lock before a new
@@ -123,10 +127,15 @@ same domain lock. `inspect` holds the lock through its complete rendered
 snapshot, and improvement artifact writes remain inside the critical section.
 
 The tests prove Linux process contention and automatic lock release after
-process termination on the test filesystem, plus stable marker reuse and
-symlink/marker rejection. The allowlist does not prove behavior on every
-local filesystem or protect against a same-user process that directly edits
-SQLite without using Runstead. The immutable preflight can only inspect the
+process termination on the test filesystem, stable marker reuse, and
+two-directory hardlink-alias rejection by competing processes before either
+can enter the state critical section. A CLI E2E kills a process after its
+prepared provider attempt and governor debit are durable, then runs the real
+`runstead resume --state-domain siwc` twice in fresh processes and checks the
+reconciled attempt, ledger, governor singleton and refusal to infer. The
+allowlist does not prove behavior on every local filesystem or protect
+against a same-user process that directly edits SQLite without using Runstead.
+The immutable preflight can only inspect the
 main DB image; durable SQLite sidecar replay is performed by SQLite when the
 locked store opens. Synthetic offline fixtures do not constitute account
 authentication or Responses inference evidence.

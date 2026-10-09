@@ -140,12 +140,15 @@ timeouts return an unavailable result. The implementation accepts only the
 ext2/3/4, XFS, Btrfs, tmpfs and overlayfs magic values; other filesystems fail
 closed. No parent directory is created as a lock fallback.
 
-Locator/manifest/database preflight is immutable and read-only. After lock
-acquisition, the command resolves the registered domain again and only then
-calls `state.Open`, which can perform SQLite WAL replay, migrations or other
-mutations. The lock spans all store access, including the full `inspect`
-snapshot and improvement artifact projection. `run` restores the singleton
-governor state and refuses fresh admission if the database contains a
+Locator/manifest/database preflight is immutable and read-only. Database,
+locator, manifest and present SQLite sidecars must be private regular files
+with `st_nlink == 1`; the database and existing sidecar inode identities are
+checked before and after the immutable SQLite inspection. After lock
+acquisition, the command resolves the registered domain again and repeats
+these checks before `state.Open`, which can perform SQLite WAL replay,
+migrations or other mutations. The lock spans all store access, including the
+full `inspect` snapshot and improvement artifact projection. `run` restores
+the singleton governor state and refuses fresh admission if the database contains a
 `prepared`, `running`, `uncertain` or `human_review_required` provider attempt.
 `resume` holds the same lock while its existing recovery pipeline classifies
 and reconciles the selected task before continuing. Prepared/uncertain history
@@ -155,9 +158,14 @@ the lock is released before a human decision; `decide` reacquires it.
 
 Kernel process termination releases `flock`; the lock marker is deliberately
 not deleted. Tests use separate OS processes and kill a lock holder to prove
-exclusion and reacquisition on the test filesystem. This is cooperative CLI
-exclusion: a same-user process that bypasses Runstead and writes SQLite
-directly is outside the guarantee. The preflight's immutable SQLite view
+exclusion and reacquisition on the test filesystem. A further two-directory
+process test hardlinks the same SQLite inode and proves both domains refuse
+entry. The CLI recovery E2E kills a process after a prepared provider attempt
+and governor debit commit, then invokes the real
+`runstead resume --state-domain siwc` in two fresh processes and checks durable reconciliation,
+the single preserved debit, and the offline inference refusal. This is
+cooperative CLI exclusion: a same-user process that bypasses Runstead and
+writes SQLite directly is outside the guarantee. The preflight's immutable SQLite view
 checks the main DB marker, while SQLite replays any durable sidecar state only
 after the lock is held. This offline stage does not authenticate an account
 or enable Responses inference.

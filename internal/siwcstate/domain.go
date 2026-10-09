@@ -74,6 +74,11 @@ type Domain struct {
 	Identity Manifest
 }
 
+type fileIdentity struct {
+	device uint64
+	inode  uint64
+}
+
 // ManifestFromIdentity is intentionally private to the package. There is no
 // public API that turns untrusted provider configuration into a registration.
 func manifestFromIdentity(identity provider.Identity) Manifest {
@@ -162,12 +167,18 @@ func Resolve(options Options) (Domain, error) {
 		}
 	}
 	dbPath := filepath.Join(canonicalDir, "runstead.db")
-	if _, err := existingPrivateFile(dbPath); err != nil {
+	_, dbIdentity, err := existingPrivateFileIdentity(dbPath)
+	if err != nil {
 		return Domain{}, fmt.Errorf("%w: database is missing or unsafe: %w", ErrDomainUnavailable, err)
 	}
+	sidecarIdentities := make(map[string]*fileIdentity, 3)
 	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
-		if err := validateExistingSidecar(dbPath + suffix); err != nil {
+		identity, exists, err := validateExistingSidecar(dbPath + suffix)
+		if err != nil {
 			return Domain{}, fmt.Errorf("%w: SQLite sidecar is unsafe: %w", ErrDomainUnavailable, err)
+		}
+		if exists {
+			sidecarIdentities[dbPath+suffix] = identity
 		}
 	}
 	// SQLite sidecars are expected after a process crash. This is an
@@ -176,18 +187,36 @@ func Resolve(options Options) (Domain, error) {
 	if err := verifyExistingRunsteadDB(dbPath, manifest.ConfigIdentity); err != nil {
 		return Domain{}, fmt.Errorf("%w: database is not an initialized Runstead store", ErrDomainUnavailable)
 	}
+	// The immutable SQLite inspection above opens by pathname. Verify that the
+	// path still names the unique inode we preflighted, and that each existing
+	// sidecar is still the same unique inode. The caller repeats this whole
+	// validation after taking the domain lock before opening mutable state.
+	_, currentDBIdentity, err := existingPrivateFileIdentity(dbPath)
+	if err != nil || currentDBIdentity != dbIdentity {
+		return Domain{}, fmt.Errorf("%w: SQLite database identity changed during preflight", ErrDomainUnavailable)
+	}
+	for path, expected := range sidecarIdentities {
+		current, exists, err := validateExistingSidecar(path)
+		if err != nil || !exists || *current != *expected {
+			return Domain{}, fmt.Errorf("%w: SQLite sidecar identity changed during preflight", ErrDomainUnavailable)
+		}
+	}
 	return Domain{Dir: canonicalDir, Identity: manifest}, nil
 }
 
-func validateExistingSidecar(path string) error {
+func validateExistingSidecar(path string) (*fileIdentity, bool, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return nil, false, nil
 	}
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || !ownedByCurrentUser(info) {
-		return ErrUnsafePath
+		return nil, false, ErrUnsafePath
 	}
-	return nil
+	identity, links, ok := extractFileIdentity(info)
+	if !ok || links != 1 {
+		return nil, false, ErrUnsafePath
+	}
+	return &identity, true, nil
 }
 
 func validManifest(manifest Manifest) bool {
@@ -279,18 +308,59 @@ func existingPrivateDir(path string) (string, error) {
 }
 
 func existingPrivateFile(path string) (string, error) {
+	clean, _, err := existingPrivateFileIdentity(path)
+	return clean, err
+}
+
+func existingPrivateFileIdentity(path string) (string, fileIdentity, error) {
 	if !filepath.IsAbs(path) {
-		return "", ErrUnsafePath
+		return "", fileIdentity{}, ErrUnsafePath
 	}
 	if err := rejectSymlinkComponents(path); err != nil {
-		return "", err
+		return "", fileIdentity{}, err
 	}
 	abs := filepath.Clean(path)
 	info, err := os.Lstat(abs)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || !ownedByCurrentUser(info) {
-		return "", ErrUnsafePath
+		return "", fileIdentity{}, ErrUnsafePath
 	}
-	return abs, nil
+	identity, links, ok := extractFileIdentity(info)
+	if !ok || links != 1 {
+		return "", fileIdentity{}, ErrUnsafePath
+	}
+	return abs, identity, nil
+}
+
+func extractFileIdentity(info os.FileInfo) (fileIdentity, uint64, bool) {
+	sys := reflect.ValueOf(info.Sys())
+	if sys.IsValid() && sys.Kind() == reflect.Pointer {
+		sys = sys.Elem()
+	}
+	if !sys.IsValid() || sys.Kind() != reflect.Struct {
+		return fileIdentity{}, 0, false
+	}
+	readUnsigned := func(name string) (uint64, bool) {
+		field := sys.FieldByName(name)
+		if !field.IsValid() {
+			return 0, false
+		}
+		switch field.Kind() {
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return field.Uint(), true
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			value := field.Int()
+			if value < 0 {
+				return 0, false
+			}
+			return uint64(value), true
+		default:
+			return 0, false
+		}
+	}
+	device, deviceOK := readUnsigned("Dev")
+	inode, inodeOK := readUnsigned("Ino")
+	links, linksOK := readUnsigned("Nlink")
+	return fileIdentity{device: device, inode: inode}, links, deviceOK && inodeOK && linksOK
 }
 
 func rejectSymlinkComponents(path string) error {
