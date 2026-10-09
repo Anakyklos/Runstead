@@ -417,6 +417,9 @@ func (s *Store) SetModel(clientID, slug string, visible []Model) error {
 		if disk.RefreshPending || s.refreshPending(disk.Registration) {
 			return ErrRefreshUncertain
 		}
+		if !hasActiveTokens(disk) {
+			return ErrSignedOut
+		}
 		listed := false
 		for _, model := range visible {
 			if model.Slug == slug {
@@ -434,6 +437,42 @@ func (s *Store) SetModel(clientID, slug string, visible []Model) error {
 		}
 		return atomicWrite(filepath.Join(s.root, "registrations", registrationID(disk.Registration)+".json"), b, 0o600)
 	})
+}
+
+// WithActiveRegistration keeps the custody lock across a caller's final
+// commit. It verifies that the authenticated registration and its rotating
+// token set still match the snapshot observed by the caller. This is used by
+// SIWC setup so logout, refresh uncertainty, or reauthorization cannot race
+// domain creation after a slower catalog request.
+func (s *Store) WithActiveRegistration(expected Registration, commit func() error) error {
+	if commit == nil {
+		return errors.New("SIWC commit callback is required")
+	}
+	return s.withLock(func() error {
+		var disk diskRecord
+		if err := s.findRecord(expected.ClientID, &disk); err != nil {
+			return err
+		}
+		if disk.RefreshPending || s.refreshPending(disk.Registration) {
+			return ErrRefreshUncertain
+		}
+		if !hasActiveTokens(disk) || !sameRegistrationSnapshot(expected, disk) {
+			return ErrIdentityChanged
+		}
+		return commit()
+	})
+}
+
+func hasActiveTokens(disk diskRecord) bool {
+	return disk.Tokens.AccessToken != "" && disk.Tokens.RefreshToken != "" && disk.Tokens.IDToken != "" &&
+		disk.Tokens.TokenType == "Bearer" && disk.Registration.ExpiresAt.After(time.Now())
+}
+
+func sameRegistrationSnapshot(expected Registration, disk diskRecord) bool {
+	current := disk.Registration
+	return expected.Issuer == current.Issuer && expected.Subject == current.Subject && expected.ClientID == current.ClientID &&
+		expected.HostID == current.HostID && expected.Email == current.Email && expected.Model == current.Model &&
+		expected.ExpiresAt.Equal(current.ExpiresAt) && sameScopes(expected.Scopes, current.Scopes) && expected.tokens == disk.Tokens
 }
 
 func (s *Store) Registrations() ([]PublicRegistration, error) {
@@ -536,6 +575,9 @@ func (s *Store) VerifyBindings(account, credential string) error {
 				return err
 			}
 			if hmacEqual(a, account) && hmacEqual(c, credential) {
+				if disk.RefreshPending || s.refreshPending(disk.Registration) || !hasActiveTokens(disk) {
+					return errors.New("SIWC authenticated session is unavailable")
+				}
 				return nil
 			}
 		}

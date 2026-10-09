@@ -165,6 +165,10 @@ func siwcStatus(args []string, out, errOut io.Writer) int {
 }
 
 func siwcSetup(ctx context.Context, args []string, out, errOut io.Writer) int {
+	return siwcSetupWithEndpoints(ctx, args, out, errOut, siwcauth.OpenAIEndpoints())
+}
+
+func siwcSetupWithEndpoints(ctx context.Context, args []string, out, errOut io.Writer, endpoints siwcauth.Endpoints) int {
 	flags := flag.NewFlagSet("siwc setup", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	clientID, model, providerID, stateDir, providersPath := "", "", "siwc-openai", "", ""
@@ -186,20 +190,22 @@ func siwcSetup(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "siwc setup: protected credential store unavailable")
 		return exitUnavailable
 	}
-	reg, err := store.Load(clientID)
-	if err != nil {
-		fmt.Fprintf(errOut, "siwc setup: authenticated registration unavailable: %v\n", err)
-		return exitUnavailable
-	}
-	models, err := store.Catalog(ctx, nil, siwcauth.OpenAIEndpoints(), clientID)
+	models, reg, err := store.CatalogSnapshot(ctx, nil, endpoints, clientID)
 	if err != nil {
 		fmt.Fprintf(errOut, "siwc setup: account catalog unavailable: %v\n", err)
 		return exitUnavailable
 	}
 	if err := store.SetModel(clientID, model, models); err != nil {
+		if errors.Is(err, siwcauth.ErrSignedOut) || errors.Is(err, siwcauth.ErrRefreshUncertain) {
+			fmt.Fprintln(errOut, "siwc setup: authenticated registration changed during catalog lookup")
+			return exitUnavailable
+		}
 		fmt.Fprintf(errOut, "siwc setup: selected model is not visible in this account catalog\n")
 		return exitUsage
 	}
+	// Keep the token snapshot from the catalog request; SetModel must not
+	// replace it with a later reauthorization that raced the request.
+	reg.Model = model
 	accountBinding, credentialBinding, err := store.Bindings(reg.Public(), false)
 	if err != nil {
 		fmt.Fprintf(errOut, "siwc setup: verified credential binding unavailable\n")
@@ -227,12 +233,16 @@ func siwcSetup(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "siwc setup: SIWC locator unavailable")
 		return exitUnavailable
 	}
-	if err := siwcstate.Initialize(locator, stateDir, identity); err != nil {
-		fmt.Fprintf(errOut, "siwc setup: SIWC domain initialization refused: %v\n", err)
-		return exitUnavailable
-	}
-	if err := writeSIWCProviderFile(providersPath, config); err != nil {
-		fmt.Fprintf(errOut, "siwc setup: domain created but provider configuration write failed: %v\n", err)
+	if err := store.WithActiveRegistration(reg, func() error {
+		if err := siwcstate.Initialize(locator, stateDir, identity); err != nil {
+			return fmt.Errorf("SIWC domain initialization refused: %w", err)
+		}
+		if err := writeSIWCProviderFile(providersPath, config); err != nil {
+			return fmt.Errorf("provider configuration write failed: %w", err)
+		}
+		return nil
+	}); err != nil {
+		fmt.Fprintf(errOut, "siwc setup: authenticated setup commit refused: %v\n", err)
 		return exitUnavailable
 	}
 	fmt.Fprintf(out, "SIWC domain initialized for provider %q and selected model %q. Stage 5 Responses inference is still unavailable.\n", providerID, model)

@@ -24,7 +24,6 @@ type identityClaims struct {
 	IssuedAt        int64  `json:"iat"`
 	NotBefore       int64  `json:"nbf"`
 	Nonce           string `json:"nonce"`
-	ClientID        string `json:"client_id"`
 	AuthorizedParty string `json:"azp"`
 	Email           string `json:"email"`
 	EmailVerified   bool   `json:"email_verified"`
@@ -56,10 +55,13 @@ func VerifyIDToken(ctx context.Context, client *http.Client, rawToken, nonce, cl
 	if err := verifySignedJWT(ctx, client, rawToken, issuer, discoveryURL, &claims); err != nil {
 		return VerifiedClaims{}, ErrInvalidToken
 	}
-	if claims.Issuer != issuer || strings.TrimSpace(claims.Subject) == "" || claims.Nonce != nonce || claims.ClientID != clientID || claims.Expires <= now.Unix() || (claims.NotBefore != 0 && claims.NotBefore > now.Unix()) || claims.IssuedAt > now.Add(2*time.Minute).Unix() || !hasAudience(claims.Audience, clientID) || (audienceCount(claims.Audience) > 1 && claims.AuthorizedParty != clientID) {
+	if claims.Issuer != issuer || strings.TrimSpace(claims.Subject) == "" || claims.Nonce != nonce || claims.Expires <= now.Unix() || (claims.NotBefore != 0 && claims.NotBefore > now.Unix()) || claims.IssuedAt > now.Add(2*time.Minute).Unix() || !hasAudience(claims.Audience, clientID) || (audienceCount(claims.Audience) > 1 && claims.AuthorizedParty != clientID) {
 		return VerifiedClaims{}, ErrInvalidToken
 	}
-	return VerifiedClaims{Issuer: claims.Issuer, Subject: claims.Subject, ClientID: claims.ClientID, Email: claims.Email}, nil
+	// The issued client ID is bound by the validated audience (and azp when
+	// multiple audiences are present). OpenID Connect does not require a
+	// non-standard client_id claim in an ID token.
+	return VerifiedClaims{Issuer: claims.Issuer, Subject: claims.Subject, ClientID: clientID, Email: claims.Email}, nil
 }
 
 func verifySignedJWT(ctx context.Context, client *http.Client, rawToken, issuer, discoveryURL string, dst any) error {

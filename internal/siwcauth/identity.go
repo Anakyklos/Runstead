@@ -35,6 +35,7 @@ var (
 	ErrMissingScopes    = errors.New("required SIWC scopes were not granted")
 	ErrIdentityChanged  = errors.New("SIWC identity changed")
 	ErrRefreshUncertain = errors.New("SIWC refresh outcome is uncertain; sign in again")
+	ErrSignedOut        = errors.New("SIWC registration is signed out")
 )
 
 // Registration holds verified, non-secret identity and an opaque selected

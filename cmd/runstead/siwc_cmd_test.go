@@ -3,13 +3,58 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/provider"
+	"github.com/RenyEnnos/Runstead/internal/siwcauth"
 )
+
+func TestSIWCSetupProcessHelper(t *testing.T) {
+	mode := os.Getenv("RUNSTEAD_SIWC_SETUP_HELPER")
+	if mode == "" {
+		return
+	}
+	endpoints := siwcauth.Endpoints{
+		Issuer: siwcauth.Issuer, Discovery: os.Getenv("RUNSTEAD_SIWC_TEST_DISCOVERY"),
+		Catalog: os.Getenv("RUNSTEAD_SIWC_TEST_CATALOG"),
+	}
+	args := []string{"--client-id", "issued-client", "--model", "gpt-test", "--state-dir", os.Getenv("RUNSTEAD_SIWC_TEST_STATE"), "--providers", os.Getenv("RUNSTEAD_SIWC_TEST_PROVIDERS")}
+	var out, errOut bytes.Buffer
+	code := siwcSetupWithEndpoints(context.Background(), args, &out, &errOut, endpoints)
+	fmt.Fprintf(os.Stdout, "SETUP_EXIT=%d\n", code)
+	if mode == "expect-success" && code != exitSuccess {
+		t.Fatalf("setup failed: %d: %s", code, errOut.String())
+	}
+	if mode == "expect-refusal" && code == exitSuccess {
+		t.Fatalf("setup unexpectedly committed: %s", out.String())
+	}
+}
+
+func TestSIWCLogoutProcessHelper(t *testing.T) {
+	if os.Getenv("RUNSTEAD_SIWC_LOGOUT_HELPER") != "1" {
+		return
+	}
+	store, err := openSIWCStore(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoints := siwcauth.Endpoints{
+		Issuer: siwcauth.Issuer, Discovery: os.Getenv("RUNSTEAD_SIWC_TEST_DISCOVERY"),
+	}
+	if err := store.RevokeAndClear(context.Background(), nil, endpoints, "issued-client"); err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintln(os.Stdout, "LOGOUT_COMMITTED")
+}
 
 func TestSIWCStatusDoesNotRenderCredentialMaterial(t *testing.T) {
 	base := t.TempDir()
@@ -68,5 +113,115 @@ func TestSIWCProviderConfigCreationRefusesSymlinksAndOverwrite(t *testing.T) {
 	}
 	if err := writeSIWCProviderFile(path, provider.Config{}); err == nil {
 		t.Fatal("overwrote existing provider configuration")
+	}
+}
+
+func TestSIWCSetupSerializesFinalCommitWithLogoutAcrossProcesses(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	xdg := filepath.Join(base, "xdg")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	setSIWCEnv(t, home, xdg)
+	seedSIWCCredential(t, home, cliSIWCIdentity())
+	stateDir := filepath.Join(base, "state")
+	providers := filepath.Join(base, "providers.json")
+	catalogStarted := make(chan struct{}, 1)
+	allowCatalogResponse := make(chan struct{})
+	logoutFinished := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/catalog":
+			catalogStarted <- struct{}{}
+			<-allowCatalogResponse
+			_, _ = w.Write([]byte(`{"models":[{"slug":"gpt-test","display_name":"fixture","visibility":"list"}]}`))
+		case "/.well-known/openid-configuration":
+			_ = json.NewEncoder(w).Encode(map[string]string{"issuer": siwcauth.Issuer, "revocation_endpoint": "http://" + r.Host + "/revoke"})
+		case "/revoke":
+			logoutFinished <- struct{}{}
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	// httptest binds loopback; its URL is an explicitly allowed offline OAuth
+	// endpoint. Keep the fixture issuer fixed to the official registration.
+	localBase := server.URL
+	discovery := localBase + "/.well-known/openid-configuration"
+	cliBinary := os.Args[0]
+	commonEnv := []string{"HOME=" + home, "XDG_STATE_HOME=" + xdg, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
+		"RUNSTEAD_SIWC_TEST_DISCOVERY=" + discovery, "RUNSTEAD_SIWC_TEST_CATALOG=" + localBase + "/catalog",
+		"RUNSTEAD_SIWC_TEST_STATE=" + stateDir, "RUNSTEAD_SIWC_TEST_PROVIDERS=" + providers}
+	setup := exec.Command(cliBinary, "-test.run=^TestSIWCSetupProcessHelper$")
+	setup.Env = append(os.Environ(), commonEnv...)
+	setup.Env = append(setup.Env, "RUNSTEAD_SIWC_SETUP_HELPER=expect-refusal")
+	setupOutput := make(chan []byte, 1)
+	go func() { output, _ := setup.CombinedOutput(); setupOutput <- output }()
+	select {
+	case <-catalogStarted:
+	case <-time.After(5 * time.Second):
+		_ = setup.Process.Kill()
+		t.Fatal("setup process did not reach the local catalog")
+	}
+	logout := exec.Command(cliBinary, "-test.run=^TestSIWCLogoutProcessHelper$")
+	logout.Env = append(os.Environ(), commonEnv...)
+	logout.Env = append(logout.Env, "RUNSTEAD_SIWC_LOGOUT_HELPER=1")
+	logoutOutput, err := logout.CombinedOutput()
+	if err != nil || !strings.Contains(string(logoutOutput), "LOGOUT_COMMITTED") {
+		close(allowCatalogResponse)
+		t.Fatalf("separate logout process failed: %v: %s", err, logoutOutput)
+	}
+	select {
+	case <-logoutFinished:
+	case <-time.After(5 * time.Second):
+		close(allowCatalogResponse)
+		t.Fatal("logout did not revoke through the local endpoint")
+	}
+	close(allowCatalogResponse)
+	select {
+	case output := <-setupOutput:
+		if !strings.Contains(string(output), "SETUP_EXIT=") || !strings.Contains(string(output), "SETUP_EXIT=3") {
+			t.Fatalf("setup did not refuse after concurrent logout: %s", output)
+		}
+	case <-time.After(10 * time.Second):
+		_ = setup.Process.Kill()
+		t.Fatal("setup process did not finish after catalog response")
+	}
+	for _, path := range []string{stateDir, providers, filepath.Join(xdg, "runstead", "siwc", "siwc-locator.json")} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("concurrently signed-out setup left artifact %s (err=%v)", path, err)
+		}
+	}
+}
+
+func TestSIWCSetupCommitsWithCurrentAuthenticatedRegistration(t *testing.T) {
+	base := t.TempDir()
+	home, xdg := filepath.Join(base, "home"), filepath.Join(base, "xdg")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	setSIWCEnv(t, home, xdg)
+	seedSIWCCredential(t, home, cliSIWCIdentity())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/catalog" {
+			_, _ = w.Write([]byte(`{"models":[{"slug":"gpt-test","visibility":"list"}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	endpoints := siwcauth.Endpoints{Issuer: siwcauth.Issuer, Discovery: server.URL + "/.well-known/openid-configuration", Catalog: server.URL + "/catalog"}
+	stateDir, providers := filepath.Join(base, "state"), filepath.Join(base, "providers.json")
+	args := []string{"--client-id", "issued-client", "--model", "gpt-test", "--state-dir", stateDir, "--providers", providers}
+	var out, errOut bytes.Buffer
+	if code := siwcSetupWithEndpoints(context.Background(), args, &out, &errOut, endpoints); code != exitSuccess {
+		t.Fatalf("positive setup exit=%d stderr=%q", code, errOut.String())
+	}
+	for _, path := range []string{stateDir, providers, filepath.Join(xdg, "runstead", "siwc", "siwc-locator.json")} {
+		if info, err := os.Stat(path); err != nil || (path == providers && info.Mode().Perm() != 0o600) {
+			t.Fatalf("successful setup artifact %s info=%v err=%v", path, info, err)
+		}
 	}
 }

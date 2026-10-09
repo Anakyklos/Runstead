@@ -79,6 +79,30 @@ func TestStorePrivateAtomicCustodyAndVerifiedBindingLookup(t *testing.T) {
 	}
 }
 
+func TestWithActiveRegistrationRejectsChangedSessionAtCommitBoundary(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "siwc"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := testRegistration(store, t)
+	if err := store.Save(expected); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	if err := store.WithActiveRegistration(expected, func() error { called = true; return nil }); err != nil || !called {
+		t.Fatalf("active unchanged registration commit: called=%v err=%v", called, err)
+	}
+	changed := expected
+	changed.tokens.AccessToken = "new-session-token"
+	if err := store.Save(changed); err != nil {
+		t.Fatal(err)
+	}
+	called = false
+	if err := store.WithActiveRegistration(expected, func() error { called = true; return nil }); !errors.Is(err, ErrIdentityChanged) || called {
+		t.Fatalf("changed session commit: called=%v err=%v, want identity changed before callback", called, err)
+	}
+}
+
 func TestIssuedClientIDCannotBeReboundToAnotherSubject(t *testing.T) {
 	store, err := OpenStore(filepath.Join(t.TempDir(), "siwc"), true)
 	if err != nil {

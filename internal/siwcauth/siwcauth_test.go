@@ -118,7 +118,7 @@ func TestVerifyIDTokenAndScopes(t *testing.T) {
 	}))
 	defer server.Close()
 	issuer = server.URL
-	token := signedIDToken(t, key, map[string]any{"iss": issuer, "sub": "subject-1", "aud": "issued-client", "exp": now.Add(time.Hour).Unix(), "iat": now.Unix(), "nonce": "nonce-1", "client_id": "issued-client", "email": "private@example.invalid"})
+	token := signedIDToken(t, key, map[string]any{"iss": issuer, "sub": "subject-1", "aud": "issued-client", "exp": now.Add(time.Hour).Unix(), "iat": now.Unix(), "nonce": "nonce-1", "email": "private@example.invalid"})
 	claims, err := VerifyIDToken(context.Background(), server.Client(), token, "nonce-1", "issued-client", issuer, issuer+"/.well-known/openid-configuration", now)
 	if err != nil {
 		t.Fatal(err)
@@ -126,8 +126,8 @@ func TestVerifyIDTokenAndScopes(t *testing.T) {
 	if claims.Subject != "subject-1" || claims.ClientID != "issued-client" {
 		t.Fatalf("unexpected claims: %#v", claims)
 	}
-	for name, mutate := range map[string]func(map[string]any){"issuer": func(c map[string]any) { c["iss"] = "https://wrong.invalid" }, "audience": func(c map[string]any) { c["aud"] = "other" }, "nonce": func(c map[string]any) { c["nonce"] = "wrong" }, "expired": func(c map[string]any) { c["exp"] = now.Add(-time.Second).Unix() }, "client": func(c map[string]any) { c["client_id"] = "other" }} {
-		claims := map[string]any{"iss": issuer, "sub": "subject-1", "aud": "issued-client", "exp": now.Add(time.Hour).Unix(), "iat": now.Unix(), "nonce": "nonce-1", "client_id": "issued-client"}
+	for name, mutate := range map[string]func(map[string]any){"issuer": func(c map[string]any) { c["iss"] = "https://wrong.invalid" }, "audience": func(c map[string]any) { c["aud"] = "other" }, "nonce": func(c map[string]any) { c["nonce"] = "wrong" }, "expired": func(c map[string]any) { c["exp"] = now.Add(-time.Second).Unix() }} {
+		claims := map[string]any{"iss": issuer, "sub": "subject-1", "aud": "issued-client", "exp": now.Add(time.Hour).Unix(), "iat": now.Unix(), "nonce": "nonce-1"}
 		mutate(claims)
 		bad := signedIDToken(t, key, claims)
 		if _, err := VerifyIDToken(context.Background(), server.Client(), bad, "nonce-1", "issued-client", issuer, issuer+"/.well-known/openid-configuration", now); err == nil {
@@ -205,7 +205,8 @@ func TestOfflineLoopbackLoginEndToEnd(t *testing.T) {
 					t.Errorf("bad refresh form: %v", r.Form)
 				}
 				access := signedIDToken(t, key, map[string]any{"iss": issuer, "sub": "fixture-subject", "aud": Resource, "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "client_id": "issued-client", "scope": strings.Join(requiredScopes[:], " ")})
-				_ = json.NewEncoder(w).Encode(map[string]any{"access_token": access, "refresh_token": "fixture-refresh-rotated", "token_type": "Bearer", "expires_in": 3600, "scope": strings.Join(requiredScopes[:], " "), "earliest_refresh_at": "2099-01-01T00:00:00Z"})
+				id := signedIDToken(t, key, map[string]any{"iss": issuer, "sub": "fixture-subject", "aud": "issued-client", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix()})
+				_ = json.NewEncoder(w).Encode(map[string]any{"access_token": access, "refresh_token": "fixture-refresh-rotated", "id_token": id, "token_type": "Bearer", "expires_in": 3600, "scope": strings.Join(requiredScopes[:], " "), "earliest_refresh_at": "2099-01-01T00:00:00Z"})
 			default:
 				t.Errorf("unexpected grant type %q", r.Form.Get("grant_type"))
 			}
@@ -298,5 +299,12 @@ func TestOfflineLoopbackLoginEndToEnd(t *testing.T) {
 	}
 	if _, err := store.Load(reg.ClientID); err == nil {
 		t.Fatal("signed-out token remained usable")
+	}
+	if err := store.VerifyBindings(account, credential); err == nil {
+		t.Fatal("historical identity binding authorized an operational session after sign-out")
+	}
+	registrations, err := store.Registrations()
+	if err != nil || len(registrations) != 1 || registrations[0].Subject != "fixture-subject" {
+		t.Fatalf("historical identity registration was not retained: %#v err=%v", registrations, err)
 	}
 }

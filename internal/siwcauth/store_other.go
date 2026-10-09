@@ -22,6 +22,9 @@ func (*Store) Load(string) (Registration, error) {
 	return Registration{}, errLinuxCustodyRequired
 }
 func (*Store) SetModel(string, string, []Model) error { return errLinuxCustodyRequired }
+func (*Store) WithActiveRegistration(Registration, func() error) error {
+	return errLinuxCustodyRequired
+}
 func (*Store) Registrations() ([]PublicRegistration, error) {
 	return nil, errLinuxCustodyRequired
 }

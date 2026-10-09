@@ -280,25 +280,33 @@ func fetchJSON(ctx context.Context, client *http.Client, endpoint string, dst an
 // Catalog fetches only the selected account's displayable models. Listing is
 // discovery metadata; it is never an entitlement or admission decision.
 func (s *Store) Catalog(ctx context.Context, client *http.Client, endpoints Endpoints, clientID string) ([]Model, error) {
+	models, _, err := s.CatalogSnapshot(ctx, client, endpoints, clientID)
+	return models, err
+}
+
+// CatalogSnapshot returns the registration whose access token authorized the
+// catalog request. Callers that commit setup based on this display metadata
+// can compare the exact session again at their commit boundary.
+func (s *Store) CatalogSnapshot(ctx context.Context, client *http.Client, endpoints Endpoints, clientID string) ([]Model, Registration, error) {
 	if !trustedCatalogURL(endpoints.Catalog) {
-		return nil, errors.New("untrusted SIWC catalog endpoint")
+		return nil, Registration{}, errors.New("untrusted SIWC catalog endpoint")
 	}
 	reg, err := s.Load(clientID)
 	if err != nil {
-		return nil, err
+		return nil, Registration{}, err
 	}
 	now := time.Now().UTC()
 	if !reg.ExpiresAt.After(now.Add(5 * time.Minute)) {
 		reg, err = s.RefreshOAuth(ctx, client, endpoints, clientID, now)
 		if err != nil {
-			return nil, err
+			return nil, Registration{}, err
 		}
 	}
 	if !reg.ExpiresAt.After(time.Now()) {
-		return nil, errors.New("SIWC access token expired")
+		return nil, Registration{}, errors.New("SIWC access token expired")
 	}
 	if !hasScope(reg.Scopes, "resource.invoke") {
-		return nil, ErrMissingScopes
+		return nil, Registration{}, ErrMissingScopes
 	}
 	if client == nil {
 		client = defaultHTTPClient
@@ -307,31 +315,31 @@ func (s *Store) Catalog(ctx context.Context, client *http.Client, endpoints Endp
 	copyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoints.Catalog, nil)
 	if err != nil {
-		return nil, errors.New("invalid SIWC catalog endpoint")
+		return nil, Registration{}, errors.New("invalid SIWC catalog endpoint")
 	}
 	req.Header.Set("Authorization", "Bearer "+reg.tokens.AccessToken)
 	resp, err := copyClient.Do(req)
 	if err != nil {
-		return nil, errors.New("SIWC catalog request failed")
+		return nil, Registration{}, errors.New("SIWC catalog request failed")
 	}
 	if resp.StatusCode != http.StatusOK {
 		if err := closeResponse(resp); err != nil {
-			return nil, err
+			return nil, Registration{}, err
 		}
-		return nil, fmt.Errorf("SIWC catalog refused request (HTTP %d)", resp.StatusCode)
+		return nil, Registration{}, fmt.Errorf("SIWC catalog refused request (HTTP %d)", resp.StatusCode)
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthBody+1))
 	closeErr := closeResponse(resp)
 	if err != nil || closeErr != nil || len(b) > maxOAuthBody {
-		return nil, errors.New("SIWC catalog response exceeded limit")
+		return nil, Registration{}, errors.New("SIWC catalog response exceeded limit")
 	}
 	if rejectDuplicateJSONKeys(b) != nil {
-		return nil, errors.New("invalid SIWC catalog response")
+		return nil, Registration{}, errors.New("invalid SIWC catalog response")
 	}
 	var decoded catalogResponse
 	dec := json.NewDecoder(strings.NewReader(string(b)))
 	if dec.Decode(&decoded) != nil || dec.Decode(new(any)) != io.EOF {
-		return nil, errors.New("invalid SIWC catalog response")
+		return nil, Registration{}, errors.New("invalid SIWC catalog response")
 	}
 	models := make([]Model, 0, len(decoded.Models))
 	for _, m := range decoded.Models {
@@ -339,7 +347,7 @@ func (s *Store) Catalog(ctx context.Context, client *http.Client, endpoints Endp
 			models = append(models, Model{Slug: m.Slug, DisplayName: m.DisplayName})
 		}
 	}
-	return models, nil
+	return models, reg, nil
 }
 
 func trustedOAuthURL(raw string) bool   { return trustedURL(raw, "auth.openai.com") }
@@ -406,7 +414,7 @@ func (s *Store) RefreshOAuth(ctx context.Context, client *http.Client, endpoints
 			idToken = current.tokens.IDToken
 		} else {
 			var claims identityClaims
-			if err := verifySignedJWT(ctx, client, idToken, current.Issuer, endpoints.Discovery, &claims); err != nil || claims.Issuer != current.Issuer || claims.Subject != current.Subject || claims.ClientID != current.ClientID || !hasAudience(claims.Audience, current.ClientID) || (audienceCount(claims.Audience) > 1 && claims.AuthorizedParty != current.ClientID) || claims.Expires <= now.Unix() || (claims.NotBefore != 0 && claims.NotBefore > now.Unix()) || claims.IssuedAt > now.Add(2*time.Minute).Unix() {
+			if err := verifySignedJWT(ctx, client, idToken, current.Issuer, endpoints.Discovery, &claims); err != nil || claims.Issuer != current.Issuer || claims.Subject != current.Subject || !hasAudience(claims.Audience, current.ClientID) || (audienceCount(claims.Audience) > 1 && claims.AuthorizedParty != current.ClientID) || claims.Expires <= now.Unix() || (claims.NotBefore != 0 && claims.NotBefore > now.Unix()) || claims.IssuedAt > now.Add(2*time.Minute).Unix() {
 				return Registration{}, ErrIdentityChanged
 			}
 		}
