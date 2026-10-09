@@ -162,14 +162,20 @@ func ParseCallback(rawURL, expectedRedirect, expectedState, pendingClientID stri
 	return cb, nil
 }
 
-func binding(key []byte, purpose string, values ...string) string {
+func binding(key []byte, purpose string, values ...string) (string, error) {
 	mac := hmac.New(sha256.New, key)
-	_, _ = mac.Write([]byte("runstead.siwc.binding.v1\x00" + purpose))
-	for _, value := range values {
-		_, _ = mac.Write([]byte{0})
-		_, _ = mac.Write([]byte(value))
+	if _, err := mac.Write([]byte("runstead.siwc.binding.v1\x00" + purpose)); err != nil {
+		return "", err
 	}
-	return "hmac-sha256:v1:" + hex.EncodeToString(mac.Sum(nil))
+	for _, value := range values {
+		if _, err := mac.Write([]byte{0}); err != nil {
+			return "", err
+		}
+		if _, err := mac.Write([]byte(value)); err != nil {
+			return "", err
+		}
+	}
+	return "hmac-sha256:v1:" + hex.EncodeToString(mac.Sum(nil)), nil
 }
 
 // Bindings derives the already-approved opaque provider binding format from
@@ -179,8 +185,14 @@ func Bindings(key []byte, r PublicRegistration) (account, credential string, err
 	if len(key) != 32 || r.Issuer != Issuer || strings.TrimSpace(r.Subject) == "" || strings.TrimSpace(r.ClientID) == "" || !validHostID(r.HostID) {
 		return "", "", errors.New("verified SIWC identity and 32-byte local binding key are required")
 	}
-	account = binding(key, "account", r.Issuer, r.Subject, r.ClientID)
-	credential = binding(key, "credential", r.Issuer, r.Subject, r.ClientID, r.HostID)
+	account, err = binding(key, "account", r.Issuer, r.Subject, r.ClientID)
+	if err != nil {
+		return "", "", err
+	}
+	credential, err = binding(key, "credential", r.Issuer, r.Subject, r.ClientID, r.HostID)
+	if err != nil {
+		return "", "", err
+	}
 	return account, credential, nil
 }
 

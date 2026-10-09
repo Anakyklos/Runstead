@@ -124,13 +124,23 @@ func owned(info os.FileInfo) bool {
 	return ok && int(st.Uid) == os.Getuid()
 }
 
-func (s *Store) withLock(fn func() error) error {
+func (s *Store) withLock(fn func() error) (resultErr error) {
 	path := filepath.Join(s.root, ".custody-lock-v1")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return errors.New("cannot open SIWC credential lock")
 	}
-	defer f.Close()
+	locked := false
+	defer func() {
+		if locked {
+			if err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
+				resultErr = errors.Join(resultErr, errors.New("cannot unlock SIWC credentials"))
+			}
+		}
+		if err := f.Close(); err != nil {
+			resultErr = errors.Join(resultErr, errors.New("cannot close SIWC credential lock"))
+		}
+	}()
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || !owned(info) {
 		return errors.New("unsafe SIWC credential lock")
@@ -141,7 +151,7 @@ func (s *Store) withLock(fn func() error) error {
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		return errors.New("cannot lock SIWC credentials")
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	locked = true
 	return fn()
 }
 
@@ -226,15 +236,14 @@ func (s *Store) Save(reg Registration) error {
 		return err
 	}
 	return s.withLock(func() error {
-		key, err := s.bindingKeyLocked(true)
+		if _, err := s.bindingKeyLocked(true); err != nil {
+			return err
+		}
+		hostID, err := s.hostIDLocked(true)
 		if err != nil {
 			return err
 		}
-		_ = key
-		if _, err := s.hostIDLocked(true); err != nil {
-			return err
-		}
-		if reg.HostID != mustHostID(s) {
+		if reg.HostID != hostID {
 			return errors.New("SIWC registration host mismatch")
 		}
 		var existing diskRecord
@@ -261,14 +270,14 @@ func (s *Store) Save(reg Registration) error {
 			return ErrRefreshUncertain
 		}
 		if err := syncDirectory(s.root); err != nil {
-			_ = atomicWrite(marker, []byte(registrationID(reg.Public())+"\n"), 0o600)
+			if restoreErr := atomicWrite(marker, []byte(registrationID(reg.Public())+"\n"), 0o600); restoreErr != nil {
+				return errors.Join(ErrRefreshUncertain, errors.New("cannot restore SIWC refresh uncertainty marker"))
+			}
 			return ErrRefreshUncertain
 		}
 		return nil
 	})
 }
-
-func mustHostID(s *Store) string { id, _ := s.hostIDLocked(false); return id }
 
 func (s *Store) writeRecord(reg Registration, pending bool) error {
 	disk := diskRecord{Version: storeVersion, Registration: reg.Public(), Tokens: reg.tokens, RefreshPending: pending}
@@ -294,15 +303,15 @@ func readPrivateFile(path string, max int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 	b, err := io.ReadAll(io.LimitReader(f, max+1))
-	if err != nil || int64(len(b)) > max {
+	closeErr := f.Close()
+	if err != nil || closeErr != nil || int64(len(b)) > max {
 		return nil, errors.New("SIWC credential file exceeds limit")
 	}
 	return b, nil
 }
 
-func atomicWrite(path string, data []byte, mode os.FileMode) error {
+func atomicWrite(path string, data []byte, mode os.FileMode) (resultErr error) {
 	dir := filepath.Dir(path)
 	if err := checkPrivateDir(dir); err != nil {
 		return err
@@ -324,10 +333,17 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 		return errors.New("cannot create atomic SIWC credential file")
 	}
 	good := false
+	open := true
 	defer func() {
-		f.Close()
+		if open {
+			if err := f.Close(); err != nil && resultErr == nil {
+				resultErr = errors.New("cannot close atomic SIWC credential file")
+			}
+		}
 		if !good {
-			_ = os.Remove(tmp)
+			if err := os.Remove(tmp); err != nil && !errors.Is(err, os.ErrNotExist) && resultErr == nil {
+				resultErr = errors.New("cannot remove incomplete SIWC credential file")
+			}
 		}
 	}()
 	if _, err = f.Write(data); err != nil {
@@ -337,8 +353,10 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 		return errors.New("cannot sync SIWC credential file")
 	}
 	if err = f.Close(); err != nil {
+		open = false
 		return errors.New("cannot close SIWC credential file")
 	}
+	open = false
 	if err = os.Rename(tmp, path); err != nil {
 		return errors.New("cannot commit SIWC credential file")
 	}
@@ -346,8 +364,9 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return errors.New("cannot open SIWC credential directory")
 	}
-	defer d.Close()
-	if err = d.Sync(); err != nil {
+	syncErr := d.Sync()
+	closeErr := d.Close()
+	if syncErr != nil || closeErr != nil {
 		return errors.New("cannot sync SIWC credential directory")
 	}
 	good = true
@@ -584,7 +603,9 @@ func (s *Store) refresh(clientID string, refreshBefore time.Time, request func(R
 			return ErrRefreshUncertain
 		}
 		if err := syncDirectory(s.root); err != nil {
-			_ = atomicWrite(marker, []byte(registrationID(disk.Registration)+"\n"), 0o600)
+			if restoreErr := atomicWrite(marker, []byte(registrationID(disk.Registration)+"\n"), 0o600); restoreErr != nil {
+				return errors.Join(ErrRefreshUncertain, errors.New("cannot restore SIWC refresh uncertainty marker"))
+			}
 			return ErrRefreshUncertain
 		}
 		updated = candidate
@@ -598,8 +619,12 @@ func syncDirectory(path string) error {
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
-	return dir.Sync()
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil || closeErr != nil {
+		return errors.New("cannot sync SIWC credential directory")
+	}
+	return nil
 }
 
 func (s *Store) RemoveTokens(clientID string) error {

@@ -86,7 +86,7 @@ type fileIdentity struct {
 // account and credential bindings match protected authenticated custody
 // before calling. The locator is published last, so partial initialization is
 // never discoverable as an admitted domain.
-func Initialize(locatorPath, canonicalDir string, identity provider.Identity) error {
+func Initialize(locatorPath, canonicalDir string, identity provider.Identity) (resultErr error) {
 	if identity.WireContract != provider.WireResponsesSIWCV1 || !validBinding(identity.AccountBinding) || !validBinding(identity.CredentialBinding) || identity.AccountBinding == identity.CredentialBinding || !validDigest(identity.BehaviorDigest) || !validConfigIdentity(identity.ConfigIdentity) || identity.ConfigIdentity != providerV2Identity(identity.BehaviorDigest, identity.AccountBinding, identity.CredentialBinding) {
 		return ErrIdentityMismatch
 	}
@@ -113,13 +113,19 @@ func Initialize(locatorPath, canonicalDir string, identity provider.Identity) er
 	if err != nil {
 		return err
 	}
-	defer lock.Release()
+	defer func() {
+		if err := lock.Release(); err != nil {
+			resultErr = errors.Join(resultErr, ErrDomainUnavailable)
+		}
+	}()
 	store, err := state.Open(state.Options{Path: filepath.Join(canonicalDir, state.DefaultDBFile)})
 	if err != nil {
 		return ErrDomainUnavailable
 	}
 	if _, err := store.DB().Exec(`INSERT INTO meta (key,value) VALUES (?,?)`, DomainMarkerKey, identity.ConfigIdentity); err != nil {
-		_ = store.Close()
+		if closeErr := store.Close(); closeErr != nil {
+			return errors.Join(ErrDomainUnavailable, closeErr)
+		}
 		return ErrDomainUnavailable
 	}
 	if err := store.Close(); err != nil {
@@ -181,11 +187,15 @@ func writeNewPrivateJSON(path string, value any) error {
 		return ErrDomainUnavailable
 	}
 	if _, err = file.Write(encoded); err != nil {
-		_ = file.Close()
+		if closeErr := file.Close(); closeErr != nil {
+			return errors.Join(ErrDomainUnavailable, closeErr)
+		}
 		return ErrDomainUnavailable
 	}
 	if err = file.Sync(); err != nil {
-		_ = file.Close()
+		if closeErr := file.Close(); closeErr != nil {
+			return errors.Join(ErrDomainUnavailable, closeErr)
+		}
 		return ErrDomainUnavailable
 	}
 	if err = file.Close(); err != nil {
@@ -195,8 +205,9 @@ func writeNewPrivateJSON(path string, value any) error {
 	if err != nil {
 		return ErrDomainUnavailable
 	}
-	defer dir.Close()
-	if err := dir.Sync(); err != nil {
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil || closeErr != nil {
 		return ErrDomainUnavailable
 	}
 	return nil

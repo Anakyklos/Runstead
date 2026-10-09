@@ -161,12 +161,15 @@ func postForm(ctx context.Context, client *http.Client, endpoint string, values 
 	if err != nil {
 		return errors.New("SIWC endpoint request failed")
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if err := closeResponse(resp); err != nil {
+			return err
+		}
 		return fmt.Errorf("SIWC endpoint refused request (HTTP %d)", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthBody+1))
-	if err != nil || len(body) > maxOAuthBody {
+	closeErr := closeResponse(resp)
+	if err != nil || closeErr != nil || len(body) > maxOAuthBody {
 		return errors.New("SIWC endpoint response exceeded limit")
 	}
 	if dst == nil {
@@ -185,6 +188,13 @@ func postForm(ctx context.Context, client *http.Client, endpoint string, values 
 	}
 	if dec.Decode(new(any)) != io.EOF {
 		return errors.New("invalid SIWC endpoint response")
+	}
+	return nil
+}
+
+func closeResponse(resp *http.Response) error {
+	if err := resp.Body.Close(); err != nil {
+		return errors.New("cannot close SIWC endpoint response")
 	}
 	return nil
 }
@@ -243,12 +253,15 @@ func fetchJSON(ctx context.Context, client *http.Client, endpoint string, dst an
 	if err != nil {
 		return errors.New("SIWC issuer request failed")
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if err := closeResponse(resp); err != nil {
+			return err
+		}
 		return fmt.Errorf("SIWC issuer refused request (HTTP %d)", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthBody+1))
-	if err != nil || len(body) > maxOAuthBody {
+	closeErr := closeResponse(resp)
+	if err != nil || closeErr != nil || len(body) > maxOAuthBody {
 		return errors.New("SIWC issuer response exceeded limit")
 	}
 	if rejectDuplicateJSONKeys(body) != nil {
@@ -301,12 +314,15 @@ func (s *Store) Catalog(ctx context.Context, client *http.Client, endpoints Endp
 	if err != nil {
 		return nil, errors.New("SIWC catalog request failed")
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if err := closeResponse(resp); err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("SIWC catalog refused request (HTTP %d)", resp.StatusCode)
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthBody+1))
-	if err != nil || len(b) > maxOAuthBody {
+	closeErr := closeResponse(resp)
+	if err != nil || closeErr != nil || len(b) > maxOAuthBody {
 		return nil, errors.New("SIWC catalog response exceeded limit")
 	}
 	if rejectDuplicateJSONKeys(b) != nil {

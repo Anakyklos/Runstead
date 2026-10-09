@@ -256,11 +256,15 @@ func writeSIWCProviderFile(path string, c provider.Config) error {
 		return errors.New("provider configuration path already exists or is unsafe")
 	}
 	if _, err = file.Write(encoded); err != nil {
-		_ = file.Close()
+		if closeErr := file.Close(); closeErr != nil {
+			return errors.Join(errors.New("cannot write provider configuration"), closeErr)
+		}
 		return errors.New("cannot write provider configuration")
 	}
 	if err = file.Sync(); err != nil {
-		_ = file.Close()
+		if closeErr := file.Close(); closeErr != nil {
+			return errors.Join(errors.New("cannot sync provider configuration"), closeErr)
+		}
 		return errors.New("cannot sync provider configuration")
 	}
 	if err := file.Close(); err != nil {
@@ -270,8 +274,9 @@ func writeSIWCProviderFile(path string, c provider.Config) error {
 	if err != nil {
 		return errors.New("cannot open provider configuration directory")
 	}
-	defer dir.Close()
-	if err := dir.Sync(); err != nil {
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil || closeErr != nil {
 		return errors.New("cannot sync provider configuration directory")
 	}
 	return nil

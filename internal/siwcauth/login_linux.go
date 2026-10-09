@@ -21,7 +21,7 @@ func Login(ctx context.Context, store *Store, client *http.Client, issuedClientI
 	return loginWithEndpoints(ctx, store, client, OpenAIEndpoints(), issuedClientID, openBrowser)
 }
 
-func loginWithEndpoints(ctx context.Context, store *Store, client *http.Client, endpoints Endpoints, issuedClientID string, openBrowser func(context.Context, string) error) (Registration, error) {
+func loginWithEndpoints(ctx context.Context, store *Store, client *http.Client, endpoints Endpoints, issuedClientID string, openBrowser func(context.Context, string) error) (resultReg Registration, resultErr error) {
 	if store == nil || openBrowser == nil {
 		return Registration{}, errors.New("SIWC login configuration is incomplete")
 	}
@@ -33,7 +33,11 @@ func loginWithEndpoints(ctx context.Context, store *Store, client *http.Client, 
 	if err != nil {
 		return Registration{}, errors.New("cannot bind SIWC loopback callback")
 	}
-	defer listener.Close()
+	defer func() {
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			resultErr = errors.Join(resultErr, errors.New("cannot close SIWC callback listener"))
+		}
+	}()
 	port := listener.Addr().(*net.TCPAddr).Port
 	redirect := "http://127.0.0.1:" + fmt.Sprint(port) + "/auth/callback"
 	pending, err := NewAuthorizationWithEndpoints(redirect, hostID, issuedClientID, endpoints)
@@ -52,24 +56,37 @@ func loginWithEndpoints(ctx context.Context, store *Store, client *http.Client, 
 			return
 		}
 		callback, err := ParseCallback("http://127.0.0.1:"+strconv.Itoa(port)+r.URL.RequestURI(), pending.RedirectURI, pending.State, pending.ClientID, pending.FirstRegistration)
-		select {
-		case resultCh <- result{callback, err}:
-		default:
-		}
 		if err != nil {
 			http.Error(w, "Sign-in was refused. Return to Runstead.", http.StatusBadRequest)
+			select {
+			case resultCh <- result{callback, err}:
+			default:
+			}
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("Sign-in received. Return to Runstead."))
+		if _, err := w.Write([]byte("Sign-in received. Return to Runstead.")); err != nil {
+			select {
+			case resultCh <- result{err: errors.New("cannot acknowledge SIWC callback")}:
+			default:
+			}
+			return
+		}
+		select {
+		case resultCh <- result{callback: callback}:
+		default:
+		}
 	})
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 3 * time.Second}
-	go func() { _ = server.Serve(listener) }()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve(listener) }()
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			resultErr = errors.Join(resultErr, errors.New("cannot stop SIWC callback server"))
+		}
 	}()
 	if err := openBrowser(ctx, pending.URL); err != nil {
 		return Registration{}, errors.New("cannot open system browser for SIWC sign-in")
@@ -77,6 +94,11 @@ func loginWithEndpoints(ctx context.Context, store *Store, client *http.Client, 
 	select {
 	case <-ctx.Done():
 		return Registration{}, ctx.Err()
+	case err := <-serveErr:
+		if !errors.Is(err, http.ErrServerClosed) {
+			return Registration{}, errors.New("SIWC callback server stopped unexpectedly")
+		}
+		return Registration{}, errors.New("SIWC callback server stopped before authentication")
 	case result := <-resultCh:
 		if result.err != nil {
 			return Registration{}, result.err
@@ -105,9 +127,8 @@ func OpenSystemBrowser(ctx context.Context, rawURL string) error {
 		return errors.New("xdg-open is unavailable")
 	}
 	cmd := exec.CommandContext(ctx, path, rawURL)
-	if err := cmd.Start(); err != nil {
+	if err := cmd.Run(); err != nil {
 		return errors.New("cannot start system browser")
 	}
-	go func() { _ = cmd.Wait() }()
 	return nil
 }
