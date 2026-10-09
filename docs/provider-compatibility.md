@@ -57,6 +57,13 @@ contract proof, not live operational proof. See
 
 ## Deterministic contract proof
 
+The SIWC wire contract `responses_siwc_v1` remains refused by the
+compatibility composition and by the Chat Completions adapter. The Stage 3
+domain lock and recovery barrier are offline state-management support only;
+they do not prove authentication, Responses/SSE request construction, or live
+provider execution. A v2 declaration and synthetic state-domain fixture are
+not account attestations.
+
 The shared provider-neutral suite (`internal/provider/compat/matrix_test.go`)
 runs one harness across the three families against local `httptest` endpoints
 that speak each family's wire subset. It proves:

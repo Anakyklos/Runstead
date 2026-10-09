@@ -417,9 +417,13 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "run: %v\n", err)
 		return stateDomainResolveExitCode(stateDomain)
 	}
-	if stateLocation.SIWC != nil {
-		fmt.Fprintln(errOut, "run: SIWC state is not operational until the interprocess lock and recovery barrier stage is implemented")
+	stateLock, lockErr := acquireSIWCDomainLock(ctx, stateLocation)
+	if lockErr != nil {
+		fmt.Fprintf(errOut, "run: SIWC domain unavailable: %v\n", lockErr)
 		return exitUnavailable
+	}
+	if stateLock != nil {
+		defer releaseSIWCDomainLock(stateLock, errOut, "run")
 	}
 	store, err := openStore(stateLocation.Dir)
 	if err != nil {
@@ -443,6 +447,12 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(errOut, "run: invalid account policy: %v\n", err)
 		return exitUsage
+	}
+	if stateLocation.SIWC != nil {
+		if err := store.CheckSIWCAdmissionSafety(ctx); err != nil {
+			fmt.Fprintf(errOut, "run: SIWC admission blocked by unresolved durable attempt: %v\n", err)
+			return exitUnavailable
+		}
 	}
 
 	var client provider.Client
@@ -1169,6 +1179,14 @@ func inspectCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 		fmt.Fprintf(errOut, "inspect: %v\n", err)
 		return stateDomainResolveExitCode(stateDomain)
 	}
+	stateLock, lockErr := acquireSIWCDomainLock(ctx, location)
+	if lockErr != nil {
+		fmt.Fprintf(errOut, "inspect: SIWC domain unavailable: %v\n", lockErr)
+		return exitUnavailable
+	}
+	if stateLock != nil {
+		defer releaseSIWCDomainLock(stateLock, errOut, "inspect")
+	}
 	dir := location.Dir
 	store, err := openStore(dir)
 	if err != nil {
@@ -1283,6 +1301,14 @@ func decideCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	if err != nil {
 		fmt.Fprintf(errOut, "decide: %v\n", err)
 		return stateDomainResolveExitCode(stateDomain)
+	}
+	stateLock, lockErr := acquireSIWCDomainLock(ctx, location)
+	if lockErr != nil {
+		fmt.Fprintf(errOut, "decide: SIWC domain unavailable: %v\n", lockErr)
+		return exitUnavailable
+	}
+	if stateLock != nil {
+		defer releaseSIWCDomainLock(stateLock, errOut, "decide")
 	}
 	dir := location.Dir
 	store, err := openStore(dir)

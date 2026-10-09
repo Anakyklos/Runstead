@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/improvement"
+	"github.com/RenyEnnos/Runstead/internal/siwcstate"
 	"github.com/RenyEnnos/Runstead/internal/state"
 )
 
@@ -122,6 +123,21 @@ func improvementStoreDir(values map[string]string) (string, int, error) {
 	return location.Dir, exitSuccess, nil
 }
 
+func lockImprovementDomain(ctx context.Context, values map[string]string, dir string) (*siwcstate.Lock, error) {
+	if values["--state-domain"] != "siwc" {
+		return nil, nil
+	}
+	stateDir, stateDirSet := values["--state-dir"]
+	location, err := resolveCommandStateDomain(values["--state-domain"], true, stateDir, stateDirSet, stateDirSet, nil)
+	if err != nil || location.Dir != dir {
+		if err != nil {
+			return nil, err
+		}
+		return nil, siwcstate.ErrDomainUnavailable
+	}
+	return acquireSIWCDomainLock(ctx, location)
+}
+
 func writeImprovementStateResolutionError(errOut io.Writer, command string, err error, values map[string]string) {
 	_, selectorSet := values["--state-domain"]
 	fmt.Fprintf(errOut, "improvement %s: %s\n", command, stateDomainDiagnostic(err, selectorSet))
@@ -172,6 +188,14 @@ func improvementProposeCommand(ctx context.Context, args []string, out, errOut i
 		writeImprovementStateResolutionError(errOut, "propose", stateErr, values)
 		return code
 	}
+	lock, lockErr := lockImprovementDomain(ctx, values, dir)
+	if lockErr != nil {
+		fmt.Fprintf(errOut, "improvement: SIWC domain unavailable: %v\n", lockErr)
+		return exitUnavailable
+	}
+	if lock != nil {
+		defer releaseSIWCDomainLock(lock, errOut, "improvement")
+	}
 	store, err := openStore(dir)
 	if err != nil {
 		fmt.Fprintf(errOut, "improvement propose: state unavailable: %v\n", err)
@@ -202,6 +226,14 @@ func improvementListCommand(ctx context.Context, args []string, out, errOut io.W
 	if code != exitSuccess {
 		writeImprovementStateResolutionError(errOut, "list", stateErr, values)
 		return code
+	}
+	lock, lockErr := lockImprovementDomain(ctx, values, dir)
+	if lockErr != nil {
+		fmt.Fprintf(errOut, "improvement: SIWC domain unavailable: %v\n", lockErr)
+		return exitUnavailable
+	}
+	if lock != nil {
+		defer releaseSIWCDomainLock(lock, errOut, "improvement")
 	}
 	store, err := openStore(dir)
 	if err != nil {
@@ -237,6 +269,14 @@ func improvementShowCommand(ctx context.Context, args []string, out, errOut io.W
 	if code != exitSuccess {
 		writeImprovementStateResolutionError(errOut, "show", stateErr, values)
 		return code
+	}
+	lock, lockErr := lockImprovementDomain(ctx, values, dir)
+	if lockErr != nil {
+		fmt.Fprintf(errOut, "improvement: SIWC domain unavailable: %v\n", lockErr)
+		return exitUnavailable
+	}
+	if lock != nil {
+		defer releaseSIWCDomainLock(lock, errOut, "improvement")
 	}
 	store, err := openStore(dir)
 	if err != nil {
@@ -332,6 +372,14 @@ func improvementReviewCommand(ctx context.Context, args []string, out, errOut io
 		writeImprovementStateResolutionError(errOut, "review", stateErr, values)
 		return code
 	}
+	lock, lockErr := lockImprovementDomain(ctx, values, dir)
+	if lockErr != nil {
+		fmt.Fprintf(errOut, "improvement: SIWC domain unavailable: %v\n", lockErr)
+		return exitUnavailable
+	}
+	if lock != nil {
+		defer releaseSIWCDomainLock(lock, errOut, "improvement")
+	}
 	store, err := openStore(dir)
 	if err != nil {
 		fmt.Fprintf(errOut, "improvement review: state unavailable: %v\n", err)
@@ -369,6 +417,14 @@ func improvementApplyCommand(ctx context.Context, args []string, out, errOut io.
 	if code != exitSuccess {
 		writeImprovementStateResolutionError(errOut, "apply", stateErr, values)
 		return code
+	}
+	lock, lockErr := lockImprovementDomain(ctx, values, dir)
+	if lockErr != nil {
+		fmt.Fprintf(errOut, "improvement: SIWC domain unavailable: %v\n", lockErr)
+		return exitUnavailable
+	}
+	if lock != nil {
+		defer releaseSIWCDomainLock(lock, errOut, "improvement")
 	}
 	store, err := openStore(dir)
 	if err != nil {
@@ -414,6 +470,14 @@ func improvementValidateCommand(ctx context.Context, args []string, out, errOut 
 		writeImprovementStateResolutionError(errOut, "validate", stateErr, values)
 		return code
 	}
+	lock, lockErr := lockImprovementDomain(ctx, values, dir)
+	if lockErr != nil {
+		fmt.Fprintf(errOut, "improvement: SIWC domain unavailable: %v\n", lockErr)
+		return exitUnavailable
+	}
+	if lock != nil {
+		defer releaseSIWCDomainLock(lock, errOut, "improvement")
+	}
 	store, err := openStore(dir)
 	if err != nil {
 		fmt.Fprintf(errOut, "improvement validate: state unavailable: %v\n", err)
@@ -443,6 +507,14 @@ func improvementRollbackCommand(ctx context.Context, args []string, out, errOut 
 	if code != exitSuccess {
 		writeImprovementStateResolutionError(errOut, "rollback", stateErr, values)
 		return code
+	}
+	lock, lockErr := lockImprovementDomain(ctx, values, dir)
+	if lockErr != nil {
+		fmt.Fprintf(errOut, "improvement: SIWC domain unavailable: %v\n", lockErr)
+		return exitUnavailable
+	}
+	if lock != nil {
+		defer releaseSIWCDomainLock(lock, errOut, "improvement")
 	}
 	store, err := openStore(dir)
 	if err != nil {

@@ -56,6 +56,30 @@ func mustProviderAttemptPreparedOnly(t *testing.T, store *Store, taskID, request
 	}
 }
 
+func TestSIWCAdmissionSafetyBlocksPreparedAndUncertainAttempts(t *testing.T) {
+	store := openTestStore(t)
+	mustTask(t, store, "task-1")
+	if err := store.CheckSIWCAdmissionSafety(context.Background()); err != nil {
+		t.Fatalf("empty ledger blocked admission: %v", err)
+	}
+	mustProviderAttemptPreparedOnly(t, store, "task-1", "request-1", 1)
+	if err := store.CheckSIWCAdmissionSafety(context.Background()); !errors.Is(err, ErrAdmissionUnsafe) {
+		t.Fatalf("prepared attempt admission check = %v, want ErrAdmissionUnsafe", err)
+	}
+	if _, err := store.DB().Exec(`UPDATE provider_attempts SET status='uncertain' WHERE task_id='task-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CheckSIWCAdmissionSafety(context.Background()); !errors.Is(err, ErrAdmissionUnsafe) {
+		t.Fatalf("uncertain attempt admission check = %v, want ErrAdmissionUnsafe", err)
+	}
+	if _, err := store.DB().Exec(`UPDATE provider_attempts SET status='reconciled', uncertain=1 WHERE task_id='task-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CheckSIWCAdmissionSafety(context.Background()); err != nil {
+		t.Fatalf("reconciled uncertain history blocked admission: %v", err)
+	}
+}
+
 // mustProviderAttemptReceiptAwarePreparedOnly records a receipt-aware provider
 // attempt intent whose TX 1 governor projection has NO debit, mirroring
 // StartReceiptAware: all debits are deferred to the receipt finish path, so a

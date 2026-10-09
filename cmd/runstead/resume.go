@@ -422,9 +422,13 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintf(errOut, "resume: %v\n", err)
 		return stateDomainResolveExitCode(stateDomain)
 	}
-	if location.SIWC != nil {
-		fmt.Fprintln(errOut, "resume: SIWC state is not operational until the interprocess lock and recovery barrier stage is implemented")
+	stateLock, lockErr := acquireSIWCDomainLock(ctx, location)
+	if lockErr != nil {
+		fmt.Fprintf(errOut, "resume: SIWC domain unavailable: %v\n", lockErr)
 		return exitUnavailable
+	}
+	if stateLock != nil {
+		defer releaseSIWCDomainLock(stateLock, errOut, "resume")
 	}
 	dir := location.Dir
 	store, err := openStore(dir)
@@ -749,7 +753,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			return exitUsage
 		}
 	}
-	if resumeResolvedProvider != nil {
+	if resumeResolvedProvider != nil && location.SIWC == nil {
 		// Provider operational metadata and adapter construction happen only
 		// after the frozen Profile has passed exact composition validation. No
 		// invalid Profile can therefore mutate the operational projection or
@@ -911,6 +915,19 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintf(errOut, "resume: %v\n", err)
 		return exitCorrupt
 	}
+	if location.SIWC != nil {
+		// Recovery may apply a conservative provider debit while reconciling a
+		// prepared attempt. Refresh the in-memory account governor from that
+		// durable singleton before any continuation can reach admission.
+		fresh, ok, loadErr := store.GovernorState(ctx)
+		if loadErr != nil {
+			fmt.Fprintf(errOut, "resume: cannot restore account protection state after recovery: %v\n", loadErr)
+			return exitUnavailable
+		}
+		if ok {
+			accountGovernor.RestorePersistedState(fresh)
+		}
+	}
 	if plan.Decision == recovery.DecisionHumanReview {
 		fmt.Fprintf(errOut, "resume: %s\n", plan.Reason)
 		return exitHumanReview
@@ -918,6 +935,10 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	if plan.Decision == recovery.DecisionBlocked {
 		fmt.Fprintf(errOut, "resume: continuation blocked: %s\n", plan.Reason)
 		return exitGovernorBlocked
+	}
+	if location.SIWC != nil {
+		fmt.Fprintln(errOut, "resume: durable recovery completed; SIWC inference remains unavailable until the Responses adapter stage")
+		return exitUnavailable
 	}
 
 	// Wire the resumed task with the same control boundaries as a normal run:

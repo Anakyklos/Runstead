@@ -247,6 +247,52 @@ func TestResolveRejectsIdentityMismatch(t *testing.T) {
 	}
 }
 
+func TestResolveRejectsDatabaseHardlinkAlias(t *testing.T) {
+	root := t.TempDir()
+	identity := testIdentity()
+	stateA := filepath.Join(root, "domain-a")
+	stateB := filepath.Join(root, "domain-b")
+	locatorA := filepath.Join(root, "locator-a", LocatorFile)
+	locatorB := filepath.Join(root, "locator-b", LocatorFile)
+	registerFixture(t, locatorA, stateA, identity)
+	registerFixture(t, locatorB, stateB, identity)
+	if err := os.Remove(filepath.Join(stateB, "runstead.db")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(stateA, "runstead.db"), filepath.Join(stateB, "runstead.db")); err != nil {
+		t.Fatalf("create database hardlink alias: %v", err)
+	}
+	for name, locator := range map[string]string{"first domain": locatorA, "second domain": locatorB} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Resolve(Options{LocatorPath: locator, Identity: &identity}); !errors.Is(err, ErrDomainUnavailable) {
+				t.Fatalf("Resolve() with hardlinked database = %v, want ErrDomainUnavailable", err)
+			}
+		})
+	}
+}
+
+func TestResolveRejectsHardlinkedSQLiteSidecar(t *testing.T) {
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		t.Run(suffix, func(t *testing.T) {
+			root := t.TempDir()
+			identity := testIdentity()
+			stateDir := filepath.Join(root, "domain")
+			locator := filepath.Join(root, "locator", LocatorFile)
+			registerFixture(t, locator, stateDir, identity)
+			sidecar := filepath.Join(stateDir, "runstead.db"+suffix)
+			if err := os.WriteFile(sidecar, []byte("sidecar"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Link(sidecar, filepath.Join(root, "sidecar-alias")); err != nil {
+				t.Fatalf("create sidecar hardlink alias: %v", err)
+			}
+			if _, err := Resolve(Options{LocatorPath: locator, Identity: &identity}); !errors.Is(err, ErrDomainUnavailable) {
+				t.Fatalf("Resolve() with hardlinked sidecar = %v, want ErrDomainUnavailable", err)
+			}
+		})
+	}
+}
+
 func TestResolveRejectsSymlinksAndWeakPermissions(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "canonical")
@@ -310,7 +356,7 @@ func TestResolveRejectsDuplicateLocatorKeys(t *testing.T) {
 	}
 }
 
-func TestResolveRejectsSQLiteSidecarsWithoutOpeningStore(t *testing.T) {
+func TestResolveAllowsSQLiteSidecarsReadOnlyForLockedRecovery(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "canonical")
 	locator := filepath.Join(root, "locator", LocatorFile)
@@ -320,9 +366,8 @@ func TestResolveRejectsSQLiteSidecarsWithoutOpeningStore(t *testing.T) {
 	if err := os.WriteFile(wal, []byte("pending"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Resolve(Options{LocatorPath: locator, Identity: &identity})
-	if !errors.Is(err, ErrDomainUnavailable) || !errors.Is(err, ErrDatabaseBusy) {
-		t.Fatalf("error = %v, want unavailable with ErrDatabaseBusy", err)
+	if _, err := Resolve(Options{LocatorPath: locator, Identity: &identity}); err != nil {
+		t.Fatalf("read-only resolver error = %v", err)
 	}
 	if _, err := os.Stat(wal); err != nil {
 		t.Fatalf("resolver modified or removed WAL sidecar: %v", err)
