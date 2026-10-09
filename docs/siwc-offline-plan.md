@@ -1,7 +1,7 @@
 # Sign in with ChatGPT — offline implementation sequence
 
-Status: **not operational**. Maintainer decision: issue #174, authorized 2026-10-08.
-PR 1 scope: issue #175. No ChatGPT login, no inference, no API key substitution.
+Status: **Stage 4 implemented for explicit local authentication and custody; inference remains unavailable**. Maintainer decision: issue #174, authorized 2026-10-08.
+No live login has been performed by this implementation. No inference or API key substitution is available.
 
 ## Contract boundary
 
@@ -20,10 +20,11 @@ and validated opaque bindings. The SIWC form requires:
 - the existing declared capability profile and safe single-attempt RouteSafety;
 - no untyped `options` fields.
 
-These bindings are **not verified account attestations** in PR 1. Later work
-must calculate and verify them against authenticated OIDC material in protected
-local credential storage. A syntactically valid user-supplied value confers
-no access or proof of identity.
+These bindings are not accepted from provider configuration as proof. Stage 4
+derives them from the locally protected binding key and verified OIDC issuer,
+subject, issued client ID and stable host ID. Commands resolving a SIWC domain
+verify the resulting bindings against that custody record both before and
+after acquiring the Stage 3 domain lock.
 
 The v2 identity is deliberately separate from the historical
 `provider.Config{...}` v1 identity: `provider.v2:sha256:...` binds a
@@ -39,18 +40,18 @@ versions and mixed v1/v2 material fail closed.
 
 ## Activation gate
 
-The offline deliveries through Stage 3 establish canonical state discovery,
-Linux interprocess exclusion, and a durable recovery/admission boundary. They
-do **not** implement OAuth, protected credential custody, account registration,
+Stages 1–3 establish the provider contract, canonical state discovery, Linux
+interprocess exclusion, and durable recovery/admission boundary. Stage 4 adds
+explicit official OAuth/OIDC registration, local credential custody, refresh,
+revocation and an account-specific model catalog. It does **not** implement
 Responses SSE, quota management or live canaries. Both the compatibility
 composition and direct legacy Chat Completions adapter continue to refuse
 `responses_siwc_v1` instead of silently dispatching it as Chat Completions.
-SIWC authentication and inference remain inactive.
+Authenticated custody is not inference activation.
 
 Remaining bounded deliveries:
-1. Official PKCE/OIDC sign-in, protected refresh rotation and model catalog.
-2. Direct Responses/SSE adapter and provider-governed multiple turns.
-3. Full offline E2E tests and operational documentation.
+1. Direct Responses/SSE adapter and provider-governed multiple turns (Stage 5).
+2. Full offline E2E tests and operational documentation (Stage 6).
 
 The user-approved delivery plan and detailed acceptance criteria are in
 [issue #174](https://github.com/Anakyklos/Runstead/issues/174). This offline
@@ -91,10 +92,10 @@ and legacy state-dir precedence continue to apply to non-SIWC providers.
 
 The locator and manifest are not an authenticated account attestation. The
 provider declaration's HMAC-shaped bindings are compared with the registered
-manifest, never accepted as proof by themselves. Until a later authenticated
-registration flow exists, there is no supported way to create a usable SIWC
-domain; deterministic tests construct local synthetic fixtures. The Responses
-adapter remains inactive and refuses dispatch. Stage 2 rejects symlink paths,
+manifest and verified against protected custody, never accepted as proof by
+themselves. Stage 4's explicit `runstead siwc setup` is the only supported way
+to create a new SIWC domain; deterministic tests also construct local synthetic
+fixtures. The Responses adapter remains inactive and refuses dispatch. Stage 2 rejects symlink paths,
 non-owner files, and directories or files accessible to other users. Stage 3 supplies cooperative interprocess exclusion for the CLI paths described below. It does not claim protection from a same-user process that bypasses the CLI and directly edits the database.
 
 ## Stage 3: Linux lock and recovery/admission barrier
@@ -139,3 +140,55 @@ The immutable preflight can only inspect the
 main DB image; durable SQLite sidecar replay is performed by SQLite when the
 locked store opens. Synthetic offline fixtures do not constitute account
 authentication or Responses inference evidence.
+
+## Stage 4: official OAuth/OIDC custody and model catalog
+
+`runstead siwc login` explicitly opens the system browser and binds one
+Authorization Code + PKCE S256 flow to a loopback listener on
+`127.0.0.1:<ephemeral-port>/auth/callback`. The first registration sends the
+vendor's dynamic `client_id=dynamic_agent_client` and `agent_name_hint=Runstead`;
+the issued client ID from the callback is used for token exchange and later
+requests. A stable owner-only `urn:uuid:...` host ID is stored locally and
+reused. State, nonce and PKCE verifier are freshly generated per login and are
+not printed. The production endpoints are fixed to official issuer/API hosts;
+HTTP endpoints are accepted only by internal offline test seams on loopback.
+Redirects are not followed.
+
+The token response must grant every documented scope. The ID token is checked
+against issuer discovery/JWKS for RS256 signature, issuer, client audience,
+subject, nonce, expiry and client ID. The access token is separately checked
+for signature, issuer, API resource audience, subject, client ID, expiry and
+exact granted scope set before it is used to query the catalog. The catalog
+retains only exact model slugs with `visibility=list`; that metadata does not
+establish entitlement or provider eligibility. `runstead siwc setup` requires
+an explicit account and model and records exactly one provider/model and
+credential/account binding in the domain. It does not enable inference.
+
+On Linux, custody lives separately from SQLite under
+`$XDG_CONFIG_HOME/runstead/siwc`, or `$HOME/.config/runstead/siwc` when XDG is
+unset. Directories are owner-only mode 0700; files are owner-only mode 0600,
+regular, single-link files. Writes use a synced temporary file, atomic rename
+and directory sync. The stable host ID and local 256-bit binding key are
+protected alongside per-registration credential records. Tokens never enter
+SQLite, provider contracts, traces, evidence or CLI output. This is filesystem
+permission protection, not hardware-backed encryption: a same-user process or
+offline theft of the user's disk is outside this protection boundary.
+
+Refresh takes a separate persistent flock-protected custody lock and writes a
+durable uncertainty marker before making one refresh request. Rotated tokens
+and expiry are atomically committed before that marker is cleared. If the
+response is lost, the process crashes during rotation, or marker cleanup is
+ambiguous, that registration is not refreshed or replayed again; the operator
+must sign in again. Revocation is explicit. If the issuer cannot confirm it,
+local tokens are retained and the command reports failure. A successful
+revocation clears tokens but retains non-secret registration identity for
+inspection. A new successful explicit login for the same subject/client
+replaces the uncertain rotation and clears its marker durably. Multiple saved
+registrations are permitted but never pooled or automatically switched.
+
+The implementation and fixtures are fully offline-testable; no real sign-in,
+token exchange, catalog request or inference was executed. The tested Linux
+filesystem allowlist does not establish semantics for unlisted or remote
+filesystems. Stages 5 and 6 remain pending, `responses_siwc_v1` remains refused
+by the Chat Completions adapter, and this work does not satisfy Gate A or
+promote M12.

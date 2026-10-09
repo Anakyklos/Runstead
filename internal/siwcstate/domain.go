@@ -5,6 +5,7 @@ package siwcstate
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -20,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/RenyEnnos/Runstead/internal/provider"
+	"github.com/RenyEnnos/Runstead/internal/state"
 	_ "modernc.org/sqlite"
 )
 
@@ -77,6 +79,127 @@ type Domain struct {
 type fileIdentity struct {
 	device uint64
 	inode  uint64
+}
+
+// Initialize creates one explicitly requested SIWC domain from an already
+// derived v2 provider identity. Callers must verify that the identity's opaque
+// account and credential bindings match protected authenticated custody
+// before calling. The locator is published last, so partial initialization is
+// never discoverable as an admitted domain.
+func Initialize(locatorPath, canonicalDir string, identity provider.Identity) error {
+	if identity.WireContract != provider.WireResponsesSIWCV1 || !validBinding(identity.AccountBinding) || !validBinding(identity.CredentialBinding) || identity.AccountBinding == identity.CredentialBinding || !validDigest(identity.BehaviorDigest) || !validConfigIdentity(identity.ConfigIdentity) || identity.ConfigIdentity != providerV2Identity(identity.BehaviorDigest, identity.AccountBinding, identity.CredentialBinding) {
+		return ErrIdentityMismatch
+	}
+	if !filepath.IsAbs(canonicalDir) || filepath.Clean(canonicalDir) != canonicalDir || !filepath.IsAbs(locatorPath) {
+		return ErrUnsafePath
+	}
+	if _, err := os.Lstat(locatorPath); err == nil {
+		return ErrDomainUnavailable
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return ErrUnsafePath
+	}
+	if err := rejectSymlinkComponents(filepath.Dir(canonicalDir)); err != nil {
+		return ErrUnsafePath
+	}
+	if err := os.Mkdir(canonicalDir, 0o700); err != nil {
+		return fmt.Errorf("cannot create requested SIWC state directory: %w", err)
+	}
+	info, err := os.Lstat(canonicalDir)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 || !ownedByCurrentUser(info) {
+		return ErrUnsafePath
+	}
+	domain := Domain{Dir: canonicalDir, Identity: manifestFromIdentity(identity)}
+	lock, err := AcquireLock(context.Background(), domain)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	store, err := state.Open(state.Options{Path: filepath.Join(canonicalDir, state.DefaultDBFile)})
+	if err != nil {
+		return ErrDomainUnavailable
+	}
+	if _, err := store.DB().Exec(`INSERT INTO meta (key,value) VALUES (?,?)`, DomainMarkerKey, identity.ConfigIdentity); err != nil {
+		_ = store.Close()
+		return ErrDomainUnavailable
+	}
+	if err := store.Close(); err != nil {
+		return ErrDomainUnavailable
+	}
+	manifestPath := filepath.Join(canonicalDir, ManifestFile)
+	if err := writeNewPrivateJSON(manifestPath, manifestFromIdentity(identity)); err != nil {
+		return err
+	}
+	if err := ensurePrivateDirectory(filepath.Dir(locatorPath)); err != nil {
+		return err
+	}
+	locator := Locator{Version: LocatorVersion, CanonicalDir: canonicalDir, DomainID: identity.ConfigIdentity}
+	if err := writeNewPrivateJSON(locatorPath, locator); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensurePrivateDirectory(path string) error {
+	if !filepath.IsAbs(path) {
+		return ErrUnsafePath
+	}
+	current := string(filepath.Separator)
+	for _, part := range strings.Split(strings.TrimPrefix(filepath.Clean(path), current), current) {
+		if part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			if err := os.Mkdir(current, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+				return ErrUnsafePath
+			}
+			info, err = os.Lstat(current)
+		}
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return ErrUnsafePath
+		}
+	}
+	return existingPrivateDirectoryOnly(path)
+}
+
+func existingPrivateDirectoryOnly(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 || !ownedByCurrentUser(info) {
+		return ErrUnsafePath
+	}
+	return nil
+}
+
+func writeNewPrivateJSON(path string, value any) error {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return ErrDomainUnavailable
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return ErrDomainUnavailable
+	}
+	if _, err = file.Write(encoded); err != nil {
+		_ = file.Close()
+		return ErrDomainUnavailable
+	}
+	if err = file.Sync(); err != nil {
+		_ = file.Close()
+		return ErrDomainUnavailable
+	}
+	if err = file.Close(); err != nil {
+		return ErrDomainUnavailable
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return ErrDomainUnavailable
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		return ErrDomainUnavailable
+	}
+	return nil
 }
 
 // ManifestFromIdentity is intentionally private to the package. There is no

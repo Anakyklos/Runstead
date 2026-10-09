@@ -18,15 +18,18 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/governor"
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/provider/compat"
+	"github.com/RenyEnnos/Runstead/internal/siwcauth"
 	"github.com/RenyEnnos/Runstead/internal/siwcstate"
 	"github.com/RenyEnnos/Runstead/internal/state"
 )
 
 func cliSIWCIdentity() provider.Identity {
+	verified := siwcauth.PublicRegistration{Issuer: siwcauth.Issuer, Subject: "fixture-subject", ClientID: "issued-client", HostID: "urn:uuid:01234567-89ab-4cde-8fab-0123456789ab", Email: "fixture@example.invalid"}
+	account, credential, _ := siwcauth.Bindings([]byte(strings.Repeat("k", 32)), verified)
 	identity := provider.Identity{
 		WireContract:      provider.WireResponsesSIWCV1,
-		AccountBinding:    "hmac-sha256:v1:" + strings.Repeat("a", 64),
-		CredentialBinding: "hmac-sha256:v1:" + strings.Repeat("b", 64),
+		AccountBinding:    account,
+		CredentialBinding: credential,
 		BehaviorDigest:    "sha256:" + strings.Repeat("c", 64),
 		ProviderID:        "siwc-cli-test",
 		ProtocolFamily:    provider.FamilyOpenAICompatible,
@@ -144,6 +147,7 @@ func seedSIWCDomainWithBinding(t *testing.T, home, xdg, stateDir, taskID string,
 	if len(registeredIdentity) > 0 {
 		identity = registeredIdentity[0]
 	}
+	seedSIWCCredential(t, home, identity)
 	if err := os.MkdirAll(filepath.Join(xdg, "runstead", "siwc"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -214,14 +218,54 @@ func setSIWCEnv(t *testing.T, home, xdg string) {
 	t.Helper()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_STATE_HOME", xdg)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("RUNSTEAD_STATE_DIR", "")
 	if err := os.Unsetenv("RUNSTEAD_STATE_DIR"); err != nil {
 		t.Fatal(err)
 	}
 }
 
+func seedSIWCCredential(t *testing.T, home string, identity provider.Identity) {
+	t.Helper()
+	reg := siwcauth.PublicRegistration{Issuer: siwcauth.Issuer, Subject: "fixture-subject", ClientID: "issued-client", HostID: "urn:uuid:01234567-89ab-4cde-8fab-0123456789ab", Email: "fixture@example.invalid", Scopes: siwcauth.RequiredScopes(), ExpiresAt: time.Now().Add(time.Hour)}
+	a, c, err := siwcauth.Bindings([]byte(strings.Repeat("k", 32)), reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != identity.AccountBinding || c != identity.CredentialBinding {
+		t.Fatal("test SIWC identity does not match synthetic authenticated registration")
+	}
+	root := filepath.Join(home, ".config", "runstead", "siwc")
+	registrations := filepath.Join(root, "registrations")
+	if err := os.MkdirAll(registrations, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{filepath.Join(home, ".config"), filepath.Join(home, ".config", "runstead"), root, registrations} {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "host-id"), []byte(reg.HostID+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "binding.key"), []byte(strings.Repeat("k", 32)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id := sha256.Sum256([]byte(reg.Issuer + "\x00" + reg.Subject + "\x00" + reg.ClientID))
+	filename := hex.EncodeToString(id[:]) + ".json"
+	record := map[string]any{"version": 1, "registration": reg, "tokens": map[string]string{"access_token": "offline-access-fixture", "refresh_token": "offline-refresh-fixture", "id_token": "offline-id-fixture", "token_type": "Bearer"}, "refresh_pending": false}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(registrations, filename), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeSIWCProviderFixture(t *testing.T, path string) {
 	t.Helper()
+	identity := cliSIWCIdentity()
 	document := `{
   "version": 2,
   "providers": [{
@@ -233,8 +277,8 @@ func writeSIWCProviderFixture(t *testing.T, path string) {
     "auth_requirement": "reference_required",
     "config_version": "v1",
     "wire_contract": "responses_siwc_v1",
-    "account_binding": "hmac-sha256:v1:` + strings.Repeat("a", 64) + `",
-    "credential_binding": "hmac-sha256:v1:` + strings.Repeat("b", 64) + `",
+    "account_binding": "` + identity.AccountBinding + `",
+    "credential_binding": "` + identity.CredentialBinding + `",
     "profile": {
       "profile_version": "v1",
       "capabilities": ["text_turn", "runstead_protocol"],
