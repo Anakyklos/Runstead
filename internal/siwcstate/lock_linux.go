@@ -32,7 +32,8 @@ type lockMarker struct {
 // Lock is an exclusive Linux flock held on the stable, domain-local inode.
 // The marker file is intentionally persistent; recovery never unlinks it.
 type Lock struct {
-	file *os.File
+	file    *os.File
+	created bool
 }
 
 // AcquireLock takes the exclusive SIWC domain lock. It creates no parent
@@ -54,7 +55,11 @@ func AcquireLock(ctx context.Context, domain Domain) (*Lock, error) {
 		return nil, fmt.Errorf("%w: filesystem locking semantics are not supported", ErrUnsafePath)
 	}
 	path := filepath.Join(dir, lockFile)
-	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	created := err == nil
+	if err == unix.EEXIST {
+		fd, err = unix.Open(path, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: cannot open domain lock", ErrUnsafePath)
 	}
@@ -108,7 +113,7 @@ func AcquireLock(ctx context.Context, domain Domain) (*Lock, error) {
 	if err := file.Sync(); err != nil {
 		return cleanup(fmt.Errorf("sync SIWC lock marker: %w", err))
 	}
-	return &Lock{file: file}, nil
+	return &Lock{file: file, created: created}, nil
 }
 
 func validateOrInitializeMarker(file *os.File, expected []byte) error {

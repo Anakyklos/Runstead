@@ -1613,7 +1613,7 @@ func printResumeHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --providers FILE          provider declarations file (RUNSTEAD_PROVIDERS); required to resume a task that ran through a configured provider")
 	fmt.Fprintln(out, "  --provider-id ID          the exact persisted provider_id (RUNSTEAD_PROVIDER_ID); provider/model/config divergence fails closed")
 	fmt.Fprintln(out, "  --state-dir PATH          durable state directory (RUNSTEAD_STATE_DIR)")
-	fmt.Fprintln(out, "  --state-domain siwc       use the previously registered SIWC state domain; registration is not available in this stage")
+	fmt.Fprintln(out, "  --state-domain siwc       use the authenticated SIWC state domain; Responses inference remains unavailable")
 	fmt.Fprintln(out, "  --log-level LEVEL         debug, info, warn or error (RUNSTEAD_LOG_LEVEL, default info)")
 	fmt.Fprintln(out, "  --write-policy SPEC       write tool modes, e.g. write_file=allow (RUNSTEAD_WRITE_POLICY, default approval_required)")
 	fmt.Fprintln(out, "  --recipes FILE            operator-controlled recipe catalog (RUNSTEAD_RECIPES); re-supplied at resume")

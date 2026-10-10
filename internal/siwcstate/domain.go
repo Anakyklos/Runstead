@@ -5,6 +5,7 @@ package siwcstate
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -20,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/RenyEnnos/Runstead/internal/provider"
+	"github.com/RenyEnnos/Runstead/internal/state"
 	_ "modernc.org/sqlite"
 )
 
@@ -77,6 +79,341 @@ type Domain struct {
 type fileIdentity struct {
 	device uint64
 	inode  uint64
+}
+
+// Initialize creates one explicitly requested SIWC domain from an already
+// derived v2 provider identity. Callers must verify that the identity's opaque
+// account and credential bindings match protected authenticated custody
+// before calling. The locator is published last, so partial initialization is
+// never discoverable as an admitted domain.
+func Initialize(locatorPath, canonicalDir string, identity provider.Identity) (resultErr error) {
+	return InitializeWithPublisher(locatorPath, canonicalDir, identity, nil)
+}
+
+// InitializeWithPublisher initializes a new domain and calls publish only
+// after its database and manifest are durable, but before the locator makes
+// the domain discoverable. Failed initialization removes only artifacts whose
+// identities were captured from this transaction. Unexpected entries are
+// preserved and reported.
+func InitializeWithPublisher(locatorPath, canonicalDir string, identity provider.Identity, publish func() (rollback func() error, err error)) (resultErr error) {
+	if identity.WireContract != provider.WireResponsesSIWCV1 || !validBinding(identity.AccountBinding) || !validBinding(identity.CredentialBinding) || identity.AccountBinding == identity.CredentialBinding || !validDigest(identity.BehaviorDigest) || !validConfigIdentity(identity.ConfigIdentity) || identity.ConfigIdentity != providerV2Identity(identity.BehaviorDigest, identity.AccountBinding, identity.CredentialBinding) {
+		return ErrIdentityMismatch
+	}
+	if !filepath.IsAbs(canonicalDir) || filepath.Clean(canonicalDir) != canonicalDir || !filepath.IsAbs(locatorPath) {
+		return ErrUnsafePath
+	}
+	if _, err := os.Lstat(locatorPath); err == nil {
+		return ErrDomainUnavailable
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return ErrUnsafePath
+	}
+	if err := rejectSymlinkComponents(filepath.Dir(canonicalDir)); err != nil {
+		return ErrUnsafePath
+	}
+	if err := os.Mkdir(canonicalDir, 0o700); err != nil {
+		return fmt.Errorf("cannot create requested SIWC state directory: %w", err)
+	}
+	info, err := os.Lstat(canonicalDir)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 || !ownedByCurrentUser(info) {
+		return ErrUnsafePath
+	}
+	domainCommitted := false
+	cleanup := domainInitializationCleanup{dir: canonicalDir, dirInfo: info}
+	var lock *Lock
+	defer func() {
+		if resultErr != nil && !domainCommitted {
+			if cleanupErr := cleanup.rollback(lock); cleanupErr != nil {
+				resultErr = errors.Join(resultErr, cleanupErr)
+			}
+		}
+		if lock != nil {
+			if releaseErr := lock.Release(); releaseErr != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("release SIWC initialization lock: %w", releaseErr))
+			}
+		}
+	}()
+	domain := Domain{Dir: canonicalDir, Identity: manifestFromIdentity(identity)}
+	lock, err = AcquireLock(context.Background(), domain)
+	if err != nil {
+		return err
+	}
+	lockInfo, err := lock.file.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect SIWC lock identity: %w", err)
+	}
+	if lock.created {
+		cleanup.add(filepath.Join(canonicalDir, lockFile), lockInfo)
+	}
+	dbPath := filepath.Join(canonicalDir, state.DefaultDBFile)
+	dbFile, err := os.OpenFile(dbPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("create SIWC database exclusively: %w", err)
+	}
+	dbInfo, statErr := dbFile.Stat()
+	closeErr := dbFile.Close()
+	if statErr != nil || closeErr != nil || !validCreatedDomainFile(dbInfo) {
+		return errors.Join(ErrUnsafePath, statErr, closeErr)
+	}
+	cleanup.add(dbPath, dbInfo)
+	store, err := state.Open(state.Options{Path: dbPath})
+	if err != nil {
+		cleanup.captureSQLiteSidecars(dbPath)
+		return fmt.Errorf("open SIWC initialization database: %w", err)
+	}
+	cleanup.captureSQLiteSidecars(dbPath)
+	if _, err := store.DB().Exec(`INSERT INTO meta (key,value) VALUES (?,?)`, DomainMarkerKey, identity.ConfigIdentity); err != nil {
+		if closeErr := store.Close(); closeErr != nil {
+			return errors.Join(ErrDomainUnavailable, closeErr)
+		}
+		return ErrDomainUnavailable
+	}
+	if err := store.Close(); err != nil {
+		return ErrDomainUnavailable
+	}
+	manifestPath := filepath.Join(canonicalDir, ManifestFile)
+	manifestInfo, err := writeNewPrivateJSON(manifestPath, manifestFromIdentity(identity))
+	if err != nil {
+		return err
+	}
+	cleanup.add(manifestPath, manifestInfo)
+	if err := ensurePrivateDirectory(filepath.Dir(locatorPath)); err != nil {
+		return err
+	}
+	var rollback func() error
+	if publish != nil {
+		rollback, err = publish()
+		if err != nil {
+			if rollback != nil {
+				resultErr = errors.Join(err, rollback())
+			} else {
+				resultErr = err
+			}
+			return resultErr
+		}
+	}
+	locator := Locator{Version: LocatorVersion, CanonicalDir: canonicalDir, DomainID: identity.ConfigIdentity}
+	if _, err := writeNewPrivateJSON(locatorPath, locator); err != nil {
+		if rollback != nil {
+			resultErr = errors.Join(err, rollback())
+			return resultErr
+		}
+		return err
+	}
+	domainCommitted = true
+	return nil
+}
+
+func ensurePrivateDirectory(path string) error {
+	if !filepath.IsAbs(path) {
+		return ErrUnsafePath
+	}
+	current := string(filepath.Separator)
+	for _, part := range strings.Split(strings.TrimPrefix(filepath.Clean(path), current), current) {
+		if part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			if err := os.Mkdir(current, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+				return ErrUnsafePath
+			}
+			info, err = os.Lstat(current)
+		}
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return ErrUnsafePath
+		}
+	}
+	return existingPrivateDirectoryOnly(path)
+}
+
+func existingPrivateDirectoryOnly(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 || !ownedByCurrentUser(info) {
+		return ErrUnsafePath
+	}
+	return nil
+}
+
+func writeNewPrivateJSON(path string, value any) (os.FileInfo, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, ErrDomainUnavailable
+	}
+	dirPath := filepath.Dir(path)
+	file, err := os.CreateTemp(dirPath, ".siwc-metadata-*.stage")
+	if err != nil {
+		return nil, ErrDomainUnavailable
+	}
+	tempPath := file.Name()
+	cleanupTemp := func() error { return removeStagingFile(tempPath) }
+	if err := file.Chmod(0o600); err != nil {
+		return nil, errors.Join(ErrDomainUnavailable, file.Close(), cleanupTemp())
+	}
+	if _, err = file.Write(encoded); err != nil {
+		return nil, errors.Join(ErrDomainUnavailable, file.Close(), cleanupTemp())
+	}
+	if err = file.Sync(); err != nil {
+		return nil, errors.Join(ErrDomainUnavailable, file.Close(), cleanupTemp())
+	}
+	if err = file.Close(); err != nil {
+		return nil, errors.Join(ErrDomainUnavailable, cleanupTemp())
+	}
+	info, err := os.Lstat(tempPath)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || !ownedByCurrentUser(info) {
+		return nil, errors.Join(ErrUnsafePath, cleanupTemp())
+	}
+	if err := os.Link(tempPath, path); err != nil {
+		return nil, errors.Join(ErrDomainUnavailable, cleanupTemp())
+	}
+	cleanupDestination := func() error {
+		current, statErr := os.Lstat(path)
+		if errors.Is(statErr, os.ErrNotExist) {
+			return nil
+		}
+		if statErr != nil {
+			return statErr
+		}
+		if !os.SameFile(info, current) {
+			return nil
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		return syncMetadataDirectory(dirPath)
+	}
+	current, err := os.Lstat(path)
+	if err != nil || !os.SameFile(info, current) {
+		return nil, errors.Join(ErrUnsafePath, cleanupDestination(), cleanupTemp())
+	}
+	dir, err := os.Open(dirPath)
+	if err != nil {
+		return nil, errors.Join(ErrDomainUnavailable, cleanupDestination(), cleanupTemp())
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil || closeErr != nil {
+		return nil, errors.Join(ErrDomainUnavailable, syncErr, closeErr, cleanupDestination(), cleanupTemp())
+	}
+	if err := os.Remove(tempPath); err != nil {
+		return nil, errors.Join(ErrDomainUnavailable, err, cleanupDestination(), cleanupTemp())
+	}
+	return info, nil
+}
+
+type domainInitializationCleanup struct {
+	dir       string
+	dirInfo   os.FileInfo
+	artifacts []domainInitializationArtifact
+}
+
+type domainInitializationArtifact struct {
+	path string
+	info os.FileInfo
+}
+
+func (c *domainInitializationCleanup) add(path string, info os.FileInfo) {
+	if info != nil {
+		c.artifacts = append(c.artifacts, domainInitializationArtifact{path: path, info: info})
+	}
+}
+
+func (c *domainInitializationCleanup) captureSQLiteSidecars(dbPath string) {
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		path := dbPath + suffix
+		info, err := os.Lstat(path)
+		if err == nil && validCreatedDomainFile(info) {
+			c.add(path, info)
+		}
+	}
+}
+
+func (c *domainInitializationCleanup) rollback(lock *Lock) error {
+	var cleanupErr error
+	// Remove data while the exclusive lock is still held. The lock marker is
+	// handled last and only when this transaction created its inode.
+	for i := len(c.artifacts) - 1; i >= 0; i-- {
+		artifact := c.artifacts[i]
+		if filepath.Base(artifact.path) == lockFile {
+			continue
+		}
+		if err := removeCreatedDomainArtifact(artifact); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
+	}
+	if lock != nil && lock.created && cleanupErr == nil {
+		for i := len(c.artifacts) - 1; i >= 0; i-- {
+			artifact := c.artifacts[i]
+			if filepath.Base(artifact.path) == lockFile {
+				entries, readErr := os.ReadDir(c.dir)
+				if readErr != nil {
+					cleanupErr = errors.Join(cleanupErr, fmt.Errorf("preserve incomplete SIWC state: inspect remaining domain entries: %w", readErr))
+				} else if len(entries) == 1 && entries[0].Name() == lockFile {
+					if err := removeCreatedDomainArtifact(artifact); err != nil {
+						cleanupErr = errors.Join(cleanupErr, err)
+					}
+				}
+				break
+			}
+		}
+	}
+	current, err := os.Lstat(c.dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return cleanupErr
+	}
+	if err != nil || !os.SameFile(c.dirInfo, current) || !current.IsDir() || current.Mode().Perm()&0o077 != 0 || !ownedByCurrentUser(current) {
+		return errors.Join(cleanupErr, fmt.Errorf("preserve incomplete SIWC state: domain directory identity or permissions changed"))
+	}
+	if err := os.Remove(c.dir); err != nil {
+		return errors.Join(cleanupErr, fmt.Errorf("preserve incomplete SIWC state: domain directory is not empty or cannot be removed: %w", err))
+	}
+	if err := syncMetadataDirectory(filepath.Dir(c.dir)); err != nil {
+		return errors.Join(cleanupErr, fmt.Errorf("sync SIWC domain cleanup: %w", err))
+	}
+	return cleanupErr
+}
+
+func removeCreatedDomainArtifact(artifact domainInitializationArtifact) error {
+	current, err := os.Lstat(artifact.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("preserve SIWC artifact %q: inspect: %w", filepath.Base(artifact.path), err)
+	}
+	if !os.SameFile(artifact.info, current) || !validCreatedDomainFile(current) {
+		return fmt.Errorf("preserve SIWC artifact %q: identity changed", filepath.Base(artifact.path))
+	}
+	if err := os.Remove(artifact.path); err != nil {
+		return fmt.Errorf("remove created SIWC artifact %q: %w", filepath.Base(artifact.path), err)
+	}
+	return syncMetadataDirectory(filepath.Dir(artifact.path))
+}
+
+func validCreatedDomainFile(info os.FileInfo) bool {
+	if info == nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || !ownedByCurrentUser(info) {
+		return false
+	}
+	_, links, ok := extractFileIdentity(info)
+	return ok && links == 1
+}
+
+func syncMetadataDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	return errors.Join(syncErr, closeErr)
+}
+
+func removeStagingFile(path string) error {
+	err := os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 // ManifestFromIdentity is intentionally private to the package. There is no
