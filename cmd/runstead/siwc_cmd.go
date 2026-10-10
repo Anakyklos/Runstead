@@ -251,10 +251,9 @@ func siwcSetupWithLifecycleHooks(ctx context.Context, args []string, out, errOut
 		if err != nil {
 			return fmt.Errorf("provider configuration preparation failed: %w", err)
 		}
-		defer staged.Cleanup()
 		if afterStage != nil {
 			if err := afterStage(); err != nil {
-				return fmt.Errorf("provider configuration staging interrupted: %w", err)
+				return errors.Join(fmt.Errorf("provider configuration staging interrupted: %w", err), staged.Cleanup())
 			}
 		}
 		publish := func() (func() error, error) {
@@ -264,10 +263,11 @@ func siwcSetupWithLifecycleHooks(ctx context.Context, args []string, out, errOut
 			}
 			return rollback, err
 		}
-		if err := siwcstate.InitializeWithPublisher(locator, stateDir, identity, publish); err != nil {
-			return fmt.Errorf("SIWC domain initialization refused: %w", err)
+		initializeErr := siwcstate.InitializeWithPublisher(locator, stateDir, identity, publish)
+		if initializeErr != nil {
+			initializeErr = fmt.Errorf("SIWC domain initialization refused: %w", initializeErr)
 		}
-		return nil
+		return errors.Join(initializeErr, staged.Cleanup())
 	}); err != nil {
 		fmt.Fprintf(errOut, "siwc setup: authenticated setup commit refused: %v\n", err)
 		return exitUnavailable
@@ -281,15 +281,13 @@ func writeSIWCProviderFile(path string, c provider.Config) error {
 	if err != nil {
 		return err
 	}
-	defer staged.Cleanup()
 	rollback, err := staged.Publish()
 	if err != nil {
 		if rollback != nil {
 			err = errors.Join(err, rollback())
 		}
-		return err
 	}
-	return nil
+	return errors.Join(err, staged.Cleanup())
 }
 
 type stagedSIWCProviderFile struct {
@@ -320,34 +318,25 @@ func stageSIWCProviderFile(path string, c provider.Config) (*stagedSIWCProviderF
 	}
 	tempPath := file.Name()
 	stage := &stagedSIWCProviderFile{tempPath: tempPath, finalPath: path}
-	removeTemp := func() { _ = os.Remove(tempPath) }
+	removeTemp := func() error { return removeSIWCOutputFile(tempPath) }
 	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		removeTemp()
-		return nil, errors.New("cannot protect provider configuration staging file")
+		return nil, errors.Join(errors.New("cannot protect provider configuration staging file"), file.Close(), removeTemp())
 	}
 	if _, err = file.Write(encoded); err != nil {
-		_ = file.Close()
-		removeTemp()
-		return nil, errors.New("cannot write provider configuration staging file")
+		return nil, errors.Join(errors.New("cannot write provider configuration staging file"), file.Close(), removeTemp())
 	}
 	if err = file.Sync(); err != nil {
-		_ = file.Close()
-		removeTemp()
-		return nil, errors.New("cannot sync provider configuration staging file")
+		return nil, errors.Join(errors.New("cannot sync provider configuration staging file"), file.Close(), removeTemp())
 	}
 	if err := file.Close(); err != nil {
-		removeTemp()
-		return nil, errors.New("cannot close provider configuration staging file")
+		return nil, errors.Join(errors.New("cannot close provider configuration staging file"), removeTemp())
 	}
 	stage.fileInfo, err = os.Lstat(tempPath)
 	if err != nil || !stage.fileInfo.Mode().IsRegular() || stage.fileInfo.Mode().Perm() != 0o600 || !siwcOutputOwnedByCurrentUser(stage.fileInfo) {
-		removeTemp()
-		return nil, errors.New("provider configuration staging file is unsafe")
+		return nil, errors.Join(errors.New("provider configuration staging file is unsafe"), removeTemp())
 	}
 	if err := syncSIWCOutputDirectory(filepath.Dir(path)); err != nil {
-		removeTemp()
-		return nil, err
+		return nil, errors.Join(err, removeTemp())
 	}
 	return stage, nil
 }
@@ -397,11 +386,23 @@ func (s *stagedSIWCProviderFile) Rollback() error {
 	return result
 }
 
-func (s *stagedSIWCProviderFile) Cleanup() {
+func (s *stagedSIWCProviderFile) Cleanup() error {
 	if s.tempPath != "" {
-		_ = os.Remove(s.tempPath)
+		err := removeSIWCOutputFile(s.tempPath)
+		if err != nil {
+			return err
+		}
 		s.tempPath = ""
 	}
+	return nil
+}
+
+func removeSIWCOutputFile(path string) error {
+	err := os.Remove(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 func validateSIWCProviderDestination(path string) error {

@@ -223,64 +223,77 @@ func writeNewPrivateJSON(path string, value any) error {
 		return ErrDomainUnavailable
 	}
 	tempPath := file.Name()
-	cleanupTemp := func() { _ = os.Remove(tempPath) }
+	cleanupTemp := func() error { return removeStagingFile(tempPath) }
 	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		cleanupTemp()
-		return ErrDomainUnavailable
+		return errors.Join(ErrDomainUnavailable, file.Close(), cleanupTemp())
 	}
 	if _, err = file.Write(encoded); err != nil {
-		_ = file.Close()
-		cleanupTemp()
-		return ErrDomainUnavailable
+		return errors.Join(ErrDomainUnavailable, file.Close(), cleanupTemp())
 	}
 	if err = file.Sync(); err != nil {
-		_ = file.Close()
-		cleanupTemp()
-		return ErrDomainUnavailable
+		return errors.Join(ErrDomainUnavailable, file.Close(), cleanupTemp())
 	}
 	if err = file.Close(); err != nil {
-		cleanupTemp()
-		return ErrDomainUnavailable
+		return errors.Join(ErrDomainUnavailable, cleanupTemp())
 	}
 	info, err := os.Lstat(tempPath)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || !ownedByCurrentUser(info) {
-		cleanupTemp()
-		return ErrUnsafePath
+		return errors.Join(ErrUnsafePath, cleanupTemp())
 	}
 	if err := os.Link(tempPath, path); err != nil {
-		cleanupTemp()
-		return ErrDomainUnavailable
+		return errors.Join(ErrDomainUnavailable, cleanupTemp())
 	}
-	cleanupDestination := func() {
-		if current, statErr := os.Lstat(path); statErr == nil && os.SameFile(info, current) {
-			_ = os.Remove(path)
+	cleanupDestination := func() error {
+		current, statErr := os.Lstat(path)
+		if errors.Is(statErr, os.ErrNotExist) {
+			return nil
 		}
+		if statErr != nil {
+			return statErr
+		}
+		if !os.SameFile(info, current) {
+			return nil
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		return syncMetadataDirectory(dirPath)
 	}
 	current, err := os.Lstat(path)
 	if err != nil || !os.SameFile(info, current) {
-		cleanupDestination()
-		cleanupTemp()
-		return ErrUnsafePath
+		return errors.Join(ErrUnsafePath, cleanupDestination(), cleanupTemp())
 	}
 	dir, err := os.Open(dirPath)
 	if err != nil {
-		cleanupDestination()
-		cleanupTemp()
-		return ErrDomainUnavailable
+		return errors.Join(ErrDomainUnavailable, cleanupDestination(), cleanupTemp())
 	}
 	syncErr := dir.Sync()
 	closeErr := dir.Close()
 	if syncErr != nil || closeErr != nil {
-		cleanupDestination()
-		cleanupTemp()
-		return ErrDomainUnavailable
+		return errors.Join(ErrDomainUnavailable, syncErr, closeErr, cleanupDestination(), cleanupTemp())
 	}
 	if err := os.Remove(tempPath); err != nil {
-		cleanupDestination()
-		return ErrDomainUnavailable
+		return errors.Join(ErrDomainUnavailable, err, cleanupDestination(), cleanupTemp())
 	}
 	return nil
+}
+
+func syncMetadataDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	return errors.Join(syncErr, closeErr)
+}
+
+func removeStagingFile(path string) error {
+	err := os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 // ManifestFromIdentity is intentionally private to the package. There is no
