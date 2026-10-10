@@ -8,21 +8,25 @@ import (
 	"io"
 	"net/http/httptrace"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/provider"
 )
 
-type delivery struct{ sent, response bool }
+type delivery struct{ sent, response atomic.Bool }
 
 func (d *delivery) trace(_ func() time.Time) *httptrace.ClientTrace {
-	return &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) { d.sent = true }, GotFirstResponseByte: func() { d.response = true }}
+	return &httptrace.ClientTrace{
+		WroteRequest:         func(httptrace.WroteRequestInfo) { d.sent.Store(true) },
+		GotFirstResponseByte: func() { d.response.Store(true) },
+	}
 }
 func (d *delivery) state() provider.DeliveryState {
-	if d.response {
+	if d.response.Load() {
 		return provider.DeliveryResponseStarted
 	}
-	if d.sent {
+	if d.sent.Load() {
 		return provider.DeliverySentUnconfirmed
 	}
 	// Do is entered only after one model request is constructed. If the
