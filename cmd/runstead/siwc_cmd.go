@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/RenyEnnos/Runstead/internal/provider"
@@ -169,6 +170,14 @@ func siwcSetup(ctx context.Context, args []string, out, errOut io.Writer) int {
 }
 
 func siwcSetupWithEndpoints(ctx context.Context, args []string, out, errOut io.Writer, endpoints siwcauth.Endpoints) int {
+	return siwcSetupWithEndpointsHook(ctx, args, out, errOut, endpoints, nil)
+}
+
+func siwcSetupWithEndpointsHook(ctx context.Context, args []string, out, errOut io.Writer, endpoints siwcauth.Endpoints, afterStage func() error) int {
+	return siwcSetupWithLifecycleHooks(ctx, args, out, errOut, endpoints, afterStage, nil)
+}
+
+func siwcSetupWithLifecycleHooks(ctx context.Context, args []string, out, errOut io.Writer, endpoints siwcauth.Endpoints, afterStage, afterProviderPublish func() error) int {
 	flags := flag.NewFlagSet("siwc setup", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	clientID, model, providerID, stateDir, providersPath := "", "", "siwc-openai", "", ""
@@ -184,6 +193,10 @@ func siwcSetupWithEndpoints(ctx context.Context, args []string, out, errOut io.W
 	if !filepath.IsAbs(stateDir) || !filepath.IsAbs(providersPath) || filepath.Clean(stateDir) != stateDir || filepath.Clean(providersPath) != providersPath {
 		fmt.Fprintln(errOut, "siwc setup: state and provider paths must be normalized absolute paths")
 		return exitUsage
+	}
+	if err := validateSIWCProviderDestination(providersPath); err != nil {
+		fmt.Fprintln(errOut, "siwc setup: provider output path is unavailable or unsafe")
+		return exitUnavailable
 	}
 	store, err := openSIWCStore(false)
 	if err != nil {
@@ -234,11 +247,25 @@ func siwcSetupWithEndpoints(ctx context.Context, args []string, out, errOut io.W
 		return exitUnavailable
 	}
 	if err := store.WithActiveRegistration(reg, func() error {
-		if err := siwcstate.Initialize(locator, stateDir, identity); err != nil {
-			return fmt.Errorf("SIWC domain initialization refused: %w", err)
+		staged, err := stageSIWCProviderFile(providersPath, config)
+		if err != nil {
+			return fmt.Errorf("provider configuration preparation failed: %w", err)
 		}
-		if err := writeSIWCProviderFile(providersPath, config); err != nil {
-			return fmt.Errorf("provider configuration write failed: %w", err)
+		defer staged.Cleanup()
+		if afterStage != nil {
+			if err := afterStage(); err != nil {
+				return fmt.Errorf("provider configuration staging interrupted: %w", err)
+			}
+		}
+		publish := func() (func() error, error) {
+			rollback, err := staged.Publish()
+			if err == nil && afterProviderPublish != nil {
+				err = afterProviderPublish()
+			}
+			return rollback, err
+		}
+		if err := siwcstate.InitializeWithPublisher(locator, stateDir, identity, publish); err != nil {
+			return fmt.Errorf("SIWC domain initialization refused: %w", err)
 		}
 		return nil
 	}); err != nil {
@@ -250,8 +277,34 @@ func siwcSetupWithEndpoints(ctx context.Context, args []string, out, errOut io.W
 }
 
 func writeSIWCProviderFile(path string, c provider.Config) error {
-	if err := validateSIWCOutputParent(path); err != nil {
+	staged, err := stageSIWCProviderFile(path, c)
+	if err != nil {
 		return err
+	}
+	defer staged.Cleanup()
+	rollback, err := staged.Publish()
+	if err != nil {
+		if rollback != nil {
+			err = errors.Join(err, rollback())
+		}
+		return err
+	}
+	return nil
+}
+
+type stagedSIWCProviderFile struct {
+	tempPath  string
+	finalPath string
+	fileInfo  os.FileInfo
+	published bool
+}
+
+func stageSIWCProviderFile(path string, c provider.Config) (*stagedSIWCProviderFile, error) {
+	if err := validateSIWCOutputParent(path); err != nil {
+		return nil, err
+	}
+	if err := validateSIWCProviderDestination(path); err != nil {
+		return nil, err
 	}
 	doc := map[string]any{"version": 2, "providers": []any{map[string]any{
 		"wire_contract": c.WireContract, "account_binding": c.AccountBinding, "credential_binding": c.CredentialBinding, "provider_id": c.ProviderID, "protocol_family": c.ProtocolFamily, "base_url": c.BaseURL, "model": c.Model, "auth_ref": c.Auth, "auth_requirement": c.AuthRequirement, "options": map[string]string{}, "config_version": c.ConfigVersion,
@@ -259,28 +312,109 @@ func writeSIWCProviderFile(path string, c provider.Config) error {
 	}}}
 	encoded, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
-		return errors.New("cannot encode provider configuration")
+		return nil, errors.New("cannot encode provider configuration")
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := os.CreateTemp(filepath.Dir(path), ".runstead-siwc-provider-*.stage")
 	if err != nil {
-		return errors.New("provider configuration path already exists or is unsafe")
+		return nil, errors.New("cannot create provider configuration staging file")
+	}
+	tempPath := file.Name()
+	stage := &stagedSIWCProviderFile{tempPath: tempPath, finalPath: path}
+	removeTemp := func() { _ = os.Remove(tempPath) }
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		removeTemp()
+		return nil, errors.New("cannot protect provider configuration staging file")
 	}
 	if _, err = file.Write(encoded); err != nil {
-		if closeErr := file.Close(); closeErr != nil {
-			return errors.Join(errors.New("cannot write provider configuration"), closeErr)
-		}
-		return errors.New("cannot write provider configuration")
+		_ = file.Close()
+		removeTemp()
+		return nil, errors.New("cannot write provider configuration staging file")
 	}
 	if err = file.Sync(); err != nil {
-		if closeErr := file.Close(); closeErr != nil {
-			return errors.Join(errors.New("cannot sync provider configuration"), closeErr)
-		}
-		return errors.New("cannot sync provider configuration")
+		_ = file.Close()
+		removeTemp()
+		return nil, errors.New("cannot sync provider configuration staging file")
 	}
 	if err := file.Close(); err != nil {
-		return errors.New("cannot close provider configuration")
+		removeTemp()
+		return nil, errors.New("cannot close provider configuration staging file")
 	}
-	dir, err := os.Open(filepath.Dir(path))
+	stage.fileInfo, err = os.Lstat(tempPath)
+	if err != nil || !stage.fileInfo.Mode().IsRegular() || stage.fileInfo.Mode().Perm() != 0o600 || !siwcOutputOwnedByCurrentUser(stage.fileInfo) {
+		removeTemp()
+		return nil, errors.New("provider configuration staging file is unsafe")
+	}
+	if err := syncSIWCOutputDirectory(filepath.Dir(path)); err != nil {
+		removeTemp()
+		return nil, err
+	}
+	return stage, nil
+}
+
+func (s *stagedSIWCProviderFile) Publish() (func() error, error) {
+	rollback := s.Rollback
+	if err := os.Link(s.tempPath, s.finalPath); err != nil {
+		return rollback, errors.New("provider configuration path already exists or is unsafe")
+	}
+	s.published = true
+	info, err := os.Lstat(s.finalPath)
+	if err != nil || !os.SameFile(s.fileInfo, info) || info.Mode().Perm() != 0o600 || !siwcOutputOwnedByCurrentUser(info) {
+		return rollback, errors.New("published provider configuration identity is unsafe")
+	}
+	if err := syncSIWCOutputDirectory(filepath.Dir(s.finalPath)); err != nil {
+		return rollback, errors.New("cannot sync provider configuration directory")
+	}
+	if err := os.Remove(s.tempPath); err != nil {
+		return rollback, errors.New("cannot finalize provider configuration staging file")
+	}
+	s.tempPath = ""
+	return rollback, nil
+}
+
+func (s *stagedSIWCProviderFile) Rollback() error {
+	var result error
+	if s.published {
+		current, err := os.Lstat(s.finalPath)
+		if err == nil && os.SameFile(s.fileInfo, current) {
+			if err := os.Remove(s.finalPath); err != nil {
+				result = errors.Join(result, err)
+			} else {
+				result = errors.Join(result, syncSIWCOutputDirectory(filepath.Dir(s.finalPath)))
+			}
+		} else if err != nil && !os.IsNotExist(err) {
+			result = errors.Join(result, err)
+		}
+		s.published = false
+	}
+	if s.tempPath != "" {
+		if err := os.Remove(s.tempPath); err != nil && !os.IsNotExist(err) {
+			result = errors.Join(result, err)
+		} else {
+			s.tempPath = ""
+		}
+	}
+	return result
+}
+
+func (s *stagedSIWCProviderFile) Cleanup() {
+	if s.tempPath != "" {
+		_ = os.Remove(s.tempPath)
+		s.tempPath = ""
+	}
+}
+
+func validateSIWCProviderDestination(path string) error {
+	if _, err := os.Lstat(path); err == nil {
+		return errors.New("provider configuration destination already exists")
+	} else if !os.IsNotExist(err) {
+		return errors.New("provider configuration destination is unsafe")
+	}
+	return nil
+}
+
+func syncSIWCOutputDirectory(path string) error {
+	dir, err := os.Open(path)
 	if err != nil {
 		return errors.New("cannot open provider configuration directory")
 	}
@@ -290,6 +424,11 @@ func writeSIWCProviderFile(path string, c provider.Config) error {
 		return errors.New("cannot sync provider configuration directory")
 	}
 	return nil
+}
+
+func siwcOutputOwnedByCurrentUser(info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Uid == uint32(os.Getuid())
 }
 
 func validateSIWCOutputParent(path string) error {

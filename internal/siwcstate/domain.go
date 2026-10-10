@@ -87,6 +87,14 @@ type fileIdentity struct {
 // before calling. The locator is published last, so partial initialization is
 // never discoverable as an admitted domain.
 func Initialize(locatorPath, canonicalDir string, identity provider.Identity) (resultErr error) {
+	return InitializeWithPublisher(locatorPath, canonicalDir, identity, nil)
+}
+
+// InitializeWithPublisher initializes a new domain and calls publish only
+// after its database and manifest are durable, but before the locator makes
+// the domain discoverable. If publication or locator creation fails, rollback
+// is called before the newly-created domain directory is removed.
+func InitializeWithPublisher(locatorPath, canonicalDir string, identity provider.Identity, publish func() (rollback func() error, err error)) (resultErr error) {
 	if identity.WireContract != provider.WireResponsesSIWCV1 || !validBinding(identity.AccountBinding) || !validBinding(identity.CredentialBinding) || identity.AccountBinding == identity.CredentialBinding || !validDigest(identity.BehaviorDigest) || !validConfigIdentity(identity.ConfigIdentity) || identity.ConfigIdentity != providerV2Identity(identity.BehaviorDigest, identity.AccountBinding, identity.CredentialBinding) {
 		return ErrIdentityMismatch
 	}
@@ -108,6 +116,16 @@ func Initialize(locatorPath, canonicalDir string, identity provider.Identity) (r
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 || !ownedByCurrentUser(info) {
 		return ErrUnsafePath
 	}
+	domainCommitted := false
+	defer func() {
+		if resultErr != nil && !domainCommitted {
+			if current, statErr := os.Lstat(canonicalDir); statErr == nil && os.SameFile(info, current) && current.IsDir() && current.Mode().Perm()&0o077 == 0 && ownedByCurrentUser(current) {
+				if removeErr := os.RemoveAll(canonicalDir); removeErr != nil {
+					resultErr = errors.Join(resultErr, fmt.Errorf("remove incomplete SIWC domain: %w", removeErr))
+				}
+			}
+		}
+	}()
 	domain := Domain{Dir: canonicalDir, Identity: manifestFromIdentity(identity)}
 	lock, err := AcquireLock(context.Background(), domain)
 	if err != nil {
@@ -138,10 +156,27 @@ func Initialize(locatorPath, canonicalDir string, identity provider.Identity) (r
 	if err := ensurePrivateDirectory(filepath.Dir(locatorPath)); err != nil {
 		return err
 	}
+	var rollback func() error
+	if publish != nil {
+		rollback, err = publish()
+		if err != nil {
+			if rollback != nil {
+				resultErr = errors.Join(err, rollback())
+			} else {
+				resultErr = err
+			}
+			return resultErr
+		}
+	}
 	locator := Locator{Version: LocatorVersion, CanonicalDir: canonicalDir, DomainID: identity.ConfigIdentity}
 	if err := writeNewPrivateJSON(locatorPath, locator); err != nil {
+		if rollback != nil {
+			resultErr = errors.Join(err, rollback())
+			return resultErr
+		}
 		return err
 	}
+	domainCommitted = true
 	return nil
 }
 
@@ -182,32 +217,67 @@ func writeNewPrivateJSON(path string, value any) error {
 	if err != nil {
 		return ErrDomainUnavailable
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	dirPath := filepath.Dir(path)
+	file, err := os.CreateTemp(dirPath, ".siwc-metadata-*.stage")
 	if err != nil {
+		return ErrDomainUnavailable
+	}
+	tempPath := file.Name()
+	cleanupTemp := func() { _ = os.Remove(tempPath) }
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		cleanupTemp()
 		return ErrDomainUnavailable
 	}
 	if _, err = file.Write(encoded); err != nil {
-		if closeErr := file.Close(); closeErr != nil {
-			return errors.Join(ErrDomainUnavailable, closeErr)
-		}
+		_ = file.Close()
+		cleanupTemp()
 		return ErrDomainUnavailable
 	}
 	if err = file.Sync(); err != nil {
-		if closeErr := file.Close(); closeErr != nil {
-			return errors.Join(ErrDomainUnavailable, closeErr)
-		}
+		_ = file.Close()
+		cleanupTemp()
 		return ErrDomainUnavailable
 	}
 	if err = file.Close(); err != nil {
+		cleanupTemp()
 		return ErrDomainUnavailable
 	}
-	dir, err := os.Open(filepath.Dir(path))
+	info, err := os.Lstat(tempPath)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || !ownedByCurrentUser(info) {
+		cleanupTemp()
+		return ErrUnsafePath
+	}
+	if err := os.Link(tempPath, path); err != nil {
+		cleanupTemp()
+		return ErrDomainUnavailable
+	}
+	cleanupDestination := func() {
+		if current, statErr := os.Lstat(path); statErr == nil && os.SameFile(info, current) {
+			_ = os.Remove(path)
+		}
+	}
+	current, err := os.Lstat(path)
+	if err != nil || !os.SameFile(info, current) {
+		cleanupDestination()
+		cleanupTemp()
+		return ErrUnsafePath
+	}
+	dir, err := os.Open(dirPath)
 	if err != nil {
+		cleanupDestination()
+		cleanupTemp()
 		return ErrDomainUnavailable
 	}
 	syncErr := dir.Sync()
 	closeErr := dir.Close()
 	if syncErr != nil || closeErr != nil {
+		cleanupDestination()
+		cleanupTemp()
+		return ErrDomainUnavailable
+	}
+	if err := os.Remove(tempPath); err != nil {
+		cleanupDestination()
 		return ErrDomainUnavailable
 	}
 	return nil

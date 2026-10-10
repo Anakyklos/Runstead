@@ -16,6 +16,7 @@ import (
 
 	"github.com/RenyEnnos/Runstead/internal/provider"
 	"github.com/RenyEnnos/Runstead/internal/siwcauth"
+	"github.com/RenyEnnos/Runstead/internal/siwcstate"
 )
 
 func TestSIWCSetupProcessHelper(t *testing.T) {
@@ -223,5 +224,138 @@ func TestSIWCSetupCommitsWithCurrentAuthenticatedRegistration(t *testing.T) {
 		if info, err := os.Stat(path); err != nil || (path == providers && info.Mode().Perm() != 0o600) {
 			t.Fatalf("successful setup artifact %s info=%v err=%v", path, info, err)
 		}
+	}
+}
+
+func TestSIWCSetupPublishesProviderAndDomainTransactionally(t *testing.T) {
+	base := t.TempDir()
+	home, xdg := filepath.Join(base, "home"), filepath.Join(base, "xdg")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	setSIWCEnv(t, home, xdg)
+	seedSIWCCredential(t, home, cliSIWCIdentity())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/catalog" {
+			_, _ = w.Write([]byte(`{"models":[{"slug":"gpt-test","visibility":"list"}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	endpoints := siwcauth.Endpoints{Issuer: siwcauth.Issuer, Discovery: server.URL + "/.well-known/openid-configuration", Catalog: server.URL + "/catalog"}
+	stateDir, providers := filepath.Join(base, "state"), filepath.Join(base, "providers.json")
+	locator := filepath.Join(xdg, "runstead", "siwc", siwcstate.LocatorFile)
+	args := []string{"--client-id", "issued-client", "--model", "gpt-test", "--state-dir", stateDir, "--providers", providers}
+	runSetup := func(hook func() error) (int, string) {
+		var out, errOut bytes.Buffer
+		code := siwcSetupWithEndpointsHook(context.Background(), args, &out, &errOut, endpoints, hook)
+		return code, errOut.String()
+	}
+	runSetupAfterProviderPublish := func(hook func() error) (int, string) {
+		var out, errOut bytes.Buffer
+		code := siwcSetupWithLifecycleHooks(context.Background(), args, &out, &errOut, endpoints, nil, hook)
+		return code, errOut.String()
+	}
+	assertUnpublished := func() {
+		t.Helper()
+		for _, path := range []string{stateDir, filepath.Join(stateDir, "runstead.db"), locator} {
+			if _, err := os.Lstat(path); !os.IsNotExist(err) {
+				t.Fatalf("failed setup left discoverable artifact %s (err=%v)", path, err)
+			}
+		}
+		staged, err := filepath.Glob(filepath.Join(base, ".runstead-siwc-provider-*.stage"))
+		if err != nil || len(staged) != 0 {
+			t.Fatalf("staging files were not cleaned: paths=%v err=%v", staged, err)
+		}
+	}
+
+	// A destination present before setup is refused before any state or
+	// locator is created, and its bytes and mode remain operator-owned.
+	want := []byte("operator-owned provider configuration\n")
+	if err := os.WriteFile(providers, want, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := runSetup(nil); code == exitSuccess {
+		t.Fatal("setup accepted an existing provider output")
+	}
+	got, err := os.ReadFile(providers)
+	info, statErr := os.Stat(providers)
+	if err != nil || statErr != nil || string(got) != string(want) || info.Mode().Perm() != 0o640 {
+		t.Fatalf("existing provider file changed: bytes=%q info=%v readErr=%v statErr=%v", got, info, err, statErr)
+	}
+	assertUnpublished()
+	if err := os.Remove(providers); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate another writer winning the no-overwrite publication race after
+	// the private output has been staged. Rollback must preserve that writer's
+	// inode and remove the undiscoverable database/manifest/lock directory.
+	raceBytes := []byte("concurrent operator file\n")
+	code, message := runSetup(func() error { return os.WriteFile(providers, raceBytes, 0o640) })
+	if code == exitSuccess || !strings.Contains(message, "initialization refused") {
+		t.Fatalf("post-staging publication race was not refused: exit=%d stderr=%q", code, message)
+	}
+	got, err = os.ReadFile(providers)
+	info, statErr = os.Stat(providers)
+	if err != nil || statErr != nil || string(got) != string(raceBytes) || info.Mode().Perm() != 0o640 {
+		t.Fatalf("racing provider file was changed: bytes=%q info=%v readErr=%v statErr=%v", got, info, err, statErr)
+	}
+	assertUnpublished()
+	if err := os.Remove(providers); err != nil {
+		t.Fatal(err)
+	}
+
+	// Force the locator destination to be claimed after provider publication.
+	// Locator remains the discoverability boundary; failed publication must
+	// remove only the provider inode created by this transaction.
+	locatorBytes := []byte("operator-owned locator\n")
+	code, message = runSetupAfterProviderPublish(func() error { return os.WriteFile(locator, locatorBytes, 0o640) })
+	if code == exitSuccess || !strings.Contains(message, "initialization refused") {
+		t.Fatalf("post-provider locator race was not refused: exit=%d stderr=%q", code, message)
+	}
+	got, err = os.ReadFile(locator)
+	info, statErr = os.Stat(locator)
+	if err != nil || statErr != nil || string(got) != string(locatorBytes) || info.Mode().Perm() != 0o640 {
+		t.Fatalf("racing locator file was changed: bytes=%q info=%v readErr=%v statErr=%v", got, info, err, statErr)
+	}
+	for _, path := range []string{stateDir, providers, filepath.Join(stateDir, "runstead.db")} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("failed final publication left artifact %s (err=%v)", path, err)
+		}
+	}
+	if err := os.Remove(locator); err != nil {
+		t.Fatal(err)
+	}
+
+	// The same authenticated setup can be retried after the unrelated output is
+	// removed; it publishes a matching provider document and canonical domain.
+	if code, message := runSetup(nil); code != exitSuccess {
+		t.Fatalf("setup did not succeed after safe refusal: exit=%d stderr=%q", code, message)
+	}
+	var doc struct {
+		Version   int `json:"version"`
+		Providers []struct {
+			ProviderID string `json:"provider_id"`
+			Model      string `json:"model"`
+			Account    string `json:"account_binding"`
+			Credential string `json:"credential_binding"`
+		} `json:"providers"`
+	}
+	data, err := os.ReadFile(providers)
+	if err != nil || json.Unmarshal(data, &doc) != nil || doc.Version != 2 || len(doc.Providers) != 1 || doc.Providers[0].ProviderID != "siwc-openai" || doc.Providers[0].Model != "gpt-test" {
+		t.Fatalf("provider config does not match successful domain: config=%+v err=%v", doc, err)
+	}
+	manifestData, err := os.ReadFile(filepath.Join(stateDir, siwcstate.ManifestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest siwcstate.Manifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Providers[0].Account != manifest.AccountBinding || doc.Providers[0].Credential != manifest.CredentialBinding {
+		t.Fatalf("provider and canonical domain bindings disagree: provider=%+v manifest=%+v", doc.Providers[0], manifest)
 	}
 }
