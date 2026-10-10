@@ -9,6 +9,7 @@ import (
 
 	"github.com/RenyEnnos/Runstead/internal/config"
 	"github.com/RenyEnnos/Runstead/internal/provider"
+	"github.com/RenyEnnos/Runstead/internal/siwcauth"
 	"github.com/RenyEnnos/Runstead/internal/siwcstate"
 )
 
@@ -51,6 +52,9 @@ func acquireSIWCDomainLock(ctx context.Context, location resolvedStateDomain) (*
 			return nil, releaseSIWCDomainLockError(lock, err)
 		}
 		return nil, releaseSIWCDomainLockError(lock, siwcstate.ErrDomainUnavailable)
+	}
+	if err := verifySIWCBinding(home, revalidated.Identity); err != nil {
+		return nil, releaseSIWCDomainLockError(lock, siwcstate.ErrIdentityMismatch)
 	}
 	return lock, nil
 }
@@ -116,11 +120,26 @@ func resolveCommandStateDomain(selection string, selectionSet bool, stateDir str
 	if err != nil {
 		return resolvedStateDomain{}, err
 	}
+	if err := verifySIWCBinding(home, domain.Identity); err != nil {
+		return resolvedStateDomain{}, fmt.Errorf("%w: authenticated SIWC credential binding is unavailable", siwcstate.ErrIdentityMismatch)
+	}
 	explicitStateDir := ""
 	if stateDirExplicit {
 		explicitStateDir = stateDir
 	}
 	return resolvedStateDomain{Dir: domain.Dir, SIWC: &domain, explicitStateDir: explicitStateDir, identity: identity}, nil
+}
+
+func verifySIWCBinding(home string, manifest siwcstate.Manifest) error {
+	path, err := siwcauth.DefaultStorePath(home, os.Getenv("XDG_CONFIG_HOME"))
+	if err != nil {
+		return err
+	}
+	store, err := siwcauth.OpenStore(path, false)
+	if err != nil {
+		return err
+	}
+	return store.VerifyBindings(manifest.AccountBinding, manifest.CredentialBinding)
 }
 
 // stateDomainDiagnostic returns stable, sanitized error text for operator

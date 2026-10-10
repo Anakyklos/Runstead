@@ -99,6 +99,30 @@ func TestResolveRegisteredDomainAndEquivalentOverride(t *testing.T) {
 	}
 }
 
+func TestInitializePublishesOnlyLockedAndMarkedDomain(t *testing.T) {
+	base := t.TempDir()
+	stateDir := filepath.Join(base, "new-state")
+	locator := filepath.Join(base, "xdg", "runstead", "siwc", LocatorFile)
+	identity := testIdentity()
+	if err := Initialize(locator, stateDir, identity); err != nil {
+		t.Fatal(err)
+	}
+	domain, err := Resolve(Options{LocatorPath: locator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if domain.Dir != stateDir || domain.Identity.ConfigIdentity != identity.ConfigIdentity {
+		t.Fatalf("resolved domain=%#v", domain)
+	}
+	lockInfo, err := os.Stat(filepath.Join(stateDir, lockFile))
+	if err != nil || lockInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("lock marker stat=%v err=%v", lockInfo, err)
+	}
+	if err := Initialize(locator, stateDir, identity); err == nil {
+		t.Fatal("reinitialized an existing domain")
+	}
+}
+
 func TestResolveRejectsLegacyDatabaseWithoutSIWCDomainBinding(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "legacy-state")

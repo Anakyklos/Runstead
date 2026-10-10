@@ -60,6 +60,8 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return decideCommand(ctx, args[1:], out, errOut)
 	case "improvement":
 		return improvementCommand(ctx, args[1:], out, errOut)
+	case "siwc":
+		return siwcCommand(ctx, args[1:], out, errOut)
 	default:
 		fmt.Fprintf(errOut, "runstead: unknown command %q\n\n", args[0])
 		printRootHelp(errOut)
@@ -113,7 +115,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	flags.StringVar(&task, "task", "", "task prompt (RUNSTEAD_TASK)")
 	flags.StringVar(&scripted, "scripted", "", "JSONL file of scripted model responses for a deterministic offline run (RUNSTEAD_SCRIPTED_RESPONSES)")
 	flags.StringVar(&stateDir, "state-dir", "", "durable state directory (RUNSTEAD_STATE_DIR; default: $XDG_DATA_HOME/runstead or ~/.local/share/runstead)")
-	flags.StringVar(&stateDomain, "state-domain", "", "select the registered SIWC state domain (siwc); unavailable until authenticated registration is implemented")
+	flags.StringVar(&stateDomain, "state-domain", "", "select the authenticated SIWC state domain (siwc); Responses inference remains unavailable")
 	flags.StringVar(&writePolicy, "write-policy", "", "write tool policy modes, e.g. write_file=allow,apply_patch=approval_required (RUNSTEAD_WRITE_POLICY; default: approval_required for every write tool)")
 	flags.StringVar(&recipesFile, "recipes", "", "operator-controlled recipe catalog file (RUNSTEAD_RECIPES): JSON array of recipes; run_recipe fails closed without it")
 	flags.StringVar(&recipePolicy, "recipe-policy", "", "recipe policy modes, e.g. test=allow,vet=approval_required (RUNSTEAD_RECIPE_POLICY; default: approval_required for every recipe)")
@@ -1434,6 +1436,7 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "  inspect   inspect durable task state by task id")
 	fmt.Fprintln(out, "  resume    resume an interrupted task from durable state")
 	fmt.Fprintln(out, "  decide    approve or reject a pending write/recipe action (operator control plane)")
+	fmt.Fprintln(out, "  siwc      manage official OAuth custody and an offline SIWC state domain")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Configuration precedence: flags > environment > defaults")
 	fmt.Fprintf(out, "  %s, %s, %s, %s\n", config.EnvWorkspace, config.EnvLogLevel, config.EnvTask, config.EnvStateDir)
@@ -1498,7 +1501,7 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --scripted FILE           scripted responses for a deterministic offline run (RUNSTEAD_SCRIPTED_RESPONSES)")
 	fmt.Fprintln(out, "  --workspace PATH          workspace path (RUNSTEAD_WORKSPACE, default .)")
 	fmt.Fprintln(out, "  --state-dir PATH          durable state directory (RUNSTEAD_STATE_DIR, default $XDG_DATA_HOME/runstead or ~/.local/share/runstead)")
-	fmt.Fprintln(out, "  --state-domain siwc       use the previously registered SIWC state domain; registration is not available in this stage")
+	fmt.Fprintln(out, "  --state-domain siwc       use the authenticated SIWC state domain; Responses inference remains unavailable")
 	fmt.Fprintln(out, "  --write-policy SPEC       write tool modes, e.g. write_file=allow,apply_patch=deny (RUNSTEAD_WRITE_POLICY, default approval_required)")
 	fmt.Fprintln(out, "  --recipes FILE            operator-controlled recipe catalog (RUNSTEAD_RECIPES); run_recipe fails closed without it")
 	fmt.Fprintln(out, "  --recipe-policy SPEC      recipe modes, e.g. test=allow,vet=deny (RUNSTEAD_RECIPE_POLICY, default approval_required)")

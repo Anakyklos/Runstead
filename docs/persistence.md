@@ -170,6 +170,24 @@ checks the main DB marker, while SQLite replays any durable sidecar state only
 after the lock is held. This offline stage does not authenticate an account
 or enable Responses inference.
 
+## SIWC OAuth custody (offline Stage 4)
+
+Explicit SIWC login stores credentials outside SQLite under
+`$XDG_CONFIG_HOME/runstead/siwc` or `$HOME/.config/runstead/siwc`. Owner-only
+0700 directories contain owner-only 0600, regular single-link records. Atomic
+credential replacement syncs the file and directory. A separate persistent
+`flock` serializes refresh. Before the one refresh request, a durable pending
+marker is committed; loss of response or ambiguous crash state remains
+uncertain and cannot be automatically replayed. Successful token rotation is
+synced before the marker is cleared. Failed revocation retains local tokens;
+confirmed revocation clears them. A stable host ID and local HMAC key derive
+opaque provider bindings from verified issuer, subject and issued client ID.
+SQLite stores only the existing non-secret SIWC manifest/marker and opaque
+bindings, never OAuth tokens. File permissions do not encrypt custody against
+the same user or offline disk theft. Model catalog visibility is display
+metadata and does not establish eligibility. Stage 4 does not enable the
+`responses_siwc_v1` adapter.
+
 ## Migrations
 
 Versioned SQL migrations are embedded in the executable
