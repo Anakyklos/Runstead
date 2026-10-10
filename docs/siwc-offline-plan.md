@@ -141,6 +141,17 @@ main DB image; durable SQLite sidecar replay is performed by SQLite when the
 locked store opens. Synthetic offline fixtures do not constitute account
 authentication or Responses inference evidence.
 
+During initial `siwc setup`, rollback removes the lock marker only when that
+same initialization created it, still holds its exclusive lock, and it is the
+only entry remaining after cleanup; the domain has not yet become discoverable.
+SQLite files and the manifest are removed only when their recorded file
+identities still match. Rollback never recursively deletes the state directory.
+If unexpected content appears, or an artifact identity changes, setup preserves
+the remaining files and lock marker, leaves the locator unpublished, and
+reports an incomplete private state directory. Inspect and preserve that
+content before relocating or removing the directory; setup refuses to reuse
+the path until it is clear.
+
 ## Stage 4: official OAuth/OIDC custody and model catalog
 
 `runstead siwc login` explicitly opens the system browser and binds one

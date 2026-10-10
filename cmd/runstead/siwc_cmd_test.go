@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -357,5 +358,76 @@ func TestSIWCSetupPublishesProviderAndDomainTransactionally(t *testing.T) {
 	}
 	if doc.Providers[0].Account != manifest.AccountBinding || doc.Providers[0].Credential != manifest.CredentialBinding {
 		t.Fatalf("provider and canonical domain bindings disagree: provider=%+v manifest=%+v", doc.Providers[0], manifest)
+	}
+}
+
+func TestSIWCSetupPreservesUnexpectedDomainArtifactOnRollback(t *testing.T) {
+	base := t.TempDir()
+	home, xdg := filepath.Join(base, "home"), filepath.Join(base, "xdg")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	setSIWCEnv(t, home, xdg)
+	seedSIWCCredential(t, home, cliSIWCIdentity())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/catalog" {
+			_, _ = w.Write([]byte(`{"models":[{"slug":"gpt-test","visibility":"list"}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	endpoints := siwcauth.Endpoints{Issuer: siwcauth.Issuer, Discovery: server.URL + "/.well-known/openid-configuration", Catalog: server.URL + "/catalog"}
+	stateDir, providers := filepath.Join(base, "new-state"), filepath.Join(base, "providers.json")
+	locator := filepath.Join(xdg, "runstead", "siwc", siwcstate.LocatorFile)
+	if _, err := os.Lstat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("test state directory must start absent: %v", err)
+	}
+	args := []string{"--client-id", "issued-client", "--model", "gpt-test", "--state-dir", stateDir, "--providers", providers}
+	sentinelPath := filepath.Join(stateDir, "operator-owned-evidence")
+	sentinel := []byte("preserve this unrelated operator artifact\n")
+	injectedFailure := errors.New("injected failure before locator publication")
+	var out, errOut bytes.Buffer
+	code := siwcSetupWithLifecycleHooks(context.Background(), args, &out, &errOut, endpoints, nil, func() error {
+		if err := os.WriteFile(sentinelPath, sentinel, 0o600); err != nil {
+			return err
+		}
+		return injectedFailure
+	})
+	if code == exitSuccess || !strings.Contains(errOut.String(), injectedFailure.Error()) {
+		t.Fatalf("injected pre-locator failure was not propagated: exit=%d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "preserve incomplete SIWC state") {
+		t.Fatalf("partial-state preservation was not reported explicitly: %q", errOut.String())
+	}
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil || !bytes.Equal(got, sentinel) {
+		t.Fatalf("operator sentinel was not preserved: bytes=%q err=%v", got, err)
+	}
+	for _, path := range []string{locator, providers, filepath.Join(stateDir, "runstead.db"), filepath.Join(stateDir, siwcstate.ManifestFile)} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("failed setup published or retained owned artifact %s (err=%v)", path, err)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(stateDir, ".siwc-domain-lock-v1")); err != nil {
+		t.Fatalf("partial domain did not preserve the persistent lock marker with unexpected content: %v", err)
+	}
+	if _, err := siwcstate.Resolve(siwcstate.Options{LocatorPath: locator}); !errors.Is(err, siwcstate.ErrDomainUnavailable) {
+		t.Fatalf("failed setup left an operational locator/domain: resolve error=%v", err)
+	}
+
+	// A subsequent setup attempt sees the retained unexpected content and fails
+	// at exclusive directory creation without changing it.
+	var retryOut, retryErr bytes.Buffer
+	retryCode := siwcSetupWithLifecycleHooks(context.Background(), args, &retryOut, &retryErr, endpoints, nil, nil)
+	if retryCode == exitSuccess || !strings.Contains(retryErr.String(), "cannot create requested SIWC state directory") {
+		t.Fatalf("retry did not fail deterministically on preserved partial state: exit=%d stderr=%q", retryCode, retryErr.String())
+	}
+	got, err = os.ReadFile(sentinelPath)
+	if err != nil || !bytes.Equal(got, sentinel) {
+		t.Fatalf("retry changed preserved sentinel: bytes=%q err=%v", got, err)
+	}
+	if _, err := os.Lstat(locator); !os.IsNotExist(err) {
+		t.Fatalf("retry published locator for incomplete state (err=%v)", err)
 	}
 }
