@@ -1,7 +1,7 @@
 # Sign in with ChatGPT — offline implementation sequence
 
-Status: **Stage 4 implemented for explicit local authentication and custody; inference remains unavailable**. Maintainer decision: issue #174, authorized 2026-10-08.
-No live login has been performed by this implementation. No inference or API key substitution is available.
+Status: **Stage 5 direct Responses/SSE adapter is implemented and undergoing offline validation**. Maintainer decision: issue #174, authorized 2026-10-08.
+No live SIWC login, refresh, catalog request or inference has been performed during this implementation.
 
 ## Contract boundary
 
@@ -43,15 +43,15 @@ versions and mixed v1/v2 material fail closed.
 Stages 1–3 establish the provider contract, canonical state discovery, Linux
 interprocess exclusion, and durable recovery/admission boundary. Stage 4 adds
 explicit official OAuth/OIDC registration, local credential custody, refresh,
-revocation and an account-specific model catalog. It does **not** implement
-Responses SSE, quota management or live canaries. Both the compatibility
-composition and direct legacy Chat Completions adapter continue to refuse
-`responses_siwc_v1` instead of silently dispatching it as Chat Completions.
-Authenticated custody is not inference activation.
+revocation and an account-specific model catalog. Stage 5 adds the direct
+Responses/SSE adapter selected only by `responses_siwc_v1`; it never enters the
+legacy Chat Completions wire. Each model request remains a governor-admitted
+Runstead `Complete`, with one inference POST and no adapter retry, fallback or
+remote conversation state. Offline tests do not establish live eligibility.
 
 Remaining bounded deliveries:
-1. Direct Responses/SSE adapter and provider-governed multiple turns (Stage 5).
-2. Full offline E2E tests and operational documentation (Stage 6).
+1. Complete Stage 5 gates and independent PR review.
+2. Stage 6 full offline E2E suite and operational documentation.
 
 The user-approved delivery plan and detailed acceptance criteria are in
 [issue #174](https://github.com/Anakyklos/Runstead/issues/174). This offline
@@ -95,7 +95,9 @@ provider declaration's HMAC-shaped bindings are compared with the registered
 manifest and verified against protected custody, never accepted as proof by
 themselves. Stage 4's explicit `runstead siwc setup` is the only supported way
 to create a new SIWC domain; deterministic tests also construct local synthetic
-fixtures. The Responses adapter remains inactive and refuses dispatch. Stage 2 rejects symlink paths,
+fixtures. Stage 5 supersedes the original Stage 2 inactive-adapter boundary:
+only governed `run` and `resume` paths can dispatch one direct Responses
+request per completion. Stage 2 rejects symlink paths,
 non-owner files, and directories or files accessible to other users. Stage 3 supplies cooperative interprocess exclusion for the CLI paths described below. It does not claim protection from a same-user process that bypasses the CLI and directly edits the database.
 
 ## Stage 3: Linux lock and recovery/admission barrier
@@ -133,7 +135,12 @@ two-directory hardlink-alias rejection by competing processes before either
 can enter the state critical section. A CLI E2E kills a process after its
 prepared provider attempt and governor debit are durable, then runs the real
 `runstead resume --state-domain siwc` twice in fresh processes and checks the
-reconciled attempt, ledger, governor singleton and refusal to infer. The
+reconciled attempt, ledger, governor singleton and durable human-review stop.
+That recovery path never repeats an uncertain request. The
+Stage 5 process E2E also runs the real CLI in a fresh process against a local
+Responses/SSE server for two sequential governed completions, checks that the
+second request contains the first turn's action and observation, and verifies
+two completed durable attempts and governor ledger entries. The
 allowlist does not prove behavior on every local filesystem or protect
 against a same-user process that directly edits SQLite without using Runstead.
 The immutable preflight can only inspect the
@@ -198,8 +205,7 @@ replaces the uncertain rotation and clears its marker durably. Multiple saved
 registrations are permitted but never pooled or automatically switched.
 
 The implementation and fixtures are fully offline-testable; no real sign-in,
-token exchange, catalog request or inference was executed. The tested Linux
-filesystem allowlist does not establish semantics for unlisted or remote
-filesystems. Stages 5 and 6 remain pending, `responses_siwc_v1` remains refused
-by the Chat Completions adapter, and this work does not satisfy Gate A or
-promote M12.
+token exchange, catalog request or inference was executed during Stage 5
+implementation. The tested Linux filesystem allowlist does not establish
+semantics for unlisted or remote filesystems. Stage 6 remains pending, and
+offline implementation does not satisfy Gate A or promote M12.

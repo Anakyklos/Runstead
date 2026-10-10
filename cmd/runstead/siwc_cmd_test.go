@@ -82,12 +82,12 @@ func TestSIWCStatusDoesNotRenderCredentialMaterial(t *testing.T) {
 	}
 }
 
-func TestSIWCCommandHelpDoesNotEnableInference(t *testing.T) {
+func TestSIWCCommandHelpDocumentsGovernedResponsesAdapter(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if code := run(context.Background(), []string{"siwc", "--help"}, &out, &errOut); code != exitSuccess {
 		t.Fatalf("help exit=%d stderr=%q", code, errOut.String())
 	}
-	if !strings.Contains(out.String(), "Responses inference in Stage 4") || strings.Contains(out.String(), "responses API request") {
+	if !strings.Contains(out.String(), "explicit governed run with --state-domain siwc") {
 		t.Fatalf("unexpected SIWC help text: %q", out.String())
 	}
 }

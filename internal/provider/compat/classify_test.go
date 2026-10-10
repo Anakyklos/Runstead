@@ -15,6 +15,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/provider/anthropiccompat"
 	"github.com/RenyEnnos/Runstead/internal/provider/googlecompat"
 	"github.com/RenyEnnos/Runstead/internal/provider/openaicompat"
+	"github.com/RenyEnnos/Runstead/internal/provider/responsessiwc"
 )
 
 func TestClassifierMapsAdapterKindsProviderNeutrally(t *testing.T) {
@@ -82,6 +83,29 @@ func TestClassifierRetainsOnlyKnownTypedFailureKinds(t *testing.T) {
 			outcome := classifier(provider.Response{}, testCase.err)
 			if got := string(outcome.ProviderFailureClass); got != testCase.want {
 				t.Fatalf("provider failure class = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestSIWCFailureClassificationIsSanitizedAndNeverRetryable(t *testing.T) {
+	classifier := NewClassifier()
+	for _, tc := range []struct {
+		name string
+		err  *responsessiwc.Error
+		want provider.ProviderFailureClass
+	}{
+		{"rate status", &responsessiwc.Error{Kind: responsessiwc.ErrorRateCapacity, StatusCode: 429, RequestID: "req_429", DeliveryState: provider.DeliveryCompleted}, provider.FailureRateCapacity},
+		{"usage limit code", &responsessiwc.Error{Kind: responsessiwc.ErrorResponseFailed, Code: "subscription_sharing_usage_limit_exceeded", StatusCode: 200, RequestID: "req_usage", DeliveryState: provider.DeliveryCompleted}, provider.FailureSubscriptionUsageLimitExceeded},
+		{"scope code", &responsessiwc.Error{Kind: responsessiwc.ErrorResponseFailed, Code: "chatpass_v2_scope_not_authorized", StatusCode: 200, RequestID: "req_scope", DeliveryState: provider.DeliveryCompleted}, provider.FailureChatGPTScopeNotAuthorized},
+		{"unapproved code", &responsessiwc.Error{Kind: responsessiwc.ErrorResponseFailed, Code: "raw-secret-looking-value", StatusCode: 200, DeliveryState: provider.DeliveryCompleted}, provider.FailureResponseFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := provider.Response{Metadata: provider.ResponseMetadata{StatusCode: tc.err.StatusCode, RequestID: tc.err.RequestID, DeliveryState: tc.err.DeliveryState}}
+			outcome := classifier(response, tc.err)
+			if outcome.Class != governor.OutcomeUncertainReached || outcome.ProviderFailureClass != tc.want ||
+				outcome.DeliveryState != tc.err.DeliveryState {
+				t.Fatalf("SIWC structured outcome=%+v, want non-retryable class %q", outcome, tc.want)
 			}
 		})
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/provider/anthropiccompat"
 	"github.com/RenyEnnos/Runstead/internal/provider/googlecompat"
 	"github.com/RenyEnnos/Runstead/internal/provider/openaicompat"
+	"github.com/RenyEnnos/Runstead/internal/provider/responsessiwc"
 )
 
 // AdapterVersion identifies this compatibility composition surface. The value
@@ -64,7 +65,7 @@ func New(resolved provider.Resolved, resolver SecretResolver) (provider.Client, 
 			return nil, fmt.Errorf("compat: Chat Completions wire with incompatible family")
 		}
 	case provider.WireResponsesSIWCV1:
-		return nil, fmt.Errorf("compat: SIWC Responses wire contract is not implemented; refusing dispatch")
+		return responsessiwc.New(resolved)
 	default:
 		return nil, fmt.Errorf("compat: unsupported wire contract; refusing dispatch")
 	}

@@ -6,25 +6,37 @@ package provider
 type ProviderFailureClass string
 
 const (
-	FailureConfigRefused             ProviderFailureClass = "config_refused"
-	FailureAuthUnavailable           ProviderFailureClass = "auth_unavailable"
-	FailureAuthenticationDenied      ProviderFailureClass = "authentication_denied"
-	FailurePermissionDenied          ProviderFailureClass = "permission_denied"
-	FailureRateCapacity              ProviderFailureClass = "rate_or_capacity"
-	FailureTimeout                   ProviderFailureClass = "timeout"
-	FailureCancelled                 ProviderFailureClass = "cancelled"
-	FailureMalformedResponse         ProviderFailureClass = "malformed_response"
-	FailureInvalidEnvelope           ProviderFailureClass = "invalid_envelope"
-	FailureEmptyResponse             ProviderFailureClass = "empty_response"
-	FailureUnsupportedResponseFormat ProviderFailureClass = "unsupported_response_format"
-	FailureIncompleteCompletion      ProviderFailureClass = "incomplete_completion"
-	FailureRefusal                   ProviderFailureClass = "refusal"
-	FailureResponseTooLarge          ProviderFailureClass = "response_too_large"
-	FailureRequestTooLarge           ProviderFailureClass = "request_too_large"
-	FailureUpstreamServer            ProviderFailureClass = "upstream_server_failure"
-	FailureUpstreamHTTP              ProviderFailureClass = "upstream_http_failure"
-	FailureUnsafeRedirect            ProviderFailureClass = "unsafe_redirect"
-	FailureTransport                 ProviderFailureClass = "transport"
+	FailureConfigRefused                      ProviderFailureClass = "config_refused"
+	FailureAuthUnavailable                    ProviderFailureClass = "auth_unavailable"
+	FailureAuthenticationDenied               ProviderFailureClass = "authentication_denied"
+	FailurePermissionDenied                   ProviderFailureClass = "permission_denied"
+	FailureRateCapacity                       ProviderFailureClass = "rate_or_capacity"
+	FailureTimeout                            ProviderFailureClass = "timeout"
+	FailureCancelled                          ProviderFailureClass = "cancelled"
+	FailureMalformedResponse                  ProviderFailureClass = "malformed_response"
+	FailureInvalidEnvelope                    ProviderFailureClass = "invalid_envelope"
+	FailureEmptyResponse                      ProviderFailureClass = "empty_response"
+	FailureUnsupportedResponseFormat          ProviderFailureClass = "unsupported_response_format"
+	FailureIncompleteCompletion               ProviderFailureClass = "incomplete_completion"
+	FailureRefusal                            ProviderFailureClass = "refusal"
+	FailureResponseTooLarge                   ProviderFailureClass = "response_too_large"
+	FailureRequestTooLarge                    ProviderFailureClass = "request_too_large"
+	FailureUpstreamServer                     ProviderFailureClass = "upstream_server_failure"
+	FailureUpstreamHTTP                       ProviderFailureClass = "upstream_http_failure"
+	FailureUnsafeRedirect                     ProviderFailureClass = "unsafe_redirect"
+	FailureTransport                          ProviderFailureClass = "transport"
+	FailureResponseFailed                     ProviderFailureClass = "response_failed"
+	FailureResponseIncomplete                 ProviderFailureClass = "response_incomplete"
+	FailureStreamIncomplete                   ProviderFailureClass = "stream_incomplete"
+	FailureSubscriptionUserNotEligible        ProviderFailureClass = "subscription_sharing_user_not_eligible"
+	FailureSubscriptionUsageLimitExceeded     ProviderFailureClass = "subscription_sharing_usage_limit_exceeded"
+	FailureSubscriptionUsageUnavailable       ProviderFailureClass = "subscription_sharing_usage_unavailable"
+	FailureSubscriptionUnsupportedCapability  ProviderFailureClass = "subscription_sharing_unsupported_capability"
+	FailureSubscriptionRouteNotSupported      ProviderFailureClass = "subscription_sharing_route_not_supported"
+	FailureSubscriptionInvalidUser            ProviderFailureClass = "subscription_sharing_invalid_user"
+	FailureSubscriptionUserUnavailable        ProviderFailureClass = "subscription_sharing_user_unavailable"
+	FailureChatGPTScopeNotAuthorized          ProviderFailureClass = "chatpass_v2_scope_not_authorized"
+	FailureChatGPTInvalidAuthorizationContext ProviderFailureClass = "chatpass_v2_invalid_authorization_context"
 )
 
 // ParseProviderFailureClass accepts only the adapter's documented safe
@@ -45,7 +57,13 @@ func (c ProviderFailureClass) Valid() bool {
 		FailureMalformedResponse, FailureInvalidEnvelope, FailureEmptyResponse,
 		FailureUnsupportedResponseFormat, FailureIncompleteCompletion, FailureRefusal,
 		FailureResponseTooLarge, FailureRequestTooLarge, FailureUpstreamServer,
-		FailureUpstreamHTTP, FailureUnsafeRedirect, FailureTransport:
+		FailureUpstreamHTTP, FailureUnsafeRedirect, FailureTransport,
+		FailureResponseFailed, FailureResponseIncomplete, FailureStreamIncomplete,
+		FailureSubscriptionUserNotEligible, FailureSubscriptionUsageLimitExceeded,
+		FailureSubscriptionUsageUnavailable, FailureSubscriptionUnsupportedCapability,
+		FailureSubscriptionRouteNotSupported, FailureSubscriptionInvalidUser,
+		FailureSubscriptionUserUnavailable, FailureChatGPTScopeNotAuthorized,
+		FailureChatGPTInvalidAuthorizationContext:
 		return true
 	default:
 		return false

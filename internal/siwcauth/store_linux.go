@@ -3,6 +3,7 @@
 package siwcauth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -125,6 +126,14 @@ func owned(info os.FileInfo) bool {
 }
 
 func (s *Store) withLock(fn func() error) (resultErr error) {
+	return s.lockWithContext(context.Background(), 0, fn)
+}
+
+func (s *Store) withLockContext(ctx context.Context, fn func() error) (resultErr error) {
+	return s.lockWithContext(ctx, 250*time.Millisecond, fn)
+}
+
+func (s *Store) lockWithContext(ctx context.Context, lockWait time.Duration, fn func() error) (resultErr error) {
 	path := filepath.Join(s.root, ".custody-lock-v1")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
@@ -148,10 +157,38 @@ func (s *Store) withLock(fn func() error) (resultErr error) {
 	if st, ok := info.Sys().(*syscall.Stat_t); !ok || st.Nlink != 1 {
 		return errors.New("unsafe SIWC credential lock identity")
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		return errors.New("cannot lock SIWC credentials")
+	if lockWait == 0 {
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+			return errors.New("cannot lock SIWC credentials")
+		}
+		locked = true
+		return fn()
 	}
-	locked = true
+	deadline := time.NewTimer(lockWait)
+	defer deadline.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			locked = true
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			return errors.New("cannot lock SIWC credentials")
+		}
+		wait := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			return ctx.Err()
+		case <-deadline.C:
+			wait.Stop()
+			return errors.New("SIWC custody lock is busy")
+		case <-wait.C:
+		}
+	}
 	return fn()
 }
 
@@ -460,6 +497,49 @@ func (s *Store) WithActiveRegistration(expected Registration, commit func() erro
 			return ErrIdentityChanged
 		}
 		return commit()
+	})
+}
+
+// WithAccessToken grants one caller scoped access to the active bearer token
+// while the custody lock is held. The callback must perform the single
+// authorized request synchronously and must not retain the token. Identity,
+// selected model, both opaque bindings, token expiry, refresh uncertainty and
+// active session state are revalidated from the protected record immediately
+// before the callback. Holding the lock through the request serializes logout
+// and refresh against inference.
+func (s *Store) WithAccessToken(ctx context.Context, clientID, model, accountBinding, credentialBinding string, request func(string) error) error {
+	if request == nil || strings.TrimSpace(clientID) == "" || strings.TrimSpace(model) == "" {
+		return errors.New("SIWC one-request access requires an exact client, model and callback")
+	}
+	if ctx == nil {
+		return errors.New("SIWC one-request access requires a context")
+	}
+	return s.withLockContext(ctx, func() error {
+		var disk diskRecord
+		if err := s.findRecord(clientID, &disk); err != nil {
+			return err
+		}
+		if disk.RefreshPending || s.refreshPending(disk.Registration) {
+			return ErrRefreshUncertain
+		}
+		if !hasActiveTokens(disk) {
+			return ErrSignedOut
+		}
+		if disk.Registration.Model != model {
+			return ErrIdentityChanged
+		}
+		key, err := s.bindingKeyLocked(false)
+		if err != nil {
+			return err
+		}
+		account, credential, err := Bindings(key, disk.Registration)
+		if err != nil {
+			return err
+		}
+		if !hmacEqual(account, accountBinding) || !hmacEqual(credential, credentialBinding) {
+			return ErrIdentityChanged
+		}
+		return request(disk.Tokens.AccessToken)
 	})
 }
 

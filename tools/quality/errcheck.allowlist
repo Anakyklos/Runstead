@@ -210,18 +210,18 @@ internal/recovery/recovery.go:772  _ = jsonUnmarshal(raw, value)
 
 
 
-cmd/runstead/main.go:435  defer store.Close()
+cmd/runstead/main.go:446  defer store.Close()
 
 
 
 
-cmd/runstead/main.go:1198  defer store.Close()
+cmd/runstead/main.go:1209  defer store.Close()
 
 
 
 
 
-cmd/runstead/main.go:1321  defer store.Close()
+cmd/runstead/main.go:1332  defer store.Close()
 
 
 
@@ -260,7 +260,7 @@ internal/tools/registry.go:134  rgPath, _ = lookPath("rg")
 
 
 
-cmd/runstead/resume.go:439  defer store.Close()
+cmd/runstead/resume.go:448  defer store.Close()
 
 
 
@@ -769,6 +769,10 @@ internal/provider/openaicompat/client.go:230  defer response.Body.Close()
 
 
 internal/provider/openaicompat/client.go:239  body, _ := io.ReadAll(io.LimitReader(response.Body, int64(c.maxResponse)+1))
+
+# SIWC direct Responses adapter: response-body close is best-effort cleanup
+# after the response has been parsed and its bounded typed result is fixed.
+internal/provider/responsessiwc/client.go:283  defer resp.Body.Close()
 
 
 
