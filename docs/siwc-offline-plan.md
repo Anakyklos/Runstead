@@ -1,6 +1,6 @@
 # Sign in with ChatGPT — offline implementation sequence
 
-Status: **Stages 1–5 are merged on `main`; Stage 6 is tracked by child issue #185 as the offline E2E acceptance and operator-documentation delivery.** At the Stage 6 audit baseline (`c8e5b4946a576ccd022a648c2d0caa0161f23c66`), the five implementation stages are present through PRs #176, #178, #180, #182 and #184. Stage 6 evidence is being assembled separately; this document does not claim its acceptance gates have passed.
+Status: **Stages 1–5 are merged on `main`; Stage 6 evidence and operator documentation are recorded under child issue #185 and submitted in PR #186, which is pending maintainer review.** The reviewed Stage 6 baseline is `c8e5b4946a576ccd022a648c2d0caa0161f23c66`; the five implementation stages are present through PRs #176, #178, #180, #182 and #184. The Stage 6 coverage matrix records existing and added evidence, including the multi-turn CLI process E2E and its durable verifier results. Submission and test results are evidence for review, not Stage 6 acceptance or merge.
 
 The Stage 6 implementation and acceptance work is **OFFLINE ONLY**. It must not perform a real SIWC login, refresh, model-catalog request, inference, quota check or live canary. Offline tests use synthetic fixtures, loopback servers and local processes. Offline success does not satisfy live eligibility or Gate A.
 
@@ -52,9 +52,12 @@ remote conversation state. Offline tests do not establish live eligibility.
 
 Delivery state at this baseline:
 1. Stages 1–5: merged in PRs #176, #178, #180, #182 and #184.
-2. Stage 6: issue #185 under parent issue #174; offline integrated acceptance,
-   coverage evidence and operator documentation. Completion depends on the
-   separate Stage 6 acceptance and review, not on the merge of Stage 5.
+2. Stage 6: issue #185 under parent issue #174; evidence and operator
+   documentation are submitted for review in PR #186. The coverage matrix
+   distinguishes existing coverage, the added process E2E, and boundaries
+   that remain blocked or outside offline proof. Stage 6 acceptance remains
+   pending maintainer review; PR submission does not itself establish
+   acceptance or merge.
 
 The user-approved delivery plan and detailed acceptance criteria are in
 [issue #174](https://github.com/Anakyklos/Runstead/issues/174). This offline
@@ -242,6 +245,13 @@ reclassified as a pass.
 
 Stage 6 is **OFFLINE ONLY**. **Gate A NOT SATISFIED** by this work. Live
 eligibility and a live canary require separate authorization and evidence.
+The Stage 6 coverage matrix (`siwc-stage6-coverage.md`) records the named
+unit, integration and process-E2E evidence, including the added multi-turn
+CLI test that inspects persisted effects, observations and verifier decisions
+in SQLite. It also marks live eligibility and other unproven boundaries as
+blocked. These artifacts are submitted in PR #186 and remain subject to
+maintainer review; this status does not claim Stage 6 acceptance, merge,
+live qualification or Gate A satisfaction.
 See the [SIWC operator guide](siwc-operator-guide.md) for implemented command
 syntax, Linux limits, state preservation and the boundary between offline
 validation and any separately authorized live operation.

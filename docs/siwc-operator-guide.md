@@ -76,7 +76,7 @@ operation, the implemented command shape is:
 ```text
 runstead run --task "TASK" --workspace /absolute/workspace \
   --providers /absolute/providers.json --provider-id siwc-openai \
-  --state-domain siwc
+  --state-domain siwc --acceptance /absolute/acceptance.json
 ```
 
 `--state-domain siwc` is required for this provider. It binds execution to the
@@ -85,6 +85,32 @@ registered canonical domain; explicitly supplied `--state-dir` or
 provider declaration, model and bindings are frozen into task/attempt identity.
 Changing provider, model, discovery root or bindings fails closed. There is no
 automatic account, model or provider selection.
+
+Completion also requires an operator-owned acceptance plan. Save a typed JSON
+plan such as the following as `/absolute/acceptance.json` before starting the
+task:
+
+```json
+{
+  "version": 1,
+  "checks": [
+    {"id": "readme-present", "type": "file_exists", "path": "README.md"}
+  ]
+}
+```
+
+Every check in the plan is mandatory, paths are relative to the workspace, and
+the plan is frozen with the task. The example run command supplies this plan
+through `--acceptance FILE`.
+
+The accepted check types are `file_exists`, `file_absent`, `file_hash` and
+`recipe_exit_zero`; each requires its documented typed fields. A
+`recipe_exit_zero` check only passes after evidence from an executed declared
+recipe with the matching ID. Declare that recipe in the operator-controlled
+catalog and supply it with `--recipes FILE`; without a matching declared
+recipe and successful execution, the verifier blocks completion. A recipe
+check does not itself authorize execution: recipe policy and any required
+approval still apply. Do not weaken or omit checks to make a task complete.
 
 Each completion is governor-admitted and makes one Responses POST. SIWC does
 not automatically retry, fall back or rotate accounts/models/providers. A
