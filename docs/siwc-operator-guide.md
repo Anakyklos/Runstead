@@ -108,9 +108,10 @@ The accepted check types are `file_exists`, `file_absent`, `file_hash` and
 `recipe_exit_zero` check only passes after evidence from an executed declared
 recipe with the matching ID. Declare that recipe in the operator-controlled
 catalog and supply it with `--recipes FILE`; without a matching declared
-recipe and successful execution, the verifier blocks completion. A recipe
-check does not itself authorize execution: recipe policy and any required
-approval still apply. Do not weaken or omit checks to make a task complete.
+recipe and successful execution, that check cannot pass and completion is
+refused until matching evidence exists. A recipe check does not itself
+authorize execution: recipe policy and any required approval still apply. Do
+not weaken or omit checks to make a task complete.
 
 Each completion is governor-admitted and makes one Responses POST. SIWC does
 not automatically retry, fall back or rotate accounts/models/providers. A
