@@ -80,7 +80,7 @@ func TestSIWCStatusDoesNotRenderCredentialMaterial(t *testing.T) {
 	for _, expected := range []string{
 		"authenticated",
 		"responses_siwc_v1 adapter is implemented",
-		"explicitly authorized configured run with --state-domain siwc",
+		"explicitly authorized run with a compatible configured Responses provider and --state-domain siwc",
 		"governed and verifier-checked",
 		"do not prove live eligibility or authorize automatic inference",
 	} {
