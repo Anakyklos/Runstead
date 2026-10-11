@@ -80,7 +80,7 @@ func siwcLogin(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "siwc login: sign-in failed: %v\n", err)
 		return exitUnavailable
 	}
-	fmt.Fprintf(out, "SIWC credentials stored for issued client %q; inference remains unavailable.\n", reg.ClientID)
+	fmt.Fprintf(out, "SIWC credentials stored for issued client %q. This command did not issue an inference request.\n", reg.ClientID)
 	return exitSuccess
 }
 
@@ -106,7 +106,7 @@ func siwcModels(ctx context.Context, args []string, out, errOut io.Writer) int {
 	for _, model := range models {
 		fmt.Fprintf(out, "%q\t%q\n", model.Slug, model.DisplayName)
 	}
-	fmt.Fprintln(errOut, "Catalog visibility is display metadata and does not establish usage eligibility; Responses inference remains unavailable.")
+	fmt.Fprintln(errOut, "Catalog visibility is display metadata and does not establish usage eligibility; this command did not issue an inference request.")
 	return exitSuccess
 }
 
@@ -272,7 +272,7 @@ func siwcSetupWithLifecycleHooks(ctx context.Context, args []string, out, errOut
 		fmt.Fprintf(errOut, "siwc setup: authenticated setup commit refused: %v\n", err)
 		return exitUnavailable
 	}
-	fmt.Fprintf(out, "SIWC domain initialized for provider %q and selected model %q. Stage 5 Responses inference is still unavailable.\n", providerID, model)
+	fmt.Fprintf(out, "SIWC domain initialized for provider %q and selected model %q. Governed Responses dispatch is available through an explicit run.\n", providerID, model)
 	return exitSuccess
 }
 
@@ -463,5 +463,5 @@ func printSIWCHelp(out io.Writer) {
 	fmt.Fprintln(out, "  models --client-id  fetch the account-scoped visible model catalog")
 	fmt.Fprintln(out, "  setup --client-id ID --model SLUG --state-dir PATH --providers PATH  create one offline SIWC domain")
 	fmt.Fprintln(out, "  logout --client-id  revoke and clear one renewable session")
-	fmt.Fprintln(out, "Credentials and model catalog do not enable Responses inference in Stage 4.")
+	fmt.Fprintln(out, "Use an explicit governed run with --state-domain siwc to use the direct Responses adapter.")
 }

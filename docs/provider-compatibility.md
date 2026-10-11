@@ -57,12 +57,12 @@ contract proof, not live operational proof. See
 
 ## Deterministic contract proof
 
-The SIWC wire contract `responses_siwc_v1` remains refused by the
-compatibility composition and by the Chat Completions adapter. The Stage 3
-domain lock and recovery barrier are offline state-management support only;
-they do not prove authentication, Responses/SSE request construction, or live
-provider execution. A v2 declaration and synthetic state-domain fixture are
-not account attestations.
+The SIWC wire contract `responses_siwc_v1` selects the direct Responses/SSE
+adapter in compatibility composition and is never sent through the Chat
+Completions adapter. Dispatch still requires the protected Stage 4 credential
+binding and the SIWC state-domain lock and admission barrier. Offline contract
+and synthetic custody fixtures prove request behavior only; they do not prove
+live account eligibility or operational compatibility.
 
 The shared provider-neutral suite (`internal/provider/compat/matrix_test.go`)
 runs one harness across the three families against local `httptest` endpoints
@@ -105,8 +105,10 @@ The operator declares configured endpoints in one providers file
 (`--provider-id ID` / `RUNSTEAD_PROVIDER_ID`). The document maps one-to-one
 onto the #79 contract (`provider.Config`, `CapabilityProfile`,
 `RouteSafety`); resolution happens through the existing registry before any
-dispatch. The document is explicitly versioned: only `version: 1` is
-accepted, and absent/unknown/future versions or trailing JSON are rejected.
+dispatch. The document is explicitly versioned: provider declarations v1
+retain the legacy Chat Completions-compatible shapes; v2 adds a closed
+`wire_contract` choice and typed opaque SIWC identity bindings. Absent,
+unknown, or future versions and trailing JSON are rejected.
 
 ```json
 {
@@ -152,6 +154,19 @@ Fields:
   example an environment variable name). The value itself is resolved at
   dispatch time by the adapter's secret-resolver seam and never enters
   state, metadata, traces or model context.
+- For `responses_siwc_v1`, `auth_ref` is instead the issued-client custody
+  handle `siwc:<client-id>`. It resolves only through the protected SIWC
+  credential store; generic environment secret resolution is not used. The
+  wire is fixed to `https://api.openai.com/v1/responses`, sends `store:false`
+  and `stream:true`, and requires one valid `response.completed` SSE event
+  before returning text. Failed, incomplete, malformed, or disconnected
+  streams do not return partial text and are not retried. HTTP status and
+  sanitized request ID remain in attempt metadata; only explicitly allowlisted
+  SIWC vendor error codes enter the closed provider-failure classification.
+- SIWC profiles declare positive `max_request_bytes` and
+  `max_response_bytes` bounds. Every governed completion carries its full
+  local transcript and context; no remote response ID or conversation state
+  is used.
 - `options` — strictly necessary NON-SECRET protocol options. The
   anthropic-compatible baseline requires `max_tokens` and
   `anthropic_version`; option VALUES never appear in configuration identity.

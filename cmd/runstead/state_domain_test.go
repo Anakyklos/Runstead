@@ -173,13 +173,15 @@ func seedSIWCDomainWithBinding(t *testing.T, home, xdg, stateDir, taskID string,
 		}
 	}
 	ctx := context.Background()
-	if err := store.CreateTask(ctx, state.TaskRecord{TaskID: taskID, Objective: "synthetic SIWC task", Workspace: t.TempDir(), Model: "gpt-test", ConfigJSON: []byte(`{"provider_id":"siwc-cli-test"}`)}); err != nil {
-		t.Fatal(err)
+	if taskID != "" {
+		if err := store.CreateTask(ctx, state.TaskRecord{TaskID: taskID, Objective: "synthetic SIWC task", Workspace: t.TempDir(), Model: "gpt-test", ConfigJSON: []byte(`{"provider_id":"siwc-cli-test"}`)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.StartTask(ctx, taskID); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := store.StartTask(ctx, taskID); err != nil {
-		t.Fatal(err)
-	}
-	if withPendingApproval {
+	if withPendingApproval && taskID != "" {
 		actionID, err := store.RecordAction(ctx, state.ActionRecord{TaskID: taskID, Tool: "write_file", Arguments: []byte(`{}`), Fingerprint: "synthetic-write"})
 		if err != nil {
 			t.Fatal(err)
@@ -227,7 +229,7 @@ func setSIWCEnv(t *testing.T, home, xdg string) {
 
 func seedSIWCCredential(t *testing.T, home string, identity provider.Identity) {
 	t.Helper()
-	reg := siwcauth.PublicRegistration{Issuer: siwcauth.Issuer, Subject: "fixture-subject", ClientID: "issued-client", HostID: "urn:uuid:01234567-89ab-4cde-8fab-0123456789ab", Email: "fixture@example.invalid", Scopes: siwcauth.RequiredScopes(), ExpiresAt: time.Now().Add(time.Hour)}
+	reg := siwcauth.PublicRegistration{Issuer: siwcauth.Issuer, Subject: "fixture-subject", ClientID: "issued-client", HostID: "urn:uuid:01234567-89ab-4cde-8fab-0123456789ab", Email: "fixture@example.invalid", Scopes: siwcauth.RequiredScopes(), ExpiresAt: time.Now().Add(time.Hour), Model: "gpt-test"}
 	a, c, err := siwcauth.Bindings([]byte(strings.Repeat("k", 32)), reg)
 	if err != nil {
 		t.Fatal(err)
@@ -273,7 +275,7 @@ func writeSIWCProviderFixture(t *testing.T, path string) {
     "protocol_family": "openai_compatible",
     "base_url": "https://api.openai.com/v1",
     "model": "gpt-test",
-    "auth_ref": "SIWC_CONNECTION",
+    "auth_ref": "siwc:issued-client",
     "auth_requirement": "reference_required",
     "config_version": "v1",
     "wire_contract": "responses_siwc_v1",
@@ -282,6 +284,8 @@ func writeSIWCProviderFixture(t *testing.T, path string) {
     "profile": {
       "profile_version": "v1",
       "capabilities": ["text_turn", "runstead_protocol"],
+      "max_request_bytes": 262144,
+      "max_response_bytes": 4194304,
       "route_safety": {
         "attempt_accounting": "single",
         "single_attempt": "guaranteed",
@@ -750,10 +754,10 @@ func TestSIWCPreparedAttemptRecoveryAcrossProcessCrash(t *testing.T) {
 	}
 	for process := 1; process <= 2; process++ {
 		code, output := resume()
-		if code != exitUnavailable || !strings.Contains(output, "durable recovery completed; SIWC inference remains unavailable") {
-			t.Fatalf("resume process %d = (%d,%q), want recovered offline refusal", process, code, output)
+		if code != exitHumanReview || !strings.Contains(output, "human review") {
+			t.Fatalf("resume process %d = (%d,%q), want durable SIWC no-replay stop", process, code, output)
 		}
-		assertSIWCRecoveredAccounting(t, home, xdg, stateDir, identity, process)
+		assertSIWCRecoveredAccounting(t, home, xdg, stateDir, identity, 1)
 	}
 }
 
@@ -865,6 +869,13 @@ func assertSIWCRecoveredAccounting(t *testing.T, home, xdg, stateDir string, ide
 	if preparedEvents != 1 || reconciledEvents != 1 {
 		t.Fatalf("durable provider journal prepared=%d reconciled=%d; want exactly one of each", preparedEvents, reconciledEvents)
 	}
+	var taskStatus string
+	if err := store.DB().QueryRow(`SELECT status FROM tasks WHERE task_id = ?`, "siwc-task").Scan(&taskStatus); err != nil {
+		t.Fatal(err)
+	}
+	if taskStatus != "human_review_required" {
+		t.Fatalf("task status=%q, want durable no-replay human-review stop", taskStatus)
+	}
 }
 
 func TestSIWCResumeRequiresDomainBeforeOpeningLegacyPath(t *testing.T) {
@@ -912,7 +923,7 @@ func TestSIWCRunRequiresDomainBeforeOpeningLegacyPath(t *testing.T) {
 	}
 }
 
-func TestSIWCRunValidatesRegisteredDomainThenRefusesUnsupportedAdapter(t *testing.T) {
+func TestSIWCRetryPolicyRefusesBeforeSIWCDomainMutation(t *testing.T) {
 	base := t.TempDir()
 	home := filepath.Join(base, "home")
 	xdg := filepath.Join(base, "xdg")
@@ -933,20 +944,56 @@ func TestSIWCRunValidatesRegisteredDomainThenRefusesUnsupportedAdapter(t *testin
 	var out, errOut bytes.Buffer
 	code := run(context.Background(), []string{
 		"run", "--task", "synthetic", "--workspace", base, "--state-domain", "siwc",
-		"--state-dir", stateDir, "--providers", providers, "--provider-id", "siwc-cli-test", "--max-steps", "1",
+		"--state-dir", stateDir, "--providers", providers, "--provider-id", "siwc-cli-test", "--max-steps", "1", "--retry-policy", "bounded",
 	}, &out, &errOut)
-	if code != exitUnavailable || !strings.Contains(errOut.String(), "SIWC Responses wire contract is not implemented; refusing dispatch") {
-		t.Fatalf("run = (%d, %q), want explicit offline adapter refusal", code, errOut.String())
+	if code != exitUsage || !strings.Contains(errOut.String(), "--retry-policy bounded is unavailable for SIWC") {
+		t.Fatalf("run = (%d, %q), want pre-mutation SIWC retry refusal", code, errOut.String())
 	}
 	after, err := os.ReadFile(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(before, after) {
-		t.Fatal("adapter refusal unexpectedly changed the SIWC database")
+		t.Fatal("retry refusal unexpectedly changed the SIWC database")
 	}
-	if _, err := os.Stat(filepath.Join(stateDir, ".siwc-domain-lock-v1")); err != nil {
-		t.Fatalf("run did not establish the persistent domain lock marker: %v", err)
+	if _, err := os.Stat(filepath.Join(stateDir, ".siwc-domain-lock-v1")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retry refusal created the persistent domain lock marker: %v", err)
+	}
+}
+
+func TestSIWCResumeRetryPolicyRefusesBeforeDomainMutation(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	xdg := filepath.Join(base, "xdg")
+	stateDir := filepath.Join(base, "registered-state")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	setSIWCEnv(t, home, xdg)
+	providers := filepath.Join(base, "providers.json")
+	writeSIWCProviderFixture(t, providers)
+	identity := loadSIWCFixtureIdentity(t, providers)
+	seedSIWCDomain(t, home, xdg, stateDir, "siwc-task", false, identity)
+	dbPath := filepath.Join(stateDir, state.DefaultDBFile)
+	before, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{"resume", "siwc-task", "--state-domain", "siwc",
+		"--providers", providers, "--provider-id", "siwc-cli-test", "--retry-policy", "bounded"}, &out, &errOut)
+	if code != exitUsage || !strings.Contains(errOut.String(), "--retry-policy bounded is unavailable for SIWC") {
+		t.Fatalf("resume = (%d, %q), want pre-mutation SIWC retry refusal", code, errOut.String())
+	}
+	after, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("resume retry refusal unexpectedly changed the SIWC database")
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, ".siwc-domain-lock-v1")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("resume retry refusal created the persistent domain lock marker: %v", err)
 	}
 }
 

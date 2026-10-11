@@ -103,6 +103,136 @@ func TestWithActiveRegistrationRejectsChangedSessionAtCommitBoundary(t *testing.
 	}
 }
 
+func TestWithAccessTokenVerifiesModelBindingsAndSerializesLogout(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "siwc"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := testRegistration(store, t)
+	reg.Model = "exact-model"
+	if err := store.Save(reg); err != nil {
+		t.Fatal(err)
+	}
+	account, credential, err := store.Bindings(reg.Public(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	requestDone := make(chan error, 1)
+	go func() {
+		requestDone <- store.WithAccessToken(context.Background(), reg.ClientID, reg.Model, account, credential, func(token string) error {
+			if token != "access-secret-fixture" {
+				return errors.New("wrong access token")
+			}
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	logoutDone := make(chan error, 1)
+	go func() { logoutDone <- store.RemoveTokens(reg.ClientID) }()
+	select {
+	case err := <-logoutDone:
+		t.Fatalf("logout crossed active request custody lock: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	if err := <-requestDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-logoutDone; err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	if err := store.WithAccessToken(context.Background(), reg.ClientID, reg.Model, account, credential, func(string) error { called = true; return nil }); !errors.Is(err, ErrSignedOut) || called {
+		t.Fatalf("signed out access err=%v callback=%v", err, called)
+	}
+}
+
+func TestWithAccessTokenRefusesExpiredChangedAndForgedBindings(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "siwc"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := testRegistration(store, t)
+	reg.Model = "exact-model"
+	if err := store.Save(reg); err != nil {
+		t.Fatal(err)
+	}
+	account, credential, err := store.Bindings(reg.Public(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, model, account, credential string
+		mutate                           func(Registration) Registration
+	}{
+		{name: "wrong model", model: "other-model", account: account, credential: credential},
+		{name: "forged account", model: reg.Model, account: account + "x", credential: credential},
+		{name: "forged credential", model: reg.Model, account: account, credential: credential + "x"},
+		{name: "expired", model: reg.Model, account: account, credential: credential, mutate: func(r Registration) Registration { r.ExpiresAt = time.Now().Add(-time.Second); return r }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.mutate != nil {
+				if err := store.Save(tc.mutate(reg)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			called := false
+			err := store.WithAccessToken(context.Background(), reg.ClientID, tc.model, tc.account, tc.credential, func(string) error { called = true; return nil })
+			if err == nil || called {
+				t.Fatalf("err=%v callback=%v", err, called)
+			}
+			if tc.mutate != nil {
+				if err := store.Save(reg); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestWithAccessTokenLockWaitHonorsCancellation(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "siwc"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := testRegistration(store, t)
+	reg.Model = "model"
+	if err := store.Save(reg); err != nil {
+		t.Fatal(err)
+	}
+	a, c, err := store.Bindings(reg.Public(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- store.WithAccessToken(context.Background(), reg.ClientID, reg.Model, a, c, func(string) error { close(entered); <-release; return nil })
+	}()
+	<-entered
+	ctx, cancel := context.WithCancel(context.Background())
+	second := make(chan error, 1)
+	go func() {
+		second <- store.WithAccessToken(ctx, reg.ClientID, reg.Model, a, c, func(string) error { return nil })
+	}()
+	cancel()
+	select {
+	case err := <-second:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("lock wait error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled credential lock wait did not return")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIssuedClientIDCannotBeReboundToAnotherSubject(t *testing.T) {
 	store, err := OpenStore(filepath.Join(t.TempDir(), "siwc"), true)
 	if err != nil {

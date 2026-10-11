@@ -25,6 +25,9 @@ func (*Store) SetModel(string, string, []Model) error { return errLinuxCustodyRe
 func (*Store) WithActiveRegistration(Registration, func() error) error {
 	return errLinuxCustodyRequired
 }
+func (*Store) WithAccessToken(context.Context, string, string, string, string, func(string) error) error {
+	return errLinuxCustodyRequired
+}
 func (*Store) Registrations() ([]PublicRegistration, error) {
 	return nil, errLinuxCustodyRequired
 }

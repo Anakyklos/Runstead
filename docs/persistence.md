@@ -163,12 +163,13 @@ process test hardlinks the same SQLite inode and proves both domains refuse
 entry. The CLI recovery E2E kills a process after a prepared provider attempt
 and governor debit commit, then invokes the real
 `runstead resume --state-domain siwc` in two fresh processes and checks durable reconciliation,
-the single preserved debit, and the offline inference refusal. This is
+the single preserved debit, and the durable human-review stop that prevents
+an uncertain model request from being replayed. This is
 cooperative CLI exclusion: a same-user process that bypasses Runstead and
 writes SQLite directly is outside the guarantee. The preflight's immutable SQLite view
 checks the main DB marker, while SQLite replays any durable sidecar state only
-after the lock is held. This offline stage does not authenticate an account
-or enable Responses inference.
+after the lock is held. Synthetic recovery fixtures do not authenticate a
+real account or establish live eligibility.
 
 ## SIWC OAuth custody (offline Stage 4)
 
@@ -185,8 +186,9 @@ opaque provider bindings from verified issuer, subject and issued client ID.
 SQLite stores only the existing non-secret SIWC manifest/marker and opaque
 bindings, never OAuth tokens. File permissions do not encrypt custody against
 the same user or offline disk theft. Model catalog visibility is display
-metadata and does not establish eligibility. Stage 4 does not enable the
-`responses_siwc_v1` adapter.
+metadata and does not establish eligibility. Stage 5 provides a direct
+`responses_siwc_v1` adapter for explicit governed runs. Offline tests do not
+establish live account eligibility or live readiness.
 
 ## Migrations
 

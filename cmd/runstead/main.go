@@ -36,6 +36,13 @@ const (
 	exitUnavailable = 3
 )
 
+// configuredProviderClient is the composition seam for deterministic CLI
+// tests. Production execution always uses compat.New and the environment
+// resolver; SIWC loopback construction is only installed by test helpers.
+var configuredProviderClient = func(resolved provider.Resolved) (provider.Client, error) {
+	return compat.New(resolved, compat.EnvSecretResolver(os.LookupEnv))
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
@@ -115,7 +122,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	flags.StringVar(&task, "task", "", "task prompt (RUNSTEAD_TASK)")
 	flags.StringVar(&scripted, "scripted", "", "JSONL file of scripted model responses for a deterministic offline run (RUNSTEAD_SCRIPTED_RESPONSES)")
 	flags.StringVar(&stateDir, "state-dir", "", "durable state directory (RUNSTEAD_STATE_DIR; default: $XDG_DATA_HOME/runstead or ~/.local/share/runstead)")
-	flags.StringVar(&stateDomain, "state-domain", "", "select the authenticated SIWC state domain (siwc); Responses inference remains unavailable")
+	flags.StringVar(&stateDomain, "state-domain", "", "select the authenticated SIWC state domain (siwc) for governed Responses inference")
 	flags.StringVar(&writePolicy, "write-policy", "", "write tool policy modes, e.g. write_file=allow,apply_patch=approval_required (RUNSTEAD_WRITE_POLICY; default: approval_required for every write tool)")
 	flags.StringVar(&recipesFile, "recipes", "", "operator-controlled recipe catalog file (RUNSTEAD_RECIPES): JSON array of recipes; run_recipe fails closed without it")
 	flags.StringVar(&recipePolicy, "recipe-policy", "", "recipe policy modes, e.g. test=allow,vet=approval_required (RUNSTEAD_RECIPE_POLICY; default: approval_required for every recipe)")
@@ -357,6 +364,10 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "run: %v\n", err)
 		return exitUsage
 	}
+	if retriesEnabled && resolvedProvider != nil && resolvedProvider.WireContract == provider.WireResponsesSIWCV1 {
+		fmt.Fprintln(errOut, "run: --retry-policy bounded is unavailable for SIWC; each completion is single-attempt")
+		return exitUsage
+	}
 	if retriesEnabled && (scriptedSet || cfg.OmniRoute != nil) {
 		fmt.Fprintln(errOut, "run: --retry-policy bounded applies only to configured compatible providers (--providers/--provider-id)")
 		return exitUsage
@@ -487,7 +498,7 @@ func runCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 		// Exactly one configured endpoint: the composition layer selects the
 		// family adapter; the agent loop keeps depending only on
 		// provider.Client and the provider-neutral contract (#14).
-		compatClient, buildErr := compat.New(*effectiveProvider, compat.EnvSecretResolver(os.LookupEnv))
+		compatClient, buildErr := configuredProviderClient(*effectiveProvider)
 		if buildErr != nil {
 			fmt.Fprintf(errOut, "run: provider %q unavailable: %v\n", selectedProviderID, buildErr)
 			return exitUnavailable
@@ -1501,7 +1512,7 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --scripted FILE           scripted responses for a deterministic offline run (RUNSTEAD_SCRIPTED_RESPONSES)")
 	fmt.Fprintln(out, "  --workspace PATH          workspace path (RUNSTEAD_WORKSPACE, default .)")
 	fmt.Fprintln(out, "  --state-dir PATH          durable state directory (RUNSTEAD_STATE_DIR, default $XDG_DATA_HOME/runstead or ~/.local/share/runstead)")
-	fmt.Fprintln(out, "  --state-domain siwc       use the authenticated SIWC state domain; Responses inference remains unavailable")
+	fmt.Fprintln(out, "  --state-domain siwc       use the authenticated SIWC state domain for governed Responses inference")
 	fmt.Fprintln(out, "  --write-policy SPEC       write tool modes, e.g. write_file=allow,apply_patch=deny (RUNSTEAD_WRITE_POLICY, default approval_required)")
 	fmt.Fprintln(out, "  --recipes FILE            operator-controlled recipe catalog (RUNSTEAD_RECIPES); run_recipe fails closed without it")
 	fmt.Fprintln(out, "  --recipe-policy SPEC      recipe modes, e.g. test=allow,vet=deny (RUNSTEAD_RECIPE_POLICY, default approval_required)")

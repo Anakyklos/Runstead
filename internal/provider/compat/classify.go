@@ -20,6 +20,7 @@ import (
 	"github.com/RenyEnnos/Runstead/internal/provider/anthropiccompat"
 	"github.com/RenyEnnos/Runstead/internal/provider/googlecompat"
 	"github.com/RenyEnnos/Runstead/internal/provider/openaicompat"
+	"github.com/RenyEnnos/Runstead/internal/provider/responsessiwc"
 )
 
 // NewClassifier returns the composition-layer OutcomeClassifier for the
@@ -45,7 +46,20 @@ func NewClassifier() governor.OutcomeClassifier {
 		var openAI *openaicompat.Error
 		var anthropic *anthropiccompat.Error
 		var google *googlecompat.Error
+		var siwc *responsessiwc.Error
 		switch {
+		case errors.As(err, &siwc):
+			// SIWC automatic retries are prohibited regardless of HTTP status;
+			// delivery and code remain on the typed adapter error and metadata.
+			outcome.Class = governor.OutcomeUncertainReached
+			outcome.UpstreamReached = siwc.DeliveryState != provider.DeliveryNotSent
+			if siwc.Code != "" {
+				outcome.ProviderFailureClass = provider.ParseProviderFailureClass(siwc.Code)
+			}
+			if outcome.ProviderFailureClass == "" {
+				outcome.ProviderFailureClass = provider.ParseProviderFailureClass(string(siwc.Kind))
+			}
+			return outcome
 		case errors.As(err, &openAI):
 			return classifyError(outcome, string(openAI.Kind), openAI.RetryAfter)
 		case errors.As(err, &anthropic):

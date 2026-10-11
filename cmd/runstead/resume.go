@@ -362,6 +362,15 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintln(errOut, "resume: invalid state domain selector")
 		return exitUsage
 	}
+	retriesEnabled, retryErr := resolveRetryPolicy(retryPolicy, retryPolicy != "")
+	if retryErr != nil {
+		fmt.Fprintf(errOut, "resume: %v\n", retryErr)
+		return exitUsage
+	}
+	if retriesEnabled && stateDomain == "siwc" {
+		fmt.Fprintln(errOut, "resume: --retry-policy bounded is unavailable for SIWC; each completion is single-attempt")
+		return exitUsage
+	}
 	if workUnitConcurrencySet && (workUnitConcurrency < workunit.MinConcurrency || workUnitConcurrency > workunit.MaxConcurrency) {
 		fmt.Fprintf(errOut, "resume: --workunit-concurrency must be between %d and %d (got %d)\n",
 			workunit.MinConcurrency, workunit.MaxConcurrency, workUnitConcurrency)
@@ -625,6 +634,10 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			return exitUsage
 		}
 	}
+	if retriesEnabled && persistedIdentity.ProviderID == "" {
+		fmt.Fprintln(errOut, "resume: --retry-policy bounded applies only to configured compatible providers (--providers/--provider-id)")
+		return exitUsage
+	}
 	if resumeOmniRoute != nil {
 		accountConfig.ProtocolFamily = resumeProviderIdentity.ProtocolFamily
 		accountConfig.ConfigIdentity = resumeProviderIdentity.ConfigIdentity
@@ -753,7 +766,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			return exitUsage
 		}
 	}
-	if resumeResolvedProvider != nil && location.SIWC == nil {
+	if resumeResolvedProvider != nil {
 		// Provider operational metadata and adapter construction happen only
 		// after the frozen Profile has passed exact composition validation. No
 		// invalid Profile can therefore mutate the operational projection or
@@ -767,7 +780,7 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 			fmt.Fprintf(errOut, "resume: %v\n", effErr)
 			return exitUnavailable
 		}
-		compatClient, buildErr := compat.New(*effectiveResolved, compat.EnvSecretResolver(os.LookupEnv))
+		compatClient, buildErr := configuredProviderClient(*effectiveResolved)
 		if buildErr != nil {
 			fmt.Fprintf(errOut, "resume: provider %q unavailable: %v\n", resumeProviderID, buildErr)
 			return exitUnavailable
@@ -937,10 +950,22 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 		return exitGovernorBlocked
 	}
 	if location.SIWC != nil {
-		fmt.Fprintln(errOut, "resume: durable recovery completed; SIWC inference remains unavailable until the Responses adapter stage")
-		return exitUnavailable
+		uncertain := make([]string, 0)
+		for _, attempt := range preload.ProviderAttempts {
+			if attempt.Uncertain || attempt.Status == "planned" || attempt.Status == "prepared" || attempt.Status == "running" || attempt.Status == "uncertain" {
+				uncertain = append(uncertain, attempt.ExecutionID)
+			}
+		}
+		if plan.UncertainProviderAttempts > 0 || len(uncertain) > 0 {
+			reason := "an interrupted SIWC provider attempt may have reached upstream; automatic continuation would repeat an uncertain request"
+			if err := store.MarkHumanReviewRequired(ctx, taskID, reason, uncertain); err != nil {
+				fmt.Fprintf(errOut, "resume: cannot persist SIWC no-replay boundary: %v\n", err)
+				return exitUnavailable
+			}
+			fmt.Fprintf(errOut, "resume: %s; task requires human review and will not be replayed\n", reason)
+			return exitHumanReview
+		}
 	}
-
 	// Wire the resumed task with the same control boundaries as a normal run:
 	// the restored account governor, the read-only registry, the protocol
 	// parser and the persistence boundary.
@@ -951,15 +976,6 @@ func resumeCommand(ctx context.Context, args []string, out, errOut io.Writer) in
 	var outcomeClassifier governor.OutcomeClassifier
 	if persistedIdentity.ProviderID != "" {
 		outcomeClassifier = compat.NewClassifier()
-	}
-	retriesEnabled, retryErr := resolveRetryPolicy(retryPolicy, retryPolicy != "")
-	if retryErr != nil {
-		fmt.Fprintf(errOut, "resume: %v\n", retryErr)
-		return exitUsage
-	}
-	if retriesEnabled && persistedIdentity.ProviderID == "" {
-		fmt.Fprintln(errOut, "resume: --retry-policy bounded applies only to configured compatible providers (--providers/--provider-id)")
-		return exitUsage
 	}
 	var executorOptions []agent.ExecutorOptions
 	if persistedIdentity.ProviderID != "" && store != nil {
@@ -1613,7 +1629,7 @@ func printResumeHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --providers FILE          provider declarations file (RUNSTEAD_PROVIDERS); required to resume a task that ran through a configured provider")
 	fmt.Fprintln(out, "  --provider-id ID          the exact persisted provider_id (RUNSTEAD_PROVIDER_ID); provider/model/config divergence fails closed")
 	fmt.Fprintln(out, "  --state-dir PATH          durable state directory (RUNSTEAD_STATE_DIR)")
-	fmt.Fprintln(out, "  --state-domain siwc       use the authenticated SIWC state domain; Responses inference remains unavailable")
+	fmt.Fprintln(out, "  --state-domain siwc       use the authenticated SIWC state domain for governed Responses inference")
 	fmt.Fprintln(out, "  --log-level LEVEL         debug, info, warn or error (RUNSTEAD_LOG_LEVEL, default info)")
 	fmt.Fprintln(out, "  --write-policy SPEC       write tool modes, e.g. write_file=allow (RUNSTEAD_WRITE_POLICY, default approval_required)")
 	fmt.Fprintln(out, "  --recipes FILE            operator-controlled recipe catalog (RUNSTEAD_RECIPES); re-supplied at resume")
