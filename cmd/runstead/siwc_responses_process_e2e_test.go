@@ -88,7 +88,7 @@ func TestSIWCResponsesMultiTurnCLIProcessPersistsTwoGovernedCalls(t *testing.T) 
 			text = final
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		encodedDelta, _ := json.Marshal(map[string]string{"type": "response.output_text.delta", "delta": text})
+		encodedDelta, _ := json.Marshal(map[string]any{"type": "response.output_text.delta", "item_id": fmt.Sprintf("message-%d", index), "output_index": 0, "content_index": 0, "delta": text})
 		fmt.Fprintf(w, "event: response.output_text.delta\ndata: %s\n\n", encodedDelta)
 		fmt.Fprintf(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"process-response-%d\",\"status\":\"completed\"}}\n\n", index)
 	}))

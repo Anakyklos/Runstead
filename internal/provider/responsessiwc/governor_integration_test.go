@@ -28,7 +28,7 @@ func TestTwoGovernedCompletesSendSelfContainedTranscriptOnceEach(t *testing.T) {
 		n := len(requests)
 		mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprintf(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"answer-%d\"}\n\n", n)
+		fmt.Fprintf(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"message-%d\",\"output_index\":0,\"content_index\":0,\"delta\":\"answer-%d\"}\n\n", n, n)
 		fmt.Fprintf(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"response-%d\",\"status\":\"completed\"}}\n\n", n)
 	}))
 	defer server.Close()

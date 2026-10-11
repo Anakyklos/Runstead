@@ -93,7 +93,7 @@ func TestCompleteSendsResponsesWireAndRequiresCompletedSSE(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("X-Request-Id", "req_123")
-		io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n")
+		io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\",\"logprobs\":[]}\n\n")
 		io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_123\",\"status\":\"completed\"}}\n\n")
 	}, access)
 	defer server.Close()
@@ -106,6 +106,45 @@ func TestCompleteSendsResponsesWireAndRequiresCompletedSSE(t *testing.T) {
 	}
 	if count.Load() != 1 || access.calls.Load() != 1 {
 		t.Fatalf("HTTP=%d custody=%d, want one each", count.Load(), access.calls.Load())
+	}
+}
+
+func TestCompleteAcceptsOfficialResponsesSSEFieldsAndIgnoresReasoning(t *testing.T) {
+	access := &testAccess{token: "fixture-token"}
+	var requests atomic.Int32
+	client, server := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeEvent := func(name, data string) {
+			t.Helper()
+			_, _ = io.WriteString(w, "event: "+name+"\ndata: "+data+"\n\n")
+		}
+		writeEvent("response.created", `{"type":"response.created","sequence_number":0,"response":{"id":"resp_123","status":"in_progress","output":[]}}`)
+		writeEvent("response.output_item.added", `{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[]}}`)
+		writeEvent("response.reasoning_summary_text.delta", `{"type":"response.reasoning_summary_text.delta","sequence_number":2,"item_id":"rs_1","output_index":0,"summary_index":0,"delta":"private rationale"}`)
+		writeEvent("response.reasoning_summary_text.done", `{"type":"response.reasoning_summary_text.done","sequence_number":3,"item_id":"rs_1","output_index":0,"summary_index":0,"text":"private rationale"}`)
+		writeEvent("response.reasoning_text.delta", `{"type":"response.reasoning_text.delta","sequence_number":4,"item_id":"rs_1","output_index":0,"content_index":0,"delta":"inert reasoning"}`)
+		writeEvent("response.reasoning_text.done", `{"type":"response.reasoning_text.done","sequence_number":5,"item_id":"rs_1","output_index":0,"content_index":0,"text":"inert reasoning"}`)
+		writeEvent("response.output_item.done", `{"type":"response.output_item.done","sequence_number":6,"output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"private rationale"}],"content":[{"type":"reasoning_text","text":"inert reasoning"}]}}`)
+		writeEvent("response.output_item.added", `{"type":"response.output_item.added","sequence_number":7,"output_index":1,"item":{"id":"msg_1","type":"message","status":"in_progress","role":"assistant","content":[]}}`)
+		writeEvent("response.content_part.added", `{"type":"response.content_part.added","sequence_number":8,"item_id":"msg_1","output_index":1,"content_index":0,"part":{"type":"output_text","text":"","annotations":[],"logprobs":[]}}`)
+		writeEvent("response.output_text.delta", `{"type":"response.output_text.delta","sequence_number":9,"item_id":"msg_1","output_index":1,"content_index":0,"delta":"hello","logprobs":[]}`)
+		writeEvent("response.output_text.done", `{"type":"response.output_text.done","sequence_number":10,"item_id":"msg_1","output_index":1,"content_index":0,"text":"hello","logprobs":[]}`)
+		writeEvent("response.content_part.done", `{"type":"response.content_part.done","sequence_number":11,"item_id":"msg_1","output_index":1,"content_index":0,"part":{"type":"output_text","text":"hello","annotations":[],"logprobs":[]}}`)
+		writeEvent("response.output_item.done", `{"type":"response.output_item.done","sequence_number":12,"output_index":1,"item":{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hello","annotations":[],"logprobs":[]}]}}`)
+		writeEvent("response.completed", `{"type":"response.completed","sequence_number":13,"response":{"id":"resp_123","status":"completed","output":[{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"private rationale"}],"content":[{"type":"reasoning_text","text":"inert reasoning"}]},{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hello","annotations":[],"logprobs":[]}]}]}}`)
+	}, access)
+	defer server.Close()
+
+	response, err := client.Complete(context.Background(), provider.Request{Model: "exact-model", Prompt: "=== runstead:system ===\nsystem contract\n=== runstead:user ===\nhello context\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Text != "hello" || strings.Contains(response.Text, "private rationale") || response.Metadata.DeliveryState != provider.DeliveryCompleted {
+		t.Fatalf("response=%+v", response)
+	}
+	if requests.Load() != 1 || access.calls.Load() != 1 {
+		t.Fatalf("HTTP=%d custody=%d, want one each", requests.Load(), access.calls.Load())
 	}
 }
 
@@ -132,7 +171,7 @@ data: {"type":"response.incomplete","response":{"id":"r1","status":"incomplete"}
 
 `, ErrorResponseIncomplete},
 		{"disconnected", `event: response.output_text.delta
-data: {"type":"response.output_text.delta","delta":"partial"}
+data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"partial"}
 
 `, ErrorStreamIncomplete},
 		{"malformed", `event: response.output_text.delta
@@ -166,6 +205,13 @@ data: {"type":"response.refusal.delta","delta":"no"}
 data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[{"type":"function_call","name":"shell","arguments":"{}"}]}}
 
 `, ErrorInvalidEnvelope},
+		{"completed text mismatch", `event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"streamed"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"different","annotations":[],"logprobs":[]}]}]}}
+
+`, ErrorInvalidEnvelope},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -186,7 +232,7 @@ func TestSSEBoundedLinesEventsAndAggregatedOutput(t *testing.T) {
 		"line limit":             "event: " + strings.Repeat("x", maxLine) + "\n\n",
 		"event limit":            strings.Repeat(":"+strings.Repeat("x", 60<<10)+"\n", 5) + "\n",
 		"stream limit":           strings.Repeat(":"+strings.Repeat("x", 60<<10)+"\n\n", maxStream/(60<<10)+2),
-		"aggregate output limit": "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"four\"}\n\n",
+		"aggregate output limit": "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"four\"}\n\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			limit := maxOutput
