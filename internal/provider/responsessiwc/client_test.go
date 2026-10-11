@@ -148,6 +148,95 @@ func TestCompleteAcceptsOfficialResponsesSSEFieldsAndIgnoresReasoning(t *testing
 	}
 }
 
+func TestCompleteAcceptsRepeated70KiBOfficialTerminalText(t *testing.T) {
+	const size = 70 << 10
+	text := strings.Repeat("a", size)
+	access := &testAccess{token: "fixture-token"}
+	var posts atomic.Int32
+	client, server := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		posts.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		sequence := 0
+		writeEvent := func(name string, payload any) {
+			t.Helper()
+			encoded, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := io.WriteString(w, "event: "+name+"\ndata: "+string(encoded)+"\n\n"); err != nil {
+				t.Error(err)
+			}
+			sequence++
+		}
+		writeEvent("response.created", map[string]any{"type": "response.created", "sequence_number": sequence, "response": map[string]any{"id": "resp_large", "status": "in_progress", "output": []any{}}})
+		writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added", "sequence_number": sequence, "output_index": 0, "item": map[string]any{"id": "msg_large", "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}}})
+		writeEvent("response.content_part.added", map[string]any{"type": "response.content_part.added", "sequence_number": sequence, "item_id": "msg_large", "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}, "logprobs": []any{}}})
+		for start := 0; start < len(text); start += 1024 {
+			end := start + 1024
+			if end > len(text) {
+				end = len(text)
+			}
+			writeEvent("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "sequence_number": sequence, "item_id": "msg_large", "output_index": 0, "content_index": 0, "delta": text[start:end], "logprobs": []any{}})
+		}
+		textPart := map[string]any{"type": "output_text", "text": text, "annotations": []any{}, "logprobs": []any{}}
+		writeEvent("response.output_text.done", map[string]any{"type": "response.output_text.done", "sequence_number": sequence, "item_id": "msg_large", "output_index": 0, "content_index": 0, "text": text, "logprobs": []any{}})
+		writeEvent("response.content_part.done", map[string]any{"type": "response.content_part.done", "sequence_number": sequence, "item_id": "msg_large", "output_index": 0, "content_index": 0, "part": textPart})
+		message := map[string]any{"id": "msg_large", "type": "message", "status": "completed", "role": "assistant", "content": []any{textPart}}
+		writeEvent("response.output_item.done", map[string]any{"type": "response.output_item.done", "sequence_number": sequence, "output_index": 0, "item": message})
+		writeEvent("response.completed", map[string]any{"type": "response.completed", "sequence_number": sequence, "response": map[string]any{"id": "resp_large", "status": "completed", "output": []any{message}}})
+	}, access)
+	defer server.Close()
+
+	response, err := client.Complete(context.Background(), provider.Request{Model: "exact-model", Prompt: "=== runstead:system ===\ns\n=== runstead:user ===\nlarge local fixture\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Text) != size || response.Text != text || response.Metadata.DeliveryState != provider.DeliveryCompleted {
+		t.Fatalf("text bytes=%d want %d delivery=%s", len(response.Text), size, response.Metadata.DeliveryState)
+	}
+	if posts.Load() != 1 || access.calls.Load() != 1 {
+		t.Fatalf("POSTs=%d custody calls=%d, want one each", posts.Load(), access.calls.Load())
+	}
+}
+
+func TestCompleteRejectsTextAboveEffectiveResponseLimitWithoutPartialTextOrRetry(t *testing.T) {
+	const limit = 70 << 10
+	text := strings.Repeat("b", limit+1)
+	access := &testAccess{token: "fixture-token"}
+	var posts atomic.Int32
+	client, server := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		posts.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		for start := 0; start < len(text); start += 1024 {
+			end := start + 1024
+			if end > len(text) {
+				end = len(text)
+			}
+			payload := map[string]any{"type": "response.output_text.delta", "item_id": "msg_over", "output_index": 0, "content_index": 0, "delta": text[start:end]}
+			encoded, _ := json.Marshal(payload)
+			_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: "+string(encoded)+"\n\n")
+		}
+	}, access)
+	defer server.Close()
+	client.maxResponse = limit
+
+	response, err := client.Complete(context.Background(), provider.Request{Model: "exact-model", Prompt: "=== runstead:system ===\ns\n=== runstead:user ===\nlarge fixture\n"})
+	var typed *Error
+	if !errors.As(err, &typed) || typed.Kind != ErrorResponseTooLarge || response.Text != "" {
+		t.Fatalf("text bytes=%d err=%v, want typed too-large error and no partial text", len(response.Text), err)
+	}
+	if posts.Load() != 1 || access.calls.Load() != 1 {
+		t.Fatalf("POSTs=%d custody calls=%d, want one each", posts.Load(), access.calls.Load())
+	}
+}
+
+func TestValidateLogprobsAcceptsDocumentedByteArrays(t *testing.T) {
+	raw := json.RawMessage(`[{"token":"é","bytes":[195,169],"logprob":-0.25,"top_logprobs":[{"token":"é","bytes":[195,169],"logprob":-0.25}]}]`)
+	if err := validateLogprobs(raw); err != nil {
+		t.Fatalf("documented logprobs bytes were rejected: %v", err)
+	}
+}
+
 func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)
@@ -235,7 +324,7 @@ func TestSSEBoundedLinesEventsAndAggregatedOutput(t *testing.T) {
 		"aggregate output limit": "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"four\"}\n\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			limit := maxOutput
+			limit := 0
 			if name == "aggregate output limit" {
 				limit = 3
 			}

@@ -41,26 +41,34 @@ func (d *delivery) stateAfterBody(ok bool) provider.DeliveryState {
 }
 
 func parseSSE(body io.Reader, outputLimit int) (string, error) {
-	limited := io.LimitReader(body, maxStream+1)
-	r := bufio.NewReaderSize(limited, maxLine+1)
+	if outputLimit < 0 {
+		outputLimit = 0
+	}
+	if outputLimit > maxOutput {
+		outputLimit = maxOutput
+	}
+	lineLimit, eventLimit, streamLimit := sseLimits(outputLimit)
+	limited := io.LimitReader(body, int64(streamLimit)+1)
+	r := bufio.NewReaderSize(limited, 64<<10)
 	var output strings.Builder
 	state := &streamState{output: &output, outputLimit: outputLimit}
 	var eventName string
 	var data []byte
+	var line []byte
 	var total, eventBytes int
 	terminal := false
 	completed := false
 	for {
-		line, err := r.ReadSlice('\n')
-		if len(line) > maxLine {
+		line, err := readSSELine(r, line[:0], lineLimit)
+		if err == errSSELineTooLarge {
 			return "", &Error{Kind: ErrorResponseTooLarge}
 		}
 		total += len(line)
 		eventBytes += len(line)
-		if total > maxStream {
+		if total > streamLimit {
 			return "", &Error{Kind: ErrorResponseTooLarge}
 		}
-		if eventBytes > maxEvent {
+		if eventBytes > eventLimit {
 			return "", &Error{Kind: ErrorResponseTooLarge}
 		}
 		if len(line) > 0 && line[len(line)-1] == '\n' {
@@ -109,7 +117,7 @@ func parseSSE(body io.Reader, outputLimit int) (string, error) {
 				if len(data) > 0 {
 					return "", &Error{Kind: ErrorInvalidEnvelope}
 				}
-				if len(value) > maxEvent {
+				if len(value) > eventLimit {
 					return "", &Error{Kind: ErrorResponseTooLarge}
 				}
 				data = append(data, value...)
@@ -124,9 +132,6 @@ func parseSSE(body io.Reader, outputLimit int) (string, error) {
 			break
 		}
 		if err != nil {
-			if errors.Is(err, bufio.ErrBufferFull) {
-				return "", &Error{Kind: ErrorResponseTooLarge}
-			}
 			return "", &Error{Kind: ErrorStreamIncomplete, Cause: err}
 		}
 	}
@@ -134,6 +139,41 @@ func parseSSE(body io.Reader, outputLimit int) (string, error) {
 		return "", &Error{Kind: ErrorStreamIncomplete}
 	}
 	return output.String(), nil
+}
+
+var errSSELineTooLarge = errors.New("SSE line exceeds limit")
+
+// sseLimits leave room for JSON escaping and the official terminal events,
+// which repeat the completed text in output_text.done, content_part.done,
+// output_item.done, and response.completed. The response text is independently
+// capped, and all derived wire limits remain finite (at most 128 MiB).
+func sseLimits(outputLimit int) (line, event, stream int) {
+	if outputLimit < 0 {
+		outputLimit = 0
+	}
+	if outputLimit > maxOutput {
+		outputLimit = maxOutput
+	}
+	// JSON strings can expand each byte to a six-byte \\u00XX escape.
+	line = maxLine + 6*outputLimit
+	event = maxEvent + 6*outputLimit
+	// Include deltas plus four repeated terminal copies at worst-case escaping.
+	stream = maxStream + 30*outputLimit
+	return line, event, stream
+}
+
+func readSSELine(r *bufio.Reader, line []byte, limit int) ([]byte, error) {
+	for {
+		fragment, err := r.ReadSlice('\n')
+		if len(line)+len(fragment) > limit {
+			return nil, errSSELineTooLarge
+		}
+		line = append(line, fragment...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return line, err
+	}
 }
 
 type streamState struct {
@@ -509,7 +549,7 @@ func validateLogprobs(raw json.RawMessage) error {
 	}
 	for _, entry := range entries {
 		var fields map[string]json.RawMessage
-		if json.Unmarshal(entry, &fields) != nil || rejectUnknown(fields, "token", "logprob", "top_logprobs") != nil {
+		if json.Unmarshal(entry, &fields) != nil || rejectUnknown(fields, "token", "bytes", "logprob", "top_logprobs") != nil {
 			return errors.New("invalid logprob entry")
 		}
 		if _, ok := fields["token"]; !ok {
@@ -521,6 +561,9 @@ func validateLogprobs(raw json.RawMessage) error {
 				return errors.New("invalid logprob value")
 			}
 		}
+		if raw, ok := fields["bytes"]; ok && validateLogprobBytes(raw) != nil {
+			return errors.New("invalid logprob bytes")
+		}
 		if raw, ok := fields["top_logprobs"]; ok {
 			var top []json.RawMessage
 			if json.Unmarshal(raw, &top) != nil {
@@ -528,10 +571,31 @@ func validateLogprobs(raw json.RawMessage) error {
 			}
 			for _, candidate := range top {
 				var fields map[string]json.RawMessage
-				if json.Unmarshal(candidate, &fields) != nil || rejectUnknown(fields, "token", "logprob") != nil {
+				if json.Unmarshal(candidate, &fields) != nil || rejectUnknown(fields, "token", "bytes", "logprob") != nil {
 					return errors.New("invalid top logprob entry")
 				}
+				if raw, ok := fields["bytes"]; ok && validateLogprobBytes(raw) != nil {
+					return errors.New("invalid top logprob bytes")
+				}
 			}
+		}
+	}
+	return nil
+}
+
+func validateLogprobBytes(raw json.RawMessage) error {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return errors.New("logprob bytes must be an array")
+	}
+	var values []json.RawMessage
+	if err := json.Unmarshal(trimmed, &values); err != nil {
+		return err
+	}
+	for _, value := range values {
+		var byteValue uint8
+		if err := json.Unmarshal(value, &byteValue); err != nil {
+			return err
 		}
 	}
 	return nil

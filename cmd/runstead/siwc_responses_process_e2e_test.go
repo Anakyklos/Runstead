@@ -68,7 +68,7 @@ func TestSIWCResponsesMultiTurnCLIProcessPersistsTwoGovernedCalls(t *testing.T) 
 	acceptance := writeAcceptanceFile(t, `{"version":1,"checks":[{"id":"readme","type":"file_exists","path":"README.md"}]}`)
 
 	action := `<runstead_action>{"version":"runstead.protocol.v1","tool":"read_file","arguments":{"path":"README.md"}}</runstead_action>`
-	final := `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"Read the local fixture.","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`
+	final := `<runstead_final>{"version":"runstead.protocol.v1","status":"complete","summary":"` + strings.Repeat("s", 70<<10) + `","evidence":[{"evidence_id":"obs-000001","tool":"read_file"}]}</runstead_final>`
 	var mu sync.Mutex
 	var requests []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -88,9 +88,7 @@ func TestSIWCResponsesMultiTurnCLIProcessPersistsTwoGovernedCalls(t *testing.T) 
 			text = final
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		encodedDelta, _ := json.Marshal(map[string]any{"type": "response.output_text.delta", "item_id": fmt.Sprintf("message-%d", index), "output_index": 0, "content_index": 0, "delta": text})
-		fmt.Fprintf(w, "event: response.output_text.delta\ndata: %s\n\n", encodedDelta)
-		fmt.Fprintf(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"process-response-%d\",\"status\":\"completed\"}}\n\n", index)
+		writeOfficialResponsesLifecycle(t, w, fmt.Sprintf("process-response-%d", index), fmt.Sprintf("message-%d", index), text)
 	}))
 	defer server.Close()
 
@@ -161,6 +159,39 @@ func TestSIWCResponsesMultiTurnCLIProcessPersistsTwoGovernedCalls(t *testing.T) 
 	if bytes.Contains(databaseBytes, []byte("offline-access-fixture")) {
 		t.Fatal("SQLite database contains the fixture bearer token")
 	}
+}
+
+func writeOfficialResponsesLifecycle(t *testing.T, w http.ResponseWriter, responseID, itemID, text string) {
+	t.Helper()
+	sequence := 0
+	writeEvent := func(name string, payload any) {
+		t.Helper()
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			t.Errorf("encode local Responses event: %v", err)
+			return
+		}
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, encoded); err != nil {
+			t.Errorf("write local Responses event: %v", err)
+		}
+		sequence++
+	}
+	writeEvent("response.created", map[string]any{"type": "response.created", "sequence_number": sequence, "response": map[string]any{"id": responseID, "status": "in_progress", "output": []any{}}})
+	writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added", "sequence_number": sequence, "output_index": 0, "item": map[string]any{"id": itemID, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}}})
+	writeEvent("response.content_part.added", map[string]any{"type": "response.content_part.added", "sequence_number": sequence, "item_id": itemID, "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}, "logprobs": []any{}}})
+	for start := 0; start < len(text); start += 1024 {
+		end := start + 1024
+		if end > len(text) {
+			end = len(text)
+		}
+		writeEvent("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "sequence_number": sequence, "item_id": itemID, "output_index": 0, "content_index": 0, "delta": text[start:end], "logprobs": []any{}})
+	}
+	part := map[string]any{"type": "output_text", "text": text, "annotations": []any{}, "logprobs": []any{}}
+	writeEvent("response.output_text.done", map[string]any{"type": "response.output_text.done", "sequence_number": sequence, "item_id": itemID, "output_index": 0, "content_index": 0, "text": text, "logprobs": []any{}})
+	writeEvent("response.content_part.done", map[string]any{"type": "response.content_part.done", "sequence_number": sequence, "item_id": itemID, "output_index": 0, "content_index": 0, "part": part})
+	item := map[string]any{"id": itemID, "type": "message", "status": "completed", "role": "assistant", "content": []any{part}}
+	writeEvent("response.output_item.done", map[string]any{"type": "response.output_item.done", "sequence_number": sequence, "output_index": 0, "item": item})
+	writeEvent("response.completed", map[string]any{"type": "response.completed", "sequence_number": sequence, "response": map[string]any{"id": responseID, "status": "completed", "output": []any{item}}})
 }
 
 func TestSIWCResponsesDispatchedProcessCrashResumesWithoutReplay(t *testing.T) {
