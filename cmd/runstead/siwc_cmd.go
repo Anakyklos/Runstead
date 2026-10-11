@@ -161,7 +161,7 @@ func siwcStatus(args []string, out, errOut io.Writer) int {
 		}
 		fmt.Fprintf(out, "client=%q subject_binding=%q state=%q model=%q scopes=%q\n", reg.ClientID, shortHash(reg.Subject), state, reg.Model, strings.Join(reg.Scopes, " "))
 	}
-	fmt.Fprintln(out, "SIWC credentials and model catalog do not enable inference in this stage.")
+	fmt.Fprintln(out, "The responses_siwc_v1 adapter is implemented. Inference runs only through an explicitly authorized configured run with --state-domain siwc; each run remains governed and verifier-checked. Stored credentials and model catalog visibility do not prove live eligibility or authorize automatic inference.")
 	return exitSuccess
 }
 
