@@ -109,6 +109,7 @@ func TestSIWCResponsesMultiTurnCLIProcessPersistsTwoGovernedCalls(t *testing.T) 
 	if bytes.Contains(output, []byte("offline-access-fixture")) {
 		t.Fatal("CLI process output leaked the fixture bearer token")
 	}
+	taskID := taskIDFromOutput(t, string(output))
 
 	mu.Lock()
 	got := append([]map[string]any(nil), requests...)
@@ -149,8 +150,28 @@ func TestSIWCResponsesMultiTurnCLIProcessPersistsTwoGovernedCalls(t *testing.T) 
 	if err := store.DB().QueryRow(`SELECT count(*) FROM governor_ledger`).Scan(&ledgerCount); err != nil {
 		t.Fatal(err)
 	}
-	if taskCount != 1 || attemptCount != 2 || completedAttempts != 2 || ledgerCount != 2 {
-		t.Fatalf("durable task/governor accounting tasks=%d attempts=%d completed=%d ledger=%d; want 1/2/2/2", taskCount, attemptCount, completedAttempts, ledgerCount)
+	var completedActions, completedToolAttempts, successfulObservations int
+	if err := store.DB().QueryRow(`SELECT count(*) FROM actions WHERE task_id = ? AND status = 'completed'`, taskID).Scan(&completedActions); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DB().QueryRow(`SELECT count(*) FROM tool_attempts WHERE task_id = ? AND status = 'completed' AND evidence_id = 'obs-000001'`, taskID).Scan(&completedToolAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DB().QueryRow(`SELECT count(*) FROM tool_results WHERE task_id = ? AND evidence_id = 'obs-000001' AND success = 1`, taskID).Scan(&successfulObservations); err != nil {
+		t.Fatal(err)
+	}
+	var passedVerifications, passedChecks int
+	if err := store.DB().QueryRow(`SELECT count(*) FROM verification_attempts WHERE task_id = ? AND decision = 'passed'`, taskID).Scan(&passedVerifications); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DB().QueryRow(`SELECT count(*) FROM verification_checks WHERE task_id = ? AND check_id = 'readme' AND status = 'passed'`, taskID).Scan(&passedChecks); err != nil {
+		t.Fatal(err)
+	}
+	if taskCount != 1 || attemptCount != 2 || completedAttempts != 2 || ledgerCount != 2 ||
+		completedActions != 1 || completedToolAttempts != 1 || successfulObservations != 1 ||
+		passedVerifications != 1 || passedChecks != 1 {
+		t.Fatalf("durable CLI execution tasks=%d provider_attempts=%d completed_provider_attempts=%d ledger=%d actions=%d completed_tool_attempts=%d observations=%d passed_verifications=%d passed_checks=%d; want 1/2/2/2/1/1/1/1/1",
+			taskCount, attemptCount, completedAttempts, ledgerCount, completedActions, completedToolAttempts, successfulObservations, passedVerifications, passedChecks)
 	}
 	databaseBytes, err := os.ReadFile(filepath.Join(stateDir, state.DefaultDBFile))
 	if err != nil {

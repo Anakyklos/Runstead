@@ -1,7 +1,8 @@
 # Sign in with ChatGPT — offline implementation sequence
 
-Status: **Stage 5 direct Responses/SSE adapter is implemented and undergoing offline validation**. Maintainer decision: issue #174, authorized 2026-10-08.
-No live SIWC login, refresh, catalog request or inference has been performed during this implementation.
+Status: **Stages 1–5 are merged on `main`; Stage 6 evidence and operator documentation are recorded under child issue #185 and submitted in PR #186, which is pending maintainer review.** The reviewed Stage 6 baseline is `c8e5b4946a576ccd022a648c2d0caa0161f23c66`; the five implementation stages are present through PRs #176, #178, #180, #182 and #184. The Stage 6 coverage matrix records existing and added evidence, including the multi-turn CLI process E2E and its durable verifier results. Submission and test results are evidence for review, not Stage 6 acceptance or merge.
+
+The Stage 6 implementation and acceptance work is **OFFLINE ONLY**. It must not perform a real SIWC login, refresh, model-catalog request, inference, quota check or live canary. Offline tests use synthetic fixtures, loopback servers and local processes. Offline success does not satisfy live eligibility or Gate A.
 
 ## Contract boundary
 
@@ -49,9 +50,14 @@ legacy Chat Completions wire. Each model request remains a governor-admitted
 Runstead `Complete`, with one inference POST and no adapter retry, fallback or
 remote conversation state. Offline tests do not establish live eligibility.
 
-Remaining bounded deliveries:
-1. Complete Stage 5 gates and independent PR review.
-2. Stage 6 full offline E2E suite and operational documentation.
+Delivery state at this baseline:
+1. Stages 1–5: merged in PRs #176, #178, #180, #182 and #184.
+2. Stage 6: issue #185 under parent issue #174; evidence and operator
+   documentation are submitted for review in PR #186. The coverage matrix
+   distinguishes existing coverage, the added process E2E, and boundaries
+   that remain blocked or outside offline proof. Stage 6 acceptance remains
+   pending maintainer review; PR submission does not itself establish
+   acceptance or merge.
 
 The user-approved delivery plan and detailed acceptance criteria are in
 [issue #174](https://github.com/Anakyklos/Runstead/issues/174). This offline
@@ -159,7 +165,7 @@ reports an incomplete private state directory. Inspect and preserve that
 content before relocating or removing the directory; setup refuses to reuse
 the path until it is clear.
 
-## Stage 4: official OAuth/OIDC custody and model catalog
+## Stage 4: official OAuth/OIDC custody and model catalog — merged in PR #182
 
 `runstead siwc login` explicitly opens the system browser and binds one
 Authorization Code + PKCE S256 flow to a loopback listener on
@@ -204,8 +210,48 @@ inspection. A new successful explicit login for the same subject/client
 replaces the uncertain rotation and clears its marker durably. Multiple saved
 registrations are permitted but never pooled or automatically switched.
 
-The implementation and fixtures are fully offline-testable; no real sign-in,
-token exchange, catalog request or inference was executed during Stage 5
-implementation. The tested Linux filesystem allowlist does not establish
-semantics for unlisted or remote filesystems. Stage 6 remains pending, and
-offline implementation does not satisfy Gate A or promote M12.
+The implementation and fixtures are covered by offline tests. This does not
+assert that an operator's separate use of the CLI has made no external
+requests. The tested Linux filesystem allowlist does not establish semantics
+for unlisted or remote filesystems. Stage 6 acceptance is tracked separately;
+offline implementation and tests do not satisfy Gate A or promote M12.
+
+## Stage 5: governed direct Responses/SSE — merged in PR #184
+
+`responses_siwc_v1` selects the direct Responses API adapter through the
+provider compatibility resolver. The adapter sends one governed HTTP POST per
+completion, streams and validates the documented event sequence, and has no
+automatic retry, fallback, account/model/provider rotation or remote
+conversation-state authority. Only a valid `response.completed` terminal event
+can complete a response. The governor, durable attempt/ledger state, runtime
+policy, recovery, evidence and verifier remain authoritative. The adapter
+does not treat reasoning annotations as instructions or effects.
+
+Offline loopback and process tests can establish local request construction,
+SSE parsing, governor accounting and process-recovery behavior against their
+fixtures. They do not establish real-account authentication, model entitlement,
+live service compatibility, quota, eligibility or Gate A.
+
+## Stage 6: offline integrated acceptance and operator documentation
+
+Stage 6 assembles cross-stage evidence for configuration and identity,
+custody, domain locking, governed local Responses/SSE, SQLite accounting,
+recovery and independent verification. The acceptance record must distinguish
+unit, integration and process-E2E evidence, list any gaps, and show secret
+redaction without embedding credentials in fixtures, tasks, logs or reports.
+Only demonstrated behavior may be marked complete. Any unsupported boundary
+or unresolved material gap remains a limitation or follow-up; it is not
+reclassified as a pass.
+
+Stage 6 is **OFFLINE ONLY**. **Gate A NOT SATISFIED** by this work. Live
+eligibility and a live canary require separate authorization and evidence.
+The Stage 6 coverage matrix (`siwc-stage6-coverage.md`) records the named
+unit, integration and process-E2E evidence, including the added multi-turn
+CLI test that inspects persisted effects, observations and verifier decisions
+in SQLite. It also marks live eligibility and other unproven boundaries as
+blocked. These artifacts are submitted in PR #186 and remain subject to
+maintainer review; this status does not claim Stage 6 acceptance, merge,
+live qualification or Gate A satisfaction.
+See the [SIWC operator guide](siwc-operator-guide.md) for implemented command
+syntax, Linux limits, state preservation and the boundary between offline
+validation and any separately authorized live operation.

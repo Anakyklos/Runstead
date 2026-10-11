@@ -77,8 +77,16 @@ func TestSIWCStatusDoesNotRenderCredentialMaterial(t *testing.T) {
 			t.Fatalf("status leaked credential %q", secret)
 		}
 	}
-	if !strings.Contains(out.String(), "authenticated") || !strings.Contains(out.String(), "inference in this stage") {
-		t.Fatalf("status output=%q", out.String())
+	for _, expected := range []string{
+		"authenticated",
+		"responses_siwc_v1 adapter is implemented",
+		"explicitly authorized run with a compatible configured Responses provider and --state-domain siwc",
+		"governed and verifier-checked",
+		"do not prove live eligibility or authorize automatic inference",
+	} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("status output missing %q: %q", expected, out.String())
+		}
 	}
 }
 
