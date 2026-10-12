@@ -25,6 +25,16 @@ governor accounting, evidence and the non-secret domain marker and bindings.
 Tokens and refresh credentials are not stored in SQLite. File permissions do
 not protect against the same user or offline disk theft.
 
+OAuth token-response parsing recognizes the exact documented parameters and
+ignores unknown extension parameters as required by RFC 6749 §5.1. Known
+parameters remain typed and are validated by the existing OIDC/custody checks;
+duplicate JSON keys, malformed content and trailing data are rejected.
+Token-response parse failures emit only fixed reason codes
+(`duplicate_key`, `malformed_json`, `known_field_type_mismatch`,
+`trailing_data`, `non_object`), never response values or untrusted field
+names. This is offline protocol-compatibility work, **not** proof that the
+previously failed live login or account eligibility has been fixed.
+
 An offline test or local fixture does not authenticate an account, prove model
 entitlement, establish live compatibility or qualify a canary. This guide's
 management commands can contact official services when an operator invokes
