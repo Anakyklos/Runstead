@@ -127,6 +127,45 @@ type tokenResponse struct {
 	EarliestRefreshAt string `json:"earliest_refresh_at,omitempty"`
 }
 
+// UnmarshalJSON accepts RFC 6749 §5.1 extension names but projects only
+// exact, case-sensitive known parameters into token fields. Go's default
+// struct decoder also matches case-insensitively, which would let an unknown
+// parameter such as "Access_Token" override "access_token". Duplicate keys
+// and malformed content are rejected by postForm before this projection.
+func (r *tokenResponse) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	var decoded tokenResponse
+	for name, raw := range fields {
+		var target any
+		switch name {
+		case "access_token":
+			target = &decoded.AccessToken
+		case "refresh_token":
+			target = &decoded.RefreshToken
+		case "id_token":
+			target = &decoded.IDToken
+		case "token_type":
+			target = &decoded.TokenType
+		case "expires_in":
+			target = &decoded.ExpiresIn
+		case "scope":
+			target = &decoded.Scope
+		case "earliest_refresh_at":
+			target = &decoded.EarliestRefreshAt
+		default:
+			continue
+		}
+		if err := json.Unmarshal(raw, target); err != nil {
+			return err
+		}
+	}
+	*r = decoded
+	return nil
+}
+
 func (tokenResponse) String() string   { return "SIWC token response (credentials redacted)" }
 func (tokenResponse) GoString() string { return "SIWC token response (credentials redacted)" }
 
@@ -178,16 +217,38 @@ func postForm(ctx context.Context, client *http.Client, endpoint string, values 
 		}
 		return nil
 	}
-	if rejectDuplicateJSONKeys(body) != nil {
-		return errors.New("invalid SIWC endpoint response")
+	// RFC 6749 §5.1 permits unrecognized response parameters, but requires
+	// known token fields to be validated. Ignore extensions only for typed
+	// token responses; all response JSON must still be well-formed, bounded,
+	// free of duplicate keys, and contain exactly one object.
+	trimmed := strings.TrimSpace(string(body))
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return errors.New("invalid SIWC endpoint response (non_object)")
+	}
+	if err := rejectDuplicateJSONKeys(body); err != nil {
+		class := "malformed_json"
+		switch {
+		case errors.Is(err, errDuplicateJSONKey):
+			class = "duplicate_key"
+		case errors.Is(err, errExtraJSONValue):
+			class = "trailing_data"
+		}
+		return fmt.Errorf("invalid SIWC endpoint response (%s)", class)
 	}
 	dec := json.NewDecoder(strings.NewReader(string(body)))
-	dec.DisallowUnknownFields()
+	if _, tokenResponseOnly := dst.(*tokenResponse); !tokenResponseOnly {
+		dec.DisallowUnknownFields()
+	}
 	if err := dec.Decode(dst); err != nil {
-		return errors.New("invalid SIWC endpoint response")
+		class := "malformed_json"
+		var fieldType *json.UnmarshalTypeError
+		if errors.As(err, &fieldType) {
+			class = "known_field_type_mismatch"
+		}
+		return fmt.Errorf("invalid SIWC endpoint response (%s)", class)
 	}
 	if dec.Decode(new(any)) != io.EOF {
-		return errors.New("invalid SIWC endpoint response")
+		return errors.New("invalid SIWC endpoint response (trailing_data)")
 	}
 	return nil
 }

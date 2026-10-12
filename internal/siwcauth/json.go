@@ -7,6 +7,11 @@ import (
 	"io"
 )
 
+var (
+	errDuplicateJSONKey = errors.New("duplicate JSON object key")
+	errExtraJSONValue   = errors.New("extra JSON value")
+)
+
 func rejectDuplicateJSONKeys(raw []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
@@ -14,7 +19,7 @@ func rejectDuplicateJSONKeys(raw []byte) error {
 		return err
 	}
 	if _, err := decoder.Token(); err != io.EOF {
-		return errors.New("extra JSON value")
+		return errExtraJSONValue
 	}
 	return nil
 }
@@ -44,7 +49,7 @@ func consumeJSONValue(decoder *json.Decoder, depth int) error {
 				return errors.New("invalid JSON object key")
 			}
 			if _, exists := seen[key]; exists {
-				return errors.New("duplicate JSON object key")
+				return errDuplicateJSONKey
 			}
 			seen[key] = struct{}{}
 			if err := consumeJSONValue(decoder, depth+1); err != nil {
