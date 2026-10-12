@@ -28,12 +28,36 @@ not protect against the same user or offline disk theft.
 OAuth token-response parsing recognizes the exact documented parameters and
 ignores unknown extension parameters as required by RFC 6749 §5.1. Known
 parameters remain typed and are validated by the existing OIDC/custody checks;
-duplicate JSON keys, malformed content and trailing data are rejected.
-Token-response parse failures emit only fixed reason codes
-(`duplicate_key`, `malformed_json`, `known_field_type_mismatch`,
-`trailing_data`, `non_object`), never response values or untrusted field
-names. This is offline protocol-compatibility work, **not** proof that the
-previously failed live login or account eligibility has been fixed.
+duplicate JSON keys, malformed content, excessive depth/size and trailing
+data are rejected before field diagnostics.
+
+When typed decoding rejects a known field, the parser may report only
+`invalid SIWC endpoint response (known_field_type_mismatch): field=<ID>
+expected=<KIND> observed=<KIND>`. The ID literals match canonical wire names,
+but are internal fixed constants, not names copied from the response:
+
+| Fixed field ID | Expected JSON kind |
+| --- | --- |
+| `access_token` | `string` |
+| `refresh_token` | `string` |
+| `id_token` | `string` |
+| `token_type` | `string` |
+| `expires_in` | `number` |
+| `scope` | `string` |
+| `earliest_refresh_at` | `string` |
+
+Observed kinds are limited to `string`, `number`, `boolean`, `object`, `array`
+and `null`. No unknown name, response value, decoder error or URL is included.
+The first failure follows the fixed field order above, independent of wire
+order. JSON `null` retains Go's existing zero-value decoding behavior; values
+such as fractional, exponent-form or out-of-range `expires_in` can fail typed
+int64 decoding as `expected=number observed=number`. Required-value checks
+remain downstream and unchanged.
+
+This diagnostic identifies only the current parser failure boundary. It does
+not identify a historical private response, repair real authentication or
+authorize a retry. Offline protocol-compatibility work is **not** proof that
+the previous live login or account eligibility has been fixed.
 
 An offline test or local fixture does not authenticate an account, prove model
 entitlement, establish live compatibility or qualify a canary. This guide's

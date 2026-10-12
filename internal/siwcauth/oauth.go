@@ -1,6 +1,7 @@
 package siwcauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -127,6 +128,105 @@ type tokenResponse struct {
 	EarliestRefreshAt string `json:"earliest_refresh_at,omitempty"`
 }
 
+type tokenFieldID uint8
+
+const (
+	tokenFieldUnknown tokenFieldID = iota
+	tokenFieldAccessToken
+	tokenFieldRefreshToken
+	tokenFieldIDToken
+	tokenFieldTokenType
+	tokenFieldExpiresIn
+	tokenFieldScope
+	tokenFieldEarliestRefreshAt
+)
+
+func (id tokenFieldID) String() string {
+	switch id {
+	case tokenFieldAccessToken:
+		return "access_token"
+	case tokenFieldRefreshToken:
+		return "refresh_token"
+	case tokenFieldIDToken:
+		return "id_token"
+	case tokenFieldTokenType:
+		return "token_type"
+	case tokenFieldExpiresIn:
+		return "expires_in"
+	case tokenFieldScope:
+		return "scope"
+	case tokenFieldEarliestRefreshAt:
+		return "earliest_refresh_at"
+	default:
+		return "unknown"
+	}
+}
+
+type jsonKind uint8
+
+const (
+	jsonKindUnknown jsonKind = iota
+	jsonKindString
+	jsonKindNumber
+	jsonKindBoolean
+	jsonKindObject
+	jsonKindArray
+	jsonKindNull
+)
+
+func (kind jsonKind) String() string {
+	switch kind {
+	case jsonKindString:
+		return "string"
+	case jsonKindNumber:
+		return "number"
+	case jsonKindBoolean:
+		return "boolean"
+	case jsonKindObject:
+		return "object"
+	case jsonKindArray:
+		return "array"
+	case jsonKindNull:
+		return "null"
+	default:
+		return "unknown"
+	}
+}
+
+type tokenFieldTypeError struct {
+	field    tokenFieldID
+	expected jsonKind
+	observed jsonKind
+}
+
+func (e *tokenFieldTypeError) Error() string {
+	return "invalid SIWC endpoint response (known_field_type_mismatch): field=" + e.field.String() +
+		" expected=" + e.expected.String() + " observed=" + e.observed.String()
+}
+
+func observedJSONKind(raw json.RawMessage) jsonKind {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return jsonKindUnknown
+	}
+	switch trimmed[0] {
+	case '"':
+		return jsonKindString
+	case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-':
+		return jsonKindNumber
+	case 't', 'f':
+		return jsonKindBoolean
+	case '{':
+		return jsonKindObject
+	case '[':
+		return jsonKindArray
+	case 'n':
+		return jsonKindNull
+	default:
+		return jsonKindUnknown
+	}
+}
+
 // UnmarshalJSON accepts RFC 6749 §5.1 extension names but projects only
 // exact, case-sensitive known parameters into token fields. Go's default
 // struct decoder also matches case-insensitively, which would let an unknown
@@ -138,27 +238,30 @@ func (r *tokenResponse) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var decoded tokenResponse
-	for name, raw := range fields {
-		var target any
-		switch name {
-		case "access_token":
-			target = &decoded.AccessToken
-		case "refresh_token":
-			target = &decoded.RefreshToken
-		case "id_token":
-			target = &decoded.IDToken
-		case "token_type":
-			target = &decoded.TokenType
-		case "expires_in":
-			target = &decoded.ExpiresIn
-		case "scope":
-			target = &decoded.Scope
-		case "earliest_refresh_at":
-			target = &decoded.EarliestRefreshAt
-		default:
+	specs := [...]struct {
+		name     string
+		id       tokenFieldID
+		expected jsonKind
+		target   any
+	}{
+		{"access_token", tokenFieldAccessToken, jsonKindString, &decoded.AccessToken},
+		{"refresh_token", tokenFieldRefreshToken, jsonKindString, &decoded.RefreshToken},
+		{"id_token", tokenFieldIDToken, jsonKindString, &decoded.IDToken},
+		{"token_type", tokenFieldTokenType, jsonKindString, &decoded.TokenType},
+		{"expires_in", tokenFieldExpiresIn, jsonKindNumber, &decoded.ExpiresIn},
+		{"scope", tokenFieldScope, jsonKindString, &decoded.Scope},
+		{"earliest_refresh_at", tokenFieldEarliestRefreshAt, jsonKindString, &decoded.EarliestRefreshAt},
+	}
+	for _, spec := range specs {
+		raw, ok := fields[spec.name]
+		if !ok {
 			continue
 		}
-		if err := json.Unmarshal(raw, target); err != nil {
+		if err := json.Unmarshal(raw, spec.target); err != nil {
+			var typeErr *json.UnmarshalTypeError
+			if errors.As(err, &typeErr) {
+				return &tokenFieldTypeError{field: spec.id, expected: spec.expected, observed: observedJSONKind(raw)}
+			}
 			return err
 		}
 	}
@@ -240,9 +343,13 @@ func postForm(ctx context.Context, client *http.Client, endpoint string, values 
 		dec.DisallowUnknownFields()
 	}
 	if err := dec.Decode(dst); err != nil {
-		class := "malformed_json"
-		var fieldType *json.UnmarshalTypeError
+		var fieldType *tokenFieldTypeError
 		if errors.As(err, &fieldType) {
+			return fieldType
+		}
+		class := "malformed_json"
+		var decoderType *json.UnmarshalTypeError
+		if errors.As(err, &decoderType) {
 			class = "known_field_type_mismatch"
 		}
 		return fmt.Errorf("invalid SIWC endpoint response (%s)", class)
