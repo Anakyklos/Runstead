@@ -9,12 +9,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -306,5 +308,86 @@ func TestOfflineLoopbackLoginEndToEnd(t *testing.T) {
 	registrations, err := store.Registrations()
 	if err != nil || len(registrations) != 1 || registrations[0].Subject != "fixture-subject" {
 		t.Fatalf("historical identity registration was not retained: %#v err=%v", registrations, err)
+	}
+}
+
+func TestOfflineLoopbackLoginKnownFieldKindFailure(t *testing.T) {
+	var tokenPosts, unexpectedRoutes, callbackCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			tokenPosts.Add(1)
+			if r.Method != http.MethodPost {
+				t.Errorf("token method = %s, want POST", r.Method)
+			}
+			_, _ = io.WriteString(w, `{"earliest_refresh_at":42,"SENTINEL_UNKNOWN_NAME":{"private":"SENTINEL_TOKEN"}}`)
+			return
+		}
+		unexpectedRoutes.Add(1)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	endpoints := Endpoints{
+		Issuer:    Issuer,
+		Authorize: server.URL + "/authorize",
+		Token:     server.URL + "/token",
+		Discovery: server.URL + "/discovery",
+		Catalog:   server.URL + "/catalog",
+	}
+	store, err := OpenStore(filepath.Join(t.TempDir(), "config", "runstead", "siwc"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = loginWithEndpoints(ctx, store, server.Client(), endpoints, "", func(ctx context.Context, authURL string) error {
+		callbackCalls.Add(1)
+		auth, err := url.Parse(authURL)
+		if err != nil {
+			return err
+		}
+		callback, err := url.Parse(auth.Query().Get("redirect_uri"))
+		if err != nil {
+			return err
+		}
+		query := callback.Query()
+		query.Set("code", "SENTINEL_CALLBACK_CODE")
+		query.Set("state", auth.Query().Get("state"))
+		query.Set("client_id", "SENTINEL_CALLBACK_CLIENT")
+		callback.RawQuery = query.Encode()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, callback.String(), nil)
+		if err != nil {
+			return err
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return errors.New("synthetic callback rejected")
+		}
+		return nil
+	})
+	want := "invalid SIWC endpoint response (known_field_type_mismatch): field=earliest_refresh_at expected=string observed=number"
+	if err == nil || err.Error() != want {
+		t.Fatalf("got %v, want %q", err, want)
+	}
+	for _, rendered := range []string{err.Error(), fmt.Sprintf("%v", err), fmt.Sprintf("%+v", err), fmt.Sprintf("%#v", err)} {
+		for _, secret := range []string{"SENTINEL", "private", "127.0.0.1", "callback"} {
+			if strings.Contains(rendered, secret) {
+				t.Fatalf("login error leaked %q: %s", secret, rendered)
+			}
+		}
+	}
+	if tokenPosts.Load() != 1 || unexpectedRoutes.Load() != 0 || callbackCalls.Load() != 1 {
+		t.Fatalf("token posts=%d unexpected routes=%d synthetic callbacks=%d", tokenPosts.Load(), unexpectedRoutes.Load(), callbackCalls.Load())
+	}
+
+	registrations, err := store.Registrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(registrations) != 0 {
+		t.Fatalf("failed login issued registrations: %d", len(registrations))
 	}
 }
